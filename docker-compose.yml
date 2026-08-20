@@ -1,0 +1,62 @@
+services:
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      target: standalone
+    image: ${DIGITAL_MIGRATION_IMAGE:-digital-standalone:latest}
+    user: "${DIGITAL_UID:?请设置 DIGITAL_UID}:${DIGITAL_GID:?请设置 DIGITAL_GID}"
+    environment:
+      DIGITAL_PRODUCT_DATA: /data
+      DIGITAL_COMPOSE_SERVICE: migrate
+    entrypoint: ["/usr/local/bin/compose-entrypoint"]
+    volumes:
+      - type: bind
+        source: ${DIGITAL_PRODUCT_DATA_HOST_PATH:?请设置 DIGITAL_PRODUCT_DATA_HOST_PATH}
+        target: /data
+        bind:
+          create_host_path: false
+    restart: "no"
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      target: runtime
+    image: ${DIGITAL_RUNTIME_IMAGE:-digital-runtime:latest}
+    user: "${DIGITAL_UID:?请设置 DIGITAL_UID}:${DIGITAL_GID:?请设置 DIGITAL_GID}"
+    environment:
+      DIGITAL_PRODUCT_DATA: /data
+      DIGITAL_COMPOSE_SERVICE: web
+    entrypoint: ["/usr/local/bin/compose-entrypoint"]
+    command: ["node", "/app/dist/server/index.mjs"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - type: bind
+        source: ${DIGITAL_PRODUCT_DATA_HOST_PATH:?请设置 DIGITAL_PRODUCT_DATA_HOST_PATH}
+        target: /data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${DIGITAL_OBSERVED_ROOT_HOST_PATH:?请设置 DIGITAL_OBSERVED_ROOT_HOST_PATH}
+        target: /observed/media
+        read_only: true
+        bind:
+          create_host_path: false
+    ports:
+      - "${DIGITAL_BIND_ADDRESS:-127.0.0.1}:${DIGITAL_PORT:-3000}:3000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/ready').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped

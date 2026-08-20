@@ -1,0 +1,314 @@
+import { randomUUID } from "node:crypto";
+import { lstatSync, readFileSync, readlinkSync } from "node:fs";
+import path from "node:path";
+
+import {
+  ProductPrivateLease,
+  errorCode,
+  isCanonicalTimestamp,
+  linuxProcessStartTimeTicks,
+  type ProductPrivateLeaseOwnership,
+  type ProductPrivateLeaseOwner,
+  type ProductPrivateLeaseRecord,
+} from "./private-lease.js";
+
+export {
+  ProductPrivateLease,
+  inspectPrivatePath,
+  writePrivateJsonDurably,
+} from "./private-lease.js";
+export type {
+  ProductPrivateLeaseOwnership,
+  ProductPrivateLeaseRecord,
+} from "./private-lease.js";
+
+export {
+  createOfflineProductDataBackup,
+  restoreOfflineProductDataBackup,
+} from "./offline-product-data.js";
+export type { ProductDataRestoreStage } from "./offline-product-data.js";
+
+const productOperationStateSuffix = ".digital-operation-state";
+const productOperationLeaseFileName = "product-operation.lease.json";
+const operationLeaseLifetimeMilliseconds = 24 * 60 * 60 * 1_000;
+
+type ProductOperation = "writer" | "maintenance";
+
+type ProductOperationLeaseRecord = ProductPrivateLeaseRecord & {
+  readonly schema: "product-private-lease/1";
+  readonly version: "product-operation-lease/1";
+  readonly fingerprint: "product-operation";
+  readonly operation: ProductOperation;
+};
+
+/**
+ * 不可结构伪造的产品写入世代。它只由 ProductDataOperations 创建；组合根从不
+ * 接受此对象作为输入，因此测试也不能绕过真实的跨进程准入。
+ */
+class ProductOperationGeneration {
+  readonly #ownership: ProductPrivateLeaseOwnership<ProductOperationLeaseRecord>;
+  #released = false;
+
+  constructor(
+    ownership: ProductPrivateLeaseOwnership<ProductOperationLeaseRecord>,
+  ) {
+    this.#ownership = ownership;
+  }
+
+  isCurrent(): boolean {
+    return !this.#released && this.#ownership.isCurrent();
+  }
+
+  release(): void {
+    if (this.#released) return;
+    this.#released = true;
+    this.#ownership.retire();
+  }
+}
+
+/**
+ * 在构造任何可改写 Catalogue、托管产物或私有连接的生产对象前取得全产品写入权。
+ * 它与维护共享同一权威，因此维护不能插入检查与真实写入之间。
+ */
+export class ProductDataWriterLifecycle {
+  readonly #generation: ProductOperationGeneration;
+  constructor(generation: ProductOperationGeneration) {
+    this.#generation = generation;
+  }
+  isCurrent(): boolean {
+    return this.#generation.isCurrent();
+  }
+  close(): void {
+    this.#generation.release();
+  }
+}
+
+export class ProductDataMaintenanceLifecycle {
+  readonly #generation: ProductOperationGeneration;
+  constructor(generation: ProductOperationGeneration) {
+    this.#generation = generation;
+  }
+  isCurrent(): boolean {
+    return this.#generation.isCurrent();
+  }
+  close(): void {
+    this.#generation.release();
+  }
+}
+
+/** 产品根布局、跨进程准入与维护授权的唯一高层 Interface。 */
+export class ProductDataOperations {
+  readonly #root: string;
+  private constructor(root: string) {
+    this.#root = path.resolve(root);
+  }
+  static forRoot(root: string): ProductDataOperations {
+    return new ProductDataOperations(root);
+  }
+  startWriter(): ProductDataWriterLifecycle {
+    const generation = acquireProductOperationLease(this.#root, "writer");
+    try {
+      assertNoInterruptedRestore(this.#root);
+      return new ProductDataWriterLifecycle(generation);
+    } catch (error) {
+      generation.release();
+      throw error;
+    }
+  }
+  startMaintenance(): ProductDataMaintenanceLifecycle {
+    return new ProductDataMaintenanceLifecycle(
+      acquireProductOperationLease(this.#root, "maintenance"),
+    );
+  }
+  async withWriter<Result>(operation: () => Promise<Result>): Promise<Result> {
+    const lifecycle = this.startWriter();
+    try {
+      return await operation();
+    } finally {
+      lifecycle.close();
+    }
+  }
+  async assertOffline(): Promise<void> {
+    const lease = productOperationLease(this.#root);
+    if (!lease.isLive()) return;
+    throw operationConflict(lease.currentRecord()?.operation, "maintenance");
+  }
+  assertRestoreCanStart(): void {
+    assertNoInterruptedRestore(this.#root);
+  }
+}
+
+/**
+ * 恢复发布在进程中断后不会猜测目录是否完整。维护者必须删除该目标并从原备份
+ * 恢复到新的空根；此前拒绝任何写入者取得权威。
+ */
+function assertNoInterruptedRestore(productDataDirectory: string): void {
+  const marker = path.join(
+    path.resolve(productDataDirectory),
+    "runtime-state",
+    "offline-restore-in-progress.json",
+  );
+  try {
+    const status = lstatSync(marker);
+    if (!status.isFile() || status.isSymbolicLink()) {
+      throw new Error(
+        "离线恢复中断状态不可信；拒绝写入，删除失败目标后从备份恢复",
+      );
+    }
+    readFileSync(marker, "utf8");
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return;
+    if (error instanceof Error && error.message.includes("离线恢复中断状态"))
+      throw error;
+    throw new Error(
+      "离线恢复中断状态不可信；拒绝写入，删除失败目标后从备份恢复",
+    );
+  }
+  throw new Error("离线恢复曾中断；拒绝写入，删除失败目标后从备份恢复");
+}
+
+function acquireProductOperationLease(
+  productDataDirectory: string,
+  operation: ProductOperation,
+): ProductOperationGeneration {
+  const lease = productOperationLease(productDataDirectory);
+  const ownership = lease.acquire(newOperationRecord(operation));
+  if (ownership === undefined) {
+    throw operationConflict(lease.currentRecord()?.operation, operation);
+  }
+  return ownedOperationLease(ownership);
+}
+
+function ownedOperationLease(
+  ownership: ProductPrivateLeaseOwnership<ProductOperationLeaseRecord>,
+): ProductOperationGeneration {
+  return new ProductOperationGeneration(ownership);
+}
+
+function operationConflict(
+  active: ProductOperation | undefined,
+  requested: ProductOperation,
+): Error {
+  if (active === "writer") {
+    return new Error(
+      requested === "maintenance"
+        ? "产品正在运行；产品正在写入。停止 Web、自动刷新宿主和 CLI 写入后再执行离线维护"
+        : "产品正在写入；拒绝并发启动另一个产品写入者",
+    );
+  }
+  if (active === "maintenance") {
+    return new Error(
+      requested === "writer"
+        ? "产品正在维护；离线备份或恢复完成前拒绝启动写入者"
+        : "产品正在维护；拒绝并发执行另一个维护操作",
+    );
+  }
+  return new Error("产品运行维护状态不可信；拒绝并发写入或离线维护");
+}
+
+function productOperationLease(
+  productDataDirectory: string,
+): ProductPrivateLease<ProductOperationLeaseRecord> {
+  const directory = productOperationStateDirectory(productDataDirectory);
+  return new ProductPrivateLease({
+    directory,
+    path: path.join(directory, productOperationLeaseFileName),
+    now: () => new Date(),
+    isRecord: isProductOperationLeaseRecord,
+    failureMessage: "产品运行维护状态不可信；拒绝并发写入或离线维护",
+    reclaimCorrupt: false,
+    processOwner: productOperationOwner,
+    isOwnerAlive: productOperationOwnerAlive,
+  });
+}
+
+/**
+ * 运行维护状态属于部署卷：容器中的 /data 与宿主机维护命令看见同一记录，且
+ * 非 root 用户只需有产品根的写权限。离线备份显式排除此可重建区域。
+ */
+function productOperationStateDirectory(productDataDirectory: string): string {
+  const root = path.resolve(productDataDirectory);
+  return path.join(root, "runtime-state", productOperationStateSuffix);
+}
+
+function newOperationRecord(
+  operation: ProductOperation,
+): ProductOperationLeaseRecord {
+  const acquiredAt = new Date();
+  return {
+    schema: "product-private-lease/1",
+    version: "product-operation-lease/1",
+    // 即使 Linux 复用 PID，实例随机值仍可区分一次重启。
+    instanceNonce: randomUUID(),
+    leaseNonce: randomUUID(),
+    fingerprint: "product-operation",
+    operation,
+    acquiredAt: acquiredAt.toISOString(),
+    expiresAt: new Date(
+      acquiredAt.getTime() + operationLeaseLifetimeMilliseconds,
+    ).toISOString(),
+  };
+}
+
+function isProductOperationLeaseRecord(
+  value: unknown,
+): value is ProductOperationLeaseRecord {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const record = value as Record<string, unknown>;
+  return (
+    record.schema === "product-private-lease/1" &&
+    record.version === "product-operation-lease/1" &&
+    isNonce(record.instanceNonce) &&
+    isNonce(record.leaseNonce) &&
+    record.fingerprint === "product-operation" &&
+    (record.operation === "writer" || record.operation === "maintenance") &&
+    isCanonicalTimestamp(record.acquiredAt) &&
+    isCanonicalTimestamp(record.expiresAt) &&
+    Date.parse(record.expiresAt) > Date.parse(record.acquiredAt)
+  );
+}
+
+function isNonce(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+      value,
+    )
+  );
+}
+
+/** ProductPrivateLease 记录启动标识；无法证明 PID 命名空间和 UID 相同时一律拒绝回收。 */
+function productOperationOwner(): ProductPrivateLeaseOwner {
+  const uid = process.getuid?.();
+  if (typeof uid !== "number" || !Number.isSafeInteger(uid) || uid < 0)
+    throw new Error("cannot establish process UID");
+  return {
+    pid: process.pid,
+    startTimeTicks: linuxProcessStartTimeTicks(process.pid),
+    pidNamespace: linuxPidNamespace(),
+    uid,
+  };
+}
+
+function productOperationOwnerAlive(owner: ProductPrivateLeaseOwner): boolean {
+  if (owner.pidNamespace === undefined || owner.uid === undefined)
+    throw new Error("owner namespace identity is incomplete");
+  const self = productOperationOwner();
+  if (owner.pidNamespace !== self.pidNamespace || owner.uid !== self.uid) {
+    throw new Error("owner PID namespace or UID is not provably shared");
+  }
+  try {
+    return linuxProcessStartTimeTicks(owner.pid) === owner.startTimeTicks;
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function linuxPidNamespace(): string {
+  const value = readlinkSync("/proc/self/ns/pid");
+  if (!/^pid:\[[0-9]+\]$/u.test(value))
+    throw new Error("invalid PID namespace");
+  return value;
+}

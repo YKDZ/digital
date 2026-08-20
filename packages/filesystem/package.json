@@ -1,0 +1,38 @@
+{
+  "name": "@digital/filesystem",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "source": "./dist/index.js",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "format:check": "oxfmt --list-different --config ../../oxfmt.config.ts .",
+    "format:write": "oxfmt --write --config ../../oxfmt.config.ts .",
+    "lint": "oxlint --quiet --format=unix --config ../../oxlint.config.ts --ignore-pattern node_modules .",
+    "lint:fix": "oxlint --format=unix --config ../../oxlint.config.ts . --fix",
+    "test:public-interface": "pnpm build && tsc -p tsconfig.public-interface.json --noEmit --pretty false",
+    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
+    "test": "vitest run --reporter=verbose",
+    "build": "tsc -p tsconfig.json --pretty false"
+  },
+  "dependencies": {
+    "@digital/application": "workspace:*"
+  },
+  "devDependencies": {
+    "@digital/test-support": "workspace:*",
+    "@types/node": "catalog:",
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:",
+    "oxlint-tsgolint": "catalog:",
+    "typescript-7": "catalog:",
+    "vitest": "catalog:"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.config.json",
+  "files": [
+    "oxfmt.config.ts",
+    "oxlint.config.ts",
+    "scripts/run-root-owned-task.ts"
+  ]
+}

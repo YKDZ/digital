@@ -1,0 +1,8 @@
+{
+  "recommendations": [
+    "oxc.oxc-vscode",
+    "Vue.volar",
+    "bradlc.vscode-tailwindcss",
+    "vitest.explorer"
+  ]
+}

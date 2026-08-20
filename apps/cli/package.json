@@ -1,0 +1,62 @@
+{
+  "name": "@digital/cli",
+  "version": "0.0.0",
+  "bin": {
+    "cli": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "imports": {
+    "#main": {
+      "source": "./src/main.ts",
+      "types": "./src/main.ts",
+      "default": "./dist/main.js"
+    }
+  },
+  "exports": {
+    ".": {
+      "source": "./src/main.ts",
+      "types": "./dist/main.d.ts",
+      "default": "./dist/main.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json --pretty false",
+    "format:check": "oxfmt --list-different --config ../../oxfmt.config.ts .",
+    "format:write": "oxfmt --write --config ../../oxfmt.config.ts .",
+    "lint": "oxlint --quiet --format=unix --config ../../oxlint.config.ts --ignore-pattern node_modules .",
+    "lint:fix": "oxlint --format=unix --config ../../oxlint.config.ts . --fix",
+    "postbuild": "node -e \"if (process.platform !== 'win32') require('node:fs').chmodSync('dist/cli.js', 0o755)\"",
+    "prepack": "pnpm exec turbo run build --filter=.",
+    "pretest": "pnpm --filter @digital/sqlite build",
+    "pretest:e2e": "pnpm --filter @digital/sqlite build && pnpm --filter @digital/cli build",
+    "test": "vitest run test/unit test/integration --reporter=verbose",
+    "test:e2e": "node --conditions=source test/e2e/run-journeys.ts source distribution",
+    "test:e2e:bangumi-live": "DIGITAL_E2E_JOURNEY=bangumi-episodic-live node --conditions=source test/e2e/run-journeys.ts source distribution",
+    "test:e2e:tmdb-omdb-live": "DIGITAL_E2E_JOURNEY=tmdb-omdb-live node --conditions=source test/e2e/run-journeys.ts source distribution",
+    "test:e2e:deep-integrity": "DIGITAL_DEEP_CORPUS_INTEGRITY=1 node --conditions=source test/e2e/run-journeys.ts source distribution",
+    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false"
+  },
+  "dependencies": {
+    "@digital/application": "workspace:*",
+    "@digital/composition": "workspace:*",
+    "commander": "catalog:"
+  },
+  "devDependencies": {
+    "@digital/test-support": "workspace:*",
+    "@types/node": "catalog:",
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:",
+    "oxlint-tsgolint": "catalog:",
+    "typescript-7": "catalog:",
+    "vitest": "catalog:"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

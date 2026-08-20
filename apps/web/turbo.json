@@ -1,0 +1,13 @@
+{
+  "extends": ["//"],
+  "tags": ["delivery"],
+  "tasks": {
+    "build": {
+      "outputs": ["dist/**"]
+    },
+    "test:e2e": {
+      "dependsOn": ["build"],
+      "cache": false
+    }
+  }
+}

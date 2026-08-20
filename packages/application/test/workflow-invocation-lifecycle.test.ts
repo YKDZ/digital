@@ -1,0 +1,149 @@
+import { describe, expect, it, vi } from "vitest";
+
+import {
+  atPublicWorkflowBoundary,
+  decodeAssetRefreshWorkflowInput,
+  notifyWorkflowCheckpoint,
+  WorkflowLifecycleInterruption,
+} from "../src/index.ts";
+
+const fulfillmentInput = {
+  version: "asset-refresh-input/1",
+  trigger: "information-fulfillment",
+  initiatedBy: "information-fulfillment",
+  acceptTrusted: false,
+  configurationReferences: [],
+  operation: {
+    version: "information-fulfillment-operation/1",
+    kind: "source-artifact-acquisition",
+    subjectId: "subject",
+    sourceIdentity: "source",
+    sourceAssociationId: "association",
+  },
+} as const;
+
+describe("Workflow Invocation Lifecycle", () => {
+  it.each([
+    "source-records-retained",
+    "artifact-acquired",
+    "artifact-stored",
+    "change-impact-retained",
+  ])(
+    "preserves the caller error identity at the %s durable checkpoint",
+    async (stage) => {
+      const cause = new Error(`stop at ${stage}`);
+      const hostCheckpoint = vi.fn();
+      const operation = atPublicWorkflowBoundary(async () => {
+        notifyWorkflowCheckpoint(
+          {
+            onCheckpoint: () => {
+              throw cause;
+            },
+            onHostCheckpoint: hostCheckpoint,
+          },
+          { stage },
+        );
+      });
+
+      await expect(operation).rejects.toBe(cause);
+      expect(hostCheckpoint).not.toHaveBeenCalled();
+    },
+  );
+
+  it("notifies caller before Host exactly once", () => {
+    const events: string[] = [];
+
+    notifyWorkflowCheckpoint(
+      {
+        onCheckpoint: () => events.push("caller"),
+        onHostCheckpoint: () => events.push("host"),
+      },
+      { stage: "retained" },
+    );
+
+    expect(events).toEqual(["caller", "host"]);
+  });
+
+  it("marks a Host callback failure as lifecycle interruption", () => {
+    const cause = new Error("Host is closing");
+
+    expect(() =>
+      notifyWorkflowCheckpoint(
+        {
+          onHostCheckpoint: () => {
+            throw cause;
+          },
+        },
+        { stage: "retained" },
+      ),
+    ).toThrow(WorkflowLifecycleInterruption);
+  });
+});
+
+describe("Information Fulfillment restart input", () => {
+  it("decodes the explicit structured operation coordinate", () => {
+    expect(decodeAssetRefreshWorkflowInput(fulfillmentInput)).toEqual({
+      valid: true,
+      input: fulfillmentInput,
+    });
+  });
+
+  it.each([
+    {
+      name: "missing operation",
+      input: { ...fulfillmentInput, operation: undefined },
+    },
+    {
+      name: "unknown operation version",
+      input: {
+        ...fulfillmentInput,
+        operation: { ...fulfillmentInput.operation, version: "unknown/9" },
+      },
+    },
+    {
+      name: "tampered operation field",
+      input: {
+        ...fulfillmentInput,
+        operation: { ...fulfillmentInput.operation, providerSecret: "nope" },
+      },
+    },
+  ])("fails closed for $name", ({ input }) => {
+    expect(decodeAssetRefreshWorkflowInput(input)).toMatchObject({
+      valid: false,
+    });
+  });
+
+  it("rejects a nonempty frozen target closure that lacks its registered spelling", () => {
+    expect(
+      decodeAssetRefreshWorkflowInput({
+        version: "asset-refresh-input/1",
+        trigger: "interactive",
+        initiatedBy: "user",
+        acceptTrusted: false,
+        configurationReferences: [],
+        observedRoots: [
+          {
+            version: "observed-root-snapshot/1",
+            id: "source",
+            configVersion: 1,
+            containerPath: "/observed/source",
+            canonicalPath: "/canonical/source",
+            readOnly: true,
+            symlinkMode: "follow-file-links",
+            allowedTargetRootIds: ["target"],
+            authorizedTargetRoots: [
+              {
+                id: "target",
+                configVersion: 1,
+                canonicalPath: "/canonical/target",
+              },
+            ],
+          },
+        ],
+      }),
+    ).toEqual({
+      valid: false,
+      reason: "刷新版本化输入文件位置快照无效",
+    });
+  });
+});

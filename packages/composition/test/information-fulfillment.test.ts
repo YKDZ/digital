@@ -1,0 +1,1670 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+
+import {
+  InformationFulfillment,
+  type AssetRefreshInspection,
+} from "@digital/application";
+import { dlsiteInformationFulfillmentCapabilities } from "@digital/dlsite";
+import { SqliteCatalogue } from "@digital/sqlite";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+
+import {
+  composeAssetRefresh,
+  composeAssetRefreshRuntime,
+  composeOwnedAssetRefresh,
+  type ComposedAssetRefresh,
+} from "../src/index.ts";
+import {
+  disposePreparedCatalogueTemplate,
+  prepareCatalogueAt,
+} from "./prepared-catalogue.ts";
+
+const temporaryRoots: string[] = [];
+
+afterEach(async () => {
+  vi.unstubAllGlobals();
+  await Promise.all(
+    temporaryRoots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true })),
+  );
+});
+
+afterAll(async () => {
+  await disposePreparedCatalogueTemplate();
+});
+
+/**
+ * Production observer tests must cross the registered-root boundary.  This
+ * helper intentionally avoids the legacy raw-path scan entrypoint so the
+ * Node observer receives a descriptor-bound authority just like delivery.
+ */
+async function scanRegisteredScope(
+  workflow: Pick<
+    ComposedAssetRefresh,
+    "observedRootRegistrations" | "scanObservedScope"
+  >,
+  observed: string,
+  input: Omit<
+    Parameters<ComposedAssetRefresh["scanObservedScope"]>[0],
+    "registrationId" | "relativeScope"
+  >,
+): Promise<AssetRefreshInspection> {
+  const root = await workflow.observedRootRegistrations.create({
+    displayName: "测试观察目录",
+    containerPath: observed,
+    readOnly: true,
+    symlinkMode: "do-not-follow",
+    allowedTargetRootIds: [],
+  });
+  return await workflow.scanObservedScope({
+    registrationId: root.id,
+    relativeScope: ".",
+    ...input,
+  });
+}
+
+describe("information fulfillment composition", () => {
+  it("waits for the workflow fulfillment drain before releasing composed persistence", async () => {
+    let releaseDrain!: () => void;
+    const drain = new Promise<void>((resolve) => {
+      releaseDrain = resolve;
+    });
+    const workflowClose = vi.fn(() => drain);
+    const persistence = { close: vi.fn() };
+    const workflow = composeOwnedAssetRefresh(
+      { close: workflowClose } as never,
+      persistence,
+    );
+    const closing = workflow.close();
+    try {
+      expect(workflow.close()).toBe(closing);
+      expect(workflowClose).toHaveBeenCalledTimes(1);
+      expect(persistence.close).toHaveBeenCalledTimes(0);
+    } finally {
+      releaseDrain();
+      await closing;
+    }
+    expect(persistence.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases composed persistence after a fulfillment terminalization failure", async () => {
+    const terminalizationFailure = new Error("terminal write failed");
+    const workflowClose = vi.fn(() => Promise.reject(terminalizationFailure));
+    const persistence = { close: vi.fn() };
+    const workflow = composeOwnedAssetRefresh(
+      { close: workflowClose } as never,
+      persistence,
+    );
+
+    const closing = workflow.close();
+    expect(workflow.close()).toBe(closing);
+    await expect(closing).rejects.toBe(terminalizationFailure);
+    await expect(workflow.close()).rejects.toBe(terminalizationFailure);
+    expect(workflowClose).toHaveBeenCalledTimes(1);
+    expect(persistence.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("shares one source-artifact fulfilment between delivery and the owned automation host", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "digital-shared-seam-"));
+    temporaryRoots.push(root);
+    const productData = path.join(root, "product-data");
+    await prepareCatalogueAt(productData);
+    const observed = path.join(root, "RJ01668691");
+    await mkdir(observed);
+    await writeFile(path.join(observed, "track.wav"), "observed bytes");
+    const requested: string[] = [];
+    vi.stubGlobal("fetch", async (input: string | URL | Request) => {
+      const address =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      requested.push(address);
+      if (address.includes("/product/info/ajax")) {
+        return new Response(
+          JSON.stringify({
+            RJ01668691: {
+              site_id: "maniax",
+              work_name: "Exact work",
+              regist_date: "2026-08-01",
+              work_image: "//img.dlsite.jp/primary.jpg",
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      if (address === "https://img.dlsite.jp/primary.jpg") {
+        return new Response(new Uint8Array([1, 2, 3, 4]), {
+          headers: { "content-type": "image/jpeg" },
+        });
+      }
+      return new Response("<html></html>", {
+        headers: { "content-type": "text/html" },
+      });
+    });
+    const coverRequirement = {
+      metadataUsageContext: "asset.ordinary",
+      metadata: [],
+      relationshipTypes: [],
+      artifactRoles: [
+        {
+          role: "asset.primary-cover",
+          necessity: "required" as const,
+          maximum: 1,
+        },
+      ],
+    };
+    const runtime = composeAssetRefreshRuntime(productData, {
+      configuration: {},
+      automationInformationRequirement: coverRequirement,
+    });
+
+    try {
+      const recognized = await scanRegisteredScope(runtime.workflow, observed, {
+        acceptTrusted: true,
+        informationRequirement: {
+          metadataUsageContext: "asset.ordinary",
+          metadata: [{ property: "asset.title", necessity: "required" }],
+          relationshipTypes: [],
+          artifactRoles: [],
+        },
+      });
+      const subjectId = recognized.accepted?.entity.id;
+      if (subjectId === undefined)
+        throw new Error("DLsite subject was not accepted");
+      const refreshed = await runtime.workflow.refreshMetadata({
+        selection: {
+          version: "asset-refresh-selection/1",
+          subjects: [
+            {
+              subjectId,
+              explanations: [{ path: ["test", subjectId] }],
+            },
+          ],
+          filesystemScopes: [],
+        },
+        informationRequirement: coverRequirement,
+      });
+      expect(refreshed.sourceRefreshRuns).toEqual([
+        expect.objectContaining({ outcome: "succeeded", phase: "terminal" }),
+      ]);
+      const automationRoot =
+        await runtime.workflow.observedRootRegistrations.create({
+          displayName: "自动刷新测试",
+          containerPath: observed,
+          readOnly: true,
+          symlinkMode: "do-not-follow",
+          allowedTargetRootIds: [],
+        });
+      const automated = await runtime.workflow.enableAutomation({
+        observedRootId: automationRoot.id,
+        relativeScope: ".",
+        intervalMilliseconds: 60_000,
+        acceptTrusted: true,
+        runInitial: false,
+      });
+      expect(automated.intent.id).toEqual(expect.any(String));
+
+      const invoke = vi.spyOn(runtime.executionHost, "invoke");
+      const interactive = runtime.workflow.fulfillInformation({
+        selection: { subjectIds: [subjectId] },
+        requirement: coverRequirement,
+      });
+      const repeatedInteractive = runtime.workflow.fulfillInformation({
+        selection: { subjectIds: [subjectId] },
+        requirement: coverRequirement,
+      });
+      const host = runtime.automationHost.start();
+      const [readiness, repeatedReadiness] = await Promise.all([
+        interactive,
+        repeatedInteractive,
+        host,
+      ]);
+      const executionId =
+        readiness.subjects[0]?.inputs[0]?.executionReferences?.[0]
+          ?.workflowExecutionId;
+      expect(executionId).toEqual(expect.any(String));
+      // Node's opaque object identities are deliberately snapshot-local. The
+      // separately registered automation scan therefore has its own source
+      // acquisition boundary instead of borrowing this scan's file identity.
+      expect(
+        repeatedReadiness.subjects[0]?.inputs[0]?.executionReferences?.[0]
+          ?.workflowExecutionId,
+      ).toBe(executionId);
+      expect(invoke).toHaveBeenCalledTimes(1);
+      await waitForTerminalExecution(runtime.workflow, executionId!);
+      expect(await runtime.workflow.listInspections()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            execution: expect.objectContaining({
+              automationIntentId: automated.intent.id,
+            }),
+          }),
+        ]),
+      );
+
+      // The initial registered scan and its automatic follow-up are separate
+      // snapshots, so neither may reuse Node-local object identity evidence.
+      expect(
+        requested.filter(
+          (address) => address === "https://img.dlsite.jp/primary.jpg",
+        ),
+      ).toHaveLength(2);
+    } finally {
+      await runtime.close();
+      await runtime.close();
+    }
+  });
+
+  it("stops one deduplicated fulfillment child at its next SQLite checkpoint and recovers it with a replacement Host", async () => {
+    const root = await mkdtemp(
+      path.join(tmpdir(), "digital-hosted-fulfillment-"),
+    );
+    temporaryRoots.push(root);
+    const productData = path.join(root, "product-data");
+    await prepareCatalogueAt(productData);
+    const observed = path.join(root, "RJ01668691");
+    await mkdir(observed);
+    await writeFile(path.join(observed, "track.wav"), "observed bytes");
+    let releaseImage!: () => void;
+    const imageRelease = new Promise<void>((resolve) => {
+      releaseImage = resolve;
+    });
+    let markImageStarted!: () => void;
+    const imageStarted = new Promise<void>((resolve) => {
+      markImageStarted = resolve;
+    });
+    let imageRequests = 0;
+    vi.stubGlobal("fetch", async (input: string | URL | Request) => {
+      const address =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      if (address.includes("/product/info/ajax")) {
+        return new Response(
+          JSON.stringify({
+            RJ01668691: {
+              site_id: "maniax",
+              work_name: "Hosted fulfillment",
+              regist_date: "2026-08-01",
+              work_image: "//img.dlsite.jp/hosted.jpg",
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      if (address === "https://img.dlsite.jp/hosted.jpg") {
+        imageRequests += 1;
+        markImageStarted();
+        await imageRelease;
+        return new Response(new Uint8Array([1, 2, 3, 4]), {
+          headers: { "content-type": "image/jpeg" },
+        });
+      }
+      return new Response("<html></html>", {
+        headers: { "content-type": "text/html" },
+      });
+    });
+    const coverRequirement = {
+      metadataUsageContext: "asset.ordinary",
+      metadata: [],
+      relationshipTypes: [],
+      artifactRoles: [
+        {
+          role: "asset.primary-cover",
+          necessity: "required" as const,
+          maximum: 1,
+        },
+      ],
+    };
+    const runtime = composeAssetRefreshRuntime(productData, {
+      configuration: {},
+    });
+    let replacement: ReturnType<typeof composeAssetRefreshRuntime> | undefined;
+    try {
+      const recognized = await scanRegisteredScope(runtime.workflow, observed, {
+        acceptTrusted: true,
+        informationRequirement: {
+          metadataUsageContext: "asset.ordinary",
+          metadata: [{ property: "asset.title", necessity: "required" }],
+          relationshipTypes: [],
+          artifactRoles: [],
+        },
+      });
+      const subjectId = recognized.accepted?.entity.id;
+      if (subjectId === undefined) throw new Error("subject was not accepted");
+      const invoke = vi.spyOn(runtime.executionHost, "invoke");
+      const first = await runtime.workflow.fulfillInformation({
+        selection: { subjectIds: [subjectId] },
+        requirement: coverRequirement,
+      });
+      const executionId =
+        first.subjects[0]?.inputs[0]?.executionReferences?.[0]
+          ?.workflowExecutionId;
+      expect(executionId).toEqual(expect.any(String));
+      await imageStarted;
+
+      const duplicate = await runtime.workflow.fulfillInformation({
+        selection: { subjectIds: [subjectId] },
+        requirement: coverRequirement,
+      });
+      expect(
+        duplicate.subjects[0]?.inputs[0]?.executionReferences?.[0]
+          ?.workflowExecutionId,
+      ).toBe(executionId);
+      expect(invoke).toHaveBeenCalledTimes(1);
+
+      const hostClose = runtime.executionHost.close();
+      await expect(runtime.workflow.close()).resolves.toBeUndefined();
+      let hostClosed = false;
+      void hostClose.then(() => {
+        hostClosed = true;
+      });
+      await Promise.resolve();
+      expect(hostClosed).toBe(false);
+      releaseImage();
+      await expect(hostClose).resolves.toBeUndefined();
+      await expect(
+        runtime.workflow.inspect(executionId!),
+      ).resolves.toMatchObject({
+        execution: {
+          status: "running",
+          stage: "source-artifacts-acquired",
+        },
+      });
+      expect(imageRequests).toBe(1);
+
+      await runtime.close();
+      replacement = composeAssetRefreshRuntime(productData, {
+        configuration: {},
+      });
+      await expect(
+        replacement.workflow.inspect(executionId!),
+      ).resolves.toMatchObject({
+        execution: {
+          workflowInput: {
+            operation: {
+              version: "information-fulfillment-operation/1",
+              kind: "source-artifact-acquisition",
+              subjectId,
+              sourceIdentity: "dlsite",
+            },
+          },
+        },
+      });
+      await replacement.automationHost.start();
+      const recovered = await waitForTerminalExecution(
+        replacement.workflow,
+        executionId!,
+      );
+      expect(recovered.execution.reason).toBeUndefined();
+      expect(recovered.execution).toMatchObject({
+        status: "completed",
+        outcome: "accepted",
+      });
+      expect(imageRequests).toBe(1);
+    } finally {
+      releaseImage();
+      await runtime.close();
+      await replacement?.close();
+    }
+  });
+
+  it("attributes automatic metadata fulfillment to its parent execution instead of an interactive refresh", async () => {
+    const root = await mkdtemp(
+      path.join(tmpdir(), "digital-automatic-metadata-fulfillment-"),
+    );
+    temporaryRoots.push(root);
+    const productData = path.join(root, "product-data");
+    await prepareCatalogueAt(productData);
+    const observed = path.join(root, "RJ01668691");
+    await mkdir(observed);
+    await writeFile(path.join(observed, "track.wav"), "observed bytes");
+    vi.stubGlobal("fetch", async (input: string | URL | Request) => {
+      const address =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      if (address.includes("/product/info/ajax")) {
+        return new Response(
+          JSON.stringify({
+            RJ01668691: {
+              site_id: "maniax",
+              work_name: "Exact work",
+              regist_date: "2026-08-01",
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("<html></html>", {
+        headers: { "content-type": "text/html" },
+      });
+    });
+    const missingIntroduction = {
+      metadataUsageContext: "asset.ordinary",
+      metadata: [
+        { property: "asset.introduction", necessity: "required" as const },
+      ],
+      relationshipTypes: [],
+      artifactRoles: [],
+    };
+    const workflow = composeAssetRefresh(
+      productData,
+      {},
+      {
+        automationInformationRequirementForAcceptedSubject: () =>
+          missingIntroduction,
+      },
+    );
+
+    try {
+      const automationRoot = await workflow.observedRootRegistrations.create({
+        displayName: "自动刷新测试",
+        containerPath: observed,
+        readOnly: true,
+        symlinkMode: "do-not-follow",
+        allowedTargetRootIds: [],
+      });
+      const automated = await workflow.enableAutomation({
+        observedRootId: automationRoot.id,
+        relativeScope: ".",
+        intervalMilliseconds: 60_000,
+        acceptTrusted: true,
+      });
+      const parent = automated.initial?.execution;
+      const subjectId = parent?.accepted?.entity.id;
+      if (parent === undefined || subjectId === undefined)
+        throw new Error(
+          "automatic recognition did not retain an accepted subject",
+        );
+
+      const child = (await workflow.listInspections()).find(
+        (inspection) =>
+          inspection.execution.operationKind === "refresh-metadata" &&
+          inspection.execution.requestedSelection?.subjects.some(
+            (subject) => subject.subjectId === subjectId,
+          ) === true,
+      );
+      expect(child?.execution.workflowInput).toMatchObject({
+        trigger: "information-fulfillment",
+        initiatedBy: `information-fulfillment:${parent.execution.id}:${subjectId}`,
+      });
+    } finally {
+      await workflow.close();
+    }
+  });
+
+  it("atomically supersedes a refreshed source cover within its source association", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "digital-latest-artifact-"));
+    temporaryRoots.push(root);
+    const productData = path.join(root, "product-data");
+    await prepareCatalogueAt(productData);
+    const observed = path.join(root, "RJ01668691");
+    await mkdir(observed);
+    await writeFile(path.join(observed, "track.wav"), "observed bytes");
+    let currentImage: "old" | "new" = "old";
+    const requested: string[] = [];
+    vi.stubGlobal("fetch", async (input: string | URL | Request) => {
+      const address =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      requested.push(address);
+      if (address.includes("/product/info/ajax")) {
+        return new Response(
+          JSON.stringify({
+            RJ01668691: {
+              site_id: "maniax",
+              work_name: "Exact work",
+              regist_date: "2026-08-01",
+              work_image: `//img.dlsite.jp/${currentImage}.jpg`,
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      if (
+        address === "https://img.dlsite.jp/old.jpg" ||
+        address === "https://img.dlsite.jp/new.jpg"
+      ) {
+        return new Response(new Uint8Array([4, 3, 2, 1]), {
+          headers: { "content-type": "image/jpeg" },
+        });
+      }
+      return new Response("<html></html>", {
+        headers: { "content-type": "text/html" },
+      });
+    });
+    const coverRequirement = {
+      metadataUsageContext: "asset.ordinary",
+      metadata: [],
+      relationshipTypes: [],
+      artifactRoles: [
+        {
+          role: "asset.primary-cover",
+          necessity: "required" as const,
+          maximum: 1,
+        },
+      ],
+    };
+    const workflow = composeAssetRefresh(productData, {});
+    const verifier = SqliteCatalogue.forProductData(productData);
+
+    try {
+      const recognized = await scanRegisteredScope(workflow, observed, {
+        acceptTrusted: true,
+        informationRequirement: coverRequirement,
+      });
+      const subjectId = recognized.accepted?.entity.id;
+      if (subjectId === undefined)
+        throw new Error(
+          `DLsite subject was not accepted: ${JSON.stringify(recognized)}`,
+        );
+      const before = await verifier.findAcceptedForSubjects([subjectId]);
+      const recognitionDecisionId = before[0]?.accepted.recognitionDecision.id;
+      const recognitionProposalId = before[0]?.accepted.proposal.id;
+      const sourceAssociationId = before[0]?.accepted.sourceAssociation.id;
+      if (
+        recognitionDecisionId === undefined ||
+        recognitionProposalId === undefined ||
+        sourceAssociationId === undefined
+      )
+        throw new Error("DLsite recognition identity was not retained");
+      const oldAssociationId = before[0]?.accepted.artifactAssociations.find(
+        (association) => association.role === "asset.primary-cover",
+      )?.id;
+      expect(oldAssociationId).toEqual(expect.any(String));
+      expect(requested).toContain("https://img.dlsite.jp/old.jpg");
+
+      currentImage = "new";
+      const refreshed = await workflow.refreshMetadata({
+        selection: {
+          version: "asset-refresh-selection/1",
+          subjects: [
+            {
+              subjectId,
+              explanations: [{ path: ["test", subjectId] }],
+            },
+          ],
+          filesystemScopes: [],
+        },
+        informationRequirement: coverRequirement,
+      });
+      const refreshedRecordId = refreshed.sourceRefreshRuns?.flatMap((run) =>
+        run.scopes.flatMap((scope) =>
+          scope.candidateSourceRecordId === undefined
+            ? []
+            : [scope.candidateSourceRecordId],
+        ),
+      )[0];
+      expect(refreshedRecordId).toEqual(expect.any(String));
+      expect(requested).not.toContain("https://img.dlsite.jp/new.jpg");
+
+      const [staleFacts] = await verifier.readCurrentInformationSubjectFacts({
+        subjectIds: [subjectId],
+      });
+      expect(staleFacts?.artifactAssociations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: oldAssociationId,
+            sourceAssociationId,
+            currentSourceArtifact: false,
+          }),
+        ]),
+      );
+
+      const readiness = await workflow.fulfillInformation({
+        selection: { subjectIds: [subjectId] },
+        requirement: coverRequirement,
+      });
+      const executionId =
+        readiness.subjects[0]?.inputs[0]?.executionReferences?.[0]
+          ?.workflowExecutionId;
+      expect(executionId).toEqual(expect.any(String));
+      const completed = await waitForTerminalExecution(workflow, executionId!);
+      const after = await verifier.findAcceptedForSubjects([subjectId]);
+      const newAssociationId = completed?.accepted?.artifactAssociations.find(
+        (association) => association.role === "asset.primary-cover",
+      )?.id;
+      expect(completed?.execution.reason).toBeUndefined();
+      expect(completed?.execution).toMatchObject({ status: "completed" });
+      expect(newAssociationId).toEqual(expect.any(String));
+      expect(completed?.accepted).toMatchObject({
+        artifactAssociations: expect.arrayContaining([
+          expect.objectContaining({
+            subjectId,
+            role: "asset.primary-cover",
+            sourceRecordIds: [refreshedRecordId],
+            sourceAssociationId,
+          }),
+        ]),
+      });
+      expect(after[0]?.accepted.recognitionDecision.id).toBe(
+        recognitionDecisionId,
+      );
+      expect(after[0]?.accepted.proposal.id).toBe(recognitionProposalId);
+      expect(
+        requested.filter(
+          (address) => address === "https://img.dlsite.jp/new.jpg",
+        ),
+      ).toHaveLength(1);
+
+      const ledger = new DatabaseSync(
+        path.join(productData, "catalogue.sqlite"),
+      );
+      try {
+        expect(
+          ledger
+            .prepare(
+              `SELECT aa.id, aa.source_association_id, aa.source_record_ids_json
+               FROM artifact_associations aa
+               WHERE aa.subject_id = ? AND aa.role = ?
+                 AND NOT EXISTS (
+                   SELECT 1 FROM artifact_association_supersessions s
+                   WHERE s.predecessor_association_id = aa.id
+                 )
+                 AND NOT EXISTS (
+                   SELECT 1 FROM artifact_association_retractions r
+                   WHERE r.association_id = aa.id
+                 )`,
+            )
+            .all(subjectId, "asset.primary-cover"),
+        ).toEqual([
+          {
+            id: newAssociationId,
+            source_association_id: sourceAssociationId,
+            source_record_ids_json: JSON.stringify([refreshedRecordId]),
+          },
+        ]);
+        expect(
+          ledger
+            .prepare(
+              `SELECT predecessor.id AS predecessor_id, successor.id AS successor_id
+               FROM artifact_association_supersessions transition
+               JOIN artifact_associations predecessor
+                 ON predecessor.id = transition.predecessor_association_id
+               JOIN artifact_associations successor
+                 ON successor.id = transition.successor_association_id
+               WHERE predecessor.subject_id = ? AND predecessor.role = ?`,
+            )
+            .all(subjectId, "asset.primary-cover"),
+        ).toEqual([
+          {
+            predecessor_id: oldAssociationId,
+            successor_id: newAssociationId,
+          },
+        ]);
+      } finally {
+        ledger.close();
+      }
+    } finally {
+      await workflow.close();
+      verifier.close();
+    }
+  });
+
+  it("reconciles a no-image primary-cover acquisition after its durable execution reaches terminal state", async () => {
+    const root = await mkdtemp(
+      path.join(tmpdir(), "digital-no-image-readiness-"),
+    );
+    temporaryRoots.push(root);
+    const productData = path.join(root, "product-data");
+    await prepareCatalogueAt(productData);
+    const observed = path.join(root, "RJ01668691");
+    await mkdir(observed);
+    await writeFile(path.join(observed, "track.wav"), "observed bytes");
+    vi.stubGlobal("fetch", async (input: string | URL | Request) => {
+      const address =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      if (address.includes("/product/info/ajax")) {
+        return new Response(
+          JSON.stringify({
+            RJ01668691: {
+              site_id: "maniax",
+              work_name: "Exact work",
+              regist_date: "2026-08-01",
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("<html></html>", {
+        headers: { "content-type": "text/html" },
+      });
+    });
+    const coverRequirement = {
+      metadataUsageContext: "asset.ordinary",
+      metadata: [],
+      relationshipTypes: [],
+      artifactRoles: [
+        {
+          role: "asset.primary-cover",
+          necessity: "required" as const,
+          maximum: 1,
+        },
+      ],
+    };
+    const optionalCoverRequirement = {
+      ...coverRequirement,
+      artifactRoles: [
+        {
+          role: "asset.primary-cover",
+          necessity: "optional" as const,
+          maximum: 1,
+        },
+      ],
+    };
+    const workflow = composeAssetRefresh(productData, {});
+
+    try {
+      const recognized = await scanRegisteredScope(workflow, observed, {
+        acceptTrusted: true,
+        informationRequirement: {
+          metadataUsageContext: "asset.ordinary",
+          metadata: [{ property: "asset.title", necessity: "required" }],
+          relationshipTypes: [],
+          artifactRoles: [],
+        },
+      });
+      const subjectId = recognized.accepted?.entity.id;
+      if (subjectId === undefined)
+        throw new Error("DLsite subject was not accepted");
+      const refreshed = await workflow.refreshMetadata({
+        selection: {
+          version: "asset-refresh-selection/1",
+          subjects: [
+            {
+              subjectId,
+              explanations: [{ path: ["test", subjectId] }],
+            },
+          ],
+          filesystemScopes: [],
+        },
+        informationRequirement: coverRequirement,
+      });
+      expect(refreshed.sourceRefreshRuns).toEqual([
+        expect.objectContaining({ phase: "terminal", outcome: "succeeded" }),
+      ]);
+
+      const pending = await workflow.fulfillInformation({
+        selection: { subjectIds: [subjectId] },
+        requirement: coverRequirement,
+      });
+      const executionId =
+        pending.subjects[0]?.inputs[0]?.executionReferences?.[0]
+          ?.workflowExecutionId;
+      expect(executionId).toEqual(expect.any(String));
+      await expect(
+        waitForTerminalExecution(workflow, executionId!),
+      ).resolves.toMatchObject({
+        execution: {
+          status: "failed",
+          reason: "缺少必需的产物角色：asset.primary-cover",
+        },
+      });
+      const executionsBeforeReconciliation = await workflow.listInspections();
+
+      await expect(
+        workflow.fulfillInformation({
+          selection: { subjectIds: [subjectId] },
+          requirement: coverRequirement,
+        }),
+      ).resolves.toMatchObject({
+        subjects: [
+          {
+            status: "unavailable",
+            inputs: [
+              expect.objectContaining({
+                status: "unavailable",
+                reason: "当前来源未提供所需信息",
+                executionReferences: [{ workflowExecutionId: executionId }],
+              }),
+            ],
+          },
+        ],
+      });
+      await expect(workflow.listInspections()).resolves.toHaveLength(
+        executionsBeforeReconciliation.length,
+      );
+
+      const optionalPending = await workflow.fulfillInformation({
+        selection: { subjectIds: [subjectId] },
+        requirement: optionalCoverRequirement,
+      });
+      const optionalExecutionId =
+        optionalPending.subjects[0]?.inputs[0]?.executionReferences?.[0]
+          ?.workflowExecutionId;
+      expect(optionalExecutionId).toEqual(expect.any(String));
+      await expect(
+        waitForTerminalExecution(workflow, optionalExecutionId!),
+      ).resolves.toMatchObject({ execution: { status: "failed" } });
+      await expect(
+        workflow.fulfillInformation({
+          selection: { subjectIds: [subjectId] },
+          requirement: optionalCoverRequirement,
+        }),
+      ).resolves.toMatchObject({
+        subjects: [
+          {
+            status: "available",
+            inputs: [
+              expect.objectContaining({
+                status: "unavailable",
+                executionReferences: [
+                  { workflowExecutionId: optionalExecutionId },
+                ],
+              }),
+            ],
+          },
+        ],
+      });
+    } finally {
+      await workflow.close();
+    }
+  });
+
+  it("keeps readiness pending while a source refresh awaits review, then reconciles its rejected terminal run", async () => {
+    const root = await mkdtemp(
+      path.join(tmpdir(), "digital-review-readiness-"),
+    );
+    temporaryRoots.push(root);
+    const productData = path.join(root, "product-data");
+    await prepareCatalogueAt(productData);
+    const observed = path.join(root, "RJ01668691");
+    await mkdir(observed);
+    await writeFile(path.join(observed, "track.wav"), "observed bytes");
+    let includesLanguage = true;
+    vi.stubGlobal("fetch", async (input: string | URL | Request) => {
+      const address =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      if (address.includes("/product/info/ajax")) {
+        return new Response(
+          JSON.stringify({
+            RJ01668691: {
+              site_id: "maniax",
+              work_name: "Exact work",
+              regist_date: "2026-08-01",
+              ...(includesLanguage ? { work_lang: "Japanese" } : {}),
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("<html></html>", {
+        headers: { "content-type": "text/html" },
+      });
+    });
+    const missingIntroduction = {
+      metadataUsageContext: "asset.ordinary",
+      metadata: [
+        { property: "asset.introduction", necessity: "required" as const },
+      ],
+      relationshipTypes: [],
+      artifactRoles: [],
+    };
+    const workflow = composeAssetRefresh(productData, {});
+
+    try {
+      const recognized = await scanRegisteredScope(workflow, observed, {
+        acceptTrusted: true,
+        informationRequirement: {
+          metadataUsageContext: "asset.ordinary",
+          metadata: [{ property: "asset.title", necessity: "required" }],
+          relationshipTypes: [],
+          artifactRoles: [],
+        },
+      });
+      const subjectId = recognized.accepted?.entity.id;
+      if (subjectId === undefined)
+        throw new Error("DLsite subject was not accepted");
+
+      includesLanguage = false;
+      const initial = await workflow.fulfillInformation({
+        selection: { subjectIds: [subjectId] },
+        requirement: missingIntroduction,
+      });
+      const executionId =
+        initial.subjects[0]?.inputs[0]?.executionReferences?.[0]
+          ?.workflowExecutionId;
+      expect(executionId).toEqual(expect.any(String));
+      await expect(workflow.inspect(executionId!)).resolves.toMatchObject({
+        execution: {
+          workflowInput: {
+            trigger: "information-fulfillment",
+            initiatedBy: "information-fulfillment",
+          },
+        },
+      });
+      const reviewing = await waitForSourceRefreshPhase(
+        workflow,
+        executionId!,
+        "reviewing",
+      );
+      const pendingChangeSet = reviewing.sourceRefreshRuns?.flatMap((run) =>
+        run.changeSets.filter(
+          (changeSet) => changeSet.disposition === "pending",
+        ),
+      )[0];
+      expect(pendingChangeSet).toMatchObject({
+        requiresReview: true,
+        disposition: "pending",
+      });
+
+      await expect(
+        workflow.fulfillInformation({
+          selection: { subjectIds: [subjectId] },
+          requirement: missingIntroduction,
+        }),
+      ).resolves.toMatchObject({
+        subjects: [
+          {
+            status: "pending",
+            inputs: [
+              expect.objectContaining({
+                executionReferences: [{ workflowExecutionId: executionId }],
+              }),
+            ],
+          },
+        ],
+      });
+
+      const runId = reviewing.sourceRefreshRuns?.[0]?.id;
+      expect(runId).toEqual(expect.any(String));
+      await workflow.reviewSourceRefreshChangeSet({
+        runId: runId!,
+        changeSetId: pendingChangeSet!.id,
+        disposition: "rejected",
+      });
+      await expect(
+        waitForTerminalExecution(workflow, executionId!),
+      ).resolves.toMatchObject({
+        execution: { status: "completed", outcome: "partially-succeeded" },
+        sourceRefreshRuns: [
+          expect.objectContaining({
+            phase: "terminal",
+            outcome: "partially-succeeded",
+          }),
+        ],
+      });
+      const executionCount = (await workflow.listInspections()).length;
+
+      await expect(
+        workflow.fulfillInformation({
+          selection: { subjectIds: [subjectId] },
+          requirement: missingIntroduction,
+        }),
+      ).resolves.toMatchObject({
+        subjects: [
+          {
+            status: "unavailable",
+            inputs: [expect.objectContaining({ status: "unavailable" })],
+          },
+        ],
+      });
+      await expect(workflow.listInspections()).resolves.toHaveLength(
+        executionCount,
+      );
+    } finally {
+      await workflow.close();
+    }
+  });
+
+  it("reconciles a failed terminal source refresh as blocked with a sanitized durable reason", async () => {
+    const root = await mkdtemp(
+      path.join(tmpdir(), "digital-failed-refresh-readiness-"),
+    );
+    temporaryRoots.push(root);
+    const productData = path.join(root, "product-data");
+    await prepareCatalogueAt(productData);
+    const observed = path.join(root, "RJ01668691");
+    await mkdir(observed);
+    await writeFile(path.join(observed, "track.wav"), "observed bytes");
+    let failRefresh = false;
+    vi.stubGlobal("fetch", async (input: string | URL | Request) => {
+      const address =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      if (address.includes("/product/info/ajax")) {
+        if (failRefresh)
+          throw new Error("Authorization: Bearer private-refresh-token");
+        return new Response(
+          JSON.stringify({
+            RJ01668691: {
+              site_id: "maniax",
+              work_name: "Exact work",
+              regist_date: "2026-08-01",
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("<html></html>", {
+        headers: { "content-type": "text/html" },
+      });
+    });
+    const missingIntroduction = {
+      metadataUsageContext: "asset.ordinary",
+      metadata: [
+        { property: "asset.introduction", necessity: "required" as const },
+      ],
+      relationshipTypes: [],
+      artifactRoles: [],
+    };
+    const workflow = composeAssetRefresh(productData, {});
+
+    try {
+      const recognized = await scanRegisteredScope(workflow, observed, {
+        acceptTrusted: true,
+        informationRequirement: {
+          metadataUsageContext: "asset.ordinary",
+          metadata: [{ property: "asset.title", necessity: "required" }],
+          relationshipTypes: [],
+          artifactRoles: [],
+        },
+      });
+      const subjectId = recognized.accepted?.entity.id;
+      if (subjectId === undefined)
+        throw new Error("DLsite subject was not accepted");
+
+      failRefresh = true;
+      const pending = await workflow.fulfillInformation({
+        selection: { subjectIds: [subjectId] },
+        requirement: missingIntroduction,
+      });
+      const executionId =
+        pending.subjects[0]?.inputs[0]?.executionReferences?.[0]
+          ?.workflowExecutionId;
+      expect(executionId).toEqual(expect.any(String));
+      await expect(
+        waitForTerminalExecution(workflow, executionId!),
+      ).resolves.toMatchObject({
+        execution: { status: "failed" },
+        sourceRefreshRuns: [
+          expect.objectContaining({ phase: "terminal", outcome: "failed" }),
+        ],
+      });
+      const executionCount = (await workflow.listInspections()).length;
+
+      await expect(
+        workflow.fulfillInformation({
+          selection: { subjectIds: [subjectId] },
+          requirement: missingIntroduction,
+        }),
+      ).resolves.toMatchObject({
+        subjects: [
+          {
+            status: "blocked",
+            inputs: [
+              expect.objectContaining({
+                status: "blocked",
+                reason:
+                  "DLsite official source request failed: Authorization: [redacted]",
+              }),
+            ],
+          },
+        ],
+      });
+      await expect(workflow.listInspections()).resolves.toHaveLength(
+        executionCount,
+      );
+    } finally {
+      await workflow.close();
+    }
+  });
+
+  it("fulfills a missing cover through the durable composed Asset Refresh path", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "digital-fulfillment-"));
+    temporaryRoots.push(root);
+    const productData = path.join(root, "product-data");
+    await prepareCatalogueAt(productData);
+    const observed = path.join(root, "RJ01668691");
+    await mkdir(observed);
+    await writeFile(path.join(observed, "track.wav"), "observed bytes");
+    const requested: string[] = [];
+    vi.stubGlobal("fetch", async (input: string | URL | Request) => {
+      const address =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      requested.push(address);
+      if (address.includes("/product/info/ajax")) {
+        return new Response(
+          JSON.stringify({
+            RJ01668691: {
+              site_id: "maniax",
+              work_name: "Exact work",
+              regist_date: "2026-08-01",
+              work_image: "//img.dlsite.jp/primary.jpg",
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      if (address === "https://img.dlsite.jp/primary.jpg") {
+        return new Response(new Uint8Array([1, 2, 3, 4]), {
+          headers: { "content-type": "image/jpeg" },
+        });
+      }
+      return new Response("<html></html>", {
+        headers: { "content-type": "text/html" },
+      });
+    });
+    const coverRequirement = {
+      metadataUsageContext: "asset.ordinary",
+      metadata: [],
+      relationshipTypes: [],
+      artifactRoles: [
+        {
+          role: "asset.primary-cover",
+          necessity: "required" as const,
+          maximum: 1,
+        },
+      ],
+    };
+    const mixedRequirement = {
+      ...coverRequirement,
+      metadata: [
+        { property: "asset.declared-language", necessity: "optional" as const },
+      ],
+    };
+    const workflow = composeAssetRefresh(
+      productData,
+      {},
+      {
+        automationInformationRequirement: coverRequirement,
+      },
+    );
+
+    try {
+      const recognized = await scanRegisteredScope(workflow, observed, {
+        acceptTrusted: true,
+        informationRequirement: {
+          metadataUsageContext: "asset.ordinary",
+          metadata: [{ property: "asset.title", necessity: "required" }],
+          relationshipTypes: [],
+          artifactRoles: [],
+        },
+      });
+      const subjectId = recognized.accepted?.entity.id;
+      if (subjectId === undefined)
+        throw new Error(
+          `DLsite subject was not accepted: ${JSON.stringify(recognized)}`,
+        );
+      expect(requested).not.toContain("https://img.dlsite.jp/primary.jpg");
+
+      const readiness = await workflow.fulfillInformation({
+        selection: { subjectIds: [subjectId] },
+        requirement: mixedRequirement,
+      });
+      const metadataExecutionId = readiness.subjects[0]?.inputs.find(
+        (input) => input.kind === "metadata",
+      )?.executionReferences?.[0]?.workflowExecutionId;
+      const artifactExecutionId = readiness.subjects[0]?.inputs.find(
+        (input) => input.kind === "artifact-role",
+      )?.executionReferences?.[0]?.workflowExecutionId;
+      expect(readiness.subjects[0]).toMatchObject({ status: "pending" });
+      expect(metadataExecutionId).toEqual(expect.any(String));
+      expect(artifactExecutionId).toEqual(expect.any(String));
+
+      const [refreshed, completed] = await Promise.all([
+        waitForTerminalExecution(workflow, metadataExecutionId!),
+        waitForTerminalExecution(workflow, artifactExecutionId!),
+      ]);
+      expect(refreshed).toMatchObject({
+        execution: { id: metadataExecutionId, status: "completed" },
+        sourceRefreshRuns: [
+          expect.objectContaining({ outcome: "succeeded", phase: "terminal" }),
+        ],
+      });
+      expect(completed).toMatchObject({
+        execution: { id: artifactExecutionId, status: "completed" },
+        accepted: {
+          artifactAssociations: expect.arrayContaining([
+            expect.objectContaining({
+              subjectId,
+              role: "asset.primary-cover",
+              sourceRecordIds: [expect.any(String)],
+            }),
+          ]),
+        },
+      });
+      expect(requested).toContain("https://img.dlsite.jp/primary.jpg");
+
+      const executionCount = (await workflow.listInspections()).length;
+      const reused = await workflow.fulfillInformation({
+        selection: { subjectIds: [subjectId] },
+        requirement: coverRequirement,
+      });
+      expect(reused.subjects[0]).toMatchObject({
+        status: "available",
+        inputs: [{ status: "available" }],
+      });
+      expect(await workflow.listInspections()).toHaveLength(executionCount);
+
+      const automationRoot = await workflow.observedRootRegistrations.create({
+        displayName: "自动刷新测试",
+        containerPath: observed,
+        readOnly: true,
+        symlinkMode: "do-not-follow",
+        allowedTargetRootIds: [],
+      });
+      const automatic = await workflow.enableAutomation({
+        observedRootId: automationRoot.id,
+        relativeScope: ".",
+        intervalMilliseconds: 60_000,
+        acceptTrusted: true,
+      });
+      expect(automatic.intent).not.toHaveProperty("informationRequirement");
+      expect(automatic.initial).toMatchObject({ status: "started" });
+      expect(
+        requested.filter(
+          (address) => address === "https://img.dlsite.jp/primary.jpg",
+        ),
+      ).toHaveLength(2);
+      expect(await workflow.listInspections()).toHaveLength(executionCount + 1);
+    } finally {
+      await workflow.close();
+    }
+  });
+
+  it("retains an initially accepted source-artifact candidate for a later cover-only request", async () => {
+    const root = await mkdtemp(
+      path.join(tmpdir(), "digital-initial-source-artifact-lineage-"),
+    );
+    temporaryRoots.push(root);
+    const productData = path.join(root, "product-data");
+    await prepareCatalogueAt(productData);
+    const observed = path.join(root, "RJ01668691");
+    await mkdir(observed);
+    await writeFile(path.join(observed, "track.wav"), "observed bytes");
+    const requested: string[] = [];
+    vi.stubGlobal("fetch", async (input: string | URL | Request) => {
+      const address =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      requested.push(address);
+      if (address.includes("/product/info/ajax")) {
+        return new Response(
+          JSON.stringify({
+            RJ01668691: {
+              site_id: "maniax",
+              work_name: "Initial candidate work",
+              regist_date: "2026-08-01",
+              work_image: "//img.dlsite.jp/initial.jpg",
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      if (address === "https://img.dlsite.jp/initial.jpg") {
+        return new Response(new Uint8Array([1, 2, 3, 4]), {
+          headers: { "content-type": "image/jpeg" },
+        });
+      }
+      return new Response("<html></html>", {
+        headers: { "content-type": "text/html" },
+      });
+    });
+    const titleRequirement = {
+      metadataUsageContext: "asset.ordinary",
+      metadata: [{ property: "asset.title", necessity: "required" as const }],
+      relationshipTypes: [],
+      artifactRoles: [],
+    };
+    const coverRequirement = {
+      metadataUsageContext: "asset.ordinary",
+      metadata: [],
+      relationshipTypes: [],
+      artifactRoles: [
+        {
+          role: "asset.primary-cover",
+          necessity: "required" as const,
+          maximum: 1,
+        },
+      ],
+    };
+    const workflow = composeAssetRefresh(productData, {});
+    const verifier = SqliteCatalogue.forProductData(productData);
+
+    try {
+      const recognized = await scanRegisteredScope(workflow, observed, {
+        acceptTrusted: true,
+        informationRequirement: titleRequirement,
+      });
+      const subjectId = recognized.accepted?.entity.id;
+      if (subjectId === undefined)
+        throw new Error("DLsite subject was not accepted");
+      const persisted = await verifier.findAcceptedForSubjects([subjectId]);
+      const sourceAssociationId = persisted[0]?.accepted.sourceAssociation.id;
+      if (sourceAssociationId === undefined)
+        throw new Error("DLsite source association was not retained");
+      expect(requested).not.toContain("https://img.dlsite.jp/initial.jpg");
+
+      // The initial accepted interpretation, not a Recognition Proposal read,
+      // is the current durable candidate lineage before any Source Refresh.
+      await expect(
+        verifier.readCurrentSourceArtifactFacts({
+          subjectId,
+          sourceIdentity: "dlsite",
+          sourceAssociationId,
+        }),
+      ).resolves.toMatchObject({
+        sourceAssociation: { id: sourceAssociationId },
+        candidates: [
+          expect.objectContaining({
+            candidate: expect.objectContaining({
+              role: "asset.primary-cover",
+              acquisitionReference: "https://img.dlsite.jp/initial.jpg",
+            }),
+          }),
+        ],
+      });
+
+      const readiness = await workflow.fulfillInformation({
+        selection: { subjectIds: [subjectId] },
+        requirement: coverRequirement,
+      });
+      const executionId =
+        readiness.subjects[0]?.inputs[0]?.executionReferences?.[0]
+          ?.workflowExecutionId;
+      expect(readiness.subjects[0]).toMatchObject({ status: "pending" });
+      expect(executionId).toEqual(expect.any(String));
+      await expect(
+        waitForTerminalExecution(workflow, executionId!),
+      ).resolves.toMatchObject({
+        execution: { id: executionId, status: "completed" },
+        accepted: {
+          artifactAssociations: expect.arrayContaining([
+            expect.objectContaining({
+              subjectId,
+              role: "asset.primary-cover",
+            }),
+          ]),
+        },
+      });
+      expect(requested).toContain("https://img.dlsite.jp/initial.jpg");
+      expect(
+        requested.filter((address) => address.includes("/product/info/ajax")),
+      ).toHaveLength(1);
+    } finally {
+      await workflow.close();
+      verifier.close();
+    }
+  });
+
+  it("does not treat an observed-only delivered association as fulfillment-ready", async () => {
+    const root = await mkdtemp(
+      path.join(tmpdir(), "digital-observed-readiness-"),
+    );
+    temporaryRoots.push(root);
+    const productData = path.join(root, "product-data");
+    await prepareCatalogueAt(productData);
+    const observed = path.join(root, "RJ01668691");
+    await mkdir(observed);
+    await writeFile(path.join(observed, "track.wav"), "observed bytes");
+    vi.stubGlobal("fetch", async (input: string | URL | Request) => {
+      const address =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      if (address.includes("/product/info/ajax")) {
+        return new Response(
+          JSON.stringify({
+            RJ01668691: {
+              site_id: "maniax",
+              work_name: "Exact work",
+              regist_date: "2026-08-01",
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("<html></html>", {
+        headers: { "content-type": "text/html" },
+      });
+    });
+    const deliveredRequirement = {
+      metadataUsageContext: "asset.ordinary",
+      metadata: [],
+      relationshipTypes: [],
+      artifactRoles: [
+        {
+          role: "asset.material-delivered",
+          necessity: "required" as const,
+          maximum: 1,
+        },
+      ],
+    };
+    const workflow = composeAssetRefresh(productData, {});
+    const verifier = SqliteCatalogue.forProductData(productData);
+
+    try {
+      const recognized = await scanRegisteredScope(workflow, observed, {
+        acceptTrusted: true,
+        informationRequirement: {
+          metadataUsageContext: "asset.ordinary",
+          metadata: [{ property: "asset.title", necessity: "required" }],
+          relationshipTypes: [],
+          artifactRoles: [],
+        },
+      });
+      const subjectId = recognized.accepted?.entity.id;
+      if (subjectId === undefined)
+        throw new Error("DLsite subject was not accepted");
+      expect(recognized.accepted?.artifactAssociations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            subjectId,
+            role: "asset.material-delivered",
+          }),
+        ]),
+      );
+
+      const [facts] = await verifier.readCurrentInformationSubjectFacts({
+        subjectIds: [subjectId],
+      });
+      expect(facts?.artifactAssociations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            subjectId,
+            role: "asset.material-delivered",
+            managedLocations: [],
+          }),
+        ]),
+      );
+
+      await expect(
+        workflow.fulfillInformation({
+          selection: { subjectIds: [subjectId] },
+          requirement: deliveredRequirement,
+        }),
+      ).resolves.toMatchObject({
+        subjects: [
+          {
+            subjectId,
+            status: "unavailable",
+            inputs: [
+              expect.objectContaining({
+                kind: "artifact-role",
+                coordinate: "asset.material-delivered",
+                status: "unavailable",
+              }),
+            ],
+          },
+        ],
+      });
+    } finally {
+      await workflow.close();
+      verifier.close();
+    }
+  });
+
+  it("plans a DLsite primary-cover acquisition only when the neutral requirement asks for that role", async () => {
+    const starts: unknown[] = [];
+    const fulfillment = new InformationFulfillment({
+      async readSubjects() {
+        return [
+          {
+            subjectId: "work",
+            metadata: [],
+            relationships: [],
+            artifactAssociations: [],
+            sourceAssociations: [{ sourceIdentity: "dlsite" }],
+          },
+        ];
+      },
+      capabilities: dlsiteInformationFulfillmentCapabilities,
+      async start(plan) {
+        starts.push(plan);
+        return {
+          status: "pending",
+          workflowExecutionId: `execution-${plan.operation}`,
+        };
+      },
+    });
+
+    const readiness = await fulfillment.fulfill({
+      selection: { subjectIds: ["work"] },
+      requirement: {
+        metadataUsageContext: "asset.ordinary",
+        metadata: [{ property: "asset.title", necessity: "required" }],
+        relationshipTypes: [],
+        artifactRoles: [
+          {
+            role: "asset.primary-cover",
+            necessity: "optional",
+            maximum: 1,
+          },
+        ],
+      },
+    });
+
+    expect(starts).toEqual([
+      expect.objectContaining({
+        sourceIdentity: "dlsite",
+        operation: "source-refresh",
+        requirement: {
+          metadataUsageContext: "asset.ordinary",
+          metadata: [{ property: "asset.title", necessity: "required" }],
+          relationshipTypes: [],
+          artifactRoles: [],
+        },
+      }),
+      expect.objectContaining({
+        sourceIdentity: "dlsite",
+        operation: "source-artifact-acquisition",
+        requirement: {
+          metadataUsageContext: "asset.ordinary",
+          metadata: [],
+          relationshipTypes: [],
+          artifactRoles: [
+            {
+              role: "asset.primary-cover",
+              necessity: "optional",
+              maximum: 1,
+            },
+          ],
+        },
+      }),
+    ]);
+    expect(readiness.subjects[0]).toMatchObject({ status: "pending" });
+  });
+
+  it("does not trigger the DLsite artifact acquirer when the same subject requirement omits the role", async () => {
+    const starts: unknown[] = [];
+    const fulfillment = new InformationFulfillment({
+      async readSubjects() {
+        return [
+          {
+            subjectId: "work",
+            metadata: [],
+            relationships: [],
+            artifactAssociations: [],
+            sourceAssociations: [{ sourceIdentity: "dlsite" }],
+          },
+        ];
+      },
+      capabilities: dlsiteInformationFulfillmentCapabilities,
+      async start(plan) {
+        starts.push(plan);
+        return { status: "pending", workflowExecutionId: "execution-refresh" };
+      },
+    });
+
+    await fulfillment.fulfill({
+      selection: { subjectIds: ["work"] },
+      requirement: {
+        metadataUsageContext: "asset.ordinary",
+        metadata: [{ property: "asset.title", necessity: "required" }],
+        relationshipTypes: [],
+        artifactRoles: [],
+      },
+    });
+
+    expect(starts).toEqual([
+      expect.objectContaining({ operation: "source-refresh" }),
+    ]);
+  });
+});
+
+async function waitForTerminalExecution(
+  workflow: ReturnType<typeof composeAssetRefresh>,
+  executionId: string,
+) {
+  let latest: Awaited<ReturnType<typeof workflow.inspect>>;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    latest = await workflow.inspect(executionId);
+    if (latest?.execution.status !== "running") return latest;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(
+    `fulfillment execution did not become terminal: ${JSON.stringify(latest)}`,
+  );
+}
+
+async function waitForSourceRefreshPhase(
+  workflow: ReturnType<typeof composeAssetRefresh>,
+  executionId: string,
+  phase: "reviewing",
+) {
+  let latest: Awaited<ReturnType<typeof workflow.inspect>>;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    latest = await workflow.inspect(executionId);
+    if (latest?.sourceRefreshRuns?.some((run) => run.phase === phase))
+      return latest;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(
+    `fulfillment Source Refresh Run did not reach ${phase}: ${JSON.stringify(latest)}`,
+  );
+}

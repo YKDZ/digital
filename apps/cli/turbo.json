@@ -1,0 +1,12 @@
+{
+  "extends": ["//"],
+  "tags": ["delivery"],
+  "tasks": {
+    "build": { "outputs": ["dist/**"] },
+    "test": { "dependsOn": ["build", "@digital/sqlite#build"] },
+    "test:e2e": {
+      "dependsOn": ["build", "@digital/sqlite#build"],
+      "cache": false
+    }
+  }
+}

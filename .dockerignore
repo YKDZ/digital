@@ -1,0 +1,10 @@
+.git
+.scratch
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+**/.turbo
+**/cache
+**/log
+**/logs
+*.log

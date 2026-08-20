@@ -1,0 +1,7 @@
+{
+  "extends": "../../tsconfig.config.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["test/public-interface.type-test.ts"]
+}
