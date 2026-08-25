@@ -76,6 +76,8 @@ const deliveryDirectDependencyTags = new Set([
 ]);
 const invalidDeliveryDependencies: string[] = [];
 
+// Turbo 会沿组合入口解析完整的运行时闭包，因此交付标签需要容纳适配器标签；这里另行
+// 约束交付包的直接工作区依赖，防止交付代码绕过组合层直接依赖适配器。
 for (const [packageName, tags] of packageTags) {
   if (!tags.includes("delivery")) continue;
   const packagePath = packagePaths.get(packageName);
@@ -138,25 +140,3 @@ if (
   );
   process.exit(1);
 }
-
-const boundaryResult = spawnSync(
-  "pnpm",
-  [
-    "exec",
-    "turbo",
-    "boundaries",
-    "--no-color",
-    // Turbo 2.10.5 会依据组合层的完整适配器闭包检查交付包，导致唯一获准的交付入口
-    // 被当作直接导入了每个适配器而遭拒。因此上方依据交付包的直接工作区依赖检查它们；
-    // 其他所有包仍在此接受 Turbo 的严格标签规则检查。
-    ...[...packageTags]
-      .filter(([, tags]) => tags.includes("delivery"))
-      .map(([packageName]) => `--filter=!${packageName}`),
-  ],
-  {
-    stdio: "inherit",
-  },
-);
-
-if (boundaryResult.error !== undefined) throw boundaryResult.error;
-process.exit(boundaryResult.status ?? 1);

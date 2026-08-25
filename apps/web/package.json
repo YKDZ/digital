@@ -42,7 +42,7 @@
     "lint:fix": "oxlint --type-aware --format=unix --config ../../oxlint.config.ts . --fix",
     "preview": "vike preview",
     "pretest": "pnpm --filter @digital/sqlite build",
-    "pretest:e2e": "node ../../scripts/build-production-workspace.mjs",
+    "pretest:e2e": "node ../../scripts/build-production-workspace.ts",
     "start": "node ./dist/server/index.mjs",
     "test": "vitest run --reporter=agent --silent=passed-only --passWithNoTests",
     "test:e2e": "node scripts/run-playwright.ts",

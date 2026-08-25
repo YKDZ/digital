@@ -8,8 +8,6 @@ import type {
   ChangeImpactPreviewInspection,
   InformationRequirement,
 } from "@digital/application";
-// @boundaries-ignore 组合层是唯一合法的交付组装入口；
-// 根检查器会验证该包未声明直接适配器依赖。
 import {
   composeAssetRefresh,
   composeAutomationHost,

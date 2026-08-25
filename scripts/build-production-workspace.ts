@@ -1,24 +1,36 @@
 import { spawn } from "node:child_process";
-import { readFile, rm, stat } from "node:fs/promises";
-import { readdir } from "node:fs/promises";
+import { readFile, readdir, rm, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 
+type PackageManifest = {
+  readonly name: string;
+  readonly dependencies?: Readonly<Record<string, string>>;
+  readonly exports?: {
+    readonly "."?: { readonly default?: string };
+  };
+};
+
+type WorkspacePackage = {
+  readonly directory: string;
+  readonly manifest: PackageManifest;
+};
+
 const root = resolve(import.meta.dirname, "..");
-const roots = new Set(["@digital/web", "@digital/db-migrations"]);
-const manifests = new Map();
+const roots = new Set<string>(["@digital/web", "@digital/db-migrations"]);
+const manifests = new Map<string, WorkspacePackage>();
 for (const group of ["apps", "packages"]) {
   for (const entry of await readdir(resolve(root, group))) {
     const directory = resolve(root, group, entry);
     try {
       const manifest = JSON.parse(
         await readFile(resolve(directory, "package.json"), "utf8"),
-      );
+      ) as PackageManifest;
       manifests.set(manifest.name, { directory, manifest });
     } catch {}
   }
 }
-const closure = new Set();
-function visit(name) {
+const closure = new Set<string>();
+function visit(name: string): void {
   if (closure.has(name)) return;
   const item = manifests.get(name);
   if (!item) throw new Error(`未知 workspace package: ${name}`);
@@ -30,10 +42,11 @@ function visit(name) {
   }
 }
 for (const name of roots) visit(name);
-const built = new Set();
-async function build(name) {
+const built = new Set<string>();
+async function build(name: string): Promise<void> {
   if (built.has(name)) return;
   const item = manifests.get(name);
+  if (item === undefined) throw new Error(`未知 workspace package: ${name}`);
   for (const [dependency, version] of Object.entries(
     item.manifest.dependencies ?? {},
   )) {
@@ -43,7 +56,7 @@ async function build(name) {
   // Docker 排除 `dist` 输出后，TypeScript 组合构建可能仍接受过期的构建信息文件。
   // 只移除当前包的构建信息，使成功构建总会实体化其声明输出。
   await rm(resolve(item.directory, "tsconfig.tsbuildinfo"), { force: true });
-  await command("pnpm", ["--filter", name, "run", "build"]);
+  await run("pnpm", ["--filter", name, "run", "build"]);
   const sourceDist = resolve(item.directory, "dist");
   const sourceExport = item.manifest.exports?.["."]?.default;
   if (!(await exists(sourceDist)) && !sourceExport?.startsWith("./src/")) {
@@ -53,7 +66,7 @@ async function build(name) {
 }
 for (const name of roots) await build(name);
 
-async function exists(path) {
+async function exists(path: string): Promise<boolean> {
   try {
     await stat(path);
     return true;
@@ -61,8 +74,8 @@ async function exists(path) {
     return false;
   }
 }
-async function command(command, args) {
-  await new Promise((ok, fail) => {
+async function run(command: string, args: readonly string[]): Promise<void> {
+  await new Promise<void>((ok, fail) => {
     const child = spawn(command, args, { cwd: root, stdio: "inherit" });
     child.once("error", fail);
     child.once("close", (code) =>

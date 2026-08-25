@@ -26,7 +26,10 @@
             "composition",
             "application",
             "domain",
-            "test-support"
+            "integration",
+            "infrastructure",
+            "test-support",
+            "tooling"
           ]
         }
       },
@@ -74,7 +77,6 @@
     }
   },
   "tasks": {
-    "//#boundaries": { "cache": false },
     "//#format:check": { "outputs": [] },
     "//#lint": { "outputs": [] },
     "//#format:write": { "dependsOn": ["//#lint:fix"], "cache": false },

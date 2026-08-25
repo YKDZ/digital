@@ -34,9 +34,9 @@ RUN pnpm fetch
 COPY --from=pruner /repo/out/json/ ./
 RUN pnpm install --offline --frozen-lockfile
 COPY --from=pruner /repo/out/full/ ./
-COPY --from=pruner /repo/scripts/build-production-workspace.mjs ./scripts/build-production-workspace.mjs
+COPY --from=pruner /repo/scripts/build-production-workspace.ts ./scripts/build-production-workspace.ts
 # 先构建工作区依赖，再由 deploy 在隔离的部署目录中定点注入其发布文件。
-RUN node scripts/build-production-workspace.mjs
+RUN node scripts/build-production-workspace.ts
 RUN pnpm --config.inject-workspace-packages=true --filter ./apps/web deploy --prod /runtime-deploy
 RUN pnpm --config.inject-workspace-packages=true --filter ./packages/db-migrations deploy --prod /migration-deploy
 

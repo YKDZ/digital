@@ -13,6 +13,7 @@ import path from "node:path";
 
 import { checkSourceEdges } from "./boundary-source-edges.ts";
 
+// 这些负向夹具聚焦 Turbo 原生边界无法完整表达的项目规则。
 const root = await mkdtemp(path.join(tmpdir(), "digital-boundary-fixture-"));
 try {
   const application = path.join(root, "packages", "application");
@@ -1380,7 +1381,7 @@ async function runFormalRendererBoundary(input: RendererFixture): Promise<{
       await writeFile(target, file.source);
     }
 
-    const rendererBoundary = spawnSync("pnpm", ["boundaries"], {
+    const rendererBoundary = spawnSync("pnpm", ["architecture:check"], {
       cwd: process.cwd(),
       encoding: "utf8",
       env: {
