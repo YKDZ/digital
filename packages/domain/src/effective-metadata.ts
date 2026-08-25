@@ -1,7 +1,7 @@
-import type { MetadataAssertion } from "./metadata-assertion.js";
+import type { MetadataAssertion } from "./metadata-assertion.ts";
 
 export type MetadataPolicyRule = {
-  /** Exact property, a trailing `*` namespace pattern, or `*` as the default. */
+  /** 精确属性、以 `*` 结尾的命名空间模式，或作为默认值的 `*`。 */
   readonly property: string;
   readonly preferredSourceIdentities: readonly string[];
   readonly cardinality: "one" | "many";
@@ -78,9 +78,8 @@ type ResolvedAssertion = {
 };
 
 /**
- * Validates one provider-neutral policy before it participates in derivation.
- * Rule order carries no meaning; duplicate coordinates would therefore be
- * ambiguous and are rejected.
+ * 在一个提供方中立策略参与推导前对其验证。规则顺序不承载含义，因此重复坐标会产生
+ * 歧义并被拒绝。
  */
 export function validateMetadataPolicy(policy: MetadataPolicy): MetadataPolicy {
   if (
@@ -106,9 +105,8 @@ export function validateMetadataPolicy(policy: MetadataPolicy): MetadataPolicy {
 }
 
 /**
- * Derives current values and inspectable policy conflicts without authoring
- * assertions. Composition may choose policy definitions, while this module
- * owns their stable application semantics.
+ * 推导当前值和可检查策略冲突，但不创作断言。组合层可以选择策略定义，其稳定应用语义
+ * 由本模块持有。
  */
 export function deriveEffectiveMetadata(
   input: EffectiveMetadataInput,

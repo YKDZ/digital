@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { matchesReviewedCatalogueSchema } from "./schema-contract.js";
+import { matchesReviewedCatalogueSchema } from "./schema-contract.ts";
 export type DisposableCatalogueTarget = {
   readonly root: string;
   readonly databasePath: string;
@@ -16,10 +16,8 @@ const disposableCatalogueEnvironment = "DIGITAL_DISPOSABLE_CATALOGUE_ROOT";
 const disposableProductDataEnvironment = "DIGITAL_DISPOSABLE_PRODUCT_DATA_ROOT";
 
 /**
- * Resolves the only database target accepted by the Drizzle development
- * tooling. It intentionally permits neither a general product-data path nor
- * an arbitrary user directory: callers must create a fresh, clearly named
- * directory directly beneath the operating system temporary directory.
+ * 解析 Drizzle 开发工具唯一接受的数据库目标。它刻意不允许通用产品数据路径或任意用户
+ * 目录：调用方必须在操作系统临时目录正下方创建全新且命名明确的目录。
  */
 export function disposableCatalogueTarget(options: {
   readonly root: string;
@@ -52,9 +50,8 @@ export function disposableCatalogueTarget(options: {
 }
 
 /**
- * The Drizzle config is also executable on its own. Keep its target guard in
- * this module so `drizzle-kit push` cannot accidentally be pointed at product
- * data by a shell environment.
+ * Drizzle 配置也可以独立执行。把目标保护留在本模块，使 shell 环境不能误将
+ * `drizzle-kit push` 指向产品数据。
  */
 export function disposableCatalogueTargetFromEnvironment(): DisposableCatalogueTarget {
   const root = process.env[disposableCatalogueEnvironment];
@@ -68,19 +65,16 @@ export function disposableCatalogueTargetFromEnvironment(): DisposableCatalogueT
     root,
     ...(productDataDirectory === undefined ? {} : { productDataDirectory }),
   });
-  // Drizzle Kit evaluates its config synchronously. Repeat the canonical
-  // guard here rather than relying on the async prepare wrapper: otherwise a
-  // `/tmp/digital-disposable-*` symlink can point at product data before the
-  // wrapper gets a chance to inspect it.
+  // Drizzle Kit 同步求值配置。这里重复规范保护，而不依赖异步准备包装器；否则在包装器
+  // 有机会检查前，`/tmp/digital-disposable-*` 符号链接就可能指向产品数据。
   assertCanonicalDisposableTargetSync(target, productDataDirectory);
   return target;
 }
 
 /**
- * Resolves a test-only product-data target. Unlike `disposableCatalogueTarget`,
- * this target deliberately is product data; its safety boundary is instead a
- * canonical `/tmp/digital-disposable-*` ancestor. Application code must never
- * call this helper or set its environment variable.
+ * 解析仅供测试的产品数据目标。不同于 `disposableCatalogueTarget`，该目标刻意就是
+ * 产品数据；其安全边界改为规范 `/tmp/digital-disposable-*` 祖先。Application 代码
+ * 绝不能调用该辅助函数或设置其环境变量。
  */
 export function disposableProductDataCatalogueTarget(options: {
   readonly productDataDirectory: string;
@@ -92,10 +86,7 @@ export function disposableProductDataCatalogueTarget(options: {
   };
 }
 
-/**
- * Drizzle Kit's synchronous configuration entrypoint for the isolated
- * test-only product-data preparation channel.
- */
+/** Drizzle Kit 为隔离的仅测试产品数据准备通道提供的同步配置入口。 */
 export function disposableProductDataCatalogueTargetFromEnvironment(): DisposableCatalogueTarget {
   const productDataDirectory = process.env[disposableProductDataEnvironment];
   if (
@@ -112,10 +103,8 @@ export function disposableProductDataCatalogueTargetFromEnvironment(): Disposabl
 }
 
 /**
- * Builds an empty test/development catalogue from the reviewed Drizzle
- * schema and enables WAL. It is intentionally a disposable-only developer
- * tool: application persistence never invokes it and it never accepts a
- * product-data target.
+ * 从已审阅 Drizzle schema 构建空测试／开发 Catalogue 并启用 WAL。它刻意只作为一次性
+ * 开发工具：应用持久化绝不调用，也绝不接受产品数据目标。
  */
 export async function prepareDisposableCatalogue(options: {
   readonly root: string;
@@ -138,10 +127,8 @@ export async function prepareDisposableCatalogue(options: {
 }
 
 /**
- * Explicitly prepares a disposable product-data directory for tests and local
- * tooling. This is intentionally separate from `prepareDisposableCatalogue`:
- * the normal helper retains its strict rule that a disposable database must
- * not overlap `DIGITAL_PRODUCT_DATA`.
+ * 为测试和本地工具明确准备一次性产品数据目录。它刻意与 `prepareDisposableCatalogue`
+ * 分离：普通辅助函数继续严格要求一次性数据库不得与 `DIGITAL_PRODUCT_DATA` 重叠。
  */
 export async function prepareDisposableProductDataCatalogue(options: {
   readonly productDataDirectory: string;
@@ -155,9 +142,8 @@ export async function prepareDisposableProductDataCatalogue(options: {
 }
 
 /**
- * Path-based tooling check for a prepared catalogue. The physical schema
- * signature and native SQLite handle remain private to this infrastructure
- * package rather than becoming part of its root Interface.
+ * 工具使用的按路径已准备 Catalogue 检查。物理 schema 签名和原生 SQLite 句柄仍为该
+ * 基础设施包私有，而不会成为根接口的一部分。
  */
 export function isPreparedCatalogue(databasePath: string): boolean {
   let database: DatabaseSync | undefined;
@@ -385,9 +371,8 @@ function drizzlePushEnvironment(
   delete environment[disposableCatalogueEnvironment];
   delete environment[disposableProductDataEnvironment];
   if (preparation.kind === "test-product-data") {
-    // This channel is intentionally independent of any real product-data
-    // process configuration. Do not let an inherited variable become a
-    // Drizzle config target or relax the standard overlap guard.
+    // 该通道刻意独立于任何真实产品数据进程配置。不要让继承变量成为 Drizzle 配置目标，
+    // 也不要放宽标准重叠保护。
     delete environment.DIGITAL_PRODUCT_DATA;
     environment[disposableProductDataEnvironment] = target.root;
     return environment;
@@ -433,7 +418,7 @@ async function workspaceSqlitePackageRoot(): Promise<string> {
   }
 }
 
-/** WAL is operational setup, kept outside the persistence adapter and DDL. */
+/** WAL 属于操作设置，保留在持久化适配器和 DDL 之外。 */
 function enableDisposableWal(target: DisposableCatalogueTarget): void {
   const database = new DatabaseSync(target.databasePath);
   try {

@@ -120,10 +120,8 @@ function fixtureObservedRootRegistration(
 }
 
 /**
- * Every in-memory workflow fixture starts from explicit registrations.  The
- * list is intentionally data, not a path fallback: a newly introduced test
- * directory must be registered here (or use the production registration
- * service) before it can be bound.
+ * 每个内存工作流夹具都从显式注册开始。该列表刻意作为数据而非路径后备：
+ * 新引入的测试目录必须先在此注册（或使用生产注册服务），之后才能绑定。
  */
 const fixtureObservedDirectories = [
   "/another-bounded-scope",
@@ -205,9 +203,8 @@ function inMemoryObservedRootRegistrations(
 }
 
 /**
- * Test migration bridge. It maps a fixture's already-registered logical
- * directory to its registration identity, then calls the production public
- * scan boundary. No raw directory API exists on AssetRefreshWorkflow.
+ * 测试迁移桥接。它把夹具中已注册的逻辑目录映射为注册身份，再调用生产公开扫描边界。
+ * `AssetRefreshWorkflow` 不存在原始目录 API。
  */
 async function scanFixtureRegisteredObservedScope(
   workflow: Pick<AssetRefreshWorkflow, "scanObservedScope">,
@@ -1213,7 +1210,7 @@ describe("SqliteCatalogue lifecycle", () => {
                   version: "filesystem-object-identity/2",
                   kind: "durable",
                   capability: durableCapability,
-                  // The adapter owns this opaque, generation-aware token.
+                  // 适配器拥有这个可感知世代的不透明令牌。
                   value: "opaque-object/generation-1",
                 },
               },
@@ -1236,9 +1233,8 @@ describe("SqliteCatalogue lifecycle", () => {
     });
 
     expect(first.accepted?.entity.id).toEqual(expect.any(String));
-    // The second root adds a distinct observed Location, so its execution is
-    // an auditable reevaluation. The durable capability nevertheless reuses
-    // the same concrete Artifact and current Asset across the root boundary.
+    // 第二个根新增了不同的已观察位置，因此其执行是可审计的重新评估。不过持久能力仍会
+    // 跨根边界复用同一个具体产物和当前资产。
     expect(second.execution).toMatchObject({
       outcome: "accepted",
       acceptedAssetId: first.accepted?.entity.id,
@@ -1288,8 +1284,7 @@ describe("SqliteCatalogue lifecycle", () => {
                   version: "filesystem-object-identity/2",
                   kind: "durable",
                   capability: durableCapability,
-                  // The opaque adapter token can include a device/inode-like
-                  // coordinate, but generation is mandatory to its promise.
+                  // 不透明适配器令牌可以包含类似设备/inode 的坐标，但其承诺中必须包含世代。
                   value: `opaque-object/same-device-inode/generation-${generation}`,
                 },
               },
@@ -1823,8 +1818,8 @@ describe("SqliteCatalogue lifecycle", () => {
         accepted: acceptedFor(assetId, record.id),
       });
     }
-    // A later audit record for alpha must never manufacture a second current
-    // catalogue item. The current accepted subject remains the sole authority.
+    // alpha 的后续审计记录绝不能凭空生成第二个当前目录项目。
+    // 当前已接受主体仍是唯一权威。
     await catalogue.createExecution({
       ...executionFor("history-alpha"),
       status: "completed",
@@ -1834,8 +1829,7 @@ describe("SqliteCatalogue lifecycle", () => {
     });
 
     catalogue.close();
-    // The historic audit is intentionally unreadable. Current Catalogue has
-    // no reason to inspect it: its authority is the retained current head.
+    // 历史审计刻意不可读。当前目录没有理由检查它：目录权威来自保留的当前头部。
     const database = new DatabaseSync(path.join(root, "catalogue.sqlite"));
     try {
       database
@@ -1873,7 +1867,7 @@ describe("SqliteCatalogue lifecycle", () => {
       });
     }
 
-    // Initialize the lazy connection before observing only the two page reads.
+    // 先初始化惰性连接，之后只观察两次页面读取。
     await catalogue.listCurrentCataloguePage({ limit: 1 });
     const nativeDatabase = (
       catalogue as unknown as { readonly database: DatabaseSync }
@@ -1980,8 +1974,7 @@ describe("SqliteCatalogue lifecycle", () => {
     });
     catalogue.close();
 
-    // An old malformed audit remains part of permanent history, but it must
-    // not make a bounded first page rebuild every older history record.
+    // 旧的格式错误审计仍属于永久历史，但不得让有界第一页重建所有更早历史记录。
     const database = new DatabaseSync(path.join(root, "catalogue.sqlite"));
     try {
       database
@@ -3000,9 +2993,8 @@ describe("SqliteCatalogue lifecycle", () => {
       ],
     });
 
-    // The current condition is the absence of an acceptance decision. The
-    // fixture writes that authoritative downstream fact directly because V1
-    // has no separate command for later manual-proposal acceptance yet.
+    // 当前条件是缺少接受决定。夹具直接写入该权威下游事实，因为 V1 尚无用于后续
+    // 手动接受提案的独立命令。
     catalogue.close();
     const database = new DatabaseSync(path.join(root, "catalogue.sqlite"));
     try {
@@ -3093,8 +3085,7 @@ describe("SqliteCatalogue lifecycle", () => {
     } satisfies ChangeImpactPreview;
     catalogue.close();
 
-    // The proposals are immutable domain results while the execution audit
-    // above is the authority that says both work items still await review.
+    // 提案是不可变领域结果；上方执行审计则是声明两个工作项目仍等待审核的权威。
     const database = new DatabaseSync(path.join(root, "catalogue.sqlite"));
     try {
       const insert = database.prepare(
@@ -3239,8 +3230,7 @@ describe("SqliteCatalogue lifecycle", () => {
         ],
       },
     ]);
-    // Multiple currently applicable source associations enrich this one
-    // subject; they must never turn into duplicate Current Catalogue rows.
+    // 多个当前适用的来源关联会丰富同一主体；它们绝不能变成重复的当前目录行。
     await expect(
       catalogue.listCurrentCataloguePage({ limit: 1 }),
     ).resolves.toMatchObject({
@@ -4162,7 +4152,7 @@ describe("SqliteCatalogue lifecycle", () => {
           catalogue,
           replacementExecution.id,
         ),
-        // A final effect can never overwrite an unrelated execution.
+        // 最终效果绝不能覆盖无关执行。
         execution: {
           ...replacementExecution,
           id: "missing-terminal-execution",
@@ -4199,9 +4189,8 @@ describe("SqliteCatalogue lifecycle", () => {
           catalogue,
           replacementExecution.id,
         ),
-        // This failure occurs after candidate facts/provenance would have
-        // been written, proving the same Drizzle transaction rolls all of
-        // them back with its execution checkpoint.
+        // 该失败发生在本应写入候选事实/溯源之后，证明同一个 Drizzle 事务会把它们
+        // 连同执行检查点一并回滚。
         execution: {
           ...replacementExecution,
           status: "completed",
@@ -4897,8 +4886,7 @@ describe("SqliteCatalogue lifecycle", () => {
     ).resolves.toBe("claimed");
     const before = await catalogue.inspectExecution(initial.id);
 
-    // The recovering process can replay an old timestamp, but the SQLite
-    // catalogue is already well past the durable lease's expiration.
+    // 恢复进程可以重放旧时间戳，但 SQLite 目录已经远远超过持久租约的到期时间。
     authoritativeNow = new Date("2026-08-02T00:00:00.000Z");
     const terminal = {
       ...initial,
@@ -4967,8 +4955,7 @@ describe("SqliteCatalogue lifecycle", () => {
         },
         {
           token: "current-owner",
-          // This is intentionally stale: validity is the catalogue clock,
-          // not an arbitrary caller timestamp.
+          // 此时间刻意过期：有效性以目录时钟为准，而不是任意调用方时间戳。
           now: "1900-01-01T00:00:00.000Z",
         },
       ),
@@ -5671,21 +5658,19 @@ function recoveryWorkflow(
     readonly collectorCapabilityVersion?: string;
     readonly collectionCalls?: { count: number };
     /**
-     * Test seam for a Domain Run authority that can simulate a recovery-owner
-     * handoff between Application's inspection and its cancellation write.
+     * 领域运行业务权威的测试接缝，可模拟应用层检查与取消写入之间的恢复所有者交接。
      */
     readonly sourceRefreshRuns?: Pick<
       SourceRefreshRunPersistence,
       "inspectSourceRefreshRun"
     >;
     /**
-     * The recovery-only command is deliberately separate from public Domain
-     * Run cancellation.  Keep this structural until Application owns it.
+     * 仅恢复命令刻意与公开领域运行取消分离。在应用层拥有它之前，保持结构化契约。
      */
     readonly recoverySourceRefreshRuns?: RecoverySourceRefreshRunCommands;
-    /** Test seam for Application-owned frozen opaque configuration checks. */
+    /** 供应用层所有的冻结不透明配置检查使用的测试接缝。 */
     readonly configurationCompatibility?: WorkflowConfigurationCompatibility;
-    /** Keeps Application's lease request time aligned with SQLite's test clock. */
+    /** 使应用层租约请求时间与 SQLite 测试时钟对齐。 */
     readonly resumeClock?: AutomationClock;
     readonly observationBarrier?: Promise<void>;
     readonly onObservationStarted?: () => void;
@@ -5696,7 +5681,7 @@ function recoveryWorkflow(
     readonly uniqueProposalIds?: boolean;
     readonly acquisitionBarrier?: Promise<void>;
     readonly onAcquisitionStarted?: () => void;
-    /** Uses a registered test capability while retaining this SQLite source fixture. */
+    /** 使用已注册测试能力，同时保留此 SQLite 来源夹具。 */
     readonly filesystemOptions?: InMemoryObservedFilesystemOptions;
     readonly observedRootRegistrations?: Pick<
       ObservedRootRegistrations,
@@ -5963,10 +5948,8 @@ function recoveryWorkflow(
       ? {}
       : { resumeClock: options.resumeClock }),
   });
-  // This helper's default observed root is deliberately an in-memory
-  // Application fixture, not a persisted authorization record. Production
-  // and authorization tests pass a real registration service and exercise
-  // SqliteCatalogue's atomic root-aware command instead.
+  // 此辅助方法的默认观察根刻意采用内存应用层夹具，而非持久授权记录。生产和授权测试
+  // 会传入真正的注册服务，并改为运行 `SqliteCatalogue` 可感知根的原子命令。
   const automationCommands =
     options?.observedRootRegistrations === undefined
       ? {
@@ -5995,10 +5978,8 @@ function recoveryWorkflow(
 }
 
 /**
- * Creates a real SQLite parent execution plus one non-terminal Domain Run,
- * then intentionally leaves the parent without a versioned replay envelope.
- * That unknown input must interrupt recovery, but it must never authorize a
- * prior recovery owner to mutate the Run after its lease has been replaced.
+ * 创建真实 SQLite 父执行和一个非终态领域运行，再刻意让父执行缺少带版本的重放封装。
+ * 未知输入必须中断恢复，但绝不能授权先前恢复所有者在租约被替换后更改该运行。
  */
 async function createInterruptedRecoverySourceRefreshRun(
   catalogue: SqliteCatalogue,
@@ -6089,7 +6070,7 @@ async function createInterruptedRecoverySourceRefreshRun(
   return { executionId, runId };
 }
 
-/** One exact stable source fact keeps the applying fixture free of retractions. */
+/** 一条精确稳定的来源事实使应用夹具无需撤回。 */
 function sourceRunSeedAccepted(): AcceptedRecognition {
   const base = accepted();
   const interpretation = {
@@ -6133,7 +6114,7 @@ function sourceRunSeedAccepted(): AcceptedRecognition {
   };
 }
 
-/** A restart-only fixture for the public source-enrichment recovery path. */
+/** 供公开来源丰富恢复路径使用的纯重启夹具。 */
 function enrichmentCheckpointRecoveryWorkflow(
   catalogue: SqliteCatalogue,
   calls: Map<string, number>,
@@ -6277,9 +6258,9 @@ function reevaluationWorkflow(
     partialSourceRefreshRetry?: boolean;
     frozenCoverageIds?: string[][];
     stableSourceFacts?: boolean;
-    /** Exercise Blob deduplication independently from observed Artifact identity. */
+    /** 独立于已观察产物身份验证 `Blob` 去重。 */
     observedDigest?: string;
-    /** Same bytes may be re-observed after a timestamp-only object change. */
+    /** 仅时间戳变化的对象仍可能再次观察到相同字节。 */
     stableObservedByteLength?: boolean;
     sourceResolvedSubject?: "root" | "alpha" | "beta";
     reverseSourceResolvedSubjectQualifiers?: boolean;
@@ -8621,8 +8602,7 @@ describe("SQLite Asset Refresh persistence", () => {
     });
     const run = awaitingReview.sourceRefreshRuns?.[0];
 
-    // Model a restart after the Domain transition commits but before its
-    // Application outcome is projected through the public coordinator.
+    // 模拟领域转换提交后、其应用层结果尚未通过公开协调器投影前发生的重启。
     await catalogue.cancelSourceRefreshRun(run!.id);
     await expect(
       catalogue.inspectExecution(awaitingReview.execution.id),
@@ -11284,9 +11264,7 @@ describe("SQLite Asset Refresh persistence", () => {
       },
     });
     await expect(host.start()).resolves.toBeUndefined();
-    // Waiting is a completed recovery classification, not a global admission
-    // failure. The Host keeps supervising the retained execution without
-    // creating a duplicate.
+    // 等待是已完成的恢复分类，而不是全局准入失败。宿主继续监督保留执行，不创建副本。
     expect(host.recoveryReady).toBe(true);
     await expect(
       restartedCatalogue.inspectExecution(executionId),
@@ -11634,9 +11612,8 @@ describe("SQLite Asset Refresh persistence", () => {
         ).resolves.toBe("claimed");
       };
       const authority = {
-        // This is the old public-cancellation route. Before the production
-        // fix, recovery invokes it without an owner condition, letting the
-        // old owner mutate the Domain Run after `handOff` succeeds.
+        // 这是旧公开取消路径。生产修复前，恢复会在没有所有者条件时调用它，
+        // 使旧所有者能在 `handOff` 成功后更改领域运行。
         async cancelSourceRefreshRun(runId: string) {
           await handOff(executionId);
           return await catalogue.cancelSourceRefreshRun(runId);
@@ -12807,10 +12784,8 @@ describe("SQLite Asset Refresh persistence", () => {
     removeRollbackGuard.exec("DROP TRIGGER fail_change_impact_completion");
     removeRollbackGuard.close();
 
-    // The complete correction journey must not silently re-enter the legacy
-    // native-driver adapter for its CAS reads or its projected-fact writes.
-    // Restore the probe straight afterwards: the remaining assertions use
-    // deliberately raw SQLite inspection queries as test fixtures.
+    // 完整更正旅程不得为了 CAS 读取或投影事实写入而静默重新进入旧版原生驱动适配器。
+    // 随即恢复探针：其余断言刻意使用原始 SQLite 检查查询作为测试夹具。
     rejectDirectDatabaseQueries();
     await expect(catalogue.applyChangeImpactPreview(preview)).resolves.toBe(
       "applied",
@@ -14567,9 +14542,8 @@ describe("SQLite Asset Refresh persistence", () => {
 
   it("rolls back every accepted fact if a catalogue write fails", async () => {
     const { root, catalogue } = await createCatalogueWithRoot();
-    // The reviewed schema is checked when the adapter first opens. The test
-    // then injects a failure at the SQLite boundary to prove the application's
-    // existing immediate transaction still rolls back every fact.
+    // 适配器首次打开时会检查已审核模式。随后测试在 SQLite 边界注入失败，
+    // 以证明应用层现有即时事务仍会回滚每条事实。
     await catalogue.listExecutions();
     const failure = new DatabaseSync(path.join(root, "catalogue.sqlite"));
     try {
@@ -15164,7 +15138,7 @@ describe("SQLite Asset Refresh persistence", () => {
   });
 });
 
-/** A Persistence Port may reach DatabaseSync only through Drizzle. */
+/** 持久化端口只能通过 Drizzle 访问 `DatabaseSync`。 */
 function rejectDirectDatabaseQueries(): void {
   const prepare = DatabaseSync.prototype.prepare;
   const exec = DatabaseSync.prototype.exec;

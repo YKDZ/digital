@@ -9,11 +9,11 @@ export type { InformationRequirement } from "@digital/application";
 import {
   type BangumiSeriesViewModel,
   projectBangumiCatalogue,
-} from "./bangumi.js";
-import { nameSchema } from "./name-schema.js";
+} from "./bangumi";
+import { nameSchema } from "./name-schema";
 
-export * from "./asset-refresh-selection.js";
-export * from "./bangumi.js";
+export * from "./asset-refresh-selection";
+export * from "./bangumi";
 
 export type Greeting = { message: string };
 
@@ -21,7 +21,7 @@ export function greet(name: string): Greeting {
   return { message: `Hello, ${v.parse(nameSchema, name)}` };
 }
 
-/** The general Asset View's complete, delivery-neutral information demand. */
+/** 通用资产视图完整且与交付无关的信息需求。 */
 export const generalAssetViewInformationRequirement: InformationRequirement = {
   metadataUsageContext: "asset.ordinary",
   metadata: [
@@ -41,7 +41,7 @@ export const generalAssetViewInformationRequirement: InformationRequirement = {
   ],
 };
 
-/** Information the Book View actually consumes; source/provider remains open. */
+/** 图书视图实际消费的信息；来源/提供方保持开放。 */
 export const bookViewInformationRequirement: InformationRequirement = {
   metadataUsageContext: "asset.book-view",
   metadata: [
@@ -57,7 +57,7 @@ export const bookViewInformationRequirement: InformationRequirement = {
   relationshipTypes: [],
 };
 
-/** Information the Film View consumes; source/provider remains open. */
+/** 影片视图实际消费的信息；来源/提供方保持开放。 */
 export const filmViewInformationRequirement: InformationRequirement = {
   metadataUsageContext: "asset.ordinary",
   metadata: [
@@ -75,11 +75,10 @@ export const filmViewInformationRequirement: InformationRequirement = {
 };
 
 /**
- * The DLsite Asset View's whole delivery-independent input declaration.
+ * DLsite 资产视图完整且与交付无关的输入声明。
  *
- * This is intentionally owned by the View boundary rather than its card,
- * detail, file-tree, or delivery route.  Application sees only these open
- * fact coordinates and the ordinary effective-metadata usage context.
+ * 它刻意由视图边界拥有，而不是由卡片、详情、文件树或交付路由拥有。应用层只看到这些
+ * 开放事实坐标和普通有效元数据使用上下文。
  */
 export const dlsiteAssetViewInformationRequirement: InformationRequirement = {
   metadataUsageContext: "asset.ordinary",
@@ -106,9 +105,8 @@ export const dlsiteAssetViewInformationRequirement: InformationRequirement = {
 };
 
 /**
- * The formal General Asset View's consumer-facing shape.  Its source input is
- * deliberately structural: Application supplies neutral facts, while this
- * bounded context chooses the names, groupings, and omissions a consumer sees.
+ * 正式通用资产视图面向消费者的结构。其来源输入刻意保持结构化：应用层提供中立事实，
+ * 该限界上下文选择消费者看到的名称、分组和省略项。
  */
 export type AssetViewComponent =
   | "generic"
@@ -125,7 +123,7 @@ export type DlsiteViewCreditGroup = {
 
 export type AssetViewModel = {
   readonly id: string;
-  /** Exact delivery subject; the server resolves mutable scope/designation. */
+  /** 精确交付主体；服务端解析可变范围/指代。 */
   readonly refreshTarget: { readonly subjectId: string };
   readonly cardComponent: AssetViewComponent;
   readonly detailComponent: AssetViewComponent;
@@ -214,19 +212,18 @@ export type AssetViewModel = {
 
 export type AssetViewFacts = {
   readonly id: string;
-  /** Every current Source Association; one may still be recognition provenance. */
+  /** 所有当前来源关联；其中一项可能仍是识别溯源。 */
   readonly sourceAssociations?: readonly {
     readonly sourceIdentity?: string;
     readonly nativeAddress: string;
   }[];
-  /** @deprecated Use sourceAssociations; retained for existing source Views. */
+  /** @deprecated 请使用 `sourceAssociations`；为现有来源视图保留。 */
   readonly sourceAssociation?: {
     readonly sourceIdentity?: string;
     readonly nativeAddress: string;
   };
   /**
-   * Effective Metadata selected for this View's usage context. Presentation
-   * receives selected values, not an unordered bag of source assertions.
+   * 为该视图使用上下文选出的有效元数据。展示层接收选定值，而不是无序的来源断言集合。
    */
   readonly metadata: readonly (Pick<EffectiveMetadata, "property" | "value"> & {
     readonly subjectId?: string;
@@ -276,9 +273,8 @@ function metadataValues(
 }
 
 /**
- * Presentation owns component dispatch and therefore the complete requirement
- * authority for that component. Delivery never asks Application for a global
- * union of every View's optional data.
+ * 展示层拥有组件分派，也因此拥有该组件的完整需求权威。交付层绝不会向应用层请求
+ * 所有视图可选数据的全局并集。
  */
 export function assetViewComponent(
   input: Pick<
@@ -301,9 +297,8 @@ export function assetViewComponent(
 }
 
 /**
- * Resolves the one complete requirement of the presentation selected from
- * current facts. Generic, FANBOX, and Bangumi presentation use the general
- * view declaration until each owns a more specific requirement.
+ * 解析根据当前事实选出的展示所对应的唯一完整需求。通用、FANBOX 和 Bangumi 展示
+ * 暂时使用通用视图声明，直到各自拥有更具体的需求。
  */
 export function informationRequirementForAssetView(
   input: Pick<
@@ -399,8 +394,8 @@ function dlsiteCredits(
 }
 
 /**
- * Projects applied facts and proposed facts through one view.  Role strings
- * remain evidence vocabulary and never cross this consumer boundary.
+ * 通过同一个视图投影已应用事实和提议事实。角色字符串仍属于证据词汇，
+ * 绝不跨越该消费者边界。
  */
 export function projectAssetView(input: AssetViewFacts): AssetViewModel {
   const component = assetViewComponent(input);
@@ -497,6 +492,18 @@ export function projectAssetView(input: AssetViewFacts): AssetViewModel {
       const extension = /\.([^.]+)$/u.exec(name)?.[1]?.toUpperCase();
       return { name, format: extension ?? "文件" };
     });
+  const bookIsbn13 = firstMetadata(input.metadata, "book.isbn-13");
+  const bookPublisher = firstMetadata(input.metadata, "book.publisher");
+  const bookPublicationDate = firstMetadata(
+    input.metadata,
+    "book.publication-date",
+  );
+  const filmAwards = firstMetadata(input.metadata, "asset.awards");
+  const filmBoxOffice = firstMetadata(input.metadata, "asset.box-office");
+  const firstObservedFile = observedFiles[0];
+  const primarySourceLabel = sourceLabel(
+    input.sourceAssociation?.sourceIdentity,
+  );
   return {
     id: input.id,
     refreshTarget: { subjectId: input.id },
@@ -516,7 +523,9 @@ export function projectAssetView(input: AssetViewFacts): AssetViewModel {
       ? {}
       : {
           officialPage: input.sourceAssociation.nativeAddress,
-          sourceLabel: sourceLabel(input.sourceAssociation.sourceIdentity),
+          ...(primarySourceLabel === undefined
+            ? {}
+            : { sourceLabel: primarySourceLabel }),
         }),
     relationships,
     ...(component !== "fanbox"
@@ -582,25 +591,17 @@ export function projectAssetView(input: AssetViewFacts): AssetViewModel {
             title,
             ...(cover === undefined ? {} : { cover }),
             contributors: metadataValues(input.metadata, "book.contributor"),
-            ...(firstMetadata(input.metadata, "book.isbn-13") === undefined
+            ...(bookIsbn13 === undefined ? {} : { isbn13: bookIsbn13 }),
+            ...(bookPublisher === undefined
               ? {}
-              : { isbn13: firstMetadata(input.metadata, "book.isbn-13") }),
-            ...(firstMetadata(input.metadata, "book.publisher") === undefined
+              : { publisher: bookPublisher }),
+            ...(bookPublicationDate === undefined
               ? {}
-              : { publisher: firstMetadata(input.metadata, "book.publisher") }),
-            ...(firstMetadata(input.metadata, "book.publication-date") ===
-            undefined
-              ? {}
-              : {
-                  publicationDate: firstMetadata(
-                    input.metadata,
-                    "book.publication-date",
-                  ),
-                }),
+              : { publicationDate: bookPublicationDate }),
             ...(language === undefined ? {} : { language }),
-            ...(observedFiles[0] === undefined
+            ...(firstObservedFile === undefined
               ? {}
-              : { format: observedFiles[0].format }),
+              : { format: firstObservedFile.format }),
             files: observedFiles,
           },
         }),
@@ -620,14 +621,10 @@ export function projectAssetView(input: AssetViewFacts): AssetViewModel {
             directors: filmDirectors,
             cast: filmCast,
             ratings: filmRatings,
-            ...(firstMetadata(input.metadata, "asset.awards") === undefined
+            ...(filmAwards === undefined ? {} : { awards: filmAwards }),
+            ...(filmBoxOffice === undefined
               ? {}
-              : { awards: firstMetadata(input.metadata, "asset.awards") }),
-            ...(firstMetadata(input.metadata, "asset.box-office") === undefined
-              ? {}
-              : {
-                  boxOffice: firstMetadata(input.metadata, "asset.box-office"),
-                }),
+              : { boxOffice: filmBoxOffice }),
             sources: filmSources,
           },
         }),
@@ -635,8 +632,8 @@ export function projectAssetView(input: AssetViewFacts): AssetViewModel {
 }
 
 /**
- * Owns catalogue partition and View Component dispatch. Delivery receives
- * ready-to-render Presentation models and never groups by provider identity.
+ * 拥有目录分区和视图组件分派。交付层接收可直接渲染的展示模型，
+ * 绝不会按提供方身份分组。
  */
 export function projectCatalogue(
   facts: readonly AssetViewFacts[],

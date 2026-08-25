@@ -3,9 +3,8 @@ import type { AcceptedRecognition, MetadataPolicy } from "@digital/domain";
 export type MetadataPolicyDefinition = Omit<MetadataPolicy, "subjectIds">;
 
 /**
- * Composition supplies definitions and the product mapping from an accepted
- * interpretation to explicit policy enrollment. Application coordinates and
- * persists only those opaque identifiers.
+ * 组合层提供定义，以及从已接受解释到明确策略登记的产品映射。Application 只协调并
+ * 持久化这些不透明标识符。
  */
 export type MetadataPolicyConfiguration = {
   readonly version: string;

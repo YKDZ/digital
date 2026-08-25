@@ -68,7 +68,7 @@ async function awaitExternalService(baseUrl: string): Promise<void> {
         return;
       }
     } catch {
-      // The externally managed service may still be starting.
+      // 外部管理的服务可能仍在启动。
     }
 
     await new Promise((resolve) => setTimeout(resolve, 250));

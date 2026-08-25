@@ -2,7 +2,7 @@ import type {
   AssetRefreshSelection,
   AssetRefreshWorkflow,
   ObservedRootSnapshot,
-} from "../src/index.js";
+} from "../src/index.ts";
 
 type RegisteredScanInput = Parameters<
   AssetRefreshWorkflow["scanObservedScope"]
@@ -16,7 +16,7 @@ const registeredScan: RegisteredScanInput = {
 void registeredScan;
 
 const callerPathCannotBypassRegistration: RegisteredScanInput = {
-  // @ts-expect-error Production scan input accepts a registration identity, never a path.
+  // @ts-expect-error 生产扫描输入接受注册身份，绝不接受路径。
   directory: "/host/media",
   acceptTrusted: true,
 };
@@ -35,7 +35,7 @@ const registeredFilesystemScope: RegisteredFilesystemScope = {
 };
 void registeredFilesystemScope;
 
-// @ts-expect-error New filesystem selections must retain a frozen registered root.
+// @ts-expect-error 新文件系统选择必须保留冻结的已注册根。
 const rootOnlyFilesystemScope: RegisteredFilesystemScope = {
   root: "/container/media",
   explanations: [{ path: ["legacy-root-only"] }],
@@ -49,20 +49,20 @@ declare const optionalObservedRootScope: {
   readonly explanations: readonly { readonly path: readonly string[] }[];
 };
 
-// @ts-expect-error A possibly absent root snapshot cannot enter a new filesystem selection.
+// @ts-expect-error 可能缺失的根快照不能进入新文件系统选择。
 const rejectedOptionalObservedRoot: RegisteredFilesystemScope =
   optionalObservedRootScope;
 void rejectedOptionalObservedRoot;
 
 declare const workflow: AssetRefreshWorkflow;
 
-// @ts-expect-error Legacy raw-path refresh is not a public Application API.
+// @ts-expect-error 旧版原始路径刷新不是公开应用层 API。
 void workflow.refresh;
-// @ts-expect-error Filesystem scans require a registered root identity.
+// @ts-expect-error 文件系统扫描需要已注册根身份。
 void workflow.scanFilesystem;
-// @ts-expect-error Re-scraping requires the registered-root public entrypoint.
+// @ts-expect-error 重新抓取需要已注册根公开入口。
 void workflow.rescrape;
-// @ts-expect-error Directed recognition requires the registered-root public entrypoint.
+// @ts-expect-error 定向识别需要已注册根公开入口。
 void workflow.directedRecognition;
-// @ts-expect-error A terminal Source Refresh Run has no dedicated retry bypass.
+// @ts-expect-error 终态来源刷新运行没有专用重试绕过入口。
 void workflow.retrySourceRefreshRun;

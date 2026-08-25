@@ -213,9 +213,8 @@ describe("production catalogue preparation", () => {
       path.join(tmpdir(), "digital-db-migrations-deploy-"),
     );
     try {
-      // This is the real Issue-08-compatible Drizzle baseline with data, but
-      // its fingerprint is intentionally damaged so replay reaches DDL that
-      // conflicts with the existing catalogue.
+      // 这是包含数据且与议题 08 兼容的真实 Drizzle 基线，但其指纹被刻意损坏，
+      // 使重放抵达与现有目录冲突的 DDL。
       await prepareDisposableProductDataCatalogue({ productDataDirectory });
       const database = new DatabaseSync(
         path.join(productDataDirectory, "catalogue.sqlite"),
@@ -292,6 +291,7 @@ async function deployFormalCli(deploymentDirectory: string): Promise<void> {
     const child = spawn(
       "pnpm",
       [
+        "--config.inject-workspace-packages=true",
         "--filter",
         "./packages/db-migrations",
         "deploy",

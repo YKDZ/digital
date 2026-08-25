@@ -2,16 +2,13 @@
   "name": "@digital/domain",
   "version": "0.0.0",
   "private": true,
+  "files": [
+    "dist"
+  ],
   "type": "module",
-  "imports": {
-    "#/*": {
-      "default": "./src/*.ts",
-      "types": "./src/*.ts"
-    }
-  },
   "exports": {
     ".": {
-      "source": "./dist/index.js",
+      "digital-source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
@@ -23,12 +20,13 @@
     "lint:fix": "oxlint --format=unix --config ../../oxlint.config.ts . --fix",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
     "test": "vitest run --reporter=verbose",
-    "build": "tsc -p tsconfig.json --pretty false"
+    "build": "tsc -p tsconfig.build.json --pretty false"
   },
   "dependencies": {
     "valibot": "catalog:"
   },
   "devDependencies": {
+    "@digital/typescript-config": "workspace:*",
     "@types/node": "catalog:",
     "oxfmt": "catalog:",
     "oxlint": "catalog:",

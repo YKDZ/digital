@@ -38,9 +38,8 @@ afterAll(async () => {
 });
 
 /**
- * Production observer tests must cross the registered-root boundary.  This
- * helper intentionally avoids the legacy raw-path scan entrypoint so the
- * Node observer receives a descriptor-bound authority just like delivery.
+ * 生产观察者测试必须跨越已注册根边界。该辅助方法刻意避开旧版原始路径扫描入口，
+ * 使 Node 观察者像交付层一样接收绑定描述符的权威。
  */
 async function scanRegisteredScope(
   workflow: Pick<
@@ -229,9 +228,8 @@ describe("information fulfillment composition", () => {
         readiness.subjects[0]?.inputs[0]?.executionReferences?.[0]
           ?.workflowExecutionId;
       expect(executionId).toEqual(expect.any(String));
-      // Node's opaque object identities are deliberately snapshot-local. The
-      // separately registered automation scan therefore has its own source
-      // acquisition boundary instead of borrowing this scan's file identity.
+      // Node 的不透明对象身份刻意限定在快照内。因此单独注册的自动化扫描拥有自己的
+      // 来源获取边界，而不是借用本次扫描的文件身份。
       expect(
         repeatedReadiness.subjects[0]?.inputs[0]?.executionReferences?.[0]
           ?.workflowExecutionId,
@@ -248,8 +246,7 @@ describe("information fulfillment composition", () => {
         ]),
       );
 
-      // The initial registered scan and its automatic follow-up are separate
-      // snapshots, so neither may reuse Node-local object identity evidence.
+      // 初始已注册扫描及其自动后续操作属于不同快照，因此二者都不能复用 Node 本地对象身份证据。
       expect(
         requested.filter(
           (address) => address === "https://img.dlsite.jp/primary.jpg",
@@ -1368,8 +1365,7 @@ describe("information fulfillment composition", () => {
         throw new Error("DLsite source association was not retained");
       expect(requested).not.toContain("https://img.dlsite.jp/initial.jpg");
 
-      // The initial accepted interpretation, not a Recognition Proposal read,
-      // is the current durable candidate lineage before any Source Refresh.
+      // 在任何来源刷新前，当前持久候选谱系来自初始已接受解释，而不是读取识别提案。
       await expect(
         verifier.readCurrentSourceArtifactFacts({
           subjectId,

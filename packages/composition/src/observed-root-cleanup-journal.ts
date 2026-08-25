@@ -4,9 +4,8 @@ import type {
 } from "@digital/application";
 
 /**
- * The process keeps only the newest incidents.  A cleanup-reporting failure
- * is exceptional operational evidence, not a durable workflow record, so a
- * bounded emergency journal must never compete with catalogue availability.
+ * 进程只保留最新事件。清理报告失败是异常运维证据，而非持久工作流记录，
+ * 因此有界应急日志绝不能与目录可用性争夺资源。
  */
 export const observedRootCleanupEmergencyJournalCapacity = 64;
 
@@ -23,9 +22,8 @@ type SanitizedCleanupErrorKind =
   | "undefined";
 
 /**
- * A process-local record deliberately preserves only logical registration
- * coordinates and value kinds. It never retains raw adapter errors, paths,
- * descriptor state, or credential-bearing text.
+ * 进程本地记录刻意只保存逻辑注册坐标和值种类。它绝不保留原始适配器错误、路径、
+ * 描述符状态或含凭据文本。
  */
 export type ObservedRootCleanupEmergencyIncident = {
   readonly event: "observed-root-cleanup-reporting-failure";
@@ -39,13 +37,12 @@ export type ObservedRootCleanupEmergencyIncident = {
 
 export type ObservedRootCleanupEmergencyJournalSnapshot = {
   readonly incidents: readonly ObservedRootCleanupEmergencyIncident[];
-  /** Number of oldest incidents discarded since the last drain. */
+  /** 自上次排空后丢弃的最旧事件数量。 */
   readonly discardedIncidentCount: number;
 };
 
 /**
- * An inspectable, process-owned operational journal. `drain` is intended for
- * an outer operational reporter after its own failure domain has recovered.
+ * 可检查且由进程拥有的运维日志。`drain` 供外层运维报告器在自身故障域恢复后调用。
  */
 export type ObservedRootCleanupEmergencyJournal = {
   snapshot(): ObservedRootCleanupEmergencyJournalSnapshot;
@@ -53,9 +50,8 @@ export type ObservedRootCleanupEmergencyJournal = {
 };
 
 /**
- * The final cleanup audit sink is synchronous and intentionally non-throwing.
- * When full, it discards the oldest record so the latest failure remains
- * inspectable. No filesystem or reporting adapter is called from here.
+ * 最终清理审计槽是同步的，并刻意保证不抛错。容量满时会丢弃最旧记录，
+ * 使最新失败仍可检查。此处不会调用文件系统或报告适配器。
  */
 export class InProcessObservedRootCleanupEmergencyJournal
   implements
@@ -77,8 +73,7 @@ export class InProcessObservedRootCleanupEmergencyJournal
       }
       this.incidents.push(toEmergencyIncident(input));
     } catch {
-      // This is the last independent fallback. It must not control cleanup or
-      // public error precedence even if an unexpected runtime defect occurs.
+      // 这是最后一个独立后备。即使发生意外运行时缺陷，它也不得控制清理或公开错误优先级。
     }
   }
 

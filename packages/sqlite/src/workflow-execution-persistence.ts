@@ -15,11 +15,11 @@ import {
   workflowExecutionAuditLegacyMarker,
   workflowExecutionAuditVersion,
   type VersionedJson,
-} from "./schema.js";
+} from "./schema.ts";
 
 /**
- * Internal structural subsets. They are deliberately not Application Ports
- * and exist only to keep Drizzle inside the SQLite Adapter implementation.
+ * 内部结构子集。它们刻意不是 Application 端口，只为把 Drizzle 留在 SQLite 适配器
+ * 实现内部而存在。
  */
 type DrizzleWriteTransaction = Pick<
   ReturnType<typeof drizzle>,
@@ -53,7 +53,7 @@ type ExecutionRow = {
   readonly cover_acquisition_json: string | null;
   readonly managed_cover_json: string | null;
   readonly automation_intent_id: string | null;
-  /** Legacy compatibility column; new executions use workflow_input_json. */
+  /** 旧版兼容列；新执行使用 `workflow_input_json`。 */
   readonly trigger_kind: string | null;
   readonly operation_kind?: WorkflowExecution["operationKind"] | null;
   readonly requested_selection_json?: string | null;
@@ -61,18 +61,17 @@ type ExecutionRow = {
   readonly target_dispositions_json?: string | null;
   readonly filesystem_snapshots_json?: string | null;
   readonly source_enrichments_json?: string | null;
-  /** NULL is the explicit legacy fallback before frozen input existed. */
+  /** 在冻结输入存在前，NULL 是明确的旧版回退。 */
   readonly workflow_input_json?: string | null;
-  /** NULL is the explicitly supported pre-audit legacy fallback. */
+  /** NULL 是明确支持的审计机制引入前旧版回退。 */
   readonly audit_json: string | null;
-  /** NULL means the Workflow Execution was not explicitly cancelled. */
+  /** NULL 表示工作流执行未被明确取消。 */
   readonly cancellation_json?: string | null;
 };
 
 /**
- * Pre-registered-root persisted input. It is intentionally private to this
- * historical SQLite reader: no new Application caller can name or construct
- * it, and it never becomes an executable AssetRefreshSelection.
+ * 注册观察根机制引入前的持久化输入。它刻意只属于该历史 SQLite 读取器：新的
+ * Application 调用方不能命名或构造它，它也绝不会成为可执行资产刷新选择。
  */
 type LegacyPersistedFilesystemSelection = {
   readonly version: "asset-refresh-selection/1";
@@ -106,12 +105,11 @@ const legacyFilesystemSelectionRecoveryReason =
   "刷新记录使用旧版未登记文件位置范围，无法安全继续；请重新选择范围并刷新";
 
 /**
- * The private Workflow Execution persistence core.
+ * 私有工作流执行持久化核心。
  *
- * Its small Interface accepts only the caller-owned Drizzle session needed to
- * hydrate, establish a full audit baseline, and insert or replace a durable
- * execution. SqliteCatalogue retains transaction orchestration, lease policy,
- * automation ownership, and cross-aggregate inspection composition.
+ * 其小型接口只接受调用方持有的 Drizzle 会话，用于装载、建立完整审计基线，以及插入
+ * 或替换耐久执行。事务编排、租约策略、自动化持有权和跨聚合检查组合仍由
+ * `SqliteCatalogue` 保留。
  */
 export class WorkflowExecutionPersistence {
   readExecutionWithDrizzle(
@@ -146,8 +144,7 @@ export class WorkflowExecutionPersistence {
   }
 
   /**
-   * A checkpoint or terminal write starts from the complete frozen audit
-   * payload. Cross-aggregate transactions use this exact same CAS baseline.
+   * 检查点或终态写入从完整冻结审计载荷开始。跨聚合事务使用完全相同的 CAS 基线。
    */
   runningExecutionBaseline(
     query: DrizzleReadQuery,
@@ -219,9 +216,8 @@ export class WorkflowExecutionPersistence {
 }
 
 /**
- * The compatibility reader's recovery barrier is deliberately ephemeral: it
- * is not a new durable workflow-input shape and disappears when Application
- * records the required terminal interruption.
+ * 兼容性读取器的恢复屏障刻意是瞬时的：它不是新的耐久工作流输入形状；Application
+ * 记录必需的终态中断后，它就会消失。
  */
 function withoutLegacyFilesystemSelectionRecoveryBarrier(
   execution: WorkflowExecution,
@@ -360,7 +356,7 @@ function executionColumnRow(execution: WorkflowExecution) {
   } satisfies ExecutionRow;
 }
 
-/** Keep the Application audit decoder independent of Drizzle column casing. */
+/** 使 Application 审计解码器不依赖 Drizzle 列名大小写。 */
 function executionRowFromDrizzle(
   row: typeof workflowExecutions.$inferSelect,
 ): ExecutionRow {
@@ -519,9 +515,8 @@ function decodeExecutionColumns(row: ExecutionRow): DecodedExecutionColumns {
       ...workflowInput,
       ...(legacyFilesystemSelection
         ? {
-            // The public WorkflowExecution retains only a sanitized reason. The
-            // private legacy payload above is used solely to verify durable
-            // audit consistency while this row is read.
+            // 公开工作流执行只保留净化后的原因。上方私有旧版载荷只在读取该行时用于验证
+            // 耐久审计一致性。
             workflowInputInvalid: {
               raw: JSON.stringify(legacySelections),
               reason: legacyFilesystemSelectionRecoveryReason,
@@ -581,9 +576,8 @@ function executionFromAudit(
   decodedColumns: DecodedExecutionColumns,
 ): WorkflowExecution {
   const { execution: fromColumns, legacySelections } = decodedColumns;
-  // 0031 adds a nullable column specifically so existing durable executions
-  // continue to reopen through the old column representation. A short-lived
-  // prerelease default marker receives the same constrained fallback.
+  // 0031 专门添加可空列，使既有耐久执行继续通过旧列表示重新打开。短期预发布默认标记
+  // 使用相同的受限回退。
   if (auditJson === null || auditJson === workflowExecutionAuditLegacyMarker)
     return fromColumns;
 
@@ -608,9 +602,8 @@ function executionFromAudit(
   )
     throw new Error("Workflow execution audit_json payload must be an object");
   if (fromColumns.workflowInputInvalid !== undefined) {
-    // Only the damaged input coordinate is exempt from the audit comparison.
-    // All other columns still have to match the original complete audit, so a
-    // malformed envelope cannot hide unrelated durable-row tampering.
+    // 只有损坏输入坐标不参与审计比较。其他所有列仍必须匹配原始完整审计，因此畸形封装
+    // 不能掩盖无关的耐久行篡改。
     const {
       workflowInputInvalid: _invalidInput,
       workflowInput: _columnInput,
@@ -648,7 +641,7 @@ function executionFromAudit(
   return fromColumns;
 }
 
-/** Shared by execution audit CAS and Adapter-owned canonical fact checks. */
+/** 由执行审计 CAS 与适配器持有的规范事实检查共同使用。 */
 export function canonicalJson(value: unknown): string {
   if (value === null) return "null";
   if (typeof value === "string" || typeof value === "boolean")
@@ -680,8 +673,7 @@ function parsePersistedAssetRefreshSelection(
   value: string,
   column: string,
 ): DecodedPersistedAssetRefreshSelection {
-  // Known fields are recursively strict. Unknown fields remain tolerated for
-  // forward-compatible readers, matching the repository's JSON audit policy.
+  // 已知字段递归严格；为实现读取器前向兼容，仍容忍未知字段，与仓库 JSON 审计策略一致。
   const parsed = parseNewAuditJson(value, column);
   try {
     assertAssetRefreshSelection(parsed);
@@ -695,9 +687,8 @@ function parsePersistedAssetRefreshSelection(
 }
 
 /**
- * The sole compatibility reader for pre-registration selection rows. It
- * recognizes a former root-only scope only so the row remains inspectable;
- * callers never receive this shape as an executable Application selection.
+ * 注册机制引入前选择行的唯一兼容性读取器。它识别旧版仅根范围，只为让该行继续可检查；
+ * 调用方绝不会把这种形状作为可执行 Application 选择接收。
  */
 function decodeLegacyPersistedFilesystemSelection(
   value: unknown,
@@ -718,9 +709,8 @@ function decodeLegacyPersistedFilesystemSelection(
     return undefined;
   }
   try {
-    // Reuse the public strict validator for all non-filesystem coordinates.
-    // A legacy filesystem row still needs at least one valid subject or its
-    // original scopes must be the only non-empty target set.
+    // 对所有非文件系统坐标复用公开严格验证器。旧版文件系统行仍须至少包含一个有效主体，
+    // 否则其原始范围必须是唯一非空目标集合。
     assertAssetRefreshSelection({
       ...candidate,
       filesystemScopes: [],
@@ -777,8 +767,7 @@ function isLegacyRootOnlyFilesystemScope(scope: unknown): boolean {
 function parseTargetDispositions(
   value: string,
 ): NonNullable<WorkflowExecution["targetDispositions"]> {
-  // Validate every known nested element; tolerate unknown fields so a newer
-  // writer does not make an older reader discard an otherwise readable audit.
+  // 验证每个已知嵌套元素；容忍未知字段，使新写入者不会迫使旧读取器丢弃原本可读的审计。
   const parsed = parseNewAuditJson(value, "target_dispositions_json");
   const statuses = new Set([
     "running",

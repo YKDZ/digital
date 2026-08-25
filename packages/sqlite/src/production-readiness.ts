@@ -2,7 +2,7 @@ import { access } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { matchesReviewedCatalogueSchema } from "./schema-contract.js";
+import { matchesReviewedCatalogueSchema } from "./schema-contract.ts";
 
 export const productionCatalogueMigrationHead =
   "20260820000000_v1_catalogue_baseline";
@@ -30,8 +30,7 @@ export type ProductionCatalogueReadiness =
   | { readonly state: "local-dependency-missing"; readonly message: string };
 
 /**
- * Runtime-only production admission check. It never creates a directory,
- * writes a ledger, or invokes migration tooling.
+ * 仅供运行时使用的生产准入检查。它绝不创建目录、写入账本或调用迁移工具。
  */
 export async function inspectProductionCatalogueReadiness(options: {
   readonly productDataDirectory: string;
@@ -63,9 +62,8 @@ export async function inspectProductionCatalogueReadiness(options: {
         .map((row) => (row as { readonly name: string }).name),
     );
     if (!tables.has("__digital_catalogue_migrations")) {
-      // Disposable development and test catalogues are deliberately prepared
-      // by the reviewed Drizzle push path. They never enable this exception in
-      // a production process, where the formal ledger is mandatory.
+      // 一次性开发与测试 Catalogue 刻意通过已审阅的 Drizzle push 路径准备。生产
+      // 进程绝不启用该例外，因为正式迁移账本在生产中是强制要求。
       if (
         process.env.NODE_ENV === "test" &&
         matchesReviewedCatalogueSchema(database)
@@ -150,9 +148,8 @@ export async function inspectProductionCatalogueReadiness(options: {
 function matchesCatalogueSchemaWithProductionLedger(
   database: DatabaseSync,
 ): boolean {
-  // The production ledger is deployment metadata, not Application persistence.
-  // Remove only its two explicitly named tables while retaining strict review of
-  // every catalogue-managed structure.
+  // 生产账本是部署元数据，不是 Application 持久化。只移除两个明确命名的账本表，
+  // 同时继续严格审阅 Catalogue 管理的每个结构。
   const ledgers = [
     "__digital_catalogue_migrations",
     "__digital_catalogue_migration_failures",

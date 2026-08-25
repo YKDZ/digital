@@ -5,8 +5,8 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 
 /**
- * Test-only setup boundary. Web runtime code must not import Drizzle or use
- * this helper; an unprepared product-data directory intentionally fails closed.
+ * 仅供测试使用的设置边界。Web 运行时代码不得导入 Drizzle 或使用该辅助方法；
+ * 未准备的产品数据目录刻意以关闭方式失败。
  */
 export async function prepareWebProductData(
   productDataDirectory: string,

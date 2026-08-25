@@ -40,7 +40,7 @@ export type EpubPublication = {
   readonly cover?: { readonly bytes: Uint8Array; readonly mediaType: string };
 };
 
-/** Parses bytes supplied by Application's already-bound observer capability. */
+/** 解析应用层已绑定观察者能力提供的字节。 */
 export function inspectEpubPublication(bytes: Uint8Array): EpubPublication {
   const archive = new ZipArchive(bytes);
   const container = archive.text("META-INF/container.xml");
@@ -98,8 +98,7 @@ export function inspectEpubPublication(bytes: Uint8Array): EpubPublication {
 }
 
 /**
- * The EPUB integration owns container interpretation. It selects an explicit
- * one-file work boundary rather than turning a parent directory into a book.
+ * EPUB 集成拥有容器解释。它选择显式的单文件作品边界，而不是把父目录变成图书。
  */
 export class EpubPublicationInspector implements ArtifactFormatInspector {
   readonly capability = directoryCapability;
@@ -175,7 +174,7 @@ export class EpubPublicationInspector implements ArtifactFormatInspector {
   }
 }
 
-/** Materializes an embedded EPUB cover only after Application requests it. */
+/** 只有应用层提出请求后，才实体化 EPUB 内嵌封面。 */
 export class EpubEmbeddedCoverAcquirer implements ObservedArtifactPartAcquirer {
   readonly capability = acquirerCapability;
 
@@ -241,8 +240,7 @@ function isbnIdentifiers(opf: string): readonly string[] {
             `<meta\\b[^>]*\\brefines\\s*=\\s*(["'])#${escapeRegExp(identifierId)}\\1[^>]*\\bproperty\\s*=\\s*(["'])identifier-type\\2[^>]*>\\s*isbn(?:-13)?\\s*<\\/meta>`,
             "iu",
           ).test(opf);
-    // An explicit non-ISBN scheme always wins. When EPUB2 gives no scheme,
-    // the ISBN-13 prefix/checksum itself is the only accepted semantic.
+    // 显式非 ISBN 方案始终优先。EPUB2 未提供方案时，只接受 ISBN-13 前缀/校验和本身的语义。
     if (
       scheme !== undefined &&
       !/^isbn(?:-13)?$/iu.test(scheme) &&
@@ -332,7 +330,7 @@ function resolveHref(opf: string, href: string): string {
   return path.posix.normalize(path.posix.join(path.posix.dirname(opf), href));
 }
 
-/** A deliberately small, bounded ZIP reader for EPUB container members. */
+/** 刻意保持精简且有界的 EPUB 容器成员 ZIP 读取器。 */
 class ZipArchive {
   private readonly entries = new Map<string, ZipEntry>();
   private readonly archiveBytes: Uint8Array;

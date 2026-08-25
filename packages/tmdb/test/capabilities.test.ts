@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
 
-import { describe, expect, it } from "vitest";
-
 import { prerequisiteUnavailableFailure } from "@digital/application";
+import { describe, expect, it } from "vitest";
 
 import {
   TmdbArtifactAcquirer,
@@ -161,7 +160,7 @@ describe("TMDB collection and interpretation", () => {
       snapshot("/library/恐怖直播 (2013)"),
     );
 
-    const collected = await collector.collect(evidence[0]!);
+    const collected = await collector.collect(evidence[0]);
     const interpreted = new TmdbSourceInterpreter().interpret({
       evidence,
       sourceRecords: collected.records,
@@ -225,7 +224,7 @@ describe("TMDB collection and interpretation", () => {
       snapshot("/library/恐怖直播 (2013)"),
     );
 
-    const collection = await collector.collect(evidence[0]!);
+    const collection = await collector.collect(evidence[0]);
     const interpreted = new TmdbSourceInterpreter().interpret({
       evidence,
       sourceRecords: collection.records,
@@ -287,7 +286,7 @@ describe("TMDB collection and interpretation", () => {
       snapshot("/library/恐怖直播 (2013)"),
     );
 
-    const collection = await collector.collect(evidence[0]!);
+    const collection = await collector.collect(evidence[0]);
     const interpreted = new TmdbSourceInterpreter().interpret({
       evidence,
       sourceRecords: collection.records,
@@ -349,7 +348,7 @@ describe("TMDB collection and interpretation", () => {
       snapshot("/library/恐怖直播 (2013)"),
     );
 
-    const collected = await collector.collect(evidence[0]!);
+    const collected = await collector.collect(evidence[0]);
 
     expect(
       new TmdbSourceInterpreter().canInterpret({
@@ -379,7 +378,7 @@ describe("TMDB collection and interpretation", () => {
       snapshot("/library/不存在的作品 (2013)"),
     );
 
-    const collected = await collector.collect(evidence[0]!);
+    const collected = await collector.collect(evidence[0]);
 
     expect(collected.failures).toEqual([]);
     expect(collected.records.map((record) => record.coverage.id)).toEqual([
@@ -424,7 +423,7 @@ describe("TMDB collection and interpretation", () => {
       snapshot("/library/恐怖直播 (2013)"),
     );
 
-    const collected = await collector.collect(evidence[0]!);
+    const collected = await collector.collect(evidence[0]);
 
     expect(collected.records.map((record) => record.coverage.id)).toEqual([
       "tmdb.search.page.1",
@@ -461,7 +460,7 @@ describe("TMDB collection and interpretation", () => {
       snapshot("/library/恐怖直播 (2013)"),
     );
 
-    const collected = await collector.collect(evidence[0]!);
+    const collected = await collector.collect(evidence[0]);
 
     expect(collected.records.map((record) => record.coverage.id)).toEqual([
       "tmdb.search.page.1",
@@ -540,8 +539,7 @@ describe("TMDB collection and interpretation", () => {
               id: 75913 + index,
               name: `演员 ${index + 1}`,
               character: `角色 ${index + 1}`,
-              // Deliberately differs from response-array order. The
-              // interpretation contract follows TMDB's declared order.
+              // 刻意不同于响应数组顺序；解释契约遵循 TMDB 声明的顺序。
               order: (index + 5) % 12,
             })),
           });
@@ -563,7 +561,7 @@ describe("TMDB collection and interpretation", () => {
     const evidence = new TmdbStrictFilmDirectoryInterpreter().interpret(
       snapshot("/library/恐怖直播 (2013)"),
     );
-    const collected = await collector.collect(evidence[0]!);
+    const collected = await collector.collect(evidence[0]);
     const interpreted = new TmdbSourceInterpreter().interpret({
       evidence,
       sourceRecords: collected.records,
@@ -662,22 +660,22 @@ describe("TMDB collection and interpretation", () => {
       translationsRecord,
     ] = collected.records;
     expect(interpreted.sourceRecordIds).toEqual([
-      detailRecord!.id,
-      directorsRecord!.id,
-      creditsRecord!.id,
-      translationsRecord!.id,
+      detailRecord.id,
+      directorsRecord.id,
+      creditsRecord.id,
+      translationsRecord.id,
     ]);
     expect(
       interpreted.relationships?.find((item) => item.role === "director")
         ?.sourceRecordIds,
-    ).toEqual([directorsRecord!.id]);
+    ).toEqual([directorsRecord.id]);
     expect(
       interpreted.relationships?.find((item) => item.role === "cast")
         ?.sourceRecordIds,
-    ).toEqual([creditsRecord!.id]);
+    ).toEqual([creditsRecord.id]);
     expect(proposal.ruleResults[0]?.evidenceReferences).toEqual([
-      { kind: "source-record", sourceRecordId: searchRecord!.id },
-      { kind: "source-record", sourceRecordId: detailRecord!.id },
+      { kind: "source-record", sourceRecordId: searchRecord.id },
+      { kind: "source-record", sourceRecordId: detailRecord.id },
     ]);
     expect(proposal.ruleResults).toMatchObject([
       { ...trustedTmdbStrictFilmRule, outcome: "satisfied" },
@@ -735,7 +733,7 @@ describe("TMDB collection and interpretation", () => {
     expect(proposal.ruleResults[0]?.evidenceReferences).toEqual([
       {
         kind: "source-record",
-        sourceRecordId: collected.records[0]!.id,
+        sourceRecordId: collected.records[0].id,
       },
     ]);
   });
@@ -852,7 +850,7 @@ describe("TMDB collection and interpretation", () => {
   it("does not copy an Authorization-bearing request failure into its public collection result", async () => {
     const evidence = new TmdbStrictFilmDirectoryInterpreter().interpret(
       snapshot("/library/Private Failure Film (2004)"),
-    )[0]!;
+    )[0];
     const result = await new TmdbCollector({
       accessToken: "tmdb-error-token",
       request: async () => {

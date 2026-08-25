@@ -65,10 +65,8 @@ const acquirerCapability = declareCapability({
 });
 
 /**
- * The adapter describes its open fact coordinates to Application without
- * teaching Application anything about a DLsite View or payload. Collection
- * and interpretation together form the low-cost source-refresh path; the
- * separate acquirer is considered only when a requirement names its role.
+ * 适配器向应用层描述其开放事实坐标，但不让应用层了解 DLsite 视图或载荷。
+ * 采集与解释共同构成低成本来源刷新路径；只有需求点名其角色时，才考虑独立获取器。
  */
 export const dlsiteInformationFulfillmentCapabilities = [
   {
@@ -179,8 +177,8 @@ export class DlsiteCollector implements SourceCollector {
       nativeAddress = canonicalDirectedProductAddress(evidence.sourceAddress!);
       productId = productIdFromAddress(nativeAddress);
     } catch (error) {
-      // Validation is deliberately before constructing, let alone issuing, any
-      // request.  A directed address is untrusted user input, not an endpoint.
+      // 验证刻意发生在构造任何请求之前，更不用说发出请求。定向地址是不可信用户输入，
+      // 不是端点。
       return {
         records: [],
         failures: [
@@ -427,10 +425,8 @@ export class DlsiteSourceInterpreter implements SourceInterpreter {
       explicitImage === undefined ? carouselFirstImage(html.body) : undefined;
     const image = explicitImage ?? carouselImage;
     /**
-     * Cover selection is source interpretation policy: an explicit official
-     * main image wins, and the first official carousel image is only a
-     * fallback. Absence is valid source evidence, not a recognition failure;
-     * Application decides whether a consumer's requirement needs this role.
+     * 封面选择属于来源解释策略：显式官方主图优先，首张官方轮播图只作为后备。
+     * 缺失也是有效来源证据，不是识别失败；由应用层决定消费者需求是否需要该角色。
      */
     const sourceArtifacts: SourceArtifactCandidate[] =
       image === undefined
@@ -594,7 +590,7 @@ export class DlsiteSourceInterpreter implements SourceInterpreter {
   }
 }
 
-/** A recognizer only emits a generic proposal and versioned rule result. */
+/** 识别器只发出通用提案和带版本的规则结果。 */
 export class DlsiteExactRecognizer implements Recognizer {
   readonly capability = recognizerCapability;
 
@@ -708,10 +704,9 @@ function canonicalProductAddress(
 }
 
 /**
- * DLsite owns the grammar of a manually directed source address.  Keep this
- * deliberately narrower than URL parsing: only the canonical public product
- * page is a source-native address, never a redirect, ajax endpoint, foreign
- * host, HTTP URL, credentials, fragment, or query-bearing URL.
+ * DLsite 拥有手动定向来源地址的语法。该语法刻意比 URL 解析更窄：只有规范公开产品页
+ * 才是来源原生地址；重定向、Ajax 端点、外部主机、HTTP URL、凭据、片段或带查询的 URL
+ * 均不是。
  */
 function canonicalDirectedProductAddress(input: string): string {
   let address: URL;
@@ -838,8 +833,8 @@ function jpyPrice(value: unknown): string | undefined {
 
 function creditedNames(value: unknown): readonly string[] {
   const values = Array.isArray(value) ? value : [value];
-  // The only split points are documented DLsite list separators.  Each exact
-  // occurrence is retained; no trim/normalisation/Set can merge spellings.
+  // 唯一分割点是 DLsite 文档规定的列表分隔符。保留每次精确出现；
+  // 任何修剪、规范化或 `Set` 都不能合并不同拼写。
   return values
     .flatMap((item) => stringValue(item).split(/[、,，／]/u))
     .flatMap((item) =>

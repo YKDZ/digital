@@ -99,9 +99,8 @@ function compareCodeUnits(left: string, right: string): number {
 }
 
 /**
- * This ordinary acceptance check deliberately avoids hashing the 123 GiB
- * private corpus on every root check.  It freezes every entry's type, path,
- * device/inode where available, mode, size, mtime and ctime around a
- * read-only observation.  Normal writes change ctime (and generally size or
- * mtime), while the separate CLI deep-integrity task opts into full hashes.
+ * 这项普通验收检查刻意避免在每次根检查时哈希 123 GiB 私有语料。它围绕一次只读观察，
+ * 冻结每个条目的类型、路径、可用时的设备/inode、模式、大小、修改时间和状态变化时间。
+ * 普通写入会更改状态变化时间（通常也会更改大小或修改时间）；独立 CLI 深度完整性任务
+ * 才会选择完整哈希。
  */

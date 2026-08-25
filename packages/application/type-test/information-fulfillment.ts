@@ -2,7 +2,7 @@ import type {
   InformationFulfillmentPlan,
   InformationFulfillmentPorts,
   InformationSubjectSelection,
-} from "../src/index.js";
+} from "../src/index.ts";
 
 type AssertFalse<Value extends false> = Value;
 type IncludesForbiddenKey<Keys, Forbidden extends PropertyKey> =

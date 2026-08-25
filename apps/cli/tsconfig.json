@@ -1,18 +1,15 @@
 {
+  "extends": "@digital/typescript-config/base.json",
   "compilerOptions": {
-    "customConditions": ["source"],
+    "customConditions": ["digital-source"],
     "declaration": true,
     "erasableSyntaxOnly": true,
-    "exactOptionalPropertyTypes": true,
-    "isolatedModules": true,
     "module": "nodenext",
     "moduleResolution": "nodenext",
-    "noUncheckedIndexedAccess": true,
     "rewriteRelativeImportExtensions": true,
-    "strict": true,
+    "skipLibCheck": true,
     "target": "es2023",
-    "types": ["node", "vitest/globals"],
-    "verbatimModuleSyntax": true
+    "types": ["node", "vitest/globals"]
   },
   "include": ["src/**/*.ts", "test/**/*.ts"]
 }

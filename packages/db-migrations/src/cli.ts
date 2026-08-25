@@ -3,7 +3,7 @@ import { restoreOfflineProductDataBackup } from "@digital/product-data";
 import {
   prepareProductionCatalogue,
   prepareRestoredProductionCatalogue,
-} from "./index.js";
+} from "./index.ts";
 
 try {
   const [command] = process.argv.slice(2);

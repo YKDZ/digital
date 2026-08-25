@@ -46,7 +46,7 @@ const collectorCapability = declareCapability({
   contractVersion: "1",
   interpretationContractVersions: ["1"],
 });
-/** Private OMDb access is independently declared from enrichment collection. */
+/** 私有 OMDb 访问与丰富采集分别声明。 */
 export const omdbSourceConnectionCapability = declareCapability({
   identity: "omdb.source-connection",
   implementationVersion: "1",
@@ -76,7 +76,7 @@ type FetchLike = (input: string) => Promise<{
   arrayBuffer(): Promise<ArrayBuffer>;
 }>;
 
-/** A provider-neutral subject snapshot supplied by Application, never a Film. */
+/** 由应用层提供、与提供方无关的主体快照，绝不是影片实体。 */
 export type SourceEnrichmentInput = {
   readonly subjectId: string;
   readonly recognitionSourceAssociation: SourceAssociation;
@@ -108,8 +108,7 @@ type OmdbResponse = {
 };
 
 /**
- * Interprets already accepted, source-labelled facts into one exact candidate
- * address. Collection remains the responsibility of `OmdbCollector`.
+ * 将已接受且带有来源标签的事实解释为一个精确候选地址。采集仍由 `OmdbCollector` 负责。
  */
 export class OmdbSourceAssociationCandidateInterpreter {
   readonly capability = candidateInterpreterCapability;
@@ -135,8 +134,7 @@ export class OmdbSourceAssociationCandidateInterpreter {
 }
 
 /**
- * Validates one independently interpreted OMDb response against the accepted
- * subject. It establishes no association itself and never collects a record.
+ * 依据已接受主体验证一份独立解释的 OMDb 响应。它本身不建立关联，也绝不采集记录。
  */
 export class OmdbSourceAssociationInterpreter {
   readonly capability = associationInterpreterCapability;
@@ -229,7 +227,7 @@ function recognitionSourceMetadata(
   );
 }
 
-/** Refreshes an already-confirmed OMDb association; it never discovers one. */
+/** 刷新已经确认的 OMDb 关联；绝不发现新关联。 */
 export class OmdbCollector implements SourceCollector {
   readonly capability = collectorCapability;
   private readonly apiKey: string | undefined;
@@ -283,7 +281,7 @@ export class OmdbCollector implements SourceCollector {
   }
 }
 
-/** Interprets only the exact OMDb record named by the current association. */
+/** 只解释当前关联精确指向的 OMDb 记录。 */
 export class OmdbSourceInterpreter implements SourceInterpreter {
   readonly capability = interpreterCapability;
 
@@ -451,15 +449,13 @@ async function collectOmdbRecord(input: {
     if (!hasSuccessfulOmdbEnvelope(body))
       return {
         records: [],
-        // OMDb's negative payload often includes the request URL, the key,
-        // and provider-specific Error text. It is an acquisition failure, not
-        // evidence, so retain only a local repairable classification.
+        // OMDb 的否定载荷通常包含请求 URL、密钥和提供方特定的 `Error` 文本。
+        // 它属于获取失败而非证据，因此只保留本地可修复分类。
         failures: [failure("OMDb 官方来源未返回可用作品")],
       };
   } catch {
-    // The OMDb key is part of the request URL. A network implementation can
-    // echo that URL in its error, so its diagnostic must not enter a durable
-    // collection failure or public execution inspection.
+    // OMDb 密钥是请求 URL 的一部分。网络实现可能在错误中回显该 URL，
+    // 因此其诊断不得进入持久采集失败或公开执行检查。
     return {
       records: [],
       failures: [failure("OMDb 官方来源请求未完成")],
@@ -471,9 +467,8 @@ async function collectOmdbRecord(input: {
         id: `source-record_omdb_${randomUUID()}`,
         sourceIdentity: "omdb",
         nativeAddress,
-        // OMDb collection is a JSON-only protocol. Preserve its declared
-        // media type instead of reflecting a response header that may contain
-        // request context or private configuration.
+        // OMDb 采集是纯 JSON 协议。保留其声明的媒体类型，不要映射可能包含请求上下文
+        // 或私有配置的响应标头。
         mediaType: "application/json",
         acquiredAt: new Date().toISOString(),
         acquisition: {
@@ -486,9 +481,8 @@ async function collectOmdbRecord(input: {
           completeness: "complete",
           authority: "official",
         },
-        // The retained body is intentionally the sanitized source evidence;
-        // its digest must therefore describe exactly what later inspection and
-        // interpretation can see, never an unretained private response.
+        // 保留正文刻意采用净化后的来源证据；因此其摘要必须精确描述后续检查和解释可见的内容，
+        // 绝不是未保留的私有响应。
         digest: createHash("sha256").update(body).digest("hex"),
         body,
       },
@@ -575,10 +569,8 @@ function parseResponse(body: string): OmdbResponse {
 }
 
 /**
- * Source Records preserve successful bounded evidence only. Confirm the
- * provider's smallest success envelope before a response can enter durable
- * storage; full identity validation stays with the source interpreter and
- * association contract.
+ * 来源记录只保存成功且有界的证据。响应进入持久存储前，先确认提供方最小成功响应结构；
+ * 完整身份验证仍由来源解释器和关联契约负责。
  */
 function hasSuccessfulOmdbEnvelope(body: string): boolean {
   try {
@@ -595,11 +587,9 @@ function hasSuccessfulOmdbEnvelope(body: string): boolean {
 }
 
 /**
- * OMDb can only be called with an API key embedded in its request URL. A
- * successful remote response is still untrusted: remove exact key
- * representations before it can cross this provider collector boundary into
- * a Source Record. The shared Domain/Application contracts intentionally do
- * not know that this source uses an API key.
+ * 调用 OMDb 时只能把 API 密钥嵌入请求 URL。即使远端响应成功也仍不可信：它跨越提供方
+ * 采集器边界进入来源记录前，应移除密钥的精确表示。共享的领域/应用契约刻意不知道
+ * 该来源使用 API 密钥。
  */
 function redactOmdbResponseBody(body: string, apiKey: string): string {
   const representations = new Set([

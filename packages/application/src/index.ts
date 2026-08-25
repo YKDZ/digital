@@ -39,11 +39,11 @@ import {
   freezeAssetRefreshSelection,
   type AssetRefreshSelection,
   type ResolvedAssetRefreshSelection,
-} from "./asset-refresh-selection.js";
+} from "./asset-refresh-selection.ts";
 import type {
   ExecutionHost,
   ExecutionInvocationControl,
-} from "./execution-host.js";
+} from "./execution-host.ts";
 import {
   blockedInformationReadiness,
   InformationFulfillment,
@@ -55,41 +55,41 @@ import {
   type InformationReadiness,
   type InformationSubjectFacts,
   type InformationSubjectSelection,
-} from "./information-fulfillment.js";
-import type { MetadataPolicyConfiguration } from "./metadata-policy-configuration.js";
+} from "./information-fulfillment.ts";
+import type { MetadataPolicyConfiguration } from "./metadata-policy-configuration.ts";
 import {
   decodeObservedRootSnapshot,
   freezeObservedRootAutomationAuthorization,
   type ObservedRootAutomationAuthorization,
   type ObservedRootAutomationScope,
-} from "./observed-root-authority.js";
-import { ObservedRootExecution } from "./observed-root-execution.js";
+} from "./observed-root-authority.ts";
+import { ObservedRootExecution } from "./observed-root-execution.ts";
 import {
   BoundObservedScope,
   ObservedByteSource,
   type ObservedRootRegistrations,
   type ObservedRootSnapshot,
   ObservedRootUnavailable,
-} from "./observed-root-registrations.js";
+} from "./observed-root-registrations.ts";
 import {
   CheckpointedSourceArtifactWork,
   projectManagedSourceArtifacts,
-} from "./source-artifact-work.js";
+} from "./source-artifact-work.ts";
 import {
   atPublicWorkflowBoundary,
   notifyWorkflowCheckpoint as notifyDurableCheckpoint,
   rethrowWorkflowLifecycle,
   WorkflowLifecycleInterruption as WorkflowCheckpointInterruption,
-} from "./workflow-invocation-lifecycle.js";
+} from "./workflow-invocation-lifecycle.ts";
 
-export * from "./information-fulfillment.js";
-export * from "./execution-host.js";
-export * from "./workflow-invocation-lifecycle.js";
-export * from "./observed-root-registrations.js";
-export * from "./observed-root-authority.js";
-export * from "./observed-root-execution.js";
+export * from "./information-fulfillment.ts";
+export * from "./execution-host.ts";
+export * from "./workflow-invocation-lifecycle.ts";
+export * from "./observed-root-registrations.ts";
+export * from "./observed-root-authority.ts";
+export * from "./observed-root-execution.ts";
 
-export * from "./asset-refresh-selection.js";
+export * from "./asset-refresh-selection.ts";
 export {
   deriveEffectiveMetadata,
   validateMetadataPolicy,
@@ -101,17 +101,15 @@ export {
   type MetadataPolicyConflict,
   type MetadataPolicyRule,
 } from "@digital/domain";
-export * from "./metadata-policy-configuration.js";
+export * from "./metadata-policy-configuration.ts";
 
 export type FileObservation = {
   readonly relativePath: string;
   readonly size: number;
   readonly modifiedAt: string;
   /**
-   * Opaque observer evidence. Snapshot-local values can only coalesce aliases
-   * within this one immutable snapshot. Durable values additionally require
-   * the observer's explicit durable-identity capability before Application
-   * may use them as cross-execution Artifact continuity evidence.
+   * 不透明观察器证据。快照内的值只能在本次不可变快照中合并别名。耐久值还要求观察器
+   * 明确声明耐久身份能力，Application 才能把它们用作跨执行的产物连续性证据。
    */
   readonly objectIdentity?: FilesystemObjectIdentity;
 };
@@ -125,16 +123,14 @@ export type FilesystemObjectIdentity =
   | {
       readonly version: "filesystem-object-identity/2";
       readonly kind: "durable";
-      /** The independently versioned capability that guarantees continuity. */
+      /** 为连续性提供保证、且独立版本化的能力。 */
       readonly capability: CapabilityCoordinate;
       readonly value: string;
     };
 
 /**
- * The reliability declaration is intentionally separate from individual
- * opaque values. A snapshot cannot elevate its own `durable` claim; only the
- * configured Filesystem Observer may opt in and freezes the capability
- * coordinate before its first I/O.
+ * 可靠性声明刻意与单个不透明值分离。快照不能自行提升自己的 `durable` 声明；只有
+ * 已配置的文件系统观察器可以选择加入，并在首次 I/O 前冻结能力坐标。
  */
 export type FilesystemObjectIdentityContract =
   | { readonly kind: "snapshot-local" }
@@ -144,9 +140,8 @@ export type FilesystemObjectIdentityContract =
     };
 
 /**
- * A durable parser result, not a domain or operating-system error.  A
- * diagnostic means the snapshot has incomplete coverage and therefore cannot
- * be used to infer an omitted Location disappeared.
+ * 耐久的解析器结果，而不是领域或操作系统错误。存在诊断意味着快照覆盖不完整，因此
+ * 不能据此推断未出现的位置已经消失。
  */
 export type FilesystemObservationDiagnostic = {
   readonly relativePath: string;
@@ -158,18 +153,17 @@ export type FilesystemObservationDiagnostic = {
     | "inaccessible-symbolic-link"
     | "symbolic-link-cycle"
     | "repeated-directory-target"
-    /** A directory entry disappeared after enumeration; healthy siblings remain observed. */
+    /** 目录项在枚举后消失；健康的同级项仍保持已观察。 */
     | "entry-missing"
-    /** Permission or a runtime access failure isolated to one entry. */
+    /** 隔离在单个目录项上的权限或运行时访问失败。 */
     | "entry-inaccessible"
-    /** lstat/open no longer named the same object, so it was excluded. */
+    /** `lstat` 与打开操作不再指向同一对象，因此将其排除。 */
     | "entry-identity-changed";
 };
 
 /**
- * A structural observation inside a Filesystem Package Snapshot. The root is
- * represented as `.` so an empty package and a package whose only entry is an
- * empty directory remain distinguishable from an omitted observation.
+ * 文件系统包快照内的结构观察。根用 `.` 表示，使空包、唯一条目为空目录的包和缺失
+ * 观察三者仍可区分。
  */
 export type DirectoryObservation = {
   readonly relativePath: string;
@@ -182,8 +176,7 @@ export type FilesystemPackageSnapshot = {
   readonly complete: boolean;
   readonly files: readonly FileObservation[];
   /**
-   * Added after the first persisted snapshots. Undefined is a legacy
-   * files-only record, not evidence that its package had no directories.
+   * 在首批持久化快照之后加入。`undefined` 表示旧版仅文件记录，不证明其包中没有目录。
    */
   readonly directories?: readonly DirectoryObservation[];
   readonly excluded: readonly {
@@ -200,23 +193,22 @@ export type AssetRefreshOutcome =
   | "accepted"
   | "partially-succeeded"
   | "failed"
-  /** Recovery could not safely continue the frozen execution. */
+  /** 恢复过程无法安全继续冻结的执行。 */
   | "interrupted"
-  /** A user explicitly stopped the Workflow Execution. */
+  /** 用户明确停止了工作流执行。 */
   | "cancelled"
   | "no-change";
 
 /**
- * A metadata refresh deliberately carries only facts which an already-current
- * Source Association is allowed to refresh.  It is not another recognition
- * acceptance, so it can never replace an asset identity as a side effect.
+ * 元数据刷新刻意只携带当前有效来源关联允许刷新的事实。它不是另一次识别接受，因此
+ * 绝不能顺带替换资产身份。
  */
 export type MetadataRefreshSubmission = {
   readonly assetId: string;
   readonly sourceAssociation: SourceAssociation;
   readonly sourceRecords: readonly SourceRecord[];
   readonly interpretation: SourceInterpretationBatch;
-  /** Frozen before interpretation/application; stale collectors may be retained but cannot advance facts. */
+  /** 在解释／应用前冻结；可以保留过期采集器，但它不能推进事实。 */
   readonly expectedLineageHeads: readonly {
     readonly sourceIdentity: string;
     readonly nativeAddress: string;
@@ -226,9 +218,8 @@ export type MetadataRefreshSubmission = {
 };
 
 /**
- * Application passes a complete interpreted candidate into the domain-owned
- * Run. SQLite stores the candidate with its Change Set until it is approved,
- * rejected, cancelled, or conditionally appended.
+ * Application 把完整的已解释候选传入领域持有的来源刷新运行。SQLite 将候选与变更集
+ * 一同保存，直到它被批准、拒绝、取消或条件追加。
  */
 export type StageSourceRefreshChangeSetInput = {
   readonly runId: string;
@@ -243,15 +234,14 @@ export type CreateSourceRefreshRunInputForExecution = {
 };
 
 /**
- * A delivery-independent candidate for attaching another existing source to
- * one accepted subject. It deliberately carries no asset category or source
- * grammar; the source capability owns both.
+ * 把另一个既有来源附加到一个已接受主体的、与交付层无关的候选。它刻意不携带资产
+ * 类别或来源语法；二者都由来源能力持有。
  */
 export type SourceEnrichmentInput = {
   readonly subjectId: string;
-  /** The accepted identity source whose assertions may justify enrichment. */
+  /** 其断言可为来源补充提供依据的已接受身份来源。 */
   readonly recognitionSourceAssociation: SourceAssociation;
-  /** Frozen with the association so an identity replacement invalidates both coordinates. */
+  /** 随关联一同冻结，使身份替换同时使两个坐标失效。 */
   readonly recognitionDecisionId: string;
   readonly sourceAssociations: readonly SourceAssociation[];
   readonly metadata: readonly MetadataAssertion[];
@@ -262,7 +252,7 @@ export type SourceEnrichmentInput = {
   readonly informationRequirement: InformationRequirement;
 };
 
-/** Interprets current accepted facts into one exact enrichment-source candidate. */
+/** 把当前已接受事实解释为一个精确的补充来源候选。 */
 export type SourceAssociationCandidateInterpreter = {
   readonly capability: CapabilityCoordinate;
   interpret(
@@ -271,8 +261,7 @@ export type SourceAssociationCandidateInterpreter = {
 };
 
 /**
- * Validates whether one ordinary source interpretation denotes the already
- * accepted subject. It performs no collection or source-record interpretation.
+ * 验证一份普通来源解释是否指向已经接受的主体；不执行采集或来源记录解释。
  */
 export type SourceAssociationInterpreter = {
   readonly capability: CapabilityCoordinate;
@@ -289,16 +278,15 @@ export type SourceAssociationInterpreter = {
     | { readonly status: "contradicted"; readonly explanation: string };
 };
 
-/** The primary recognition association plus every currently applicable source. */
+/** 主识别关联以及当前适用的所有来源。 */
 export type AcceptedAssetState = AcceptedRecognition & {
-  /** Legacy stores may expose only the recognition association until migrated. */
+  /** 旧存储在迁移前可能只公开识别关联。 */
   readonly sourceAssociations?: readonly SourceAssociation[];
   /**
-   * Opaque product-policy enrollments for this explicit subject. Definitions
-   * remain composition-owned; persistence stores only durable applicability.
+   * 该明确主体的不透明产品策略登记。定义仍由组合层持有；持久化只保存耐久适用性。
    */
   readonly metadataPolicyIds?: readonly string[];
-  /** Current provenance records needed to derive source-labelled values. */
+  /** 推导带来源标签值所需的当前来源记录。 */
   readonly metadataSourceRecords?: readonly {
     readonly id: string;
     readonly sourceIdentity: string;
@@ -306,12 +294,11 @@ export type AcceptedAssetState = AcceptedRecognition & {
 };
 
 /**
- * The only cross-location reuse coordinate: an observer-declared, opaque
- * filesystem-object identity already projected to deterministic Artifact IDs.
+ * 唯一的跨位置复用坐标：由观察器声明的不透明文件系统对象身份，已经投影为确定性的
+ * 产物 ID。
  *
- * This deliberately does not expose pathname, title, Blob digest, or a
- * database-specific query.  More than one current Asset is contradictory
- * durable evidence, so Application must stop rather than choose one.
+ * 这里刻意不公开路径名、标题、Blob 摘要或数据库专用查询。存在多个当前资产属于相互
+ * 矛盾的耐久证据，因此 Application 必须停止，不能任选其一。
  */
 export type ObservedArtifactReuseMatch =
   | { readonly status: "none" }
@@ -348,20 +335,20 @@ export type ChangeImpactPreview = {
   readonly executionId: string;
   readonly assetId: string;
   readonly proposal: RecognitionProposal;
-  /** Every value that must still hold when the confirmation is applied. */
+  /** 应用确认时仍必须成立的每个值。 */
   readonly baselines: readonly {
     readonly key: string;
     readonly value: string;
   }[];
-  /** Complete applied state at the frozen baseline. */
+  /** 冻结基线上的完整已应用状态。 */
   readonly current: AssetStateProjection;
-  /** Complete state derived by the same application projection after change. */
+  /** 变更后由同一应用投影推导的完整状态。 */
   readonly projected: AssetStateProjection;
   readonly blockingConditions: readonly string[];
   readonly status: "awaiting-confirmation" | "rejected" | "applied" | "stale";
 };
 
-/** Safe delivery DTO; raw proposals and conditional baselines stay internal. */
+/** 安全的交付 DTO；原始提议和条件基线保留在内部。 */
 export type ChangeImpactPreviewInspection = {
   readonly id: string;
   readonly executionId: string;
@@ -380,22 +367,20 @@ export type ChangeImpactPreviewInspection = {
   readonly blockingConditions: readonly string[];
 };
 
-/** Durable recurring configuration; execution state lives in WorkflowExecution. */
+/** 耐久的重复执行配置；执行状态属于工作流执行。 */
 export type AutomationDisabledReason =
   | "observed-root-revoked"
-  /** A live filesystem binding failed; operator re-enables after repair. */
+  /** 实时文件系统绑定失败；由操作方修复后重新启用。 */
   | "observed-root-unavailable"
-  /** A capability reported an unavailable operational prerequisite. */
+  /** 某项能力报告操作前置条件不可用。 */
   | "prerequisite-unavailable"
   | "invalid-configuration";
 
 /**
- * Transient authorization evidence for the one durable Automation Intent
- * write.  It deliberately contains registration versions only: neither an
- * Automation Intent nor its persistence adapter receives a filesystem path
- * or a bound filesystem capability.
+ * 写入一次耐久自动化意图所需的瞬时授权证据。它刻意只包含注册版本：自动化意图和
+ * 它的持久化适配器都不会收到文件系统路径或已绑定文件系统能力。
  */
-/** @deprecated Use the authority-owned name for new Application adapters. */
+/** @deprecated 新 Application 适配器应使用由权威持有的名称。 */
 export type AutomationObservedRootAuthorization =
   ObservedRootAutomationAuthorization;
 
@@ -408,15 +393,13 @@ export type AutomationIntent = {
   readonly scope: ObservedRootAutomationScope;
   readonly enabled: boolean;
   /**
-   * Present only when a product-owned prerequisite disabled the intent.  It
-   * deliberately records a stable reason rather than an infrastructure error
-   * message so a later Delivery surface can explain the state without
-   * inspecting an Observed Root or a database row.
+   * 仅在产品持有的前置条件停用该意图时存在。它刻意记录稳定原因而非基础设施错误消息，
+   * 使后续交付界面无需检查观察根或数据库行也能解释状态。
    */
   readonly disabledReason?: AutomationDisabledReason;
   readonly intervalMilliseconds: number;
   readonly workflowInputVersion: "asset-refresh-input/1";
-  /** Fixed enablement policy, not a host-lifecycle instruction. */
+  /** 固定启用策略，而不是宿主生命周期指令。 */
   readonly runInitial: boolean;
   readonly policyReferences: readonly string[];
   readonly acceptTrusted: boolean;
@@ -424,13 +407,13 @@ export type AutomationIntent = {
 
 export type AutomationTrigger = "initial" | "interval" | "scan-now";
 
-/** The immutable initiation path for one execution. */
+/** 一次执行的不可变发起路径。 */
 export type WorkflowExecutionTrigger =
   | AutomationTrigger
   | "interactive"
   | "information-fulfillment";
 
-/** Values retained only when reading pre-envelope execution rows. */
+/** 只在读取输入封装机制引入前的执行行时保留的值。 */
 export type LegacyWorkflowExecutionTrigger =
   | WorkflowExecutionTrigger
   | "manual"
@@ -438,8 +421,7 @@ export type LegacyWorkflowExecutionTrigger =
   | "metadata-refresh";
 
 /**
- * The small, non-secret input envelope needed to replay one Asset Refresh
- * safely. It deliberately does not become a generic workflow definition.
+ * 安全重放一次资产刷新所需的小型非秘密输入封装；刻意不把它扩展为通用工作流定义。
  */
 export type AssetRefreshWorkflowInput = {
   readonly version: "asset-refresh-input/1";
@@ -459,9 +441,8 @@ export type AssetRefreshWorkflowInput = {
 
 export type InvalidAssetRefreshWorkflowInput = {
   /**
-   * Original non-executable durable input, retained only for inspection and
-   * an explicit interrupted audit. A compatibility reader may use this same
-   * sanitized barrier for a legacy selection that cannot be safely replayed.
+   * 原始、不可执行的耐久输入，只为检查和明确的中断审计保留。兼容性读取器可以对无法
+   * 安全重放的旧选择复用同一个已净化屏障。
    */
   readonly raw: string;
   readonly reason: string;
@@ -484,9 +465,8 @@ function isWorkflowExecutionTrigger(
 }
 
 /**
- * Runtime validation for the small persisted restart envelope. This is shared
- * by the SQLite reader and Application recovery; TypeScript types alone never
- * make durable JSON safe to replay.
+ * 对小型持久化重启封装执行运行时验证。SQLite 读取器和 Application 恢复共用该验证；
+ * 仅靠 TypeScript 类型绝不能使耐久 JSON 达到安全重放条件。
  */
 export function decodeAssetRefreshWorkflowInput(
   value: unknown,
@@ -604,7 +584,7 @@ export type AutomationTriggerResult =
 export type ExecutionStartDisposition = "started" | "skipped" | "disabled";
 
 export type OrdinaryScanReusePlan = {
-  /** Independent capability work-items, not one universal asset cache key. */
+  /** 相互独立的能力工作项，而不是通用资产缓存键。 */
   readonly workItems: readonly {
     readonly key: string;
     readonly domainBaseline: string;
@@ -621,9 +601,8 @@ export type WorkflowCompatibility = {
 };
 
 /**
- * Application-owned answer about whether the opaque non-secret configuration
- * references frozen in one Workflow Execution can still be used to recover
- * it. Concrete configuration registries live at composition boundaries.
+ * 由 Application 持有的判定：一次工作流执行中冻结的不透明、非秘密配置引用是否仍可
+ * 用于恢复该执行。具体配置登记表位于组合边界。
  */
 export type WorkflowConfigurationCompatibility = {
   checkCompatibility(input: {
@@ -635,10 +614,8 @@ export type WorkflowConfigurationCompatibility = {
 };
 
 /**
- * A completed execution may be reused only when every capability it actually
- * froze is still available at the same coordinate. Extra configured
- * capabilities are deliberately irrelevant: they did not participate in the
- * prior execution and must not invalidate it.
+ * 仅当已完成执行实际冻结的每项能力仍在同一坐标可用时，才能复用该执行。额外配置的
+ * 能力刻意与此无关：它们没有参与先前执行，因此不能使其失效。
  */
 export function workflowCompatibilityCanReuse(
   frozen: WorkflowCompatibility,
@@ -664,7 +641,7 @@ export type WorkItemDisposition = {
     | "reused"
     | "no-change";
   readonly reason?: string;
-  /** Application-owned, platform-neutral operational failure classification. */
+  /** 由 Application 持有、且平台中立的操作失败分类。 */
   readonly failureClassification?: OperationalFailureClassification;
   readonly effectReference?: string;
 };
@@ -699,21 +676,20 @@ export type AssetRefreshTarget = {
 export type MetadataRefreshInput = {
   readonly selection: AssetRefreshSelection;
   readonly informationRequirement?: InformationRequirement;
-  /** Audit principal for the Source Refresh Run; integrations may supply a user identity. */
+  /** 来源刷新运行的审计主体；集成可以提供用户身份。 */
   readonly initiatedBy?: string;
-  /** Automatic and review-gated runs use the same durable Change Set path. */
+  /** 自动运行和审阅门控运行使用同一条耐久变更集路径。 */
   readonly reviewPolicy?: "automatic" | "review";
   readonly onExecutionStarted?: (execution: WorkflowExecution) => void;
   readonly onProgress?: (message: string) => void;
   readonly onCheckpoint?: (execution: WorkflowExecution) => void;
-  /** Process-owner lifecycle; never persisted as workflow input. */
+  /** 进程持有者生命周期；绝不作为工作流输入持久化。 */
   readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
 };
 
 /**
- * Internal-only initiation context for a child metadata execution. The
- * persisted Workflow Input remains the recovery authority; this context is
- * only used while creating that child.
+ * 仅供内部使用的子元数据执行发起上下文。持久化工作流输入仍是恢复权威；该上下文只在
+ * 创建子执行时使用。
  */
 type MetadataRefreshInitiation = {
   readonly version: "metadata-refresh-initiation/1";
@@ -745,24 +721,24 @@ function metadataRefreshInitiationForInformationFulfillment(
   };
 }
 
-/** Durable audit state for one independently planned recognition boundary. */
+/** 一个独立规划识别边界的耐久审计状态。 */
 export type AssetRefreshWorkItem = {
   readonly key: string;
   readonly relativePaths: readonly string[];
-  /** An explicit package remains one Artifact even when it contains many files. */
+  /** 即使明确的包包含多个文件，它仍是一个产物。 */
   readonly observedArtifactBoundary?: "filesystem-package";
-  /** Capability that made the technical boundary decision; not a Domain fact. */
+  /** 作出技术边界决策的能力；不是领域事实。 */
   readonly observedArtifactBoundaryProducer?: CapabilityCoordinate;
   readonly planningEvidence?: readonly import("@digital/domain").RecognitionEvidence[];
   readonly reuseFingerprint?: string;
-  /** Actual capability coordinates for this boundary, never the full configuration. */
+  /** 该边界的实际能力坐标，绝不是完整配置。 */
   readonly reuseCompatibility?: WorkflowCompatibility;
   readonly sourceRecordIds: readonly string[];
   readonly proposalId?: string;
   readonly acceptedAssetId?: string;
   readonly outcome?: AssetRefreshOutcome;
   readonly reason?: string;
-  /** Application-owned, platform-neutral operational failure classification. */
+  /** 由 Application 持有、且平台中立的操作失败分类。 */
   readonly failureClassification?: OperationalFailureClassification;
   readonly sourceArtifactAcquisitions?: readonly SourceArtifactAcquisitionCheckpoint[];
   readonly managedSourceArtifacts?: readonly ManagedSourceArtifactCheckpoint[];
@@ -786,31 +762,28 @@ export type InformationRequirement = {
 };
 
 /**
- * Static, application-owned identity for one deployed narrow capability.
+ * 一个已部署窄能力的静态 Application 权威身份。
  *
- * `kind` deliberately remains an open stable string: Application owns the
- * Port contracts, but neither Application nor Digital Assets maintains a
- * provider or capability-kind enum.
+ * `kind` 刻意保持为开放且稳定的字符串：Application 持有端口契约，但 Application
+ * 与数字资产都不维护提供方或能力种类枚举。
  */
 export type CapabilityDeclaration = {
   readonly identity: string;
   readonly implementationVersion: string;
   readonly kind: string;
-  /** Empty only when this capability applies no interpretation contract. */
+  /** 只有该能力不适用任何解释契约时才为空。 */
   readonly interpretationContractVersions: readonly string[];
 };
 
 /**
- * The provenance coordinate emitted by a concrete capability together with
- * its complete static declaration. The extra fields survive structural use as
- * a Domain `CapabilityCoordinate`, so derived facts retain the declaration
- * that produced them without introducing an Application dependency in Domain.
+ * 具体能力连同完整静态声明一起产生的来源坐标。附加字段在结构化作为领域
+ * `CapabilityCoordinate` 使用时仍会保留，使派生事实保留生成它们的声明，同时不在
+ * 领域中引入 Application 依赖。
  */
 export type DeclaredCapability = CapabilityCoordinate & CapabilityDeclaration;
 
 /**
- * Keeps the legacy coordinate spelling and the declaration's terminology in
- * one immutable value. It is a value constructor, not a plugin interface.
+ * 在一个不可变值中同时保留旧坐标拼写和声明术语。它是值构造器，不是插件接口。
  */
 export function declareCapability(input: {
   readonly identity: string;
@@ -847,8 +820,7 @@ export const knownSourceAssociationEvidenceCapability = declareCapability({
 });
 
 /**
- * Application-owned evidence producers are deployed capabilities too. Their
- * static values join Composition validation just like integration instances.
+ * Application 持有的证据生产者同样是已部署能力；其静态值与集成实例一样参与组合验证。
  */
 export const applicationOwnedCapabilityDeclarations = [
   directedRecognitionEvidenceCapability,
@@ -863,9 +835,8 @@ export const emptyInformationRequirement: InformationRequirement = {
 };
 
 /**
- * Application owns the execution audit shape it submits through its Ports.
- * This is the exact last-persisted snapshot carried into a conditional
- * recognition acceptance; it deliberately has no infrastructure readback.
+ * Application 持有通过端口提交的执行审计形状。这是带入条件识别接受的精确最后持久化
+ * 快照；刻意不提供基础设施回读。
  */
 function persistedWorkflowExecution(
   execution: WorkflowExecution,
@@ -891,11 +862,11 @@ export type SourceArtifactAcquisitionCheckpoint = {
   readonly sourceRecordId: string;
   readonly subjectId?: string;
   readonly role: string;
-  /** Legacy checkpoints lack this coordinate and must not be semantically reused. */
+  /** 旧检查点缺少该坐标，不得进行语义复用。 */
   readonly acquisitionReference?: string;
-  /** The interpreter that made this candidate available. */
+  /** 使该候选可用的解释器。 */
   readonly sourceArtifactProducer?: CapabilityCoordinate;
-  /** The acquirer that performed the external effect. */
+  /** 执行外部效果的获取器。 */
   readonly acquisitionProducer?: CapabilityCoordinate;
   readonly stagedReference: string;
   readonly digest: string;
@@ -907,7 +878,7 @@ export type ManagedSourceArtifactCheckpoint = {
   readonly sourceRecordId: string;
   readonly subjectId?: string;
   readonly role: string;
-  /** Preserves the acquisition coordinate through managed-store recovery. */
+  /** 在托管存储恢复期间保留获取坐标。 */
   readonly acquisitionReference?: string;
   readonly sourceArtifactProducer?: CapabilityCoordinate;
   readonly acquisitionProducer?: CapabilityCoordinate;
@@ -916,14 +887,13 @@ export type ManagedSourceArtifactCheckpoint = {
 };
 
 /**
- * Complete durable intent for one accepted post-recognition source
- * enrichment. Recovery consumes this checkpoint directly and never rebuilds
- * it by rerunning recognition or source interpretation.
+ * 一次已接受识别后来源补充的完整耐久意图。恢复过程直接消费该检查点，绝不会通过
+ * 重新运行识别或来源解释来重建它。
  */
 type SourceEnrichmentCheckpointBase = {
   readonly key: string;
   readonly subjectId: string;
-  /** Frozen before collection so recovery never has to rediscover the intent. */
+  /** 在采集前冻结，使恢复过程无需重新发现该意图。 */
   readonly subject: SourceEnrichmentInput;
   readonly evidence: RecognitionEvidence;
   readonly fulfilledArtifactRoles: readonly {
@@ -969,18 +939,18 @@ export type SourceEnrichmentCheckpoint =
 
 type ManagedObservedArtifactPart = {
   readonly candidate: ObservedArtifactPartCandidate;
-  /** Actual observed-part acquirer, frozen before the materialization effect. */
+  /** 实际观察部分获取器，在物化效果前冻结。 */
   readonly producer: CapabilityCoordinate;
   readonly blob: Blob;
   readonly location: { readonly address: string };
   readonly origin: Blob;
 };
 
-/** Persisted first-slice column names remain an infrastructure compatibility detail. */
+/** 首个切片持久化的列名保留为基础设施兼容性细节。 */
 export type CoverAcquisitionCheckpoint = SourceArtifactAcquisitionCheckpoint;
 export type ManagedCoverCheckpoint = ManagedSourceArtifactCheckpoint;
 
-/** Durable attribution for an explicit Workflow Execution cancellation. */
+/** 明确取消一次工作流执行的耐久归因。 */
 export type WorkflowExecutionCancellation = {
   readonly requestedBy: string;
   readonly requestedAt: string;
@@ -989,17 +959,17 @@ export type WorkflowExecutionCancellation = {
 
 export type WorkflowExecution = {
   readonly id: string;
-  /** Missing only on legacy rows, which cannot safely resume. */
+  /** 仅旧行可能缺失；这类行不能安全恢复。 */
   readonly workflowInput?: AssetRefreshWorkflowInput;
-  /** A non-executable persisted replay coordinate remains queryable solely so recovery can stop it. */
+  /** 不可执行的持久化重放坐标仍可查询，只为使恢复过程能够停止它。 */
   readonly workflowInputInvalid?: InvalidAssetRefreshWorkflowInput;
   readonly selection: {
-    /** Legacy single-scope input; absent for exact-subject executions. */
+    /** 旧版单范围输入；精确主体执行中不存在。 */
     readonly directory?: string;
     readonly intent?: "scan-now" | "metadata-refresh" | "directed-recognition";
     readonly informationRequirement?: InformationRequirement;
   };
-  /** Legacy single-scope observation; absent for subject-only executions. */
+  /** 旧版单范围观察；仅主体执行中不存在。 */
   readonly snapshot?: FilesystemPackageSnapshot;
   readonly operationKind?: "scan-filesystem" | "refresh-metadata" | "rescrape";
   readonly requestedSelection?: AssetRefreshSelection;
@@ -1012,25 +982,25 @@ export type WorkflowExecution = {
     | "source-records-retained"
     | "source-artifacts-acquired"
     | "source-artifacts-stored"
-    /** Legacy persisted stage names retained for compatible recovery. */
+    /** 为兼容恢复保留的旧版持久化阶段名。 */
     | "cover-acquired"
     | "cover-stored"
     | "completed"
     | "failed";
   readonly outcome?: AssetRefreshOutcome;
   readonly sourceRecordIds: readonly string[];
-  /** Domain-process references only; their phase, review, and outcome stay in Digital Assets. */
+  /** 只保留领域过程引用；其阶段、审阅和结果仍属于数字资产。 */
   readonly sourceRefreshRunIds?: readonly string[];
   readonly proposalId?: string;
   readonly acceptedAssetId?: string;
   readonly reason?: string;
-  /** Present only when an actor explicitly terminally cancelled this execution. */
+  /** 仅在行为主体明确终态取消本次执行时存在。 */
   readonly cancellation?: WorkflowExecutionCancellation;
   readonly reusePlan?: OrdinaryScanReusePlan;
   readonly reusedExecutionId?: string;
   readonly compatibility: WorkflowCompatibility;
   readonly dispositions: readonly WorkItemDisposition[];
-  /** Explicit work-item audit; legacy single-item columns remain populated for old executions. */
+  /** 明确的工作项审计；旧执行仍填充旧版单项列。 */
   readonly workItems?: readonly AssetRefreshWorkItem[];
   readonly coverAcquisition?: CoverAcquisitionCheckpoint;
   readonly managedCover?: ManagedCoverCheckpoint;
@@ -1038,14 +1008,14 @@ export type WorkflowExecution = {
   readonly managedSourceArtifacts?: readonly ManagedSourceArtifactCheckpoint[];
   readonly sourceEnrichments?: readonly SourceEnrichmentCheckpoint[];
   readonly automationIntentId?: string;
-  /** Legacy-only trigger column; new executions use workflowInput.trigger. */
+  /** 仅供旧版使用的触发列；新执行使用 `workflowInput.trigger`。 */
   readonly trigger?: string;
 };
 
 export type ExecutionInspection = {
   readonly execution: WorkflowExecution;
   readonly sourceRecords: readonly SourceRecord[];
-  /** Rebuildable domain projections; Workflow Execution holds only their identities. */
+  /** 可重建的领域投影；工作流执行只持有其身份。 */
   readonly sourceRefreshRuns?: readonly SourceRefreshRun[];
   readonly proposal?: RecognitionProposal;
   readonly accepted?: AcceptedAssetState;
@@ -1057,9 +1027,8 @@ export type ExecutionInspection = {
 };
 
 /**
- * A compact, delivery-independent audit view of an unresolved filesystem
- * observation. It preserves no media interpretation and is derived directly
- * from the durable Filesystem Package Snapshot.
+ * 未识别文件系统观察的紧凑、交付层无关审计视图。它不保留任何媒体解释，直接从耐久
+ * 文件系统包快照派生。
  */
 export type UnresolvedObservation = {
   readonly observedRoot: string;
@@ -1089,7 +1058,7 @@ function unresolvedObservation(
   };
 }
 
-/** Application-owned DTO for every ordinary CLI/Web inspection. */
+/** 所有普通 CLI／Web 检查共用、由 Application 持有的 DTO。 */
 export type AssetRefreshInspection = {
   readonly execution: Omit<
     WorkflowExecution,
@@ -1125,9 +1094,9 @@ export type AssetRefreshInspection = {
     readonly acquiredAt: string;
     readonly digest: string;
   }[];
-  /** Domain-owned state projected for ordinary refresh inspection. */
+  /** 为普通刷新检查投影的领域权威状态。 */
   readonly sourceRefreshRuns?: readonly SourceRefreshRun[];
-  /** Present only while this execution has no proposed or accepted identity. */
+  /** 仅在本次执行没有已提议或已接受身份时存在。 */
   readonly unresolvedObservation?: UnresolvedObservation;
   readonly recognition?: {
     readonly explanation: string;
@@ -1141,7 +1110,7 @@ export type AssetRefreshInspection = {
       readonly sourceIdentity: string;
       readonly nativeAddress: string;
     };
-    /** Current associations are plural; sourceAssociation remains recognition provenance. */
+    /** 当前关联可以有多个；`sourceAssociation` 仍表示识别来源。 */
     readonly sourceAssociations?: readonly {
       readonly sourceIdentity: string;
       readonly nativeAddress: string;
@@ -1150,7 +1119,7 @@ export type AssetRefreshInspection = {
     readonly metadataPolicyConflicts: readonly MetadataPolicyConflict[];
     readonly recognitionExplanation: string;
   };
-  /** Independently inspectable outcomes for a multi-boundary execution. */
+  /** 多边界执行中可独立检查的结果。 */
   readonly itemResults?: readonly {
     readonly key: string;
     readonly relativePaths: readonly string[];
@@ -1175,9 +1144,8 @@ export type DirectoryInterpreter = {
 };
 
 /**
- * A technical parser may recognize a selected filesystem package as the one
- * observed Artifact that serves a directed asset. It never establishes
- * identity or a provider-specific directory convention.
+ * 技术解析器可以把选定文件系统包识别为服务于定向资产的一个观察产物；它绝不建立
+ * 身份或提供方专用目录约定。
  */
 export type FilesystemPackageInterpreter = {
   readonly capability: CapabilityCoordinate;
@@ -1187,17 +1155,15 @@ export type FilesystemPackageInterpreter = {
 };
 
 /**
- * A format capability inspects artifacts, while a Directory Interpreter owns
- * the optional package boundary.  Keeping these ports separate prevents a
- * source provider from learning archive syntax and lets CBZ/ID3 follow the
- * same contract later.
+ * 格式能力检查产物，可选包边界则由目录解释器持有。保持这些端口分离，可防止来源
+ * 提供方了解归档语法，并允许 CBZ／ID3 后续遵循同一契约。
  */
 export type ArtifactFormatInspector = {
   readonly capability: CapabilityCoordinate;
   inspect(input: {
-    /** Opaque observer references; Application never interprets their grammar. */
+    /** 不透明观察器引用；Application 绝不解释其语法。 */
     readonly observedArtifactReference: string;
-    /** Already-opened bytes; inspectors never receive an observed pathname. */
+    /** 已经打开的字节；检查器绝不会收到观察路径名。 */
     readonly byteSource: ObservedByteSource;
   }):
     | readonly import("@digital/domain").RecognitionEvidence[]
@@ -1205,26 +1171,25 @@ export type ArtifactFormatInspector = {
 };
 
 /**
- * Explicit independently committable boundaries inside one frozen selection.
- * A plain evidence array remains one boundary: it can represent competing
- * identities and is never split implicitly.
+ * 一个冻结选择内可独立提交的明确边界。普通证据数组仍构成一个边界：它可以表示竞争
+ * 身份，且绝不会被隐式拆分。
  */
 export type AssetRefreshWorkPlan = {
   readonly workItems: readonly AssetRefreshWorkItemPlan[];
 };
 
 export type AssetRefreshWorkItemPlan = {
-  /** Plugin-owned stable key; Application never interprets its grammar. */
+  /** 插件持有的稳定键；Application 绝不解释其语法。 */
   readonly key: string;
   readonly relativePaths: readonly string[];
-  /** Generic packaging instruction; the deciding outer capability owns its grammar. */
+  /** 通用打包指令；作出决策的外层能力持有其语法。 */
   readonly observedArtifactBoundary?: "filesystem-package";
-  /** Application-attached provenance of the deployed technical interpreter. */
+  /** Application 附加的已部署技术解释器来源信息。 */
   readonly observedArtifactBoundaryProducer?: CapabilityCoordinate;
   readonly evidence: readonly import("@digital/domain").RecognitionEvidence[];
 };
 
-/** A repairable prerequisite is unavailable now; adapters never name platforms here. */
+/** 一个可修复前置条件当前不可用；适配器绝不在此命名平台。 */
 export type OperationalFailureClassification = {
   readonly kind: "prerequisite-unavailable";
 };
@@ -1236,19 +1201,16 @@ export const prerequisiteUnavailableFailure = {
 export type SourceCollectionFailure = {
   readonly capability: CapabilityCoordinate;
   readonly reason: string;
-  /** Typed operational classification; never inferred from a diagnostic string. */
+  /** 类型化操作分类；绝不从诊断字符串推断。 */
   readonly failureClassification?: OperationalFailureClassification;
   /**
-   * Optional exact Source Refresh coverage that this response could not
-   * acquire.  The coordinator validates it against the collector's declared
-   * scope before it can affect a durable Run.
+   * 本次响应未能获取的可选精确来源刷新覆盖。它影响耐久运行前，协调器会根据采集器声明
+   * 的范围进行验证。
    */
   readonly coverage?: SourceCoverageScope;
   /**
-   * Neutral information made unavailable by this response. Application, not
-   * the provider, decides whether the current Information Requirement makes
-   * the failure blocking. Omission retains the existing atomic-contract
-   * meaning and blocks recognition.
+   * 本次响应使其不可用的中立信息。由 Application 而非提供方根据当前信息需求决定失败
+   * 是否阻塞。省略该字段会保留既有原子契约语义并阻塞识别。
    */
   readonly affects?: {
     readonly recognition?: boolean;
@@ -1264,28 +1226,23 @@ export type SourceCollectionResult = {
 };
 
 /**
- * The non-secret configuration coordinates frozen for one collector call.
- * A collector may use them only through its capability-specific private
- * handle; neither Application nor a Workflow Execution carries credentials.
+ * 为一次采集器调用冻结的非秘密配置坐标。采集器只能通过能力专用私有句柄使用它们；
+ * Application 和工作流执行都不携带凭据。
  */
 export type SourceCollectionExecutionContext = {
   readonly configurationReferences: readonly string[];
 };
 
 /**
- * Application asks this narrow outer Port to bind only a collector that is
- * actually about to participate.  This keeps unrelated Source Connections
- * out of an execution's reproducibility envelope while allowing the owning
- * capability to resolve its private secret from an opaque version reference.
+ * Application 要求这个窄外层端口只绑定即将实际参与的采集器。这样既能把无关来源连接
+ * 排除在执行的可复现封装外，又允许持有能力从不透明版本引用解析自己的私密秘密。
  */
 export type SourceConnectionExecutionConfiguration = {
   bindCollector(input: {
     readonly collector: CapabilityCoordinate;
     /**
-     * Opaque recognition evidence for the collector invocation being bound.
-     * Application does not interpret it: an outer adapter may use it to select
-     * a capability-scoped private connection without leaking provider rules
-     * into the workflow core.
+     * 正在绑定的采集器调用所用不透明识别证据。Application 不解释它；外层适配器可以
+     * 用它选择能力范围内的私密连接，同时不把提供方规则泄漏进工作流核心。
      */
     readonly evidence: RecognitionEvidence;
     readonly configurationReferences: readonly string[];
@@ -1298,23 +1255,20 @@ export type SourceCollector = {
   readonly capability: CapabilityCoordinate;
   canCollect(evidence: import("@digital/domain").RecognitionEvidence): boolean;
   /**
-   * Declares the exact lineage scopes a collection attempt may advance.
-   * This is evaluated before transport so concurrent responses cannot rebase.
+   * 声明一次采集尝试可以推进的精确 lineage 范围。在传输前求值，使并发响应不能变基。
    */
   coverageScopeIds?(
     evidence: import("@digital/domain").RecognitionEvidence,
   ): readonly string[];
   /**
-   * Optional execution-local request scope. Unlike coverage lineage this says
-   * that identical planned boundaries may share one acquisition result.
+   * 可选的执行内请求范围。它不同于覆盖 lineage，表示相同规划边界可以共享一次获取结果。
    */
   collectionScopeIds?(
     evidence: import("@digital/domain").RecognitionEvidence,
   ): readonly string[];
   /**
-   * Optional single acquisition for all evidence in one declared execution
-   * scope. It remains a collector-owned operation and returns ordinary,
-   * independently bounded Source Records.
+   * 可选地为一个已声明执行范围中的所有证据执行一次获取。该操作仍由采集器持有，并
+   * 返回普通且各自有界的来源记录。
    */
   collectShared?(
     evidence: readonly import("@digital/domain").RecognitionEvidence[],
@@ -1360,13 +1314,10 @@ export type SourceArtifactAcquirer = {
 };
 
 /**
- * A Port owns the actual implementation that produced a fact.  It may not
- * let a response substitute a neighbouring capability's coordinate: doing so
- * would make retained provenance describe an implementation which never ran.
+ * 端口持有实际生成事实的实现。它不能允许响应替换为相邻能力的坐标，否则保留的来源
+ * 会描述一个从未运行的实现。
  *
- * The semantic declaration fields are intentionally preserved on the Port's
- * coordinate, but comparison starts with the durable legacy triple so old
- * facts remain readable.
+ * 语义声明字段刻意保留在端口坐标上，但比较从耐久旧版三元组开始，使旧事实仍可读取。
  */
 function actualProducer(
   reported: CapabilityCoordinate | undefined,
@@ -1393,10 +1344,8 @@ function actualProducer(
 }
 
 /**
- * Evidence is an immutable fact produced by the Port that just executed, not
- * an adapter-controlled claim about some neighbouring capability.  Keep this
- * deliberately at the three evidence-producing Port boundaries instead of
- * introducing a universal capability-result pipeline.
+ * 证据是刚执行的端口生成的不可变事实，不是适配器对相邻能力作出的声明。该规则刻意
+ * 留在三个证据生产端口边界，而不引入通用能力结果流水线。
  */
 function bindRecognitionEvidenceToProducer(
   evidence: RecognitionEvidence,
@@ -1551,10 +1500,8 @@ function retainInterpretationProvenance(
 }
 
 /**
- * A Recognizer has only a small draft surface. The workflow snapshots and
- * freezes the bound inputs before calling it, then reconstructs the full
- * proposal from those inputs. This prevents a trusted rule from laundering
- * itself into a Source Interpreter or Artifact Format Inspector.
+ * 识别器只有很小的草稿界面。工作流在调用前对绑定输入取快照并冻结，随后从这些输入
+ * 重建完整提议。这可以防止受信规则把自己伪装成来源解释器或产物格式检查器。
  */
 function frozenRecognitionInput(input: {
   readonly evidence: readonly RecognitionEvidence[];
@@ -1627,13 +1574,13 @@ function bindRecognitionProposalToRecognizer(
   };
 }
 
-/** Extracts a bounded Part from an observed Artifact only after it is requested. */
+/** 只在收到请求后，才从观察产物中提取有界部分。 */
 export type ObservedArtifactPartAcquirer = {
   readonly capability: CapabilityCoordinate;
   canAcquire(candidate: ObservedArtifactPartCandidate): boolean;
   acquire(input: {
     readonly candidate: ObservedArtifactPartCandidate;
-    /** Already-opened bytes; an acquirer cannot reopen arbitrary locations. */
+    /** 已经打开的字节；获取器不能重新打开任意位置。 */
     readonly byteSource: ObservedByteSource;
   }): Promise<{
     readonly candidateId: string;
@@ -1648,7 +1595,7 @@ export type StagedSourceArtifact = {
   readonly sourceRecordId: string;
   readonly bytes: Uint8Array;
   readonly mediaType: string;
-  /** Set by Application from the acquirer that actually performed acquisition. */
+  /** 由 Application 根据实际执行获取的获取器设置。 */
   readonly producer?: CapabilityCoordinate;
 };
 
@@ -1660,7 +1607,7 @@ export type ManagedArtifactStore = {
     readonly blob: Blob;
     readonly location: { readonly address: string };
   }>;
-  /** Durable staging lets resume avoid repeating an acquired external effect. */
+  /** 耐久暂存使恢复过程无需重复已经完成的外部获取效果。 */
   stage?(content: {
     readonly bytes: Uint8Array;
     readonly mediaType: string;
@@ -1679,9 +1626,9 @@ export type ManagedArtifactStore = {
   isAvailable?(address: string): Promise<boolean>;
 };
 
-/** Deliberately use-case-specific persistence Port, never a generic repository. */
+/** 刻意采用用例专用持久化端口，绝不是通用仓储。 */
 type CataloguePersistenceOperations = {
-  /** Atomically leases one resumable execution before any external effect. */
+  /** 在任何外部效果前，原子租用一个可恢复执行。 */
   claimResumeExecution(input: {
     readonly executionId: string;
     readonly token: string;
@@ -1699,14 +1646,13 @@ type CataloguePersistenceOperations = {
     readonly token: string;
   }): Promise<void>;
   /**
-   * Automation executions are inserted together with their single-active
-   * claim. Interactive executions always return `started`.
+   * 自动化执行与其单活动声明一同插入。交互执行始终返回 `started`。
    */
   createExecution(
     execution: WorkflowExecution,
     requestedAt?: string,
   ): Promise<ExecutionStartDisposition>;
-  /** One formal retained-record checkpoint with a complete execution CAS. */
+  /** 一个正式的记录保留检查点，带完整执行 CAS。 */
   retainSourceRecords(input: {
     readonly expectedExecution: WorkflowExecution;
     readonly execution: WorkflowExecution;
@@ -1714,28 +1660,27 @@ type CataloguePersistenceOperations = {
     readonly resumeClaim?: { readonly token: string; readonly now: string };
   }): Promise<void>;
   finishExecution(
-    /** Complete frozen audit observed before the caller prepares `execution`. */
+    /** 调用方准备 `execution` 前观察到的完整冻结审计。 */
     expectedExecution: WorkflowExecution,
     execution: WorkflowExecution,
     resumeClaim?: { readonly token: string; readonly now: string },
   ): Promise<void>;
   /**
-   * An explicit cancellation is its own terminal transition. It deliberately
-   * does not require a resume claim: it must be able to stop an active worker.
+   * 明确取消本身就是终态迁移。它刻意不要求恢复声明，因为必须能够停止活动工作者。
    */
   cancelExecution(input: {
     readonly expectedExecution: WorkflowExecution;
     readonly execution: WorkflowExecution;
   }): Promise<void>;
   finishExecutionWithProposal(
-    /** Complete frozen audit observed before the caller prepares `execution`. */
+    /** 调用方准备 `execution` 前观察到的完整冻结审计。 */
     expectedExecution: WorkflowExecution,
     execution: WorkflowExecution,
     proposal: RecognitionProposal,
     resumeClaim?: { readonly token: string; readonly now: string },
   ): Promise<void>;
   finishExecutionWithChangeImpactPreview(input: {
-    /** Complete frozen audit observed before the caller prepares `execution`. */
+    /** 调用方准备 `execution` 前观察到的完整冻结审计。 */
     readonly expectedExecution: WorkflowExecution;
     readonly execution: WorkflowExecution;
     readonly proposal: RecognitionProposal;
@@ -1743,7 +1688,7 @@ type CataloguePersistenceOperations = {
     readonly resumeClaim?: { readonly token: string; readonly now: string };
   }): Promise<void>;
   acceptRecognition(input: {
-    /** Complete running audit observed by the caller before it prepares acceptance. */
+    /** 调用方准备接受前观察到的完整运行中审计。 */
     readonly expectedExecution: WorkflowExecution;
     readonly execution: WorkflowExecution;
     readonly accepted: AcceptedRecognition;
@@ -1753,20 +1698,20 @@ type CataloguePersistenceOperations = {
   inspectExecution(
     executionId: string,
   ): Promise<ExecutionInspection | undefined>;
-  /** Delivery may browse durable outcomes without receiving the catalogue implementation. */
-  /** Complete history in newest-first durable creation order. */
+  /** 交付层可以浏览耐久结果，而无需取得 Catalogue 实现。 */
+  /** 按耐久创建时间从新到旧排列的完整历史。 */
   listExecutions(): Promise<readonly WorkflowExecution[]>;
-  /** Startup recovery deliberately spans every non-terminal execution. */
+  /** 启动恢复刻意覆盖每个非终态执行。 */
   listRunningExecutions(): Promise<readonly WorkflowExecution[]>;
-  /** Reuse is an ordinary-scan policy over frozen inputs, never an asset cache. */
+  /** 复用是针对冻结输入的普通扫描策略，绝不是资产缓存。 */
   findReusableOrdinaryScan(input: {
     readonly plan: OrdinaryScanReusePlan;
-    /** Current deployment coordinates only verify a prior frozen set. */
+    /** 当前部署坐标只用于验证先前冻结集合。 */
     readonly availableCompatibility: WorkflowCompatibility;
   }): Promise<WorkflowExecution | undefined>;
-  /** SQLite implements this conditionally; terminal records never reopen. */
+  /** SQLite 以条件方式实现；终态记录绝不重新打开。 */
   transitionExecution(
-    /** Complete frozen audit observed before the caller prepares `next`. */
+    /** 调用方准备 `next` 前观察到的完整冻结审计。 */
     expected: WorkflowExecution,
     next: WorkflowExecution,
     resumeClaim?: { readonly token: string; readonly now: string },
@@ -1775,7 +1720,7 @@ type CataloguePersistenceOperations = {
     executionId: string,
     sourceRecordId: string,
   ): Promise<SourceRecord | undefined>;
-  /** Resolves an accepted scope without parsing its directory or source key. */
+  /** 解析已接受范围，而不解析其目录或来源键。 */
   findAcceptedForDirectory(directory: string): Promise<
     | {
         readonly accepted: AcceptedAssetState;
@@ -1783,7 +1728,7 @@ type CataloguePersistenceOperations = {
       }
     | undefined
   >;
-  /** Loads only the exact current accepted subjects requested by the caller. */
+  /** 只加载调用方请求的精确当前已接受主体。 */
   findAcceptedForSubjects(subjectIds: readonly string[]): Promise<
     readonly {
       readonly subjectId: string;
@@ -1792,30 +1737,29 @@ type CataloguePersistenceOperations = {
     }[]
   >;
   /**
-   * Looks up only exact current observed-material associations. Callers pass
-   * deterministic Artifact IDs derived from reliable observer evidence; this
-   * port must never fall back to path, title, timestamp, or Blob matching.
+   * 只查找精确的当前观察材料关联。调用方传入从可靠观察器证据派生的确定性产物 ID；
+   * 该端口绝不能退回路径、标题、时间戳或 Blob 匹配。
    */
   findCurrentAcceptedForObservedArtifacts(input: {
     readonly artifactIds: readonly string[];
   }): Promise<ObservedArtifactReuseMatch>;
-  /** Reuse remains scoped to one stable observed boundary, never a whole root. */
+  /** 复用始终限制在一个稳定观察边界内，绝不扩大到整个根。 */
   findReusableWorkItem(input: {
     readonly directory: string;
     readonly relativePaths: readonly string[];
-    /** Current deployment coordinates only verify a prior frozen set. */
+    /** 当前部署坐标只用于验证先前冻结集合。 */
     readonly availableCompatibility: WorkflowCompatibility;
     readonly reuseFingerprint: string;
   }): Promise<
     | {
         readonly execution: WorkflowExecution;
         readonly accepted: AcceptedAssetState;
-        /** Complete actual dependency closure of the matched durable item. */
+        /** 匹配耐久项的完整实际依赖闭包。 */
         readonly reuseCompatibility: WorkflowCompatibility;
       }
     | undefined
   >;
-  /** Finds the current accepted identity for one exact explicit boundary. */
+  /** 查找一个精确明确边界的当前已接受身份。 */
   findAcceptedForWorkItem(input: {
     readonly directory: string;
     readonly relativePaths: readonly string[];
@@ -1827,11 +1771,10 @@ type CataloguePersistenceOperations = {
     | undefined
   >;
   /**
-   * Re-evaluating an unchanged accepted identity advances applicable facts
-   * without minting another Digital Asset, Source Association, or Decision.
+   * 重新求值未变的已接受身份会推进适用事实，但不会新建数字资产、来源关联或决策。
    */
   refreshAcceptedRecognition(input: {
-    /** Complete running audit observed before the reevaluation commit. */
+    /** 重新求值提交前观察到的完整运行中审计。 */
     readonly expectedExecution: WorkflowExecution;
     readonly execution: WorkflowExecution;
     readonly current: AcceptedRecognition;
@@ -1840,7 +1783,7 @@ type CataloguePersistenceOperations = {
     readonly expectedLineageHeads: MetadataRefreshSubmission["expectedLineageHeads"];
     readonly resumeClaim?: { readonly token: string; readonly now: string };
   }): Promise<void>;
-  /** Atomically advances only the known association's scoped source facts. */
+  /** 只原子推进已知关联范围内的来源事实。 */
   applyMetadataRefresh(input: {
     readonly expectedExecution: WorkflowExecution;
     readonly execution: WorkflowExecution;
@@ -1858,7 +1801,7 @@ type CataloguePersistenceOperations = {
   inspectChangeImpactPreviewForExecution(
     executionId: string,
   ): Promise<ChangeImpactPreview | undefined>;
-  /** Opaque exact baseline over current lineage and projected fact heads. */
+  /** 覆盖当前 lineage 和投影事实头的不透明精确基线。 */
   freezeChangeImpactBaseline(input: {
     readonly assetId: string;
     readonly sourceAssociationId: string;
@@ -1869,8 +1812,7 @@ type CataloguePersistenceOperations = {
   ): Promise<"applied" | "stale">;
   rejectChangeImpactPreview(previewId: string): Promise<"rejected" | "stale">;
   /**
-   * Atomically proves the preflight's registered-root closure is still active
-   * before persisting the recurring configuration and its runtime row.
+   * 在持久化重复配置及其运行时行之前，原子证明预检的注册根闭包仍然活动。
    */
   createAutomationIntentForObservedRoot(input: {
     readonly intent: AutomationIntent;
@@ -1930,9 +1872,8 @@ export type AssetRefreshReuseQueries = Pick<
 >;
 
 /**
- * Cursor input for the authoritative Current Catalogue projection.  The
- * cursor is deliberately opaque to Delivery: only the query that issued it
- * may interpret it on a later request.
+ * 权威当前 Catalogue 投影的游标输入。游标对交付层刻意保持不透明；只有签发它的查询
+ * 可以在后续请求中解释它。
  */
 export type CurrentCataloguePageRequest = {
   readonly limit?: number;
@@ -1940,43 +1881,40 @@ export type CurrentCataloguePageRequest = {
 };
 
 /**
- * Persistence-side page before Application removes provenance that Delivery
- * must not receive.  It is deliberately distinct from Workflow History and
- * Current Attention pages even though all three use opaque cursors.
+ * Application 移除交付层不得接收的来源信息前，持久化侧的页面。虽然三者都使用不透明
+ * 游标，它仍刻意区别于工作流历史页和当前待处理页。
  */
 export type CurrentCataloguePersistencePage = {
   readonly items: readonly AcceptedAssetState[];
   readonly nextCursor?: string;
 };
 
-/** Delivery-safe Current Catalogue page. */
+/** 对交付层安全的当前 Catalogue 页面。 */
 export type CurrentCataloguePage = {
   readonly items: readonly NonNullable<AssetRefreshInspection["accepted"]>[];
   readonly nextCursor?: string;
 };
 
 /**
- * A purpose-shaped Current Catalogue read.  It returns accepted domain facts
- * only; table rows, Drizzle models, and a database handle remain inside the
- * infrastructure adapter.
+ * 按用途塑形的当前 Catalogue 读取。它只返回已接受领域事实；表行、Drizzle 模型和
+ * 数据库句柄保留在基础设施适配器内部。
  */
 export type CurrentCatalogueQueries = {
   listCurrentCataloguePage(
     input?: CurrentCataloguePageRequest,
   ): Promise<CurrentCataloguePersistencePage>;
-  /** @deprecated Delivery uses the bounded page contract above. */
+  /** @deprecated 交付层应使用上方的有界页面契约。 */
   listCurrentCatalogue(): Promise<readonly AcceptedAssetState[]>;
 };
 
-/** Cursor input for permanent Workflow History. */
+/** 永久工作流历史的游标输入。 */
 export type WorkflowHistoryPageRequest = {
   readonly limit?: number;
   readonly cursor?: string;
 };
 
 /**
- * Adapter-side history page. The embedded inspection is a structured audit
- * record, not a current-catalogue reconstruction.
+ * 适配器侧历史页面。嵌入的检查是结构化审计记录，不是当前 Catalogue 重建。
  */
 export type WorkflowHistoryResultReferences = {
   readonly proposalIds: readonly string[];
@@ -1990,7 +1928,7 @@ export type WorkflowHistoryResultReferences = {
   readonly affectedSubjectIds: readonly string[];
 };
 
-/** Immutable execution result records; never a reconstruction from current heads. */
+/** 不可变执行结果记录；绝不是从当前头重建的结果。 */
 export type WorkflowHistoryPersistenceEntry = {
   readonly execution: WorkflowExecution;
   readonly resultReferences: WorkflowHistoryResultReferences;
@@ -2005,7 +1943,7 @@ export type WorkflowHistoryPersistencePage = {
   readonly nextCursor?: string;
 };
 
-/** Delivery-safe permanent Workflow History page. */
+/** 对交付层安全的永久工作流历史页面。 */
 export type WorkflowHistoryEntry = {
   readonly execution: AssetRefreshInspection["execution"];
   readonly resultReferences: WorkflowHistoryResultReferences;
@@ -2030,16 +1968,15 @@ export type WorkflowHistoryQueries = {
   ): Promise<WorkflowHistoryPersistencePage>;
 };
 
-/** Cursor input for current, rebuildable attention conditions only. */
+/** 只用于当前、可重建待处理条件的游标输入。 */
 export type CurrentAttentionPageRequest = {
   readonly limit?: number;
   readonly cursor?: string;
 };
 
 /**
- * One present-tense condition which is actionable now. This intentionally
- * excludes generic terminal failure and proposals already resolved through a
- * Recognition Decision or Change Impact Preview.
+ * 一个现在可以采取行动的当前条件。这里刻意排除通用终态失败，以及已经通过识别决策
+ * 或变更影响预览解决的提议。
  */
 export type CurrentAttentionItem = {
   readonly id: string;
@@ -2048,15 +1985,15 @@ export type CurrentAttentionItem = {
     | "change-impact-review"
     | "source-refresh-review"
     | "prerequisite-unavailable";
-  /** Absent when root preflight failed before any execution could be created. */
+  /** 根预检在创建任何执行前失败时不存在。 */
   readonly executionId?: string;
-  /** Absent for an initial Recognition Proposal that has no accepted subject yet. */
+  /** 尚无已接受主体的初始识别提议中不存在。 */
   readonly assetId?: string;
   readonly summary: string;
   readonly recognitionProposalId?: string;
   readonly changeImpactPreviewId?: string;
   readonly sourceRefreshChangeSetId?: string;
-  /** Present only for a disabled automatic intent with repairable prerequisite work. */
+  /** 仅在自动化意图因可修复前置工作而停用时存在。 */
   readonly automationIntentId?: string;
 };
 
@@ -2092,11 +2029,8 @@ export type MetadataRefreshPersistence = Pick<
 >;
 
 /**
- * The exact current facts that can satisfy an Information Requirement for one
- * selected subject. This deliberately excludes a hydrated related-entity
- * graph: callers receive no fact whose association subject differs from the
- * selected subject, and artifact availability starts with managed locations
- * only.
+ * 可以满足一个选定主体信息需求的精确当前事实。这里刻意排除已装载的相关实体图：调用方
+ * 不会收到关联主体不同于选定主体的事实，产物可用性也只从托管位置开始。
  */
 export type CurrentInformationSubjectFacts = {
   readonly subjectId: string;
@@ -2117,25 +2051,24 @@ export type CurrentInformationSubjectFacts = {
     readonly subjectId: string;
     readonly artifactId: string;
     readonly role: string;
-    /** Present only for a managed source artifact tied to one association. */
+    /** 仅对绑定到一个关联的托管来源产物存在。 */
     readonly sourceAssociationId?: string;
-    /** False when that managed source artifact no longer matches a current head. */
+    /** 该托管来源产物不再匹配当前头时为 false。 */
     readonly currentSourceArtifact?: boolean;
-    /** Observed locations are intentionally absent from this availability input. */
+    /** 该可用性输入刻意不包含观察位置。 */
     readonly managedLocations: readonly { readonly address: string }[];
   }[];
 };
 
 /**
- * An outer composition rebuilds a complete neutral Information Requirement
- * after one accepted subject is available. Application invokes this boundary
- * without learning the View, provider, route, or component that selected it.
+ * 一个已接受主体可用后，外层组合重建完整的中立信息需求。Application 调用该边界时，
+ * 不了解选择它的视图、提供方、路由或组件。
  */
 export type AutomationInformationRequirementResolver = (
   accepted: NonNullable<AssetRefreshInspection["accepted"]>,
 ) => InformationRequirement;
 
-/** A narrow query Port used only to rebuild current fulfillment readiness. */
+/** 只用于重建当前履行就绪状态的窄查询端口。 */
 export type InformationSubjectFactsQueries = {
   readCurrentInformationSubjectFacts(input: {
     readonly subjectIds: readonly string[];
@@ -2143,10 +2076,8 @@ export type InformationSubjectFactsQueries = {
 };
 
 /**
- * The exact current interpretation lineage from which Application may select
- * source artifacts for an already-recognized subject. It intentionally does
- * not expose a Recognition Proposal: recognition history is not an artifact
- * candidate cache.
+ * Application 可为已识别主体选择来源产物的精确当前解释 lineage。它刻意不公开识别提议：
+ * 识别历史不是产物候选缓存。
  */
 export type CurrentSourceArtifactFacts = {
   readonly subjectId: string;
@@ -2157,26 +2088,25 @@ export type CurrentSourceArtifactFacts = {
   };
   readonly candidates: readonly {
     readonly candidate: SourceArtifactCandidate;
-    /** Complete provenance of the current durable source interpretation. */
+    /** 当前耐久来源解释的完整来源信息。 */
     readonly interpretationSourceRecordIds: readonly string[];
     readonly sourceRecords: readonly SourceRecord[];
   }[];
 };
 
-/** A narrow read Port over current Source Refresh interpretation lineage. */
+/** 针对当前来源刷新解释 lineage 的窄读取端口。 */
 export type CurrentSourceArtifactQueries = {
   readCurrentSourceArtifactFacts(input: {
     readonly subjectId: string;
     readonly sourceIdentity: string;
-    /** Selects the exact current association chosen during readiness planning. */
+    /** 选择就绪规划期间选定的精确当前关联。 */
     readonly sourceAssociationId?: string;
   }): Promise<CurrentSourceArtifactFacts | undefined>;
 };
 
 /**
- * Identity-preserving commit boundary for bytes already acquired into the
- * managed store. It accepts ordinary Blob/Artifact/Location/Association facts
- * and never accepts a Recognition Proposal or Decision.
+ * 已经获取到托管存储中字节的身份保持提交边界。它接受普通 Blob／产物／位置／关联事实，
+ * 绝不接受识别提议或决策。
  */
 export type ManagedSourceArtifactPersistence = {
   submitManagedSourceArtifacts(input: {
@@ -2198,15 +2128,14 @@ export type ManagedSourceArtifactPersistence = {
 };
 
 /**
- * Narrow persistence boundary for the domain-owned Source Refresh Run. It
- * deliberately exposes no Workflow Execution state transitions: execution
- * only retains an ID reference while this Port owns refresh lifecycle truth.
+ * 领域持有来源刷新运行的窄持久化边界。它刻意不公开工作流执行状态迁移：执行只保留 ID
+ * 引用，刷新生命周期真相由该端口持有。
  */
 export type SourceRefreshRunPersistence = {
   createSourceRefreshRun(
     input: CreateSourceRefreshRunInputForExecution,
   ): Promise<SourceRefreshRun>;
-  /** Persists the per-scope checkpoint immediately before external collection. */
+  /** 在外部采集前立即持久化逐范围检查点。 */
   beginSourceRefreshScopeAcquisition(input: {
     readonly runId: string;
     readonly coverage: SourceCoverageScope;
@@ -2234,10 +2163,8 @@ export type SourceRefreshRunPersistence = {
 };
 
 /**
- * Recovery owns a short-lived Workflow Execution lease, while a public
- * cancellation is an independently authorized Domain operation. Keep their
- * command surfaces separate so a recovery owner cannot accidentally use the
- * public cancellation authority after it has lost its lease.
+ * 恢复过程持有短期工作流执行租约，公开取消则是独立授权的领域操作。保持二者命令界面
+ * 分离，使恢复持有者失去租约后不能误用公开取消权威。
  */
 export type RecoverySourceRefreshRunCommands = {
   cancelUncommittedRun(input: {
@@ -2249,9 +2176,8 @@ export type RecoverySourceRefreshRunCommands = {
 
 export type SourceEnrichmentPersistence = {
   /**
-   * Retains a completed collection and advances its durable intent in one
-   * commit. Recovery therefore never has to repeat an already-retained
-   * provider request.
+   * 在一次提交中保留已完成采集并推进其耐久意图。因此恢复过程绝不需要重复已经保留的
+   * 提供方请求。
    */
   checkpointSourceEnrichmentRecords(input: {
     readonly expectedExecution: WorkflowExecution;
@@ -2261,14 +2187,13 @@ export type SourceEnrichmentPersistence = {
   }): Promise<void>;
 
   /**
-   * Commits the interpreted facts and the `applied` checkpoint atomically.
-   * A process exit can leave the execution running, but never ambiguously
-   * between domain application and its durable effect marker.
+   * 原子提交已解释事实和 `applied` 检查点。进程退出可以让执行保持运行中，但绝不会
+   * 使其模糊地停在领域应用与耐久效果标记之间。
    */
   applySourceEnrichment(input: {
     readonly expectedExecution: WorkflowExecution;
     readonly execution: WorkflowExecution;
-    /** Both coordinates must still be the subject's recognition head at commit. */
+    /** 提交时两个坐标仍必须是该主体的识别头。 */
     readonly expectedRecognitionBaseline: {
       readonly sourceAssociationId: string;
       readonly recognitionDecisionId: string;
@@ -2278,8 +2203,7 @@ export type SourceEnrichmentPersistence = {
     readonly sourceRecords: readonly SourceRecord[];
     readonly interpretation: SourceInterpretationBatch;
     /**
-     * Requested source artifacts acquired from this same interpretation.
-     * The adapter commits them with the new association and assertions.
+     * 从同一解释获取的已请求来源产物。适配器将它们与新关联和断言一同提交。
      */
     readonly managedArtifacts?: {
       readonly artifacts: readonly Artifact[];
@@ -2317,7 +2241,7 @@ export type AutomationCommands = Pick<
 >;
 
 export type AssetRefreshWorkflowPorts = {
-  /** Every filesystem execution is bound through this registered authority. */
+  /** 每次文件系统执行都通过该注册权威绑定。 */
   readonly observedRootRegistrations: Pick<
     ObservedRootRegistrations,
     | "resolveActiveScope"
@@ -2332,23 +2256,21 @@ export type AssetRefreshWorkflowPorts = {
   >;
   readonly directoryInterpreters: readonly DirectoryInterpreter[];
   readonly filesystemPackageInterpreters?: readonly FilesystemPackageInterpreter[];
-  /** Format inspection is per observed Artifact, not a directory convention. */
+  /** 格式检查按观察产物进行，而不是目录约定。 */
   readonly formatInspectors?: readonly ArtifactFormatInspector[];
   readonly collectors: readonly SourceCollector[];
   readonly sourceInterpreters: readonly SourceInterpreter[];
-  /** Optional until a product deliberately configures a source enrichment. */
+  /** 在产品明确配置来源补充前可选。 */
   readonly sourceAssociationCandidateInterpreters?: readonly SourceAssociationCandidateInterpreter[];
   readonly sourceAssociationInterpreters?: readonly SourceAssociationInterpreter[];
   /**
-   * Optional while no product-managed private Source Connection participates.
-   * It owns opaque configuration-version binding and never exposes a secret
-   * or a provider-specific credential shape to Application.
+   * 没有产品管理的私密来源连接参与时可选。它持有不透明配置版本绑定，绝不向
+   * Application 公开秘密或提供方专用凭据形状。
    */
   readonly sourceConnectionExecutionConfiguration?: SourceConnectionExecutionConfiguration;
   readonly metadataPolicyConfiguration?: MetadataPolicyConfiguration;
   /**
-   * Consulted only while recovering frozen opaque configuration references;
-   * configuration identities and version storage remain outside Application.
+   * 只在恢复冻结的不透明配置引用时查询；配置身份和版本存储仍位于 Application 之外。
    */
   readonly configurationCompatibility?: WorkflowConfigurationCompatibility;
   readonly recognizers: readonly Recognizer[];
@@ -2360,36 +2282,35 @@ export type AssetRefreshWorkflowPorts = {
   readonly executionQueries: WorkflowExecutionQueries;
   readonly recoveryLease: WorkflowRecoveryLease;
   readonly reuseQueries: AssetRefreshReuseQueries;
-  /** Optional while test/legacy composition still exposes history only. */
+  /** 测试／旧版组合仍只公开历史时可选。 */
   readonly currentCatalogueQueries?: CurrentCatalogueQueries;
-  /** Optional while test/legacy composition still exposes whole history only. */
+  /** 测试／旧版组合仍只公开完整历史时可选。 */
   readonly workflowHistoryQueries?: WorkflowHistoryQueries;
-  /** Optional while test/legacy composition has no rebuildable attention authority. */
+  /** 测试／旧版组合没有可重建待处理权威时可选。 */
   readonly currentAttentionQueries?: CurrentAttentionQueries;
   readonly recognitionAcceptance: RecognitionAcceptancePersistence;
   readonly recognitionReevaluation: RecognitionReevaluationPersistence;
   readonly recognitionChangeImpact: RecognitionChangeImpactPersistence;
   readonly metadataRefreshPersistence: MetadataRefreshPersistence;
-  /** Production reads only exact current facts for fulfillment readiness. */
+  /** 生产环境只读取履行就绪所需的精确当前事实。 */
   readonly informationSubjectFactsQueries?: InformationSubjectFactsQueries;
-  /** Production reads only current durable source-artifact interpretations. */
+  /** 生产环境只读取当前耐久来源产物解释。 */
   readonly currentSourceArtifactQueries?: CurrentSourceArtifactQueries;
-  /** Production submits managed source artifacts without reevaluating identity. */
+  /** 生产环境提交托管来源产物而不重新求值身份。 */
   readonly managedSourceArtifactPersistence?: ManagedSourceArtifactPersistence;
-  /** Optional only for legacy/test composition; production uses this authority. */
+  /** 只对旧版／测试组合可选；生产环境使用该权威。 */
   readonly sourceRefreshRuns?: SourceRefreshRunPersistence;
   /**
-   * Recovery-only companion to the Domain Run authority. Its command carries
-   * the Workflow Execution lease condition and must never be substituted by
-   * the user-facing Domain cancellation command.
+   * 只供恢复使用的领域运行权威配套端口。其命令携带工作流执行租约条件，绝不能替换为
+   * 面向用户的领域取消命令。
    */
   readonly recoverySourceRefreshRuns?: RecoverySourceRefreshRunCommands;
   readonly sourceEnrichmentPersistence?: SourceEnrichmentPersistence;
   readonly changeImpactQueries: ChangeImpactQueries;
   readonly changeImpactCommands: ChangeImpactCommands;
-  /** Neutral declarations used only to plan demand-driven information work. */
+  /** 只用于规划需求驱动信息工作的中立声明。 */
   readonly informationFulfillmentCapabilities?: readonly InformationFulfillmentCapability[];
-  /** One process owner supervises fulfillment children and runtime shutdown. */
+  /** 一个进程持有者监督履行子执行和运行时关闭。 */
   readonly invocationSupervisor?: {
     invoke(
       invocation: (control: ExecutionInvocationControl) => void | Promise<void>,
@@ -2405,8 +2326,8 @@ export type AutomationClock = {
 };
 
 export type RecoveryLifecycle = {
-  readonly onCheckpoint?: () => void;
-  /** A durable, unexpired owner claim keeps this execution waiting for retry. */
+  readonly onCheckpoint?: (() => void) | undefined;
+  /** 耐久且未过期的持有者声明使本次执行继续等待重试。 */
   readonly onWaitingExecution?: (executionId: string) => void;
 };
 
@@ -2429,8 +2350,8 @@ const systemAutomationClock: AutomationClock = {
 };
 
 /**
- * Process-lifecycle host for recurring Automation Intents. It owns only timer
- * and overlap mechanics; due decisions and executions remain in the workflow.
+ * 重复自动化意图的进程生命周期宿主。它只持有定时器和重叠机制；到期决策与执行仍在
+ * 工作流中。
  */
 export class AutomationHost {
   private readonly runner: DueAutomationRunner;
@@ -2473,9 +2394,8 @@ export class AutomationHost {
   }
 
   /**
-   * Startup admission opens after every retained execution is classified.
-   * A waiting claim remains supervised and suppresses duplicate recovery, but
-   * does not make the entire catalogue unready.
+   * 所有保留执行完成分类后开放启动准入。等待中的声明仍受监督并抑制重复恢复，但不会
+   * 让整个 Catalogue 处于未就绪状态。
    */
   get recoveryReady(): boolean {
     return this.started;
@@ -2487,8 +2407,7 @@ export class AutomationHost {
     try {
       await this.runPoll(true);
     } catch (error) {
-      // A startup classification failure has not admitted a timer. Leave the
-      // Host retryable rather than poisoning its `started` latch forever.
+      // 启动分类失败时尚未准入定时器。保持宿主可重试，而不是永久污染 `started` 锁存。
       this.started = false;
       throw error;
     }
@@ -2507,7 +2426,7 @@ export class AutomationHost {
     }
   }
 
-  /** Waits for an already-started poll; it never starts a new one. */
+  /** 等待已经开始的轮询；绝不启动新轮询。 */
   async settled(): Promise<void> {
     await this.poll;
   }
@@ -2716,7 +2635,7 @@ function checkpointWorkItem(
   };
 }
 
-/** Mirrors the durable Source Record retention checkpoint in local workflow state. */
+/** 在本地工作流状态中镜像耐久来源记录保留检查点。 */
 function executionWithRetainedSourceRecords(
   execution: WorkflowExecution,
   sourceRecords: readonly SourceRecord[],
@@ -2759,24 +2678,43 @@ function terminalFromWorkItems(
       : {
           reason: `${failed.length} 个工作项未完成；其余工作项已独立保留结果`,
         }),
-    targetDispositions: execution.targetDispositions?.map((target) =>
-      target.status !== "running"
-        ? target
-        : {
-            ...target,
-            status:
-              outcome === "failed"
-                ? ("failed" as const)
-                : outcome === "no-change"
-                  ? ("no-change" as const)
-                  : ("completed" as const),
-          },
-    ),
+    ...(execution.targetDispositions === undefined
+      ? {}
+      : {
+          targetDispositions: execution.targetDispositions.map((target) =>
+            target.status !== "running"
+              ? target
+              : {
+                  ...target,
+                  status:
+                    outcome === "failed"
+                      ? ("failed" as const)
+                      : outcome === "no-change"
+                        ? ("no-change" as const)
+                        : ("completed" as const),
+                },
+          ),
+        }),
   };
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function completeManagedStoreDisposition(
+  item: WorkItemDisposition,
+  storedArtifacts: readonly ManagedSourceArtifactCheckpoint[],
+): WorkItemDisposition {
+  if (!item.key.startsWith("source-artifact.store:")) return item;
+  const effectReference = storedArtifacts.find(
+    (artifact) => item.key === `source-artifact.store:${artifact.role}`,
+  )?.location.address;
+  return {
+    ...item,
+    status: "completed",
+    ...(effectReference === undefined ? {} : { effectReference }),
+  };
 }
 
 function sourceRefreshSelectors(
@@ -2813,7 +2751,7 @@ function sourceRefreshRunCoordinatesFailure(run: SourceRefreshRun): boolean {
   );
 }
 
-/** A terminal Source Refresh diagnostic is still Domain-owned evidence. */
+/** 终态来源刷新诊断仍是领域持有的证据。 */
 function sourceRefreshTerminalReason(
   runs: readonly SourceRefreshRun[],
 ): string | undefined {
@@ -2824,10 +2762,8 @@ function sourceRefreshTerminalReason(
 }
 
 /**
- * A Source Refresh Change Set has one candidate record and one coverage
- * boundary. Split a multi-record interpreter result only at contributions
- * whose provenance is wholly owned by that exact record; mixed evidence is
- * never silently rewritten into an invented one-record assertion.
+ * 一份来源刷新变更集只有一个候选记录和一个覆盖边界。多记录解释结果只能在来源完全
+ * 归属于该精确记录的贡献处拆分；混合证据绝不能被静默改写为捏造的单记录断言。
  */
 function sourceRefreshInterpretationForRecord(
   interpretation: SourceInterpretationBatch,
@@ -2922,23 +2858,27 @@ function terminal(
     stage: failed ? "failed" : "completed",
     outcome,
     ...(reason === undefined ? {} : { reason }),
-    targetDispositions: execution.targetDispositions?.map((target) =>
-      target.status !== "running"
-        ? target
-        : {
-            ...target,
-            status: failed
-              ? ("failed" as const)
-              : outcome === "no-change"
-                ? ("no-change" as const)
-                : ("completed" as const),
-            ...(reason === undefined ? {} : { reason }),
-          },
-    ),
+    ...(execution.targetDispositions === undefined
+      ? {}
+      : {
+          targetDispositions: execution.targetDispositions.map((target) =>
+            target.status !== "running"
+              ? target
+              : {
+                  ...target,
+                  status: failed
+                    ? ("failed" as const)
+                    : outcome === "no-change"
+                      ? ("no-change" as const)
+                      : ("completed" as const),
+                  ...(reason === undefined ? {} : { reason }),
+                },
+          ),
+        }),
   };
 }
 
-/** Serializes only the stable execution coordinate, never a Port instance. */
+/** 只序列化稳定执行坐标，绝不序列化端口实例。 */
 function capabilityCoordinates(
   capabilities: readonly CapabilityCoordinate[],
 ): readonly string[] {
@@ -3001,17 +2941,23 @@ function completeTargetDisposition(
 ): WorkflowExecution {
   return {
     ...execution,
-    targetDispositions: execution.targetDispositions?.map((item) =>
-      item.key === key
-        ? {
-            ...item,
-            status,
-            ...(reason === undefined ? {} : { reason }),
-            ...(sourceRecordIds === undefined ? {} : { sourceRecordIds }),
-            ...(outputReferences === undefined ? {} : { outputReferences }),
-          }
-        : item,
-    ),
+    ...(execution.targetDispositions === undefined
+      ? {}
+      : {
+          targetDispositions: execution.targetDispositions.map((item) =>
+            item.key === key
+              ? {
+                  ...item,
+                  status,
+                  ...(reason === undefined ? {} : { reason }),
+                  ...(sourceRecordIds === undefined ? {} : { sourceRecordIds }),
+                  ...(outputReferences === undefined
+                    ? {}
+                    : { outputReferences }),
+                }
+              : item,
+          ),
+        }),
   };
 }
 
@@ -3086,10 +3032,16 @@ function publicAccepted(
     metadata: accepted.metadata,
     effectiveMetadata: effectiveMetadata.values,
     metadataPolicyConflicts: effectiveMetadata.conflicts,
-    entities: accepted.entities,
-    entityMentions: accepted.entityMentions,
-    entityResolutionDecisions: accepted.entityResolutionDecisions,
-    relationships: accepted.relationships,
+    ...(accepted.entities === undefined ? {} : { entities: accepted.entities }),
+    ...(accepted.entityMentions === undefined
+      ? {}
+      : { entityMentions: accepted.entityMentions }),
+    ...(accepted.entityResolutionDecisions === undefined
+      ? {}
+      : { entityResolutionDecisions: accepted.entityResolutionDecisions }),
+    ...(accepted.relationships === undefined
+      ? {}
+      : { relationships: accepted.relationships }),
     recognitionExplanation: accepted.recognitionDecision.acceptedRuleResults
       .map((result) => result.explanation)
       .join("；"),
@@ -3149,6 +3101,12 @@ function publicInspection(
     inspection.execution.selection.informationRequirement
       ?.metadataUsageContext ??
     emptyInformationRequirement.metadataUsageContext;
+  const publicAcceptedState = publicAccepted(
+    accepted,
+    inspection.sourceRecords,
+    metadataUsageContext,
+    configuration,
+  );
   return {
     execution: {
       ...execution,
@@ -3201,21 +3159,9 @@ function publicInspection(
             status: accepted === undefined ? "proposed" : "accepted",
           },
         }),
-    ...(publicAccepted(
-      accepted,
-      inspection.sourceRecords,
-      metadataUsageContext,
-      configuration,
-    ) === undefined
+    ...(publicAcceptedState === undefined
       ? {}
-      : {
-          accepted: publicAccepted(
-            accepted,
-            inspection.sourceRecords,
-            metadataUsageContext,
-            configuration,
-          ),
-        }),
+      : { accepted: publicAcceptedState }),
     ...(inspection.workItemInspections === undefined
       ? {}
       : {
@@ -3317,14 +3263,13 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * The one delivery-independent fulfillment seam used by interactive and
-   * automatic callers. Its readiness is rebuilt from accepted catalogue facts;
-   * planned effects stay inside the existing durable Asset Refresh workflow.
+   * 交互调用方与自动调用方共用的唯一交付层无关履行接缝。其就绪状态从已接受 Catalogue
+   * 事实重建；规划效果保留在既有耐久资产刷新工作流内。
    */
   fulfillInformation(input: {
     readonly selection: InformationSubjectSelection;
     readonly requirement: InformationRequirement;
-    /** Application-internal provenance from an accepted parent execution. */
+    /** 来自已接受父执行的 Application 内部来源信息。 */
     readonly initiation?: InformationFulfillmentInitiation;
   }): Promise<InformationReadiness> {
     if (this.informationFulfillmentClosing) {
@@ -3336,8 +3281,7 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * Prevents further fulfillment starts. The injected invocation supervisor
-   * owns settlement and is drained by the outer composition first.
+   * 阻止继续启动履行。注入的调用监督器持有收尾过程，并由外层组合优先排空。
    */
   close(): Promise<void> {
     this.informationFulfillmentClosing = true;
@@ -3432,8 +3376,7 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * A fulfillment-ready artifact must have at least one managed location.
-   * An observed path establishes local provenance, not durable delivery bytes.
+   * 履行就绪的产物必须至少有一个托管位置。观察路径建立本地来源，而不是耐久交付字节。
    */
   private async managedLocationsAreAvailable(
     locations: readonly { readonly address: string }[],
@@ -3546,10 +3489,8 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * A readiness reference is only pending while its durable execution (and
-   * any Domain-owned Source Refresh Run it coordinates) is non-terminal.
-   * Once terminal, preserve a stable unavailable/blocked result instead of
-   * allowing ordinary delivery polling to replay the same source request.
+   * 只有在耐久执行及其协调的任意领域权威来源刷新运行仍为非终态时，就绪引用才是等待中。
+   * 一旦进入终态，就保留稳定的不可用／阻塞结果，而不是允许普通交付轮询重放同一来源请求。
    */
   private async reconcilePendingInformationFulfillment(input: {
     readonly plan: InformationFulfillmentPlan;
@@ -3614,10 +3555,8 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * Current source lineage can change an artifact candidate even when its
-   * metadata Change Set is otherwise unchanged. Only a terminal successful
-   * Source Refresh therefore invalidates a prior terminal artifact memo; a
-   * page refresh alone never becomes an implicit retry.
+   * 即使元数据变更集没有其他变化，当前来源 lineage 仍可能改变产物候选。因此只有成功
+   * 终态的来源刷新才会使先前终态产物记忆失效；单纯刷新页面绝不会变成隐式重试。
    */
   private invalidateSourceArtifactFulfillmentForRuns(
     runs: readonly SourceRefreshRun[],
@@ -3813,10 +3752,14 @@ export class AssetRefreshWorkflow {
       stage: "completed",
       outcome: "accepted",
       acceptedAssetId: plan.subjectId,
-      targetDispositions: execution.targetDispositions?.map((target) => ({
-        ...target,
-        status: "completed" as const,
-      })),
+      ...(execution.targetDispositions === undefined
+        ? {}
+        : {
+            targetDispositions: execution.targetDispositions.map((target) => ({
+              ...target,
+              status: "completed" as const,
+            })),
+          }),
     };
     const artifactPersistence = this.ports.managedSourceArtifactPersistence;
     if (artifactPersistence === undefined)
@@ -3838,7 +3781,9 @@ export class AssetRefreshWorkflow {
   private async resumeInformationFulfillmentArtifacts(input: {
     readonly execution: WorkflowExecution;
     readonly operation: NonNullable<AssetRefreshWorkflowInput["operation"]>;
-    readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
+    readonly onHostCheckpoint?:
+      | ((execution: WorkflowExecution) => void)
+      | undefined;
     readonly resumeClaim: { readonly token: string; readonly now: string };
   }): Promise<AssetRefreshInspection> {
     let execution = input.execution;
@@ -3880,10 +3825,14 @@ export class AssetRefreshWorkflow {
       stage: "completed",
       outcome: "accepted",
       acceptedAssetId: input.operation.subjectId,
-      targetDispositions: execution.targetDispositions?.map((target) => ({
-        ...target,
-        status: "completed" as const,
-      })),
+      ...(execution.targetDispositions === undefined
+        ? {}
+        : {
+            targetDispositions: execution.targetDispositions.map((target) => ({
+              ...target,
+              status: "completed" as const,
+            })),
+          }),
     };
     const persistence = this.ports.managedSourceArtifactPersistence;
     if (persistence === undefined) throw new Error("托管来源产物提交未配置");
@@ -3911,22 +3860,28 @@ export class AssetRefreshWorkflow {
     return await this.inspectResumedPublic(finished.id);
   }
 
-  /** Production filesystem scan boundary: callers never supply a server path. */
+  /** 生产文件系统扫描边界：调用方绝不提供服务器路径。 */
   async scanObservedScope(input: {
     readonly registrationId: string;
     readonly relativeScope: string;
     readonly acceptTrusted: boolean;
-    readonly informationRequirement?: InformationRequirement;
-    readonly executionId?: string;
-    readonly automationIntentId?: string;
-    readonly trigger?: WorkflowExecutionTrigger;
-    readonly initiatedBy?: string;
-    readonly configurationReferences?: readonly string[];
-    readonly requestedAt?: string;
-    readonly onExecutionStarted?: (execution: WorkflowExecution) => void;
-    readonly onProgress?: (message: string) => void;
-    readonly onCheckpoint?: (execution: WorkflowExecution) => void;
-    readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
+    readonly informationRequirement?: InformationRequirement | undefined;
+    readonly executionId?: string | undefined;
+    readonly automationIntentId?: string | undefined;
+    readonly trigger?: WorkflowExecutionTrigger | undefined;
+    readonly initiatedBy?: string | undefined;
+    readonly configurationReferences?: readonly string[] | undefined;
+    readonly requestedAt?: string | undefined;
+    readonly onExecutionStarted?:
+      | ((execution: WorkflowExecution) => void)
+      | undefined;
+    readonly onProgress?: ((message: string) => void) | undefined;
+    readonly onCheckpoint?:
+      | ((execution: WorkflowExecution) => void)
+      | undefined;
+    readonly onHostCheckpoint?:
+      | ((execution: WorkflowExecution) => void)
+      | undefined;
   }): Promise<AssetRefreshInspection> {
     return await this.observedRootExecution.invoke(
       input,
@@ -4044,9 +3999,8 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * Resolves the current server-owned refresh coordinates for one exact
-   * subject. Delivery callers must not reconstruct these from catalogue trees
-   * or accept a client-provided current source association.
+   * 为一个精确主体解析当前服务器持有的刷新坐标。交付调用方不得从 Catalogue 树重建它，
+   * 也不得接受客户端提供的当前来源关联。
    */
   async inspectRefreshTarget(
     subjectId: string,
@@ -4070,8 +4024,7 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * Reads the delivery-safe current facts for one exact accepted subject.
-   * This is intentionally not implemented by browsing Workflow History.
+   * 读取一个精确已接受主体的交付层安全当前事实。这里刻意不通过浏览工作流历史实现。
    */
   async inspectCurrentCatalogueSubject(
     subjectId: string,
@@ -4125,8 +4078,7 @@ export class AssetRefreshWorkflow {
         trigger: initiation?.trigger ?? "interactive",
         initiatedBy:
           initiation?.initiatedBy ?? input.initiatedBy ?? "interactive",
-        // Metadata Refresh never makes a Recognition Decision. Source Refresh
-        // Run review policy belongs to the Domain process it references.
+        // 元数据刷新绝不作出识别决策。来源刷新运行审阅策略属于它引用的领域过程。
         acceptTrusted: false,
         configurationReferences: [],
         ...(initiation === undefined
@@ -4227,10 +4179,8 @@ export class AssetRefreshWorkflow {
           );
         }
         execution = currentExecution.execution;
-        // A reviewer or cancellation request may have terminally coordinated
-        // this same execution while a collector was still in flight.  The
-        // authoritative Run disposition owns that outcome, so this stale
-        // coordinator must return it rather than attempt another transition.
+        // 采集器仍在进行时，审阅者或取消请求可能已经终态协调了同一次执行。权威运行
+        // 处置持有该结果，因此这个过期协调器必须返回它，而不是尝试另一次迁移。
         if (execution.status !== "running") {
           return await this.inspectPublic(execution.id);
         }
@@ -4251,10 +4201,8 @@ export class AssetRefreshWorkflow {
       }
       if (usesSourceRefreshRunAuthority) {
         if (associationRuns.some((run) => run.phase !== "terminal")) {
-          // The Domain-owned Run is the only authority while a Change Set is
-          // awaiting review.  Keep this execution running at its durable
-          // application checkpoint; it will be coordinated again after the
-          // disposition makes every referenced Run terminal.
+          // 变更集等待审阅期间，领域持有的来源刷新运行是唯一权威。让本次执行停留在耐久
+          // 应用检查点；处置使所有引用运行进入终态后，再次协调它。
           continue;
         }
         const succeeded = associationRuns.some(
@@ -4393,19 +4341,23 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * An explicitly configured, post-recognition enrichment run. It creates no
-   * recognition decision and treats each source result independently. Calling
-   * this from ordinary metadata refresh keeps enrichment on the same product
-   * path rather than adding a provider-specific CLI operation.
+   * 明确配置的识别后来源补充运行。它不创建识别决策，并独立处理每个来源结果。从普通
+   * 元数据刷新调用它，可让来源补充留在同一产品路径，而不添加提供方专用 CLI 操作。
    */
   private async enrichAcceptedSubjectsInExecution(input: {
     readonly execution: WorkflowExecution;
     readonly selection: ResolvedAssetRefreshSelection;
     readonly informationRequirement: InformationRequirement;
-    readonly onProgress?: (message: string) => void;
-    readonly onCheckpoint?: (execution: WorkflowExecution) => void;
-    readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
-    readonly resumeClaim?: { readonly token: string; readonly now: string };
+    readonly onProgress?: ((message: string) => void) | undefined;
+    readonly onCheckpoint?:
+      | ((execution: WorkflowExecution) => void)
+      | undefined;
+    readonly onHostCheckpoint?:
+      | ((execution: WorkflowExecution) => void)
+      | undefined;
+    readonly resumeClaim?:
+      | { readonly token: string; readonly now: string }
+      | undefined;
   }): Promise<{
     readonly execution: WorkflowExecution;
     readonly failed: number;
@@ -4735,9 +4687,8 @@ export class AssetRefreshWorkflow {
           },
           failedSourceEnrichmentCheckpoint(currentCheckpoint),
         );
-        // A later configured enrichment may already be inside an external
-        // effect when this process exits. Persist this ordinary failure before
-        // continuing so recovery never treats it as an unattempted candidate.
+        // 本进程退出时，后续配置的来源补充可能已进入外部效果。继续前持久化这个普通
+        // 失败，使恢复过程绝不会把它当成尚未尝试的候选。
         await this.transition(execution, failedExecution, input.resumeClaim);
         execution = failedExecution;
         notifyDurableCheckpoint(input, execution);
@@ -4829,7 +4780,9 @@ export class AssetRefreshWorkflow {
     readonly sourceRecords: readonly SourceRecord[];
     readonly beforeEffect: () => void | Promise<void>;
     readonly resumeClaim: { readonly token: string; readonly now: string };
-    readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
+    readonly onHostCheckpoint?:
+      | ((execution: WorkflowExecution) => void)
+      | undefined;
   }): Promise<WorkflowExecution> {
     const persistence = this.ports.sourceEnrichmentPersistence;
     if (persistence === undefined)
@@ -5101,25 +5054,31 @@ export class AssetRefreshWorkflow {
     return execution;
   }
 
-  /** Internal coordinator owned only by the filesystem entrypoints. */
+  /** 只由文件系统入口持有的内部协调器。 */
   private async runFilesystemRecognition(input: {
     readonly scope: BoundObservedScope;
     readonly acceptTrusted: boolean;
-    readonly informationRequirement?: InformationRequirement;
-    readonly intent?: "scan-now" | "metadata-refresh";
-    readonly directedSourceAddress?: string;
-    readonly directedSourceIdentity?: string;
-    readonly executionId?: string;
-    readonly automationIntentId?: string;
-    readonly trigger?: WorkflowExecutionTrigger;
-    readonly initiatedBy?: string;
-    readonly configurationReferences?: readonly string[];
-    readonly requestedAt?: string;
-    readonly onExecutionStarted?: (execution: WorkflowExecution) => void;
-    readonly onProgress?: (message: string) => void;
-    readonly onCheckpoint?: (execution: WorkflowExecution) => void;
-    readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
-    readonly operationKind: WorkflowExecution["operationKind"];
+    readonly informationRequirement?: InformationRequirement | undefined;
+    readonly intent?: "scan-now" | "metadata-refresh" | undefined;
+    readonly directedSourceAddress?: string | undefined;
+    readonly directedSourceIdentity?: string | undefined;
+    readonly executionId?: string | undefined;
+    readonly automationIntentId?: string | undefined;
+    readonly trigger?: WorkflowExecutionTrigger | undefined;
+    readonly initiatedBy?: string | undefined;
+    readonly configurationReferences?: readonly string[] | undefined;
+    readonly requestedAt?: string | undefined;
+    readonly onExecutionStarted?:
+      | ((execution: WorkflowExecution) => void)
+      | undefined;
+    readonly onProgress?: ((message: string) => void) | undefined;
+    readonly onCheckpoint?:
+      | ((execution: WorkflowExecution) => void)
+      | undefined;
+    readonly onHostCheckpoint?:
+      | ((execution: WorkflowExecution) => void)
+      | undefined;
+    readonly operationKind: NonNullable<WorkflowExecution["operationKind"]>;
     readonly requestedSelection: AssetRefreshSelection;
     readonly resolvedSelection: ResolvedAssetRefreshSelection;
     readonly directedCurrent?: {
@@ -5139,7 +5098,11 @@ export class AssetRefreshWorkflow {
         "Filesystem recognition requires one frozen registered filesystem scope",
       );
     }
-    const directory = input.resolvedSelection.filesystemScopes[0].root;
+    const [filesystemScope] = input.resolvedSelection.filesystemScopes;
+    if (filesystemScope === undefined) {
+      throw new Error("冻结文件范围在校验后不可读取");
+    }
+    const directory = filesystemScope.root;
     const trigger: WorkflowExecutionTrigger = input.trigger ?? "interactive";
     const initiatedBy =
       input.initiatedBy ??
@@ -5301,12 +5264,9 @@ export class AssetRefreshWorkflow {
         throw new Error("多个文件系统包解析器声明了同一观察范围");
       for (const inspector of this.ports.formatInspectors ?? []) {
         /**
-         * A format inspector establishes facts about one Artifact, not every
-         * Location of that Artifact. A reliable observer may prove that
-         * several locators are one filesystem object, so inspect one stable
-         * representative while retaining every alias in the same boundary.
-         * This avoids duplicate Assets/Revisions and avoids pretending that
-         * duplicate alias evidence is independent source evidence.
+         * 格式检查器建立一个产物的事实，而不是该产物每个位置的事实。可靠观察器可以证明
+         * 多个定位项属于同一文件系统对象，因此只检查一个稳定代表，同时在同一边界保留
+         * 所有别名。这既避免重复资产／修订，也避免把重复别名证据伪装成独立来源证据。
          */
         const aliasesByObjectIdentity = new Map<string, FileObservation[]>();
         const inspectionGroups: Array<{
@@ -5338,8 +5298,12 @@ export class AssetRefreshWorkflow {
                   ? 1
                   : 0,
             );
+            const [representative] = ordered;
+            if (representative === undefined) {
+              throw new Error("可靠文件身份组不可为空");
+            }
             return {
-              representative: ordered[0],
+              representative,
               relativePaths: ordered.map((file) => file.relativePath),
             };
           }),
@@ -5429,27 +5393,35 @@ export class AssetRefreshWorkflow {
     const hasExplicitWorkItems =
       packageBoundary !== undefined ||
       interpretations.some(isAssetRefreshWorkPlan);
-    const plannedWorkItems =
+    const directedWorkItems: readonly AssetRefreshWorkItemPlan[] =
+      input.directedSourceAddress === undefined
+        ? []
+        : [
+            {
+              key: "directed-recognition",
+              relativePaths: snapshot.files.map((file) => file.relativePath),
+              ...(packageBoundary === undefined ? {} : packageBoundary),
+              evidence: [
+                {
+                  kind: "directed-source-address",
+                  sourceIdentity:
+                    input.directedSourceIdentity ??
+                    (() => {
+                      throw new Error("定向识别缺少来源身份");
+                    })(),
+                  sourceAddress: input.directedSourceAddress,
+                  explanation: "用户指定精确来源地址",
+                  producer: directedRecognitionEvidenceCapability,
+                },
+              ],
+            },
+          ];
+    const plannedWorkItems: readonly AssetRefreshWorkItemPlan[] =
       input.intent === "metadata-refresh"
         ? []
         : input.directedSourceAddress === undefined
           ? planRecognitionWorkItems(snapshot, interpretations)
-          : [
-              {
-                key: "directed-recognition",
-                relativePaths: snapshot.files.map((file) => file.relativePath),
-                ...(packageBoundary === undefined ? {} : packageBoundary),
-                evidence: [
-                  {
-                    kind: "directed-source-address",
-                    sourceIdentity: input.directedSourceIdentity,
-                    sourceAddress: input.directedSourceAddress,
-                    explanation: "用户指定精确来源地址",
-                    producer: directedRecognitionEvidenceCapability,
-                  },
-                ],
-              },
-            ];
+          : directedWorkItems;
     const evidence = plannedWorkItems.flatMap((item) => item.evidence);
     const initial: WorkflowExecution = {
       ...planningExecution,
@@ -5620,6 +5592,12 @@ export class AssetRefreshWorkflow {
         input.informationRequirement ?? emptyInformationRequirement,
       ),
     );
+    const collectionReason =
+      collectionFailures.length === 0
+        ? undefined
+        : blockingCollectionFailures.length > 0
+          ? "当前信息需求所需的官方来源工作项未完成"
+          : partialCollectionReason(collectionFailures);
     const sourced: WorkflowExecution = {
       ...collectionExecution,
       stage: "source-records-retained",
@@ -5630,12 +5608,9 @@ export class AssetRefreshWorkflow {
           key: "official-collection",
           status:
             blockingCollectionFailures.length > 0 ? "failed" : "completed",
-          reason:
-            collectionFailures.length > 0
-              ? blockingCollectionFailures.length > 0
-                ? "当前信息需求所需的官方来源工作项未完成"
-                : partialCollectionReason(collectionFailures)
-              : undefined,
+          ...(collectionReason === undefined
+            ? {}
+            : { reason: collectionReason }),
           ...(blockingCollectionFailures.some(
             sourceCollectionFailureIsPrerequisiteUnavailable,
           )
@@ -5714,7 +5689,10 @@ export class AssetRefreshWorkflow {
         await this.transition(recognitionExecution, finished);
         return await this.inspectPublic(finished.id);
       }
-      const proposal = proposals[0];
+      const [proposal] = proposals;
+      if (proposal === undefined) {
+        throw new Error("唯一识别提案在校验后不可读取");
+      }
       assertInterpretationSatisfiesInformationRequirement(
         proposal,
         input.informationRequirement ?? emptyInformationRequirement,
@@ -5756,10 +5734,8 @@ export class AssetRefreshWorkflow {
           proposal.interpretation.sourceIdentity &&
         current.accepted.sourceAssociation.nativeAddress ===
           proposal.interpretation.sourceAddress;
-      // Reuse may have missed solely because a capability or requested
-      // information coordinate advanced. Only a changed ordinary observation
-      // or evidence baseline turns an otherwise stable identity into a
-      // reevaluation; directed recognition retains its own no-change path.
+      // 复用可能只因能力或请求信息坐标推进而未命中。只有普通观察或证据基线改变时，才把
+      // 原本稳定的身份转为重新求值；定向识别保留自己的无变化路径。
       const ordinaryObservationOrEvidenceChanged =
         input.directedSourceAddress === undefined &&
         sameIdentity &&
@@ -5894,25 +5870,17 @@ export class AssetRefreshWorkflow {
             throw new Error(
               "Source-artifact acquisition checkpoint was skipped",
             );
-          storedExecution = {
+          const completedStorageExecution: WorkflowExecution = {
             ...acquiredExecution,
             stage: "source-artifacts-stored",
             managedSourceArtifacts: storedArtifacts,
             dispositions: acquiredExecution.dispositions.map((item) =>
-              item.key.startsWith("source-artifact.store:")
-                ? {
-                    ...item,
-                    status: "completed" as const,
-                    effectReference: storedArtifacts.find(
-                      (artifact) =>
-                        item.key === `source-artifact.store:${artifact.role}`,
-                    )?.location.address,
-                  }
-                : item,
+              completeManagedStoreDisposition(item, storedArtifacts),
             ),
           };
-          await this.transition(acquiredExecution, storedExecution);
-          notifyDurableCheckpoint(input, storedExecution);
+          storedExecution = completedStorageExecution;
+          await this.transition(acquiredExecution, completedStorageExecution);
+          notifyDurableCheckpoint(input, completedStorageExecution);
         },
       });
       if (storedExecution === undefined)
@@ -5936,14 +5904,17 @@ export class AssetRefreshWorkflow {
         managedArtifacts,
         asset: acceptedAsset,
         managedObservedParts,
-        objectIdentityContract:
-          this.ports.observedRootRegistrations.objectIdentityContract,
+        ...(this.ports.observedRootRegistrations.objectIdentityContract ===
+        undefined
+          ? {}
+          : {
+              objectIdentityContract:
+                this.ports.observedRootRegistrations.objectIdentityContract,
+            }),
         ...(currentAccepted === undefined ? {} : { current: currentAccepted }),
       });
-      // Acceptance establishes the immutable recognition identity, but this
-      // parent execution deliberately remains running while configured
-      // optional sources supplement it.  A supplement is never a second
-      // metadata-refresh execution.
+      // 接受建立不可变识别身份，但配置的可选来源进行补充期间，父执行刻意保持运行中。
+      // 来源补充绝不是第二次元数据刷新执行。
       const lastPersistedExecution = persistedWorkflowExecution(
         executionForAcceptance,
       );
@@ -6023,8 +5994,7 @@ export class AssetRefreshWorkflow {
         "failed",
         errorMessage(error),
       );
-      // A conditional commit may have succeeded even if a later inspection
-      // failed.  Never rewrite that accepted history as a failure.
+      // 即使后续检查失败，条件提交也可能已经成功。绝不能把已接受历史改写为失败。
       if (current?.execution.outcome === "accepted")
         return publicInspection(
           current,
@@ -6038,13 +6008,17 @@ export class AssetRefreshWorkflow {
   private async refreshPlannedWorkItems(
     initial: WorkflowExecution,
     input: {
-      /** The same descriptor-bound authority that produced `initial`. */
-      readonly scope?: BoundObservedScope;
+      /** 生成 `initial` 的同一个描述符绑定权威。 */
+      readonly scope?: BoundObservedScope | undefined;
       readonly acceptTrusted: boolean;
-      readonly informationRequirement?: InformationRequirement;
-      readonly onProgress?: (message: string) => void;
-      readonly onCheckpoint?: (execution: WorkflowExecution) => void;
-      readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
+      readonly informationRequirement?: InformationRequirement | undefined;
+      readonly onProgress?: ((message: string) => void) | undefined;
+      readonly onCheckpoint?:
+        | ((execution: WorkflowExecution) => void)
+        | undefined;
+      readonly onHostCheckpoint?:
+        | ((execution: WorkflowExecution) => void)
+        | undefined;
     },
     plans: readonly AssetRefreshWorkItemPlan[],
     resumeClaim?: { readonly token: string; readonly now: string },
@@ -6077,13 +6051,11 @@ export class AssetRefreshWorkflow {
     };
     const sourceArtifactDefinitions = new Map<string, string>();
     const sourceArtifactDefinitionConflicts = new Map<string, string>();
-    /** A source-declared artifact for one exact resolved Entity is one fact. */
+    /** 来源为一个精确已解析实体声明的产物构成一个事实。 */
     const committedSharedArtifactServeKeys = new Set<string>();
     /**
-     * One execution may plan several boundaries that depend on the same
-     * declared source scope.  Sharing is deliberately limited to this frozen
-     * execution: it avoids repeated external reads without becoming a stale
-     * cross-execution collector cache or a provider-specific workflow branch.
+     * 一次执行可以规划多个依赖同一已声明来源范围的边界。共享刻意限制在本次冻结执行：
+     * 它避免重复外部读取，同时不会变成过期的跨执行采集器缓存或提供方专用工作流分支。
      */
     const sharedSourceCollections = new Map<
       string,
@@ -6101,14 +6073,15 @@ export class AssetRefreshWorkflow {
         execution.id,
       );
       const durable = current?.execution ?? execution;
-      const item = durable.workItems?.find(
-        (candidate) => candidate.key === key,
-      );
+      const workItems = durable.workItems;
+      const item = workItems?.find((candidate) => candidate.key === key);
       if (item === undefined)
         throw new Error(`Unknown recognition work item ${key}`);
-      const next = {
+      if (workItems === undefined)
+        throw new Error(`Recognition work items are missing for ${key}`);
+      const next: WorkflowExecution = {
         ...this.retainCapabilityParticipation(durable, [capability]),
-        workItems: durable.workItems?.map((candidate) =>
+        workItems: workItems.map((candidate) =>
           candidate.key === key
             ? this.retainWorkItemCapabilityParticipation(candidate, [
                 capability,
@@ -6204,10 +6177,8 @@ export class AssetRefreshWorkflow {
           acceptedAssetId: reusable.accepted.entity.id,
           outcome: "no-change",
           reason: "工作项边界、兼容坐标和已满足的信息要求未变化",
-          // A no-change execution derives its result from the reused item,
-          // so it must retain that item's complete actual dependency closure.
-          // Otherwise it becomes a newer but weaker candidate which can hide
-          // an upgrade of collector/interpreter/recognizer/acquirer work.
+          // 无变化执行从复用项推导结果，因此必须保留该项完整的实际依赖闭包。否则它会
+          // 成为更新但更弱的候选，可能掩盖采集器／解释器／识别器／获取器工作的升级。
           reuseCompatibility: reusable.reuseCompatibility,
         });
         await this.transitionAfterWorkItem(execution, resumeClaim);
@@ -6353,7 +6324,10 @@ export class AssetRefreshWorkflow {
           notifyDurableCheckpoint(input, execution, false);
           continue;
         }
-        const proposal = proposals[0];
+        const [proposal] = proposals;
+        if (proposal === undefined) {
+          throw new Error("唯一工作项识别提案在校验后不可读取");
+        }
         assertInterpretationSatisfiesInformationRequirement(
           proposal,
           requirement,
@@ -6458,17 +6432,15 @@ export class AssetRefreshWorkflow {
                 execution,
                 proposal,
                 preview: change.preview,
-                resumeClaim,
+                ...(resumeClaim === undefined ? {} : { resumeClaim }),
               },
             );
             notifyDurableCheckpoint(input, execution, false);
             continue;
           }
         }
-        // A trusted explicit work item may checkpoint effects, but it must
-        // not commit its Recognition Proposal before the same transaction can
-        // commit the Recognition Decision and all accepted facts. Recovery
-        // rederives the proposal from its retained Source Records instead.
+        // 受信的明确工作项可以记录效果检查点，但在同一事务能够提交识别决策和所有已接受
+        // 事实前，不得提交识别提议。恢复过程改从保留的来源记录重新推导提议。
         const managedArtifacts: ManagedSourceArtifactCheckpoint[] = [];
         const persistedDefinitionConflict =
           sourceArtifactDefinitionConflicts.get(proposal.id);
@@ -6560,12 +6532,15 @@ export class AssetRefreshWorkflow {
             acquisition,
             requireCheckpointStore: true,
           });
+          const sourceArtifactAcquisitions = execution.workItems?.find(
+            (item) => item.key === plan.key,
+          )?.sourceArtifactAcquisitions;
           execution = checkpointWorkItem(execution, plan.key, {
             sourceRecordIds: recordIds,
             proposalId: proposal.id,
-            sourceArtifactAcquisitions: execution.workItems?.find(
-              (item) => item.key === plan.key,
-            )?.sourceArtifactAcquisitions,
+            ...(sourceArtifactAcquisitions === undefined
+              ? {}
+              : { sourceArtifactAcquisitions }),
             managedSourceArtifacts: [
               ...(execution.workItems?.find((item) => item.key === plan.key)
                 ?.managedSourceArtifacts ?? []),
@@ -6592,8 +6567,13 @@ export class AssetRefreshWorkflow {
           managedArtifacts,
           asset: acceptedAsset,
           managedObservedParts,
-          objectIdentityContract:
-            this.ports.observedRootRegistrations.objectIdentityContract,
+          ...(this.ports.observedRootRegistrations.objectIdentityContract ===
+          undefined
+            ? {}
+            : {
+                objectIdentityContract:
+                  this.ports.observedRootRegistrations.objectIdentityContract,
+              }),
           ...(plan.observedArtifactBoundary === undefined
             ? {}
             : { observedArtifactBoundary: plan.observedArtifactBoundary }),
@@ -6695,9 +6675,8 @@ export class AssetRefreshWorkflow {
               ...(resumeClaim === undefined ? {} : { resumeClaim }),
             });
     } catch (error) {
-      // Checkpoint callbacks model process interruption and intentionally
-      // leave a resumable execution. Candidate planning is an ordinary port
-      // failure, so it must instead terminally record the latest durable form.
+      // 检查点回调模拟进程中断，并刻意留下可恢复执行。候选规划属于普通端口失败，因此
+      // 必须改为以终态记录最新耐久形态。
       rethrowWorkflowLifecycle(error);
       const failed = await this.failLatestEnrichmentPlanningExecution(
         execution,
@@ -6721,10 +6700,8 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * Cross-root reuse is allowed only when every observed file is backed by
-   * the observer's reliable opaque object-identity contract.  The persistence
-   * port resolves those deterministic Artifact IDs through current material
-   * associations; it has no license to infer continuity from names or bytes.
+   * 只有当每个观察文件都有观察器可靠的不透明对象身份契约支持时，才允许跨根复用。
+   * 持久化端口通过当前材料关联解析这些确定性产物 ID；它无权从名称或字节推断连续性。
    */
   private async currentAcceptedForObservedArtifacts(
     snapshot: FilesystemPackageSnapshot,
@@ -6738,9 +6715,8 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * Work-item recognition remains deliberately explicit about its nested
-   * interpreter/recognizer semantics, while callers supply the durable
-   * checkpoint that must precede each concrete invocation.
+   * 工作项识别刻意明确表达嵌套的解释器／识别器语义；调用方提供每次具体调用前必须存在的
+   * 耐久检查点。
    */
   private async recognizePlannedWorkItem(input: {
     readonly evidence: readonly import("@digital/domain").RecognitionEvidence[];
@@ -6802,7 +6778,7 @@ export class AssetRefreshWorkflow {
     await this.transition(current?.execution ?? next, next, resumeClaim);
   }
 
-  /** Identifies only the acquirers selected for concrete requested candidates. */
+  /** 只标识为具体请求候选选定的获取器。 */
   private acquirerCapabilitiesFor(
     candidates: readonly SourceArtifactCandidate[],
   ): readonly CapabilityCoordinate[] {
@@ -6898,10 +6874,8 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * Explicitly stop one running Workflow Execution. Source Refresh Run owns
-   * its uncommitted scopes, so cancel those first without projecting their
-   * domain outcome back through the public Source Refresh Run coordinator.
-   * Durable records already committed by either process remain history.
+   * 明确停止一个运行中的工作流执行。来源刷新运行持有其未提交范围，因此先取消这些范围，
+   * 但不通过公开来源刷新运行协调器反向投影其领域结果。任一过程已经提交的耐久记录仍为历史。
    */
   async cancel(input: {
     readonly executionId: string;
@@ -6941,9 +6915,8 @@ export class AssetRefreshWorkflow {
       }
     }
 
-    // Source Refresh cancellation is separately durable. Re-read the complete
-    // Workflow Execution audit before its terminal CAS, so a late worker can
-    // win neither this cancellation nor any subsequent formal commit.
+    // 来源刷新取消独立耐久化。在终态 CAS 前重新读取完整工作流执行审计，使迟到工作者既
+    // 不能赢得本次取消，也不能赢得任何后续正式提交。
     const current = await this.ports.executionQueries.inspectExecution(
       input.executionId,
     );
@@ -6970,9 +6943,8 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * Delivery-safe permanent Workflow History query. The adapter first chooses
-   * a bounded audit page, then hydrates each selected structured record; it
-   * never rebuilds the page from all executions in Application.
+   * 对交付层安全的永久工作流历史查询。适配器先选择一个有界审计页面，再装载每条选中的
+   * 结构化记录；绝不在 Application 中从全部执行重建页面。
    */
   async listWorkflowHistoryPage(
     input?: WorkflowHistoryPageRequest,
@@ -7015,10 +6987,7 @@ export class AssetRefreshWorkflow {
     };
   }
 
-  /**
-   * Compatibility-only complete history query. New Delivery callers use the
-   * bounded page contract above.
-   */
+  /** 仅供兼容的完整历史查询。新的交付调用方使用上方有界页面契约。 */
   async listInspections(): Promise<readonly AssetRefreshInspection[]> {
     const executions = await this.ports.executionQueries.listExecutions();
     const inspections = await Promise.all(
@@ -7031,9 +7000,8 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * Current Catalogue remains distinct from Workflow History. It projects one
-   * authoritative, bounded accepted-subject page through Application, never
-   * an ORM row or persistence handle.
+   * 当前 Catalogue 始终区别于工作流历史。它通过 Application 投影一个权威且有界的
+   * 已接受主体页面，绝不会公开 ORM 行或持久化句柄。
    */
   async listCurrentCataloguePage(
     input?: CurrentCataloguePageRequest,
@@ -7060,8 +7028,7 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * Rebuildable present-tense review conditions. Ordinary terminal audit
-   * outcomes alone are intentionally not inferred as Attention.
+   * 可重建的当前审阅条件。普通终态审计结果本身刻意不会被推断为待处理事项。
    */
   async listCurrentAttentionPage(
     input?: CurrentAttentionPageRequest,
@@ -7075,7 +7042,7 @@ export class AssetRefreshWorkflow {
     );
   }
 
-  /** Compatibility-only complete Current Catalogue projection. */
+  /** 仅供兼容的完整当前 Catalogue 投影。 */
   async listCurrentCatalogue(): Promise<
     readonly NonNullable<AssetRefreshInspection["accepted"]>[]
   > {
@@ -7093,17 +7060,20 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * Refreshing follows an accepted association, never directory recognition.
-   * The neutral association evidence is intentionally produced here rather
-   * than asking an integration to search or reinterpret a filesystem name.
+   * 刷新沿已接受关联进行，绝不沿目录识别进行。中立关联证据刻意在此生成，而不是要求
+   * 集成搜索或重新解释文件系统名称。
    */
   private async refreshKnownAssociation(
     initial: WorkflowExecution,
     input: {
       readonly directory: string;
-      readonly onProgress?: (message: string) => void;
-      readonly onCheckpoint?: (execution: WorkflowExecution) => void;
-      readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
+      readonly onProgress?: ((message: string) => void) | undefined;
+      readonly onCheckpoint?:
+        | ((execution: WorkflowExecution) => void)
+        | undefined;
+      readonly onHostCheckpoint?:
+        | ((execution: WorkflowExecution) => void)
+        | undefined;
     },
   ): Promise<AssetRefreshInspection> {
     const existing = await this.ports.reuseQueries.findAcceptedForDirectory(
@@ -7128,12 +7098,16 @@ export class AssetRefreshWorkflow {
       readonly execution: WorkflowExecution;
     },
     input: {
-      readonly onProgress?: (message: string) => void;
-      readonly informationRequirement?: InformationRequirement;
-      readonly initiatedBy?: string;
-      readonly reviewPolicy?: "automatic" | "review";
-      readonly onCheckpoint?: (execution: WorkflowExecution) => void;
-      readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
+      readonly onProgress?: ((message: string) => void) | undefined;
+      readonly informationRequirement?: InformationRequirement | undefined;
+      readonly initiatedBy?: string | undefined;
+      readonly reviewPolicy?: "automatic" | "review" | undefined;
+      readonly onCheckpoint?:
+        | ((execution: WorkflowExecution) => void)
+        | undefined;
+      readonly onHostCheckpoint?:
+        | ((execution: WorkflowExecution) => void)
+        | undefined;
     },
     targetKey?: string,
     sourceAssociation: SourceAssociation = existing.accepted.sourceAssociation,
@@ -7175,18 +7149,17 @@ export class AssetRefreshWorkflow {
               ),
       };
     };
-    const evidence: import("@digital/domain").RecognitionEvidence[] = [
-      {
-        kind: "source-association",
-        sourceIdentity: sourceAssociation.sourceIdentity,
-        sourceAddress: sourceAssociation.nativeAddress,
-        explanation: "使用当前来源关联重新获取元数据",
-        producer: knownSourceAssociationEvidenceCapability,
-      },
-    ];
+    const associationEvidence: RecognitionEvidence = {
+      kind: "source-association",
+      sourceIdentity: sourceAssociation.sourceIdentity,
+      sourceAddress: sourceAssociation.nativeAddress,
+      explanation: "使用当前来源关联重新获取元数据",
+      producer: knownSourceAssociationEvidenceCapability,
+    };
+    const evidence: readonly RecognitionEvidence[] = [associationEvidence];
     let expectedLineageHeads: MetadataRefreshSubmission["expectedLineageHeads"];
     const applicableCollectors = this.ports.collectors.filter((candidate) =>
-      candidate.canCollect(evidence[0]),
+      candidate.canCollect(associationEvidence),
     );
     try {
       const coverageIds = [
@@ -7195,7 +7168,7 @@ export class AssetRefreshWorkflow {
             if (collector.coverageScopeIds === undefined) {
               throw new Error("来源采集器未声明刷新覆盖范围");
             }
-            return collector.coverageScopeIds(evidence[0]);
+            return collector.coverageScopeIds(associationEvidence);
           }),
         ),
       ];
@@ -7351,7 +7324,10 @@ export class AssetRefreshWorkflow {
       if (interpretations.length !== 1) {
         throw new Error("已关联来源未形成唯一完整的元数据解释");
       }
-      const interpretation = interpretations[0];
+      const [interpretation] = interpretations;
+      if (interpretation === undefined) {
+        throw new Error("唯一来源解释在校验后不可读取");
+      }
       validateSourceInterpretationBatch(interpretation);
       if (
         interpretation.sourceIdentity !== sourceAssociation.sourceIdentity ||
@@ -7424,9 +7400,8 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * Production refreshes keep the Workflow Execution at the coordination
-   * boundary.  Source Refresh Run owns the per-coverage candidate, review,
-   * compare-and-append, and terminal result.
+   * 生产刷新让工作流执行停留在协调边界。逐覆盖候选、审阅、比较并追加以及终态结果由
+   * 来源刷新运行持有。
    */
   private async refreshAcceptedAssociationThroughSourceRefreshRun(
     initial: WorkflowExecution,
@@ -7435,12 +7410,16 @@ export class AssetRefreshWorkflow {
       readonly execution: WorkflowExecution;
     },
     input: {
-      readonly onProgress?: (message: string) => void;
-      readonly informationRequirement?: InformationRequirement;
-      readonly initiatedBy?: string;
-      readonly reviewPolicy?: "automatic" | "review";
-      readonly onCheckpoint?: (execution: WorkflowExecution) => void;
-      readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
+      readonly onProgress?: ((message: string) => void) | undefined;
+      readonly informationRequirement?: InformationRequirement | undefined;
+      readonly initiatedBy?: string | undefined;
+      readonly reviewPolicy?: "automatic" | "review" | undefined;
+      readonly onCheckpoint?:
+        | ((execution: WorkflowExecution) => void)
+        | undefined;
+      readonly onHostCheckpoint?:
+        | ((execution: WorkflowExecution) => void)
+        | undefined;
     },
     targetKey: string | undefined,
     sourceAssociation: SourceAssociation,
@@ -7449,17 +7428,16 @@ export class AssetRefreshWorkflow {
     if (authority === undefined) {
       throw new Error("Source Refresh Run authority is not configured");
     }
-    const evidence: readonly RecognitionEvidence[] = [
-      {
-        kind: "source-association",
-        sourceIdentity: sourceAssociation.sourceIdentity,
-        sourceAddress: sourceAssociation.nativeAddress,
-        explanation: "使用当前来源关联重新获取元数据",
-        producer: knownSourceAssociationEvidenceCapability,
-      },
-    ];
+    const associationEvidence: RecognitionEvidence = {
+      kind: "source-association",
+      sourceIdentity: sourceAssociation.sourceIdentity,
+      sourceAddress: sourceAssociation.nativeAddress,
+      explanation: "使用当前来源关联重新获取元数据",
+      producer: knownSourceAssociationEvidenceCapability,
+    };
+    const evidence: readonly RecognitionEvidence[] = [associationEvidence];
     const applicableCollectors = this.ports.collectors.filter((collector) =>
-      collector.canCollect(evidence[0]),
+      collector.canCollect(associationEvidence),
     );
     let collectorScopes: readonly {
       readonly collector: SourceCollector;
@@ -7471,7 +7449,8 @@ export class AssetRefreshWorkflow {
         if (collector.coverageScopeIds === undefined) {
           throw new Error("来源采集器未声明刷新覆盖范围");
         }
-        const declaredCoverageIds = collector.coverageScopeIds(evidence[0]);
+        const declaredCoverageIds =
+          collector.coverageScopeIds(associationEvidence);
         const coverageIds = declaredCoverageIds;
         return coverageIds.length === 0 ? [] : [{ collector, coverageIds }];
       });
@@ -7588,9 +7567,8 @@ export class AssetRefreshWorkflow {
       ) {
         return [coverage.coverageId];
       }
-      // Legacy/unscoped failure diagnostics are intentionally conservative:
-      // a returned record proves that its exact declared scope succeeded, so
-      // the diagnostic can only close the collector's still-unmet scopes.
+      // 旧版／无范围失败诊断刻意保持保守：返回的记录证明其精确声明范围已经成功，因此
+      // 诊断只能关闭采集器尚未满足的范围。
       return item.coverageIds.filter(
         (coverageId) => !succeeded.has(coverageId),
       );
@@ -7611,9 +7589,8 @@ export class AssetRefreshWorkflow {
           });
           notifyDurableCheckpoint(input, initial);
         }
-        // This follows the source-run acquisition checkpoint and precedes the
-        // external request, so recovery records the real collector without
-        // freezing any merely configured sibling.
+        // 这里位于来源运行获取检查点之后、外部请求之前，因此恢复过程会记录真实采集器，
+        // 而不会冻结仅仅完成配置的同级能力。
         const beforeConnectionBinding =
           await this.ports.executionQueries.inspectExecution(initial.id);
         if (beforeConnectionBinding === undefined)
@@ -7621,7 +7598,7 @@ export class AssetRefreshWorkflow {
         await this.bindCollectorConfiguration(
           beforeConnectionBinding.execution,
           item.collector,
-          evidence[0],
+          associationEvidence,
         );
         await retainParticipation(item.collector.capability);
         const atCollection = await this.ports.executionQueries.inspectExecution(
@@ -7632,7 +7609,7 @@ export class AssetRefreshWorkflow {
         const collected = retainCollectedRecordProvenance(
           item.collector,
           await item.collector.collect(
-            evidence[0],
+            associationEvidence,
             this.collectionExecutionContext(atCollection.execution),
           ),
         );
@@ -7737,7 +7714,10 @@ export class AssetRefreshWorkflow {
         if (interpretations.length !== 1) {
           throw new Error("已关联来源未形成唯一完整的元数据解释");
         }
-        const interpretation = interpretations[0];
+        const [interpretation] = interpretations;
+        if (interpretation === undefined) {
+          throw new Error("唯一来源刷新解释在校验后不可读取");
+        }
         validateSourceInterpretationBatch(interpretation);
         if (
           interpretation.sourceIdentity !== sourceAssociation.sourceIdentity ||
@@ -7847,10 +7827,8 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * A Change Set disposition changes Domain-owned Run state first.  Once all
-   * runs referenced by its still-running metadata-refresh execution are
-   * terminal, this coordinator projects the actual Application outcome.  It
-   * never writes a provisional domain outcome into Workflow Execution.
+   * 变更集处置先改变领域权威运行状态。仍在运行的元数据刷新执行所引用的所有运行进入
+   * 终态后，该协调器才投影实际 Application 结果。它绝不把临时领域结果写入工作流执行。
    */
   private async continueSourceRefreshRunExecution(
     runId: string,
@@ -7973,7 +7951,7 @@ export class AssetRefreshWorkflow {
     );
   }
 
-  /** Approves/rejects one whole Change Set, then conditionally appends only an approval. */
+  /** 批准／拒绝一整份变更集，并且只对批准执行条件追加。 */
   async reviewSourceRefreshChangeSet(input: {
     readonly runId: string;
     readonly changeSetId: string;
@@ -8003,7 +7981,7 @@ export class AssetRefreshWorkflow {
     return applied;
   }
 
-  /** Cancels only uncommitted Source Refresh scopes; committed siblings remain history. */
+  /** 只取消未提交的来源刷新范围；已提交同级范围保留为历史。 */
   async cancelSourceRefreshRun(runId: string): Promise<SourceRefreshRun> {
     const authority = this.ports.sourceRefreshRuns;
     if (authority === undefined) {
@@ -8035,7 +8013,7 @@ export class AssetRefreshWorkflow {
       : publicChangeImpactPreview(preview);
   }
 
-  /** Confirmation is intentionally separate from acquisition and previewing. */
+  /** 确认刻意与获取和预览分离。 */
   async applyChangeImpactPreview(
     previewId: string,
   ): Promise<ChangeImpactPreview> {
@@ -8171,13 +8149,21 @@ export class AssetRefreshWorkflow {
         forceFallbackSubject: true,
       },
     );
-    const projectedArtifacts = projected.artifacts.map((artifact, index) => ({
-      artifact,
-      location: projected.locations[index],
-      blob: projected.blobs[index],
-      revision: projected.revisions[index],
-      association: projected.associations[index],
-    }));
+    const projectedArtifacts = projected.artifacts.map((artifact, index) => {
+      const location = projected.locations[index];
+      const blob = projected.blobs[index];
+      const revision = projected.revisions[index];
+      const association = projected.associations[index];
+      if (
+        location === undefined ||
+        blob === undefined ||
+        revision === undefined ||
+        association === undefined
+      ) {
+        throw new Error("来源产物投影未保持平行事实集合");
+      }
+      return { artifact, location, blob, revision, association };
+    });
     if (
       !input.proposal.ruleResults.some(
         (result) => result.outcome === "satisfied",
@@ -8312,15 +8298,14 @@ export class AssetRefreshWorkflow {
             ...retainedAssociations,
             ...projectedArtifacts.map((item) => item.association),
           ],
-          ...(projectedArtifacts.find(
-            (item) => item.association.role === "asset.primary-cover",
-          ) === undefined
-            ? {}
-            : {
-                primaryCoverArtifactId: projectedArtifacts.find(
-                  (item) => item.association.role === "asset.primary-cover",
-                )!.artifact.id,
-              }),
+          ...(() => {
+            const primaryCover = projectedArtifacts.find(
+              (item) => item.association.role === "asset.primary-cover",
+            );
+            return primaryCover === undefined
+              ? {}
+              : { primaryCoverArtifactId: primaryCover.artifact.id };
+          })(),
         },
         blockingConditions,
         status: "awaiting-confirmation",
@@ -8328,12 +8313,16 @@ export class AssetRefreshWorkflow {
     };
   }
 
-  /** Continues the same compatible non-terminal execution; this is not retry. */
+  /** 继续同一个兼容的非终态执行；这不是重试。 */
   async resume(input: {
     readonly executionId: string;
-    readonly onProgress?: (message: string) => void;
-    readonly onCheckpoint?: (execution: WorkflowExecution) => void;
-    readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
+    readonly onProgress?: ((message: string) => void) | undefined;
+    readonly onCheckpoint?:
+      | ((execution: WorkflowExecution) => void)
+      | undefined;
+    readonly onHostCheckpoint?:
+      | ((execution: WorkflowExecution) => void)
+      | undefined;
   }): Promise<AssetRefreshInspection> {
     const inspection = await this.ports.executionQueries.inspectExecution(
       input.executionId,
@@ -8391,14 +8380,12 @@ export class AssetRefreshWorkflow {
           inspection.execution,
         );
       } catch (error) {
-        // Binding is the last authority check before recovery work. A frozen
-        // logical Location is never reopened as a substitute for this step.
+        // 绑定是恢复工作前最后一次权威检查。绝不重新打开冻结逻辑位置来替代这一步。
         interruptionReason = errorMessage(error);
       }
     }
-    // ADR-0072 only permits a Domain-owned review wait after the frozen
-    // execution has proved decodable and compatible. An incompatible waiting
-    // Run must be explicitly closed/interrupted rather than left running.
+    // ADR-0072 只允许已经证明可解码且兼容的冻结执行进入领域权威审阅等待。不兼容的
+    // 等待中运行必须明确关闭／中断，不能继续保持运行中。
     if (
       interruptionReason === undefined &&
       (await this.isDomainOwnedSourceRefreshReviewWait(inspection.execution))
@@ -8711,7 +8698,10 @@ export class AssetRefreshWorkflow {
           );
           return await this.inspectResumedPublic(failed.id);
         }
-        const proposal = proposals[0];
+        const [proposal] = proposals;
+        if (proposal === undefined) {
+          throw new Error("恢复形成的唯一识别提案在校验后不可读取");
+        }
         const preview = { ...resumedExecution, proposalId: proposal.id };
         if (
           !acceptTrusted ||
@@ -8855,17 +8845,7 @@ export class AssetRefreshWorkflow {
                     stage: "source-artifacts-stored",
                     managedSourceArtifacts: storedArtifacts,
                     dispositions: checkpointExecution.dispositions.map((item) =>
-                      item.key.startsWith("source-artifact.store:")
-                        ? {
-                            ...item,
-                            status: "completed" as const,
-                            effectReference: storedArtifacts.find(
-                              (artifact) =>
-                                item.key ===
-                                `source-artifact.store:${artifact.role}`,
-                            )?.location.address,
-                          }
-                        : item,
+                      completeManagedStoreDisposition(item, storedArtifacts),
                     ),
                   };
                   await this.transition(
@@ -8972,17 +8952,7 @@ export class AssetRefreshWorkflow {
                   stage: "source-artifacts-stored",
                   managedSourceArtifacts: storedArtifacts,
                   dispositions: checkpointExecution.dispositions.map((item) =>
-                    item.key.startsWith("source-artifact.store:")
-                      ? {
-                          ...item,
-                          status: "completed" as const,
-                          effectReference: storedArtifacts.find(
-                            (artifact) =>
-                              item.key ===
-                              `source-artifact.store:${artifact.role}`,
-                          )?.location.address,
-                        }
-                      : item,
+                    completeManagedStoreDisposition(item, storedArtifacts),
                   ),
                 };
                 await this.transition(
@@ -9000,8 +8970,13 @@ export class AssetRefreshWorkflow {
             snapshot: requiredFilesystemSnapshot(checkpointExecution),
             managedArtifacts,
             asset: acceptedAsset,
-            objectIdentityContract:
-              this.ports.observedRootRegistrations.objectIdentityContract,
+            ...(this.ports.observedRootRegistrations.objectIdentityContract ===
+            undefined
+              ? {}
+              : {
+                  objectIdentityContract:
+                    this.ports.observedRootRegistrations.objectIdentityContract,
+                }),
           });
           const lastPersistedExecution =
             persistedWorkflowExecution(checkpointExecution);
@@ -9081,9 +9056,8 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * ADR-0072 permits a no-op startup result only for a compatible execution
-   * whose every still-open Source Refresh Run is awaiting human review. This
-   * deliberately reads no lease and performs no Domain or Execution write.
+   * ADR-0072 只允许兼容执行在其所有仍打开的来源刷新运行都等待人工审阅时，产生无操作
+   * 启动结果。这里刻意不读取租约，也不执行领域或执行写入。
    */
   private async isDomainOwnedSourceRefreshReviewWait(
     execution: WorkflowExecution,
@@ -9111,11 +9085,9 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * Runs only after this process owns the Workflow Execution resume lease.
-   * A referenced Source Refresh Run remains authoritative: all-terminal Runs
-   * are projected through the normal coordinator, while an acquiring or
-   * applying Run has no safe collector-resume protocol and is explicitly
-   * closed before its parent is interrupted.
+   * 仅在本进程持有工作流执行恢复租约后运行。被引用的来源刷新运行仍具权威：全部终态
+   * 运行通过普通协调器投影；正在获取或应用的运行没有安全采集器恢复协议，因此在父执行
+   * 中断前明确关闭。
    */
   private async recoverDomainOwnedSourceRefreshRunExecution(
     execution: WorkflowExecution,
@@ -9158,7 +9130,14 @@ export class AssetRefreshWorkflow {
       return await this.inspectResumedPublic(execution.id);
     }
     if (nonTerminalRuns.length === 0) {
-      await this.continueSourceRefreshRunExecution(runs[0].id, resumeClaim);
+      const [completedRun] = runs;
+      if (completedRun === undefined) {
+        throw new Error("执行引用的来源刷新运行集合不可为空");
+      }
+      await this.continueSourceRefreshRunExecution(
+        completedRun.id,
+        resumeClaim,
+      );
       return await this.inspectResumedPublic(execution.id);
     }
     return await this.interruptRecovery(
@@ -9169,8 +9148,7 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * Reconciles every durable non-terminal execution after process startup.
-   * The versioned persisted input envelope is the only replay authority.
+   * 进程启动后协调每个耐久非终态执行。版本化持久输入封装是唯一重放权威。
    */
   async recoverRunningExecutions(
     lifecycle?: RecoveryLifecycle,
@@ -9187,10 +9165,8 @@ export class AssetRefreshWorkflow {
           }),
         );
       } catch (error) {
-        // A retained non-expired claim is neither resumed, review-waiting nor
-        // terminal. Do not report startup ready while it remains unclassified.
-        // The single-process Host consequently keeps its admission barrier
-        // closed until an operator or the claim owner resolves it.
+        // 保留且未过期的声明既不是已恢复、等待审阅，也不是终态。它尚未分类时，不得报告
+        // 启动就绪。因此单进程宿主保持准入屏障关闭，直到操作方或声明持有者解决它。
         if (error instanceof ResumeExecutionBusyError) {
           const current = await this.ports.executionQueries.inspectExecution(
             execution.id,
@@ -9200,10 +9176,8 @@ export class AssetRefreshWorkflow {
           }
           continue;
         }
-        // A competing owner can also terminalize between this startup scan and
-        // the claim attempt. `resume()` preserves its public error for an
-        // explicit caller, but startup recovery treats the now-terminal row
-        // as already reconciled instead of failing the whole host.
+        // 竞争持有者也可能在启动扫描与声明尝试之间将其终态化。`resume()` 为明确调用方
+        // 保留公开错误，但启动恢复把现在已终态的行视为已经协调，而不是让整个宿主失败。
         const current = await this.ports.executionQueries.inspectExecution(
           execution.id,
         );
@@ -9310,9 +9284,8 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * Starts an execution with no plugin coordinates. Coordinates are appended
-   * only after a concrete Port participates, so a configured-but-inapplicable
-   * integration cannot become part of a durable resume contract.
+   * 启动不含插件坐标的执行。只有具体端口参与后才追加坐标，因此已配置但不适用的集成
+   * 不能成为耐久恢复契约的一部分。
    */
   private compatibility(
     capabilities: readonly CapabilityCoordinate[] = [],
@@ -9329,7 +9302,7 @@ export class AssetRefreshWorkflow {
     };
   }
 
-  /** Adds only durable coordinate values, never a runtime Port or its secrets. */
+  /** 只添加耐久坐标值，绝不添加运行时端口或其秘密。 */
   private retainCapabilityParticipation(
     execution: WorkflowExecution,
     capabilities: readonly CapabilityCoordinate[],
@@ -9352,9 +9325,7 @@ export class AssetRefreshWorkflow {
     item: AssetRefreshWorkItem,
     capabilities: readonly CapabilityCoordinate[],
   ): AssetRefreshWorkItem {
-    // A legacy item never proved its own participating coordinates. Do not
-    // manufacture that proof while resuming it; it remains ineligible for
-    // cross-execution reuse.
+    // 旧版条目从未证明自己的参与坐标。恢复时不要捏造该证明；它仍不具备跨执行复用资格。
     if (item.reuseCompatibility === undefined) return item;
     return {
       ...item,
@@ -9371,10 +9342,8 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * Capability invocation is preceded by a durable execution-coordinate
-   * checkpoint.  This is deliberately a small execution-record primitive,
-   * not a universal capability pipeline: each workflow still owns its own
-   * planning, checkpoints, effects, and failure semantics.
+   * 调用能力前先写入耐久执行坐标检查点。这刻意是小型执行记录原语，而不是通用能力
+   * 流水线：每个工作流仍持有自己的规划、检查点、效果和失败语义。
    */
   private async freezeCapabilityParticipation(
     execution: WorkflowExecution,
@@ -9392,9 +9361,8 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * Freeze only the private Source Connection of the collector that will run.
-   * The opaque reference is durable audit input; the secret remains behind
-   * the outer capability-specific handle and is resolved again per request.
+   * 只冻结即将运行的采集器对应私密来源连接。不透明引用是耐久审计输入；秘密仍留在
+   * 外层能力专用句柄之后，并在每次请求时重新解析。
    */
   private async bindCollectorConfiguration(
     execution: WorkflowExecution,
@@ -9475,7 +9443,7 @@ export class AssetRefreshWorkflow {
     ]);
   }
 
-  /** Deployment-wide availability is compared with prior frozen participation. */
+  /** 将部署范围可用性与先前冻结参与情况比较。 */
   private availableCompatibility(): WorkflowCompatibility {
     return {
       ...this.compatibility(),
@@ -9484,9 +9452,8 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * Descriptor scopes are opaque adapter capabilities.  The workflow may use
-   * their frozen location as evidence, but every byte open and release returns
-   * to the Observed Root authority that bound the scope.
+   * 描述符范围是不透明适配器能力。工作流可以把冻结位置用作证据，但每次字节打开和释放
+   * 都会回到绑定该范围的观察根权威。
    */
   private observedRootScopeOperations(): Pick<
     ObservedRootRegistrations,
@@ -9513,10 +9480,8 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * A durable execution retains a frozen root snapshot, not a live handle.
-   * Recovery therefore obtains a fresh adapter-bound scope from that exact
-   * snapshot before it can read an observed byte again.  There is no fallback
-   * to the persisted logical Location.
+   * 耐久执行保留冻结根快照，而不是活动句柄。因此恢复过程再次读取观察字节前，先从该
+   * 精确快照取得新的适配器绑定范围；绝不退回持久化逻辑位置。
    */
   private async rebindObservedScopeForResume(
     execution: WorkflowExecution,
@@ -9526,7 +9491,10 @@ export class AssetRefreshWorkflow {
     if (scopes.length !== 1) {
       throw new Error("刷新记录包含无法安全恢复的多个冻结文件范围");
     }
-    const scope = scopes[0];
+    const [scope] = scopes;
+    if (scope === undefined) {
+      throw new Error("冻结文件范围在恢复校验后不可读取");
+    }
     try {
       return await this.ports.observedRootRegistrations.rebindFrozenScope({
         root: scope.observedRoot,
@@ -9541,11 +9509,9 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * Old durable rows may retain a logical directory or a former `{ root }`
-   * selection, but never a registration snapshot that can safely be rebound.
-   * Such rows remain inspectable history; ADR-0068 and ADR-0072 require an
-   * explicit terminal interruption instead of adopting a current root or
-   * reopening the saved path.
+   * 旧耐久行可能保留逻辑目录或旧 `{ root }` 选择，但从未保留可安全重新绑定的注册快照。
+   * 这些行仍是可检查历史；ADR-0068 与 ADR-0072 要求明确终态中断，而不是采用当前根或
+   * 重新打开保存路径。
    */
   private legacyFilesystemScopeRecoveryReason(
     execution: WorkflowExecution,
@@ -9594,9 +9560,8 @@ export class AssetRefreshWorkflow {
         `刷新记录与实际参与能力的实现或契约不兼容：${incompatible.join(", ")}`,
       );
     }
-    // No frozen configuration means there is nothing to resolve. This keeps
-    // legacy-neutral executions compatible without inventing a configuration
-    // dependency at recovery time.
+    // 没有冻结配置就没有需要解析的内容。这使旧版中立执行保持兼容，而不会在恢复时
+    // 捏造配置依赖。
     if (observedRoots.length > 0) {
       await this.ports.observedRootRegistrations.assertFrozenRootsCurrent(
         observedRoots,
@@ -9618,9 +9583,8 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * Restart recovery never silently replans a frozen execution. When its
-   * checkpoint or compatibility coordinate cannot be honored, retain the
-   * complete existing audit and append only an explicit terminal outcome.
+   * 重启恢复绝不静默重新规划冻结执行。当检查点或兼容性坐标无法满足时，保留完整既有
+   * 审计，只追加明确终态结果。
    */
   private async interruptRecovery(
     execution: WorkflowExecution,
@@ -9646,10 +9610,8 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * An interrupted Application recovery must not strand an active
-   * Domain-owned Source Refresh Run. Domain cancellation is forward-only, so
-   * it retains every already committed fact and closes only uncommitted
-   * scopes before the Workflow Execution receives its interrupted outcome.
+   * 中断的 Application 恢复不能遗留活动的领域权威来源刷新运行。领域取消只向前生效，
+   * 因此保留所有已提交事实，并在工作流执行取得中断结果前只关闭未提交范围。
    */
   private async closeUncommittedSourceRefreshRunsForInterruptedRecovery(
     execution: WorkflowExecution,
@@ -9732,12 +9694,9 @@ export class AssetRefreshWorkflow {
   }
 
   /**
-   * Candidate planning happens after its capability coordinate has been
-   * durably frozen but before it can form a Source Enrichment checkpoint.
-   * There is consequently no honest resumable candidate intent to invent on
-   * an interpreter throw.  Read back the authoritative execution first so a
-   * preceding freeze/target transition is preserved, then terminally record
-   * the ordinary port failure.
+   * 候选规划发生在能力坐标耐久冻结后、形成来源补充检查点前。因此解释器抛错时不存在
+   * 可以诚实捏造的可恢复候选意图。先回读权威执行以保留前序冻结／目标迁移，再以终态
+   * 记录普通端口失败。
    */
   private async failLatestEnrichmentPlanningExecution(
     fallback: WorkflowExecution,
@@ -9855,36 +9814,44 @@ export class AssetRefreshWorkflow {
   }
 }
 
+type AssetRefreshAutomationOperations = Pick<
+  AssetRefreshWorkflow,
+  "scanObservedScope" | "recoverRunningExecutions" | "fulfillInformation"
+>;
+
+type AssetRefreshAutomationPorts = {
+  readonly executionQueries: WorkflowExecutionQueries;
+  readonly automationQueries: AutomationQueries;
+  readonly automationCommands: AutomationCommands;
+  /**
+   * 自动化意图耐久化前检查授权。这仍是 Application 持有的边界：调度不推断文件系统
+   * 权威，也绝不接收宿主机路径映射。
+   */
+  readonly observedRootRegistrations: Pick<
+    ObservedRootRegistrations,
+    "resolveActiveScope" | "closeBoundScope"
+  >;
+  readonly recognitionPolicyVersion: string;
+  /** 旧版静态中立需求；绝不持久化到意图。 */
+  readonly informationRequirement?: InformationRequirement;
+  /**
+   * 由外层组合为每个已接受主体重建。这里它是不透明中立需求回调：Application 绝不
+   * 接收资产视图、组件、路由或提供方专用模型。
+   */
+  readonly informationRequirementForAcceptedSubject?: AutomationInformationRequirementResolver;
+};
+
 export class AssetRefreshAutomation {
+  private readonly workflow: AssetRefreshAutomationOperations;
+  private readonly ports: AssetRefreshAutomationPorts;
+
   constructor(
-    private readonly workflow: Pick<
-      AssetRefreshWorkflow,
-      "scanObservedScope" | "recoverRunningExecutions" | "fulfillInformation"
-    >,
-    private readonly ports: {
-      readonly executionQueries: WorkflowExecutionQueries;
-      readonly automationQueries: AutomationQueries;
-      readonly automationCommands: AutomationCommands;
-      /**
-       * Authorization is checked before an Automation Intent becomes durable.
-       * This remains an Application-owned boundary: scheduling does not infer
-       * filesystem authority and never receives a host path mapping.
-       */
-      readonly observedRootRegistrations: Pick<
-        ObservedRootRegistrations,
-        "resolveActiveScope" | "closeBoundScope"
-      >;
-      readonly recognitionPolicyVersion: string;
-      /** Legacy static neutral demand; never persisted on the intent. */
-      readonly informationRequirement?: InformationRequirement;
-      /**
-       * Rebuilt by the outer composition for each accepted subject. It is an
-       * opaque neutral-requirement callback here: Application never receives
-       * an Asset View, component, route, or provider-specific model.
-       */
-      readonly informationRequirementForAcceptedSubject?: AutomationInformationRequirementResolver;
-    },
-  ) {}
+    workflow: AssetRefreshAutomationOperations,
+    ports: AssetRefreshAutomationPorts,
+  ) {
+    this.workflow = workflow;
+    this.ports = ports;
+  }
 
   async enableAutomation(input: {
     readonly observedRootId: string;
@@ -9905,9 +9872,8 @@ export class AssetRefreshAutomation {
       input.intervalMilliseconds <= 0
     )
       throw new Error("自动刷新间隔必须为正数");
-    // Resolve immediately before the first durable write. A later trigger
-    // resolves again through scanObservedScope, so a configuration change
-    // between this preflight and a run cannot authorize filesystem work.
+    // 在首次耐久写入前立即解析。后续触发通过 `scanObservedScope` 再次解析，因此本次
+    // 预检与运行之间的配置变更不能授权文件系统工作。
     const preflight =
       await this.ports.observedRootRegistrations.resolveActiveScope({
         registrationId: input.observedRootId,
@@ -9928,9 +9894,8 @@ export class AssetRefreshAutomation {
       }
       authorization = frozenAuthorization;
     } finally {
-      // The preflight proves that the configured scope can be bound right
-      // now; it grants no authority to the later timer. Release its
-      // short-lived descriptor before the durable configuration write.
+      // 预检证明已配置范围现在可以绑定；它不向后续定时器授予权威。在耐久配置写入前
+      // 释放其短期描述符。
       await this.ports.observedRootRegistrations.closeBoundScope(
         preflight.scope,
       );
@@ -9938,10 +9903,8 @@ export class AssetRefreshAutomation {
     const intent: AutomationIntent = {
       id: id("automation-intent"),
       scope: {
-        // Persist the registration coordinate returned by the authority
-        // boundary, not the caller's unnormalised spelling of it. The
-        // atomic persistence Port will still prove that this exact frozen
-        // coordinate is current when it writes the intent.
+        // 持久化权威边界返回的注册坐标，而不是调用方未规范化的路径拼写。原子持久化端口
+        // 写入意图时仍会证明该精确冻结坐标当前有效。
         observedRootId: preflight.root.id,
         relativeScope: preflight.relativeScope,
       },
@@ -9989,8 +9952,12 @@ export class AssetRefreshAutomation {
     trigger: AutomationTrigger = "scan-now",
     now = new Date(),
     lifecycle?: {
-      readonly onExecutionStarted?: (execution: WorkflowExecution) => void;
-      readonly onCheckpoint?: (execution: WorkflowExecution) => void;
+      readonly onExecutionStarted?:
+        | ((execution: WorkflowExecution) => void)
+        | undefined;
+      readonly onCheckpoint?:
+        | ((execution: WorkflowExecution) => void)
+        | undefined;
     },
   ): Promise<AutomationTriggerResult> {
     const intent =
@@ -10004,8 +9971,7 @@ export class AssetRefreshAutomation {
         registrationId: intent.scope.observedRootId,
         relativeScope: intent.scope.relativeScope,
         acceptTrusted: intent.acceptTrusted,
-        // View-specific demand is unavailable before recognition. Keep the
-        // scan input neutral and rebuild demand from the accepted subject.
+        // 识别前无法得到视图专用需求。保持扫描输入中立，并从已接受主体重建需求。
         ...(this.ports.informationRequirementForAcceptedSubject === undefined
           ? { informationRequirement: this.ports.informationRequirement }
           : {}),
@@ -10037,10 +10003,8 @@ export class AssetRefreshAutomation {
           ? { status: "disabled", reason: "自动刷新已停用" }
           : { status: "skipped", reason: "同一自动刷新意图已有进行中的执行" };
       if (trigger !== "scan-now" && error instanceof ObservedRootUnavailable) {
-        // A recurring timer must not turn one still-unavailable root into an
-        // unbounded history of equivalent failed executions. The durable
-        // intent remains the audit coordinate and an operator explicitly
-        // re-enables it after the mount or permissions have been repaired.
+        // 重复定时器不能把一个持续不可用的根变成无界的等价失败执行历史。耐久意图仍是
+        // 审计坐标；挂载或权限修复后，由操作方明确重新启用。
         await this.ports.automationCommands.setAutomationIntentEnabled(
           intent.id,
           false,
@@ -10054,7 +10018,7 @@ export class AssetRefreshAutomation {
     }
   }
 
-  /** Automation contributes only runtime-owner release after generic recovery. */
+  /** 通用恢复后，自动化只贡献运行时持有者释放。 */
   async releaseRecoveredAutomationRuntime(
     recovered: readonly AssetRefreshInspection[],
   ): Promise<void> {
@@ -10185,17 +10149,14 @@ export class AssetRefreshAutomation {
   }
 
   /**
-   * A parent scan can finish before its Host-owned Information Fulfillment
-   * child.  A later timer tick must inspect that durable graph before it
-   * creates another parent; a running child is a waiting classification, and
-   * a terminal typed prerequisite failure is the same durable degradation as
-   * the synchronous path above.
+   * 父扫描可以在宿主持有的信息履行子执行前完成。后续定时器触发创建另一个父执行前必须
+   * 检查该耐久图；运行中的子执行归类为等待，终态类型化前置条件失败与上方同步路径属于
+   * 同一种耐久降级。
    */
   private async classifyPriorInformationFulfillment(
     intent: AutomationIntent,
   ): Promise<"waiting" | "unavailable" | undefined> {
-    // Production persistence exposes this required query. A few narrow
-    // in-process legacy tests intentionally only provide inspection.
+    // 生产持久化公开这个必需查询；少数窄范围进程内旧测试刻意只提供检查。
     const listExecutions = this.ports.executionQueries.listExecutions;
     if (listExecutions === undefined) return undefined;
     const newestFirstExecutions = await listExecutions.call(
@@ -10357,9 +10318,7 @@ function selectSourceArtifacts(
 }
 
 /**
- * Information fulfillment consumes only candidates from the current durable
- * Source Refresh interpretation. A historical Recognition Proposal never
- * substitutes for that lineage.
+ * 信息履行只消费当前耐久来源刷新解释中的候选。历史识别提议绝不能替代该 lineage。
  */
 function selectCurrentSourceArtifacts(
   candidates: CurrentSourceArtifactFacts["candidates"],
@@ -10411,10 +10370,8 @@ function upsertSourceEnrichmentCheckpoint(
 }
 
 /**
- * A failed enrichment remains resumable audit evidence, even when its error
- * occurred before collection created a retained-record checkpoint.  The
- * failed union intentionally records an empty collection baseline in that
- * case rather than manufacturing a Source Record or retry instruction.
+ * 即使错误发生在采集创建记录保留检查点前，失败的来源补充仍是可恢复审计证据。该情况下
+ * 失败联合刻意记录空采集基线，而不是捏造来源记录或重试指令。
  */
 function failedSourceEnrichmentCheckpoint(
   checkpoint: SourceEnrichmentCheckpoint,
@@ -10435,9 +10392,8 @@ function failedSourceEnrichmentCheckpoint(
 }
 
 /**
- * A supplementary source may fill only an unmet requested role. Existing
- * materializations remain authoritative for that use context, so enrichment
- * never downloads a backdrop or replaces an already available primary cover.
+ * 补充来源只能填充尚未满足的请求角色。既有物化结果在该使用上下文中仍具权威，因此
+ * 来源补充绝不下载背景图，也不替换已经可用的主封面。
  */
 function selectEnrichmentSourceArtifacts(
   interpretation: SourceInterpretationBatch,
@@ -10459,9 +10415,8 @@ function selectEnrichmentSourceArtifacts(
 }
 
 /**
- * The workflow, not a bibliographic provider, projects local format facts
- * into an accepted proposal. Work-item boundaries make these opaque evidence
- * references unambiguous and keep providers replaceable.
+ * 由工作流而不是书目提供方把本地格式事实投影进已接受提议。工作项边界使这些不透明
+ * 证据引用没有歧义，并保持提供方可替换。
  */
 function attachObservedFormatFacts(
   proposal: RecognitionProposal,
@@ -10538,7 +10493,7 @@ function selectObservedArtifactParts(
   );
 }
 
-/** A candidate id is only unique in its full serving semantics. */
+/** 候选 ID 只在完整服务语义中唯一。 */
 function sourceArtifactCacheKey(candidate: SourceArtifactCandidate): string {
   return JSON.stringify({
     sourceRecordId: candidate.sourceRecordId,
@@ -10559,7 +10514,7 @@ function sourceArtifactIdempotencyKey(
   )}`;
 }
 
-/** Resolve Domain's ordinary omitted-subject shorthand before any effect key. */
+/** 在生成任何效果键前，解析领域的普通省略主体简写。 */
 function resolveSourceArtifactSubject(
   candidate: SourceArtifactCandidate,
   acceptedAssetId: string,
@@ -10570,10 +10525,8 @@ function resolveSourceArtifactSubject(
 }
 
 /**
- * A newly accepted asset has no durable identity before its first commit.
- * A complete pending checkpoint is therefore also the durable record of the
- * already chosen implicit serving subject.  Anything less complete must not
- * revive that identity or its staged bytes.
+ * 新接受资产在首次提交前没有耐久身份。因此完整待处理检查点同时也是已选隐式服务主体
+ * 的耐久记录；任何不完整内容都不能复活该身份或其暂存字节。
  */
 function inferCheckpointedAcceptedAssetId(
   candidates: readonly SourceArtifactCandidate[],
@@ -10590,11 +10543,15 @@ function inferCheckpointedAcceptedAssetId(
     const matches = checkpoints.filter((checkpoint) =>
       checkpointMatchesCandidateExceptSubject(checkpoint, candidate),
     );
-    return matches.length === 1 ? matches[0].subjectId : undefined;
+    const [match] = matches;
+    return matches.length === 1 && match !== undefined
+      ? match.subjectId
+      : undefined;
   });
   if (subjects.some((subjectId) => subjectId === undefined)) return undefined;
   const resolved = new Set(subjects);
-  return resolved.size === 1 ? subjects[0] : undefined;
+  const [subject] = subjects;
+  return resolved.size === 1 ? subject : undefined;
 }
 
 function checkpointMatchesCandidateExceptSubject(
@@ -10654,11 +10611,9 @@ function managedSourceArtifactMatchesCandidate(
 }
 
 /**
- * Candidate identifiers are source-record scoped, so their acquisition
- * definition must remain stable across work items and process restarts.
- * Serving subject and role deliberately remain in the cache key: the same
- * downloadable material can validly serve different subjects without sharing
- * an association or managed-artifact checkpoint.
+ * 候选标识符以来源记录为范围，因此其获取定义必须跨工作项和进程重启保持稳定。服务主体
+ * 与角色刻意保留在缓存键中：相同可下载材料可以合法服务不同主体，而不共享关联或托管
+ * 产物检查点。
  */
 function registerSourceArtifactDefinitions(
   definitions: Map<string, string>,
@@ -10711,9 +10666,9 @@ function createAcceptedRecognition(options: {
   readonly snapshot: FilesystemPackageSnapshot;
   readonly managedArtifacts: readonly ManagedSourceArtifactCheckpoint[];
   readonly managedObservedParts?: readonly ManagedObservedArtifactPart[];
-  /** Allocated before external artifact effects so omitted subjects stay stable. */
+  /** 在外部产物效果前分配，使省略的主体保持稳定。 */
   readonly asset?: DigitalAsset;
-  /** Same accepted source identity: preserve its identity-bearing facts. */
+  /** 相同的已接受来源身份：保留其承载身份的事实。 */
   readonly current?: AcceptedRecognition;
   readonly observedArtifactBoundary?: "filesystem-package";
   readonly objectIdentityContract?: FilesystemObjectIdentityContract;
@@ -10723,11 +10678,9 @@ function createAcceptedRecognition(options: {
       id: id("entity"),
       kind: "digital-asset",
     };
-  // ADR0030 / ADR0036: an observed pathname is a locator, not an identity
-  // continuity proof.  In the absence of an observer-supplied opaque object
-  // identity, a later accepted observation receives a new Artifact even if
-  // its address, size, timestamps, or content digest happen to match.  Blob
-  // identity is deliberately handled separately by digest at persistence.
+  // ADR0030／ADR0036：观察路径名是定位项，而不是身份连续性证明。缺少观察器提供的
+  // 不透明对象身份时，即使地址、大小、时间戳或内容摘要碰巧相同，后续接受的观察仍会
+  // 得到新产物。Blob 身份刻意在持久化层通过摘要单独处理。
   const localArtifacts: Artifact[] = [];
   const localLocations: Location[] = [];
   const localAssociations: ArtifactAssociation[] = [];
@@ -10739,9 +10692,8 @@ function createAcceptedRecognition(options: {
       ? [
           {
             address: options.snapshot.root,
-            // A filesystem-package boundary is one technical Artifact. It
-            // deliberately does not derive file-object continuity from its
-            // members, because the package interpreter owns that boundary.
+            // 文件系统包边界是一个技术产物。它刻意不从成员推导文件对象连续性，因为
+            // 该边界由包解释器持有。
           },
         ]
       : options.snapshot.files.map((file) => ({
@@ -11033,10 +10985,8 @@ function createAcceptedRecognition(options: {
 }
 
 /**
- * Snapshot-local identity remains intentionally ephemeral: it can group two
- * alias Locations in one result, but cannot manufacture a durable Artifact
- * identifier. A durable value is valid only when the configured observer
- * explicitly declares the exact capability that supplied it.
+ * 快照内身份刻意保持瞬时：它可以在一个结果中归组两个别名位置，但不能制造耐久产物
+ * 标识符。只有已配置观察器明确声明提供该值的精确能力时，耐久值才有效。
  */
 function observedObjectIdentityKey(
   file: FileObservation,
@@ -11101,9 +11051,8 @@ function observedArtifactId(identity: string): string {
 }
 
 /**
- * A cross-location lookup needs a complete, exact set.  If even one observed
- * file lacks the explicitly declared durable identity capability, no part of
- * this snapshot may be used to infer an existing Asset.
+ * 跨位置查找需要完整且精确的集合。只要一个观察文件缺少明确声明的耐久身份能力，就不
+ * 得用该快照的任何部分推断既有资产。
  */
 function exactObservedArtifactIds(
   snapshot: FilesystemPackageSnapshot,
@@ -11143,10 +11092,8 @@ function observedLocationId(artifactId: string, address: string): string {
 }
 
 /**
- * An Asset-scoped relationship is an acceptance-local fact.  A relationship
- * explicitly between sourced Entities, however, can be projected by multiple
- * Assets in one package.  Give the latter a semantic identity so persistence
- * records it once rather than manufacturing one relation per episode.
+ * 资产范围关系是接受过程内的事实；而来源实体之间的明确关系可以由一个包中的多个资产
+ * 投影。为后者赋予语义身份，使持久化只记录一次，而不是为每一集制造一条关系。
  */
 function relationshipId(
   relationship: NonNullable<SourceInterpretationBatch["relationships"]>[number],
@@ -11208,9 +11155,8 @@ function collectionFailureBlocks(
 }
 
 /**
- * A collector owns the meaning of its scopes.  Application merely shares an
- * identical declared scope within one execution and never inspects provider
- * addresses or payloads.
+ * 采集器持有其范围含义。Application 只在一次执行内共享相同声明范围，绝不检查提供方
+ * 地址或载荷。
  */
 function sourceCollectionShareKey(
   collector: SourceCollector,
@@ -11226,10 +11172,8 @@ function sourceCollectionShareKey(
 }
 
 /**
- * Recovery reconstructs execution-local sharing from durable work-item
- * planning evidence and immutable retained Source Records. It asks only the
- * collector for its opaque scope coordinate; Application never interprets a
- * provider address or payload.
+ * 恢复过程从耐久工作项规划证据和不可变保留来源记录重建执行内共享。它只向采集器请求
+ * 不透明范围坐标；Application 绝不解释提供方地址或载荷。
  */
 function persistedSharedCollectionRecords(
   inspection: ExecutionInspection | undefined,
@@ -11265,11 +11209,8 @@ function partialCollectionReason(
 }
 
 /**
- * A compatibility or information-requirement change can require another
- * evaluation without itself being a new File Observation. Identity-preserving
- * reevaluation is reserved for the latter (or new directory evidence), so a
- * capability upgrade does not manufacture a fresh Artifact episode merely by
- * recollecting the same ordinary scope.
+ * 兼容性或信息需求变更可以要求再次求值，但它本身不是新文件观察。身份保持重新求值只
+ * 留给后者或新目录证据，因此能力升级不会仅因重新采集相同普通范围就制造新的产物阶段。
  */
 function ordinaryObservationOrEvidenceBaselineChanged(
   current: OrdinaryScanReusePlan | undefined,
@@ -11291,13 +11232,9 @@ function ordinaryObservationOrEvidenceBaselineChanged(
 }
 
 /**
- * Snapshot-local identities are deliberately opaque across observations, but
- * their alias equivalence relation is still useful input to a reuse baseline.
- * Replace the random per-snapshot token with a deterministic class token
- * derived from the sorted logical paths in that one alias class.  This keeps
- * a stable same-root scan reusable while a hardlink/symlink grouping change
- * still changes the fingerprint. Durable identities retain their capability
- * and value verbatim.
+ * 快照内身份跨观察刻意保持不透明，但其别名等价关系仍是复用基线的有用输入。把每快照
+ * 随机令牌替换为从该别名类已排序逻辑路径派生的确定性类令牌。这样稳定同根扫描仍可
+ * 复用，而硬链接／符号链接归组变化仍会改变指纹。耐久身份原样保留能力和值。
  */
 function reuseComparableFiles(
   files: readonly FileObservation[],

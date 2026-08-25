@@ -12,9 +12,8 @@ export type {
 export type CatalogueAssetViewModel = AssetViewModel | BangumiSeriesViewModel;
 
 /**
- * Delivery's complete, user-visible view of Application terminal outcomes.
- * Keep this explicit boundary type separate from the Application model while
- * making label coverage mechanically exhaustive.
+ * 交付层对应用层终态结果完整且用户可见的视图。保持该显式边界类型与应用层模型分离，
+ * 同时让标签覆盖可由机械方式穷尽检查。
  */
 export type ExecutionOutcome =
   | "unresolved"
@@ -111,13 +110,13 @@ export type AutomationViewModel = {
   readonly acceptTrusted: boolean;
 };
 
-/** A safe delivery projection; container paths stay at the application boundary. */
+/** 安全的交付投影；容器路径保留在应用边界。 */
 export type ObservedRootViewModel = {
   readonly id: string;
   readonly displayName: string;
 };
 
-/** Delivery mapping of Application's current, rebuildable review condition. */
+/** 应用层当前可重建审核条件的交付映射。 */
 export type AttentionViewModel = {
   readonly id: string;
   readonly kind:

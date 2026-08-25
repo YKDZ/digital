@@ -71,14 +71,14 @@ describe("Bangumi OAuth refresh across product processes", () => {
       afterConnectionMutationOwnershipCheck: () => {
         if (interleaved) return;
         interleaved = true;
-        // A has passed its mutation-entry ownership check. Simulate an await
-        // that runs beyond the old active-owner TTL before A commits.
+        // A 已通过变更入口所有权检查。模拟一次延续到旧活跃所有者 TTL 之后、
+        // 且发生在 A 提交前的异步等待。
         monotonicNow = 60_000;
         const mutationNamespace = path.join(
           privateDirectory,
           "bangumi-oauth-connection.mutation.json.namespace",
         );
-        const namesBeforeWaiter = readdirSync(mutationNamespace).sort();
+        const namesBeforeWaiter = readdirSync(mutationNamespace).toSorted();
         const connectionBeforeWaiter = readFileSync(
           path.join(privateDirectory, "bangumi-oauth.json"),
           "utf8",
@@ -89,10 +89,9 @@ describe("Bangumi OAuth refresh across product processes", () => {
           "Bangumi 来源连接正在被其他操作修改，请刷新后重试",
         );
 
-        // The bounded busy path cannot publish a lease generation or mutate
-        // the connection while A is the exact same-boot live owner.
+        // 当 A 是同次启动中的精确存活所有者时，有界忙碌路径不能发布租约世代或更改连接。
         expect(performance.now() - startedAt).toBeLessThan(1_500);
-        expect(readdirSync(mutationNamespace).sort()).toEqual(
+        expect(readdirSync(mutationNamespace).toSorted()).toEqual(
           namesBeforeWaiter,
         );
         expect(
@@ -118,8 +117,7 @@ describe("Bangumi OAuth refresh across product processes", () => {
     });
     expect(interleaved).toBe(true);
 
-    // Once A releases its immutable generation, B can acquire the same
-    // mutation authority and durably reauthorize the connection.
+    // A 释放其不可变世代后，B 可以取得同一变更权威并持久重新授权连接。
     const started = secondProcess.beginAuthorization();
     const callback = new URL(environment.DIGITAL_BANGUMI_REDIRECT_URI);
     callback.searchParams.set("code", "after-release-code");
@@ -189,10 +187,8 @@ describe("Bangumi OAuth refresh across product processes", () => {
 
     const heldRefresh = firstProcess.authorization().bearer(context);
     await vi.waitFor(() => expect(refreshRequests).toBe(1));
-    // Token rotation is private maintenance of the same frozen Source
-    // Connection. A second workflow must not treat its configuration version
-    // as replaced merely because the holder is between token request and
-    // durable commit.
+    // 令牌轮换是同一个冻结来源连接的私有维护。不能仅因为持有者正处于令牌请求与
+    // 持久提交之间，第二个工作流就把其配置版本视为已替换。
     expect(
       secondProcess.isConfigurationReferenceCurrent(
         "source-connection/bangumi@1",
@@ -293,10 +289,8 @@ describe("Bangumi OAuth refresh across product processes", () => {
       ),
     ).toBe(false);
 
-    // A generic transport rejection cannot prove whether the provider already
-    // rotated `initial-refresh`.  Even when the test transport would now
-    // succeed, a later execution must require reauthorization instead of
-    // sending that old token again.
+    // 通用传输拒绝无法证明提供方是否已轮换 `initial-refresh`。即使测试传输现在会成功，
+    // 后续执行也必须要求重新授权，而不是再次发送旧令牌。
     await expect(firstProcess.authorization().bearer(context)).rejects.toThrow(
       "Bangumi 来源连接当前不可用",
     );

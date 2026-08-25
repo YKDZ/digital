@@ -102,7 +102,7 @@ async function cleanup(): Promise<void> {
     try {
       await runCommand("docker", args, { timeout: 30_000 });
     } catch {
-      // The resource may not have been created.
+      // 资源可能尚未创建。
     }
   }
 }
@@ -157,7 +157,7 @@ async function waitForLive(
       });
       if (response.ok) return;
     } catch {
-      // The server may still be starting.
+      // 服务端可能仍在启动。
     }
 
     const running = await docker(
@@ -206,7 +206,7 @@ async function waitForReady(baseUrl: string): Promise<void> {
       lastStatus = response.status;
       if (response.status === 200) return;
     } catch {
-      // Startup may still be progressing after liveness becomes available.
+      // 存活检查可用后，启动过程可能仍在继续。
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
@@ -388,9 +388,8 @@ try {
     image,
     ".",
   );
-  // A fresh standalone volume is the supported one-container deployment:
-  // invoke the image with no command so its default prepare-and-start path
-  // must create the baseline before Web can answer requests.
+  // 全新独立卷是受支持的单容器部署：不附带命令调用镜像，使默认准备并启动路径
+  // 必须先创建基线，Web 才能响应请求。
   await docker(30_000, "volume", "create", emptyStandaloneVolume);
   const emptyStandaloneBaseUrl = await launch(
     emptyStandaloneContainer,
@@ -401,7 +400,7 @@ try {
   await assertStatus(emptyStandaloneBaseUrl, "/api/catalogue", 200);
   await docker(30_000, "rm", "--force", emptyStandaloneContainer);
 
-  // A migration-only invocation exits successfully and never opens HTTP.
+  // 仅迁移调用成功退出，且绝不打开 HTTP。
   await docker(30_000, "volume", "create", preparedVolume);
   await docker(
     60_000,
@@ -440,9 +439,8 @@ try {
   }
   await runDeploymentE2e(baseUrl);
 
-  // Stop the standalone process before starting the runtime against the same
-  // prepared volume. This keeps the deployment check from ever running two
-  // Web/ExecutionHost processes against one SQLite catalogue.
+  // 针对同一个已准备卷启动运行时前，先停止独立进程。这样部署检查永远不会让两个
+  // Web/执行宿主进程同时访问同一个 SQLite 目录。
   await docker(30_000, "rm", "--force", container);
 
   await docker(
@@ -459,8 +457,8 @@ try {
     runtimeImage,
     ".",
   );
-  // The start-only target can serve a catalogue prepared by standalone, while
-  // an untouched volume stays live but refuses readiness and business traffic.
+  // 仅启动目标可以服务由独立模式准备的目录；未经处理的卷则保持存活，
+  // 但拒绝就绪检查和业务流量。
   const preparedRuntime = await launch(
     runtimeContainer,
     runtimeImage,
@@ -526,9 +524,8 @@ try {
   await assertStatus(failedRuntime, "/api/catalogue", 503);
   await docker(30_000, "rm", "--force", runtimeContainer);
 
-  // Construct a catalogue that reaches the real baseline DDL and fails. The
-  // standalone image must still be started with its default prepare-and-start
-  // command; a runtime 503 would not prove that Web was kept offline.
+  // 构造一个会进入真实基线 DDL 并失败的目录。独立镜像仍必须以默认准备并启动命令运行；
+  // 运行时返回 503 并不能证明 Web 始终保持离线。
   const retainedMarker = "issue17-retained-before-failed-standalone";
   const failureSecret = "issue17-secret-must-not-appear-in-diagnostics";
   await docker(30_000, "volume", "create", damagedStandaloneVolume);

@@ -29,13 +29,12 @@ import {
   type CoverAcquisitionCheckpoint,
 } from "@digital/application";
 
-import { filesystemObservationTestHooksFor } from "./testing-hooks.js";
+import { filesystemObservationTestHooksFor } from "./testing-hooks.ts";
 
 /**
- * A Linux container's `/proc/self/fd/<n>` is a descriptor-relative anchor,
- * not the mutable registration pathname. Node does not expose `openat`, so a
- * deployment without this facility fails closed instead of re-resolving a
- * logical observed path after authorization.
+ * Linux 容器中的 `/proc/self/fd/<n>` 是相对描述符的锚点，而不是可变的注册路径名。
+ * Node 没有公开 `openat`，因此缺少该设施的部署会失败闭合，而不会在授权后重新解析
+ * 逻辑观察路径。
  */
 type FrozenObservedAuthority = {
   readonly canonicalPath: string;
@@ -43,9 +42,8 @@ type FrozenObservedAuthority = {
 };
 
 /**
- * One frozen registration spelling routed to an already-validated descriptor.
- * This is deliberately not a general alias table: bind creates entries only
- * for the source registration and its frozen authorization closure.
+ * 将一个冻结的注册路径拼写路由到已经验证的描述符。这里刻意不是通用别名表：绑定
+ * 只为来源注册及其冻结授权闭包创建条目。
  */
 type FrozenObservedRootBinding = {
   readonly containerPath: string;
@@ -82,7 +80,7 @@ class BoundPathFailure extends Error {
 class NodeBoundDirectory {
   readonly authority: FrozenObservedAuthority;
   readonly handle: FileHandle;
-  /** Virtual, frozen canonical address used only to route a link to an FD. */
+  /** 只用于把链接路由到文件描述符的虚拟冻结规范地址。 */
   readonly virtualPath: string;
   readonly owned: boolean;
 
@@ -124,7 +122,7 @@ type ResolvedNodeEntry =
   | {
       readonly kind: "file";
       readonly file: NodeBoundFile;
-      /** A symlink resolver already consumed the caller's remaining suffix. */
+      /** 符号链接解析器已经消费调用方剩余的后缀。 */
       readonly consumedRemainder?: true;
     }
   | {
@@ -135,11 +133,9 @@ type ResolvedNodeEntry =
   | { readonly kind: "special"; readonly consumedRemainder?: true };
 
 /**
- * Every accepted root in the frozen closure is opened once.  Link resolution
- * is then expressed in a virtual canonical namespace and mapped back to one
- * of these descriptor anchors.  In particular, an allowed target pathname is
- * never opened after it has been authorized: replacing it with a symlink can
- * neither expand authority nor redirect an in-flight observation.
+ * 冻结闭包中每个已接受的根只打开一次。此后链接解析在虚拟规范命名空间中表达，并
+ * 映射回这些描述符锚点。尤其是，允许的目标路径名在授权后绝不会再次打开；将其替换
+ * 为符号链接既不能扩大权威，也不能重定向进行中的观察。
  */
 class NodeBoundObservedScope extends BoundObservedScope {
   readonly root: import("@digital/application").ObservedRootSnapshot;
@@ -177,10 +173,8 @@ class NodeBoundObservedScope extends BoundObservedScope {
         containerPath: string,
         canonicalPath: string,
       ): Promise<void> => {
-        // Opening every frozen spelling proves it still resolves to the
-        // recorded identity. Equal canonical roots may share the first FD,
-        // but an alias is never trusted merely because some other alias was
-        // valid earlier in the bind.
+        // 打开每个冻结路径拼写可证明它仍解析到记录的身份。规范根相同时可共享第一个
+        // 文件描述符，但绝不能仅因其他别名在本次绑定早些时候有效就信任当前别名。
         const checked = await openFrozenAuthority(
           containerPath,
           canonicalPath,
@@ -381,7 +375,7 @@ class NodeBoundObservedScope extends BoundObservedScope {
     readonly directory: NodeBoundDirectory;
     readonly name: string;
     readonly expected: "file" | "directory" | "either";
-    /** The original final expectation survives an intermediate link. */
+    /** 穿过中间链接后仍保留原始的最终类型预期。 */
     readonly terminalExpected: "file" | "directory" | "either";
     readonly linkTrail: ReadonlySet<string>;
     readonly initiallyObserved?: Awaited<ReturnType<typeof lstat>>;
@@ -428,9 +422,8 @@ class NodeBoundObservedScope extends BoundObservedScope {
     const target = path.resolve(input.directory.virtualPath, rawTarget);
     if (this.routeAuthorizedPath(target) === undefined)
       throw new BoundPathFailure("outside-authorized-roots");
-    // A path below a link necessarily traverses that link as a directory,
-    // even when its final component is a file. Prove and gate that traversal
-    // before resolving the final source.
+    // 链接下方的路径必然把该链接作为目录穿过，即使最终组成部分是文件。解析最终来源
+    // 之前，先证明并约束这次穿越。
     if (input.remaining.length > 0) {
       const linkedDirectory = await this.resolveVirtualPath(
         target,
@@ -469,10 +462,8 @@ class NodeBoundObservedScope extends BoundObservedScope {
   }
 
   /**
-   * Converts only a frozen registration spelling into its descriptor's
-   * canonical virtual namespace. It never calls realpath on a link target:
-   * an unregistered alias remains outside authority even if the operating
-   * system would resolve it to the same inode tree.
+   * 只把冻结的注册路径拼写转换到其描述符的规范虚拟命名空间。它绝不对链接目标调用
+   * `realpath`：即使操作系统会把未注册别名解析到同一 inode 树，该别名仍在权威之外。
    */
   private routeAuthorizedPath(candidate: string):
     | {
@@ -678,8 +669,7 @@ function validateBoundRelativePath(value: string): string {
 }
 
 /**
- * BDMV has an explicit package-root contract. This parser establishes only a
- * technical Artifact boundary; it supplies no source identity or media model.
+ * BDMV 具有明确的包根契约。该解析器只建立技术性产物边界，不提供来源身份或媒体模型。
  */
 export class BdmvFilesystemPackageInterpreter implements FilesystemPackageInterpreter {
   readonly capability = declareCapability({
@@ -708,11 +698,9 @@ export class BdmvFilesystemPackageInterpreter implements FilesystemPackageInterp
 }
 
 /**
- * The production observed-filesystem capability.  One instance owns the
- * registration path checks and every descriptor it binds, observes, opens,
- * and closes.  A BoundObservedScope is intentionally opaque outside this
- * module: callers must return it to this same capability instead of relying
- * on Node-specific methods.
+ * 生产观察文件系统能力。一个实例持有注册路径检查，以及它绑定、观察、打开和关闭的
+ * 每个描述符。绑定观察范围在本模块之外刻意保持不透明：调用方必须把它交回同一个
+ * 能力，而不能依赖 Node 专用方法。
  */
 export class ReadOnlyFilesystemObserver implements ObservedFilesystemCapability {
   readonly capability = declareCapability({
@@ -724,8 +712,8 @@ export class ReadOnlyFilesystemObserver implements ObservedFilesystemCapability 
   });
 
   /**
-   * Linux dev/inode values group hardlinks during one descriptor-bound walk,
-   * but lack a durable incarnation/generation promise across observations.
+   * Linux 的 dev/inode 值可在一次描述符绑定遍历中归组硬链接，但不提供跨观察的耐久
+   * 实例或世代保证。
    */
   readonly objectIdentityContract = { kind: "snapshot-local" } as const;
 
@@ -775,9 +763,8 @@ export class ReadOnlyFilesystemObserver implements ObservedFilesystemCapability 
   async observe(scope: BoundObservedScope): Promise<FilesystemPackageSnapshot> {
     const bound = this.requireBoundScope(scope);
     const snapshotId = `snapshot_${randomUUID()}`;
-    // Node's dev+ino evidence has no mount incarnation or generation contract
-    // across process executions. It is useful only for aliases inside this one
-    // immutable snapshot, so its opaque scope deliberately changes per scan.
+    // Node 的 dev+ino 证据没有跨进程执行的挂载实例或世代契约。它只对本次不可变快照
+    // 内的别名有用，因此其不透明范围会刻意随每次扫描改变。
     const objectIdentityScope = `node-posix-dev-ino/snapshot/${snapshotId}`;
     const files: import("@digital/application").FileObservation[] = [];
     const directories: DirectoryObservation[] = [];
@@ -862,8 +849,8 @@ export class ReadOnlyFilesystemObserver implements ObservedFilesystemCapability 
         continue;
       }
       if (details.isSymbolicLink()) {
-        // In do-not-follow mode this branch intentionally performs no stat,
-        // realpath, readlink, or target open after lstat.
+        // 在不跟随模式下，该分支在 `lstat` 后刻意不执行 `stat`、`realpath`、
+        // `readlink` 或目标打开。
         if (input.bound.root.symlinkMode === "do-not-follow") {
           input.excluded.push({ relativePath, kind: "symbolic-link" });
           input.diagnostics.push({
@@ -1273,10 +1260,8 @@ function errorCode(error: unknown): string | undefined {
 }
 
 /**
- * Verifies the effect roots before SQLite, a managed store, or any other
- * product-owned writer can create a path. Existing and not-yet-existing paths
- * are canonicalised through their deepest existing ancestor so a symlinked
- * parent cannot bypass the observed-root boundary.
+ * 在 SQLite、托管存储或其他产品持有的写入者创建路径前验证效果根。既有和尚不存在的
+ * 路径都通过最深的既有祖先规范化，使符号链接父目录无法绕过观察根边界。
  */
 export async function assertRootsDoNotOverlap(
   observedRoot: string,
@@ -1335,7 +1320,7 @@ function isAncestorOrEqual(parent: string, child: string): boolean {
   );
 }
 
-/** Deliberately locale-free so snapshot order is portable and reproducible. */
+/** 刻意不依赖区域设置，使快照顺序可移植且可复现。 */
 function compareRelativePath(
   left: { readonly relativePath: string },
   right: { readonly relativePath: string },
@@ -1426,7 +1411,7 @@ export class ContentAddressedManagedArtifactStore implements ManagedArtifactStor
       }
       await writeFile(location, content.bytes, { flag: "wx" }).catch(
         async (writeError: unknown) => {
-          // A racing process may have staged the exact same idempotency key.
+          // 竞态进程可能已经暂存完全相同的幂等键。
           if (
             !(
               typeof writeError === "object" &&

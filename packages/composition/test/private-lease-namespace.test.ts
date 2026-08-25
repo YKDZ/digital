@@ -66,10 +66,9 @@ describe("Product-private immutable lease namespaces", () => {
     expect(ordinary.tryAcquire(old)).toBe(true);
     monotonicNow = 2_000;
 
-    // Both cleanup paths observed L. The first one retires L, claims and
-    // retires N, then claims M while the delayed path is paused immediately
-    // before recording L's retirement. Its eventual completion has no mutable
-    // pathname to touch in either later generation.
+    // 两条清理路径都观察到了 L。第一条路径退役 L、认领并退役 N，再认领 M；
+    // 此时延迟路径恰好暂停在记录 L 退役之前。延迟路径最终完成时，
+    // 已没有可供它触碰的后续世代可变路径名。
     delayedCleanup.reclaimStale();
 
     expect(
@@ -103,9 +102,8 @@ describe("Product-private immutable lease namespaces", () => {
 
     expect(p.tryAcquire(publishedByP)).toBe(false);
     expect(q.currentRecord()).toMatchObject({ leaseNonce: "q" });
-    // P now disappears. In the old design this was the dangerous
-    // post-withdrawal crash window. An immutable failed publication leaves no
-    // mutable compensation path for P to resume or corrupt later work.
+    // P 此时消失。旧设计中，这是危险的撤回后崩溃窗口。不可变失败发布不会给 P 留下
+    // 可恢复或破坏后续工作的可变补偿路径。
     expect(q.retireExact(publishedByQ)).toBe(true);
     expect(q.tryAcquire(finalM)).toBe(true);
     expect(q.currentRecord()).toMatchObject({ leaseNonce: "m" });
@@ -141,8 +139,7 @@ describe("Product-private immutable lease namespaces", () => {
     );
     expect(held).toBeDefined();
 
-    // The wall clock can leap in either direction without granting another
-    // process authority over an in-flight holder.
+    // 墙钟可以向任一方向跳变，但不会因此把进行中持有者的权威授予另一进程。
     wallNow = new Date("2027-08-12T00:00:00.000Z");
     expect(reclaimer.reclaimStale()).toBe(false);
     expect(
@@ -165,10 +162,8 @@ describe("Product-private immutable lease namespaces", () => {
     const directory = path.join(root, "private");
     const leasePath = path.join(directory, "active-owner.lease.json");
     let monotonicNow = 1_000;
-    // A process that still has the exact `/proc` identity remains the
-    // authority for its generation.  A monotonic TTL cannot let another
-    // process overlap a mutation merely because the holder awaited longer
-    // than its original estimate.
+    // 仍拥有精确 `/proc` 身份的进程继续作为其世代权威。不能仅因为持有者等待时间超过
+    // 原始估计，就让单调 TTL 允许另一进程与其变更重叠。
     const holder = privateLease({
       directory,
       leasePath,
@@ -265,8 +260,7 @@ describe("Product-private immutable lease namespaces", () => {
     expect(ownership).toBeDefined();
     expect(ownership!.isCurrent()).toBe(true);
 
-    // The PID may exist again, but a different `/proc/<pid>/stat` starttime
-    // proves it is not the process that published this generation.
+    // PID 可能再次存在，但不同的 `/proc/<pid>/stat` 启动时间证明它不是发布本世代的进程。
     reportedStartTime = `${reportedStartTime!}1`;
 
     expect(recovered.reclaimStale()).toBe(true);
@@ -409,11 +403,10 @@ describe("Product-private immutable lease namespaces", () => {
       first.tryAcquire(testLease("pending", "2026-08-12T00:00:02.000Z")),
     ).toBe(true);
 
-    // A future wall-clock jump does not reclaim a real pending state.
+    // 墙钟向未来跳变不会回收真实待处理状态。
     wallNow = new Date("2027-08-12T00:00:00.000Z");
     expect(resumed.reclaimStale()).toBe(false);
-    // A subsequent backwards jump cannot make the detached record permanent:
-    // boot-scoped monotonic time has still passed its bounded deadline.
+    // 随后的向后跳变不能让脱离进程的记录永久存在：启动期单调时间仍已越过其有界截止点。
     wallNow = new Date("2025-08-12T00:00:00.000Z");
     monotonicNow = 3_000;
     expect(resumed.reclaimStale()).toBe(true);
@@ -544,9 +537,8 @@ describe("Product-private immutable lease namespaces", () => {
     });
 
     expect(pending.tryAcquire(state)).toBe(true);
-    // P has published the processing generation, then crashes before it can
-    // close pending. The published immutable evidence must make a retry fail
-    // closed even after a later cleanup retires P's active holder.
+    // P 已发布处理世代，随后在关闭待处理状态前崩溃。即使之后的清理退役了 P 的活跃持有者，
+    // 已发布不可变证据也必须让重试以关闭方式失败。
     expect(processing.acquire(state)).toBeDefined();
     processorAlive = false;
     monotonicNow = 3_000;

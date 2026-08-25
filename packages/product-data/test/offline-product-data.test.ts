@@ -1,5 +1,6 @@
 import {
   chmod,
+  type FileHandle,
   lstat,
   mkdir,
   mkdtemp,
@@ -129,6 +130,7 @@ describe("offline product-data layout", () => {
     const originalWrite = prototype.write;
     let shortened = false;
     vi.spyOn(prototype, "write").mockImplementation(async function (
+      this: FileHandle,
       ...arguments_
     ) {
       const length = arguments_[2];

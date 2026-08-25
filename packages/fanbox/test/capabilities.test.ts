@@ -241,7 +241,7 @@ describe("FANBOX official collection", () => {
     });
     const evidence = new FanboxDateDirectoryInterpreter("customudon").interpret(
       snapshot("/library/25.01.01 post"),
-    )[0]!;
+    )[0];
 
     await expect(collector.collect(evidence)).resolves.toMatchObject({
       records: [],
@@ -303,7 +303,7 @@ describe("FANBOX official collection", () => {
     ];
     const evidence = new FanboxDateDirectoryInterpreter("customudon").interpret(
       snapshot("/library/25.01.01 post"),
-    )[0]!;
+    )[0];
 
     for (const reflected of representations) {
       const collector = new FanboxCollector({
@@ -338,7 +338,7 @@ describe("FANBOX official collection", () => {
     });
     const evidence = new FanboxDateDirectoryInterpreter("customudon").interpret(
       snapshot("/library/25.01.01 post"),
-    )[0]!;
+    )[0];
 
     const result = await collector.collect(evidence);
 
@@ -361,7 +361,7 @@ describe("FANBOX official collection", () => {
     });
     const evidence = new FanboxDateDirectoryInterpreter("customudon").interpret(
       snapshot("/library/25.01.01 post"),
-    )[0]!;
+    )[0];
 
     await expect(collector.collect(evidence)).resolves.toMatchObject({
       records: [],
@@ -573,7 +573,7 @@ describe("FANBOX official collection", () => {
     });
     const evidence = new FanboxDateDirectoryInterpreter("customudon").interpret(
       snapshot("/library/25.01.01 post"),
-    )[0]!;
+    )[0];
 
     const result = await collector.collect(evidence);
 
@@ -873,7 +873,7 @@ describe("FANBOX official collection", () => {
     });
     const evidence = new FanboxDateDirectoryInterpreter("customudon").interpret(
       snapshot("/library/25.01.01 post"),
-    )[0]!;
+    )[0];
 
     const result = await collector.collect(evidence);
 
@@ -945,7 +945,7 @@ describe("FANBOX official collection", () => {
     });
     const evidence = new FanboxDateDirectoryInterpreter("customudon").interpret(
       snapshot("/library/25.01.01 post"),
-    )[0]!;
+    )[0];
 
     const result = await collector.collect(evidence);
 
@@ -958,7 +958,7 @@ describe("FANBOX official collection", () => {
     const details = [{ body: null }];
     const evidence = new FanboxDateDirectoryInterpreter("customudon").interpret(
       snapshot("/library/25.01.01 post"),
-    )[0]!;
+    )[0];
 
     for (const detail of details) {
       const collector = new FanboxCollector({
@@ -1023,7 +1023,7 @@ describe("FANBOX official collection", () => {
     ];
     const evidence = new FanboxDateDirectoryInterpreter("customudon").interpret(
       snapshot("/library/25.01.01 post"),
-    )[0]!;
+    )[0];
 
     for (const detail of details) {
       const collector = new FanboxCollector({
@@ -1087,7 +1087,7 @@ describe("FANBOX official collection", () => {
     });
     const evidence = new FanboxDateDirectoryInterpreter("customudon").interpret(
       snapshot("/library/25.01.01 post"),
-    )[0]!;
+    )[0];
 
     const result = await collector.collect(evidence);
 
@@ -1134,7 +1134,7 @@ describe("FANBOX official collection", () => {
     });
     const evidence = new FanboxDateDirectoryInterpreter("customudon").interpret(
       snapshot("/library/25.01.01 post"),
-    )[0]!;
+    )[0];
 
     const result = await collector.collect(evidence);
 
@@ -1181,7 +1181,7 @@ describe("FANBOX official collection", () => {
     });
     const evidence = new FanboxDateDirectoryInterpreter("customudon").interpret(
       snapshot("/library/25.01.01 post"),
-    )[0]!;
+    )[0];
 
     const result = await collector.collect(evidence);
 
@@ -1421,7 +1421,7 @@ describe("FANBOX official collection", () => {
     });
     const evidence = new FanboxDateDirectoryInterpreter("customudon").interpret(
       snapshot("/library/25.01.01 post"),
-    )[0]!;
+    )[0];
 
     const result = await collector.collect(evidence);
 

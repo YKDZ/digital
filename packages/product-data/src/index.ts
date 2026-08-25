@@ -10,23 +10,23 @@ import {
   type ProductPrivateLeaseOwnership,
   type ProductPrivateLeaseOwner,
   type ProductPrivateLeaseRecord,
-} from "./private-lease.js";
+} from "./private-lease.ts";
 
 export {
   ProductPrivateLease,
   inspectPrivatePath,
   writePrivateJsonDurably,
-} from "./private-lease.js";
+} from "./private-lease.ts";
 export type {
   ProductPrivateLeaseOwnership,
   ProductPrivateLeaseRecord,
-} from "./private-lease.js";
+} from "./private-lease.ts";
 
 export {
   createOfflineProductDataBackup,
   restoreOfflineProductDataBackup,
-} from "./offline-product-data.js";
-export type { ProductDataRestoreStage } from "./offline-product-data.js";
+} from "./offline-product-data.ts";
+export type { ProductDataRestoreStage } from "./offline-product-data.ts";
 
 const productOperationStateSuffix = ".digital-operation-state";
 const productOperationLeaseFileName = "product-operation.lease.json";
@@ -162,6 +162,7 @@ function assertNoInterruptedRestore(productDataDirectory: string): void {
       throw error;
     throw new Error(
       "离线恢复中断状态不可信；拒绝写入，删除失败目标后从备份恢复",
+      { cause: error },
     );
   }
   throw new Error("离线恢复曾中断；拒绝写入，删除失败目标后从备份恢复");

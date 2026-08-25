@@ -172,9 +172,8 @@ try {
 
   await writeFile(path.join(delivery, "src", "index.ts"), "");
 
-  // These fixtures deliberately resolve through aliases rather than a
-  // package-looking specifier. They exercise the same source-edge check that
-  // CI runs, so aliases cannot make an architectural edge invisible.
+  // 这些夹具刻意通过别名而非形似包名的说明符解析。它们运行与 CI 相同的来源边检查，
+  // 因此别名无法隐藏架构边。
   await writeFile(
     path.join(application, "package.json"),
     JSON.stringify({
@@ -316,8 +315,8 @@ try {
   );
   assert.deepEqual(await check(), []);
 
-  // A TypeScript path can cross a package boundary through a real pnpm/npm
-  // symlink even though its lexical path remains inside this package.
+  // 即使 TypeScript 路径的词法形式仍位于当前包内，它也能通过真实 pnpm/npm 符号链接
+  // 跨越包边界。
   await writeFile(
     path.join(application, "package.json"),
     JSON.stringify({
@@ -450,9 +449,8 @@ try {
     /@digital\/application: unresolvable source path #cycle .* symlink cycle/u,
   );
 
-  // A bare tsconfig extends entry follows the owning package's dependency
-  // alias through its real node_modules layout. TypeScript accepts this
-  // setup, so the source-edge checker must see the inherited SQLite path too.
+  // 裸 `tsconfig` 扩展项会通过所属包真实的 `node_modules` 布局跟随依赖别名。
+  // TypeScript 接受这种设置，因此来源边检查器也必须看到继承的 SQLite 路径。
   await writeFile(
     path.join(application, "package.json"),
     JSON.stringify({
@@ -724,9 +722,8 @@ try {
   );
   await writeFile(path.join(application, "src", "index.ts"), "");
 
-  // Dependency aliases must resolve to their real workspace package before
-  // both source-edge and persistence checks run. These are the pnpm/npm
-  // spellings that package manifests expose, across every dependency field.
+  // 在来源边和持久化检查运行前，依赖别名必须解析为真实工作区包。这些是包清单在所有
+  // 依赖字段中暴露的 pnpm/npm 拼写形式。
   await writeFile(
     path.join(aliasFixture, "package.json"),
     JSON.stringify({
@@ -774,8 +771,7 @@ try {
     /undeclared workspace source import (workspace-sqlite|npm-sqlite|optional-sqlite|peer-sqlite)/u,
   );
 
-  // A package import can hide the alias key too: resolve it recursively
-  // before deciding whether the application imports persistence.
+  // 包导入也可能隐藏别名键：判断应用层是否导入持久化之前，应递归解析它。
   await writeFile(
     path.join(aliasFixture, "package.json"),
     JSON.stringify({
@@ -855,8 +851,8 @@ try {
   );
   assert.deepEqual(await check(), []);
 
-  // TypeScript applies multiple extends entries from left to right: the
-  // latter effective config wins, and an owner's own paths wins last.
+  // TypeScript 从左到右应用多个 `extends` 项：后一个生效配置优先，
+  // 所有者自身的 `paths` 最后取得优先权。
   await writeFile(
     path.join(aliasFixture, "tsconfig.precedence-a.json"),
     JSON.stringify({
@@ -887,8 +883,7 @@ try {
   );
   assert.deepEqual(await check(), []);
 
-  // A later extends entry can also hide a direct cross-package source path.
-  // This mirrors a second-base configuration which supplies the SQLite map.
+  // 后续 `extends` 项也可能隐藏直接跨包来源路径。这里模拟由第二份基础配置提供 SQLite 映射。
   await writeFile(
     path.join(aliasFixture, "tsconfig.base-compiler.json"),
     JSON.stringify({ compilerOptions: { baseUrl: "." } }),
@@ -959,9 +954,8 @@ try {
     /@digital\/delivery: forbidden persistence implementation import node:sqlite/u,
   );
 
-  // Each case invokes the same top-level formal command used by CI rather
-  // than a test-local inspection. Vue SFCs are intentional: scripts and
-  // templates must both remain inside the renderer membrane.
+  // 每个案例都调用 CI 使用的同一条顶层正式命令，而非测试本地检查。刻意采用 Vue SFC：
+  // 脚本和模板都必须留在渲染器隔膜内。
   await assertFormalRendererRejected({
     label: "an aliased fetch global",
     cardBody: "const send = fetch;\nvoid send;",

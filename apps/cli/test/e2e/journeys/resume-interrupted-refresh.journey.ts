@@ -121,7 +121,7 @@ function cliInvocation(context: Parameters<CliJourney["setup"]>[0]): {
     ? {
         executable: process.execPath,
         prefix: [
-          "--conditions=source",
+          "--conditions=digital-source",
           path.join(context.packageRoot, "src", "cli.ts"),
         ],
       }
@@ -183,11 +183,9 @@ async function interruptAtPersistedCheckpoint(
     child.once("close", (code, signal) => resolve({ code, signal }));
   });
   const deadline = Date.now() + 30_000;
-  // This watchdog observes a child CLI process at a durable checkpoint. It is
-  // deliberately not another composed runtime: runtime initialization owns a
-  // migration gate (`BEGIN IMMEDIATE`) and would itself contend with the
-  // child checkpoint writer. The later CLI `resume` and `inspect` commands
-  // remain the restart E2E boundary; this observer only reads committed stage.
+  // 此看门狗在持久检查点观察子 CLI 进程。它刻意不是另一个已组合运行时：运行时初始化
+  // 拥有迁移闸门（`BEGIN IMMEDIATE`），自身会与子检查点写入器争用。之后的 CLI `resume`
+  // 和 `inspect` 命令仍是重启端到端边界；该观察器只读取已提交阶段。
   let observer: DatabaseSync | undefined;
   let executionId: string | undefined;
   try {
@@ -340,8 +338,7 @@ const journey: CliJourney = {
         env: { DIGITAL_PRODUCT_DATA: state.dataDirectory },
       },
       {
-        // This expected terminal failure deliberately yields an execution id that
-        // the next command inspects; it must not halt the negative-path journey.
+        // 这个预期终态失败刻意产出供下一命令检查的执行 ID；它不得中止反向路径旅程。
         name: "create a terminal failed metadata refresh",
         args: ["refresh-metadata", "missing-terminal-subject", "--json"],
         env: { DIGITAL_PRODUCT_DATA: state.dataDirectory },

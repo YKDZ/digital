@@ -71,7 +71,7 @@ const acquirerCapability = declareCapability({
   interpretationContractVersions: ["1"],
 });
 
-/** Product composition, never the integration itself, admits this exact rule. */
+/** 这条精确规则由产品组合层而非集成本身准入。 */
 export const trustedBangumiEpisodicRule = {
   capabilityId: recognizerCapability.capabilityId,
   capabilityVersion: recognizerCapability.capabilityVersion,
@@ -86,8 +86,7 @@ type EpisodeEvidence = RecognitionEvidence & {
 };
 
 /**
- * The convention owns only local structural evidence. It deliberately does
- * not turn a directory into a Domain season or infer special-entry semantics.
+ * 该约定只拥有本地结构证据。它刻意不把目录变成领域季，也不推断特别篇语义。
  */
 export class BangumiEpisodicDirectoryInterpreter implements DirectoryInterpreter {
   readonly capability = directoryCapability;
@@ -96,9 +95,8 @@ export class BangumiEpisodicDirectoryInterpreter implements DirectoryInterpreter
     snapshot: FilesystemPackageSnapshot,
   ): AssetRefreshWorkPlan | readonly RecognitionEvidence[] {
     const root = /^(.+?) \((\d{4})\)$/u.exec(baseName(snapshot.root));
-    // An empty evidence list means this convention is simply not applicable.
-    // An explicit empty plan is malformed at the Application boundary because
-    // it would claim to have selected an asset boundary without selecting one.
+    // 空证据列表表示该约定并不适用。显式空计划在应用边界属于格式错误，
+    // 因为它声称已经选择资产边界，却没有选中任何资产。
     if (root === null) return [];
 
     const title = root[1]!;
@@ -174,8 +172,7 @@ export type BangumiOAuthGrant = {
 };
 
 /**
- * A sanitized protocol classification for the private connection adapter.
- * It deliberately retains no response body, headers, tokens, or credentials.
+ * 供私有连接适配器使用的净化协议分类。它刻意不保留响应正文、标头、令牌或凭据。
  */
 export class BangumiOAuthGrantRequestFailure extends Error {
   readonly kind:
@@ -206,9 +203,8 @@ export function isBangumiOAuthAuthorizationRejected(
 }
 
 /**
- * A complete HTTP response proves the token endpoint processed this request
- * enough to answer it.  The product may use its source retry policy for this
- * class; a transport abort intentionally remains authorization-uncertain.
+ * 完整 HTTP 响应证明令牌端点至少已处理本请求到足以作答的程度。产品可以对此分类采用
+ * 来源重试策略；传输中止则刻意保持授权不确定状态。
  */
 export function isBangumiOAuthRetryableResponse(
   error: unknown,
@@ -220,9 +216,8 @@ export function isBangumiOAuthRetryableResponse(
 }
 
 /**
- * Bangumi documents an OAuth 2.0 authorization-code flow.  Its documented
- * authorization parameters include `state`, but not PKCE parameters, so this
- * integration deliberately sends only the source-supported contract.
+ * Bangumi 文档描述了 OAuth 2.0 授权码流程。文档中的授权参数包含 `state`，但不包含
+ * PKCE 参数，因此该集成刻意只发送来源支持的契约。
  */
 export function createBangumiOAuthAuthorizationRequest(input: {
   readonly clientId: string;
@@ -239,7 +234,7 @@ export function createBangumiOAuthAuthorizationRequest(input: {
   return endpoint.toString();
 }
 
-/** Exchanges one callback code using Bangumi's documented form contract. */
+/** 使用 Bangumi 文档规定的表单契约交换一个回调码。 */
 export async function exchangeBangumiOAuthAuthorizationCode(input: {
   readonly clientId: string;
   readonly clientSecret: string;
@@ -267,7 +262,7 @@ export async function exchangeBangumiOAuthAuthorizationCode(input: {
   });
 }
 
-/** Refreshes a private grant without exposing it to collector callers. */
+/** 刷新私有授权，但不向采集器调用方暴露它。 */
 export async function refreshBangumiOAuthGrant(input: {
   readonly clientId: string;
   readonly clientSecret: string;
@@ -320,8 +315,7 @@ async function requestBangumiOAuthGrant(input: {
       body: new URLSearchParams(input.parameters).toString(),
     });
   } catch {
-    // The transport interface cannot prove whether bytes reached Bangumi. A
-    // refresh token may already have rotated, so callers must not retry it.
+    // 传输接口无法证明字节是否抵达 Bangumi。刷新令牌可能已经轮换，因此调用方不得重试。
     throw new BangumiOAuthGrantRequestFailure("transport-uncertain");
   }
   if (!response.ok) {
@@ -375,16 +369,15 @@ async function isOAuthAuthorizationRejection(
     if (bytes.byteLength === 0 || bytes.byteLength > maximumResponseBytes)
       return false;
     const body = object(json(new TextDecoder().decode(bytes)));
-    // RFC 6749 defines invalid_grant as an invalid, expired, revoked, or
-    // otherwise unacceptable refresh grant. Other 4xx responses can be a
-    // transient deployment/configuration problem and must not burn a grant.
+    // RFC 6749 将 `invalid_grant` 定义为无效、过期、已撤销或因其他原因不可接受的刷新授权。
+    // 其他 4xx 响应可能只是暂时的部署/配置问题，不得因此耗掉授权。
     return body?.error === "invalid_grant";
   } catch {
     return false;
   }
 }
 
-/** A narrow private authorization capability; grants are never returned. */
+/** 窄化的私有授权能力；绝不返回授权材料。 */
 type PrivateAuthorization = {
   readonly bearer: (
     context?: SourceCollectionExecutionContext,
@@ -392,7 +385,7 @@ type PrivateAuthorization = {
 };
 
 export type BangumiCollectorOptions = {
-  /** Composition may inject a package-private OAuth capability. */
+  /** 组合层可以注入包私有的 OAuth 能力。 */
   readonly authorization?: {
     readonly bearer: (
       context?: SourceCollectionExecutionContext,
@@ -401,7 +394,7 @@ export type BangumiCollectorOptions = {
   readonly request?: BangumiOAuthTransport;
 };
 
-/** Captures every endpoint response separately; there is no synthetic payload. */
+/** 分别捕获每个端点响应；不存在合成载荷。 */
 export class BangumiCollector implements SourceCollector {
   readonly capability = collectorCapability;
   private readonly request: FetchLike;
@@ -724,7 +717,7 @@ export class BangumiCollector implements SourceCollector {
   }
 }
 
-/** A deterministic interpretation of one ordinary episode boundary. */
+/** 对一个普通剧集边界的确定性解释。 */
 export class BangumiSourceInterpreter implements SourceInterpreter {
   readonly capability = interpreterCapability;
 
@@ -1430,9 +1423,8 @@ function workEntity(subject: Subject, record: SourceRecord): SourcedEntity {
   };
 }
 /**
- * The official sequel assertion is one directed Entity-to-Entity relationship.
- * Episode membership remains a separate relationship whose subject is the
- * collected episode Asset, so neither fact leaks a season container into core.
+ * 官方续作断言是一条有向的实体到实体关系。剧集成员关系仍是独立关系，其主体为已采集的
+ * 剧集资产，因此两种事实都不会把季容器泄漏到核心层。
  */
 function officialSeasonRelationships(
   chain: readonly number[],

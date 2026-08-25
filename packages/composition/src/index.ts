@@ -89,36 +89,35 @@ import {
 import {
   InProcessObservedRootCleanupEmergencyJournal,
   type ObservedRootCleanupEmergencyJournal,
-} from "./observed-root-cleanup-journal.js";
-import { ProductSourceConnections } from "./source-connections.js";
+} from "./observed-root-cleanup-journal.ts";
+import { ProductSourceConnections } from "./source-connections.ts";
 
 export {
   InProcessObservedRootCleanupEmergencyJournal,
   observedRootCleanupEmergencyJournalCapacity,
-} from "./observed-root-cleanup-journal.js";
+} from "./observed-root-cleanup-journal.ts";
 export type {
   ObservedRootCleanupEmergencyIncident,
   ObservedRootCleanupEmergencyJournal,
   ObservedRootCleanupEmergencyJournalSnapshot,
-} from "./observed-root-cleanup-journal.js";
+} from "./observed-root-cleanup-journal.ts";
 export {
   OmdbSourceConnection,
   ProductSourceConnections,
   TmdbSourceConnection,
-} from "./source-connections.js";
+} from "./source-connections.ts";
 export { createOfflineProductDataBackup, restoreOfflineProductDataBackup };
-export { ProductBangumiSourceConnection } from "./bangumi-source-connection.js";
-export type { BangumiAuthorizationStart } from "./bangumi-source-connection.js";
+export { ProductBangumiSourceConnection } from "./bangumi-source-connection.ts";
+export type { BangumiAuthorizationStart } from "./bangumi-source-connection.ts";
 export type {
   SourceConnectionAvailability,
   SourceConnectionCredentialStatus,
   SourceConnectionInspection,
-} from "./source-connections.js";
+} from "./source-connections.ts";
 
 /**
- * Composition chooses the concrete audit sink for Application-owned cleanup
- * incidents. The record retains registration coordinates, never an adapter
- * scope or a filesystem path another layer could reopen.
+ * 组合层为 Application 持有的清理事件选择具体审计接收端。记录只保留注册坐标，
+ * 绝不保留适配器范围或可被其他层重新打开的文件系统路径。
  */
 class StderrObservedRootCleanupFailureReporter implements ObservedRootCleanupFailureReporter {
   reportCleanupFailure(input: ObservedRootCleanupFailure): void {
@@ -144,7 +143,7 @@ function describeCleanupError(error: unknown): string {
   return typeof error;
 }
 
-/** Product policy is assembled here; integrations can never grant themselves trust. */
+/** 产品策略在此装配；集成绝不能自行授予信任。 */
 class CuratedInitialRecognitionPolicy implements RecognitionPolicy {
   readonly version = "curated-initial-sources/3";
   readonly trustedRuleCoordinates = [
@@ -176,7 +175,7 @@ class CuratedInitialRecognitionPolicy implements RecognitionPolicy {
   }
 }
 
-/** The allow-list is product policy, never a capability declaration. */
+/** 允许列表属于产品策略，绝不是能力声明。 */
 export function curatedInitialRecognitionPolicy(): RecognitionPolicy & {
   readonly version: string;
 } {
@@ -186,9 +185,8 @@ export function curatedInitialRecognitionPolicy(): RecognitionPolicy & {
 const ordinaryFilmMetadataPolicyId = "ordinary-film-metadata";
 
 /**
- * Reject an invalid static assembly before it can create process resources.
- * Concrete capability instances are registered below; this function remains
- * deliberately unaware of provider names and of any closed kind catalogue.
+ * 在无效静态装配创建进程资源前拒绝它。具体能力实例在下方注册；该函数刻意不了解
+ * 提供方名称，也不了解任何封闭的种类目录。
  */
 export function validateCapabilityDeclarations(
   declarations: readonly Partial<DeclaredCapability>[],
@@ -263,8 +261,7 @@ function nonEmpty(value: unknown): value is string {
 }
 
 /**
- * Product policy lives at the assembly boundary. The Application receives
- * only generic rules and durable opaque enrollment identifiers.
+ * 产品策略位于装配边界。Application 只接收通用规则和耐久的不透明登记标识。
  */
 class CuratedMetadataPolicyConfiguration implements MetadataPolicyConfiguration {
   readonly version = "curated-metadata/2";
@@ -326,10 +323,8 @@ class CuratedMetadataPolicyConfiguration implements MetadataPolicyConfiguration 
 }
 
 /**
- * Composition owns the concrete configuration registry. It derives its
- * entries from the current composed policy/configuration versions, never from
- * an execution's frozen references, so a stale execution cannot validate
- * itself by echoing its own historical input.
+ * 组合层持有具体配置登记表。条目来自当前已组合的策略与配置版本，绝不来自执行的
+ * 冻结引用，因此过期执行不能通过回显自己的历史输入来验证自身。
  */
 class RegisteredWorkflowConfigurationCompatibility implements WorkflowConfigurationCompatibility {
   private readonly registered: ReadonlySet<string>;
@@ -370,35 +365,33 @@ class RegisteredWorkflowConfigurationCompatibility implements WorkflowConfigurat
 
 export type ComposedAssetRefresh = AssetRefreshWorkflow &
   AssetRefreshAutomationWorkflow & {
-    /** Every production composition owns the registered-root authority. */
+    /** 每个生产组合都持有注册观察根权威。 */
     readonly observedRootRegistrations: ObservedRootRegistrations;
-    /** Process-local fallback evidence when the ordinary cleanup audit fails. */
+    /** 普通清理审计失败时使用的进程内后备证据。 */
     readonly observedRootCleanupEmergencyJournal: ObservedRootCleanupEmergencyJournal;
-    /** Product-managed private access for currently deployed film sources. */
+    /** 产品管理的、供当前部署电影来源使用的私密访问能力。 */
     readonly sourceConnections: ProductSourceConnections;
-    /** Drains Application work, then releases infrastructure exactly once. */
+    /** 排空 Application 工作，然后且仅然后释放一次基础设施。 */
     close(): Promise<void>;
   };
 
 export type ComposedAutomationHost = AutomationHost & {
   /**
-   * Stops polling and releases the resources it owns exactly once. A failed
-   * active poll remains observable after release rather than becoming a
-   * graceful shutdown result.
+   * 停止轮询并且只释放一次所持资源。失败的活动轮询在释放后仍可观察，不会被改写为
+   * 正常关闭结果。
    */
   close(): Promise<void>;
 };
 
 /**
- * One production process composition. Delivery and its owned Automation Host
- * receive the same Application Workflow instance, so Information Fulfillment
- * memoization and durable work serialization are shared across both triggers.
+ * 一个生产进程组合。交付层及其持有的自动化宿主接收同一个应用工作流实例，因此两种
+ * 触发来源共享信息履行的记忆化和耐久工作串行化。
  */
 export type ComposedAssetRefreshRuntime = {
   readonly workflow: ComposedAssetRefresh;
   readonly executionHost: ExecutionHost;
   readonly automationHost: ComposedAutomationHost;
-  /** Releases the owned host first, then the one workflow/persistence owner. */
+  /** 先释放所持宿主，再释放唯一的工作流／持久化持有者。 */
   close(): Promise<void>;
 };
 
@@ -408,11 +401,10 @@ export type AssetRefreshRuntimeOptions = {
   readonly onError?: (error: unknown) => void;
   readonly configuration?: Readonly<Record<string, string | undefined>>;
   /**
-   * Delivery-owned dispatch rebuilt after each accepted subject. The callback
-   * returns only Application's neutral Information Requirement contract.
+   * 每个已接受主体建立后重建的交付层分派。回调只返回 Application 的中立信息需求契约。
    */
   readonly automationInformationRequirementForAcceptedSubject?: AutomationInformationRequirementResolver;
-  /** @deprecated Prefer per-accepted-subject resolver for new composition. */
+  /** @deprecated 新组合应优先使用按已接受主体解析的解析器。 */
   readonly automationInformationRequirement?: InformationRequirement;
 };
 
@@ -424,15 +416,14 @@ export async function assertProductDataOffline(
 }
 
 /**
- * Delivery may supply a per-accepted-subject neutral resolver without making
- * composition depend on a View or persisting expanded demand on an Automation
- * Intent. The static option remains for legacy callers only.
+ * 交付层可以提供按已接受主体工作的中立解析器，而不会让组合依赖视图，也不会把展开后
+ * 的需求持久化到自动化意图。静态选项只为旧调用方保留。
  */
 export type AssetRefreshCompositionOptions = {
   readonly automationInformationRequirementForAcceptedSubject?: AutomationInformationRequirementResolver;
-  /** @deprecated Prefer per-accepted-subject resolver for new composition. */
+  /** @deprecated 新组合应优先使用按已接受主体解析的解析器。 */
   readonly automationInformationRequirement?: InformationRequirement;
-  /** Runtime-owned supervisor shared by Delivery and Automation children. */
+  /** 由运行时持有、交付层和自动化子执行共享的监督器。 */
   readonly invocationSupervisor?: Pick<ExecutionHost, "invoke">;
 };
 
@@ -529,12 +520,11 @@ function composeAssetRefreshWithGeneration(
     const configurationCompatibility =
       new RegisteredWorkflowConfigurationCompatibility(
         [
-          // Automation's default policy reference is the current policy object.
+          // 自动化的默认策略引用就是当前策略对象。
           recognitionPolicy.version,
-          // Filesystem executions retain this explicit planning-input reference.
+          // 文件系统执行保留这个明确的规划输入引用。
           `recognition-policy/${recognitionPolicy.version}`,
-          // This is a separately versioned composed configuration, not an
-          // execution-derived echo of opaque references.
+          // 这是独立版本化的组合配置，而不是从执行派生、对不透明引用的回显。
           `metadata-policy/${metadataPolicyConfiguration.version}`,
         ],
         sourceConnections,
@@ -648,9 +638,8 @@ function composeAssetRefreshWithGeneration(
 }
 
 /**
- * Applies the one close order for a composed workflow without exposing the
- * persistence implementation to Application. It is also the narrow seam for
- * composition-level lifecycle tests with an instance-local owner.
+ * 为组合工作流应用唯一关闭顺序，同时不向 Application 暴露持久化实现。它也是使用
+ * 实例内持有者进行组合层生命周期测试的窄接缝。
  */
 export function composeOwnedAssetRefresh<
   Workflow extends { close(): Promise<void> },
@@ -680,8 +669,7 @@ export function composeOwnedAssetRefresh<
 }
 
 /**
- * The production composition root. It deliberately owns exactly one workflow
- * and passes that object to both Delivery and Automation Host composition.
+ * 生产组合根。它刻意只持有一个工作流，并把同一个对象传给交付层和自动化宿主组合。
  */
 export function composeAssetRefreshRuntime(
   productDataDirectory: string,
@@ -854,8 +842,7 @@ export function composeOwnedAutomationHost(
 }
 
 /**
- * A runtime-owned host stops its timer but leaves the shared workflow open
- * for its outer composition to release exactly once.
+ * 运行时持有的宿主停止自己的定时器，但保持共享工作流打开，由外层组合只释放一次。
  */
 function composeAutomationHostForWorkflow(
   workflow: DueAutomationRunner & {
@@ -888,9 +875,8 @@ function composeAutomationHostForWorkflow(
 }
 
 /**
- * Every owner gets a chance to release even if an earlier lifecycle phase
- * failed. The first failure remains the caller-visible cause so a failed poll
- * cannot be hidden by a later persistence-close error.
+ * 即使较早的生命周期阶段失败，每个持有者仍有机会释放。第一个失败始终是调用方可见
+ * 的原因，因此失败轮询不会被后续持久化关闭错误掩盖。
  */
 async function releaseOwnedResources(
   releases: readonly (() => void | Promise<void>)[],

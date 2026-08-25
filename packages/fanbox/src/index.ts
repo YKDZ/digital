@@ -41,9 +41,8 @@ export const fanboxOfficialCollectionCapability = declareCapability({
   interpretationContractVersions: ["1"],
 });
 /**
- * Browser credentials are a separate private capability from FANBOX's
- * collection contract. Their exported-cookie shape never enters Domain or
- * Application.
+ * 浏览器凭据是独立于 FANBOX 采集契约的私有能力。其导出 Cookie 结构绝不会进入
+ * 领域层或应用层。
  */
 export const fanboxSourceConnectionCapability = declareCapability({
   identity: "fanbox.source-connection",
@@ -91,13 +90,13 @@ type CapturedFanboxResponse = {
   readonly body: string;
   readonly bytes: Uint8Array;
   readonly mediaType: string;
-  /** The semantically successful FANBOX envelope body, never an error body. */
+  /** 语义上成功的 FANBOX 响应封装正文，绝不是错误正文。 */
   readonly envelopeBody: Record<string, unknown>;
 };
 
 /**
- * A rejected transport can leave a valid, narrower summary record in place.
- * Invalid HTTP-success JSON cannot: it has not formed source evidence at all.
+ * 被拒绝的传输仍可留下有效但范围更窄的摘要记录；无效的 HTTP 成功 JSON 则不行，
+ * 因为它根本没有形成来源证据。
  */
 class FanboxTransportFailure extends Error {}
 
@@ -117,7 +116,7 @@ export class FanboxDateDirectoryInterpreter implements DirectoryInterpreter {
               ...new Set(
                 creatorScope().filter((value) => isFanboxCreatorId(value)),
               ),
-            ].sort();
+            ].toSorted();
   }
 
   interpret(
@@ -294,9 +293,8 @@ export class FanboxCollector implements SourceCollector {
             "FANBOX detail publication datetime differs from its summary",
           );
       } catch (error) {
-        // A contradictory endpoint response means this collection has not
-        // established one FANBOX post identity.  Do not retain a summary
-        // record under an identity the paired official endpoint rejects.
+        // 相互矛盾的端点响应意味着本次采集尚未建立统一的 FANBOX 帖子身份。
+        // 不要在配对官方端点拒绝的身份下保留摘要记录。
         return {
           records: [],
           failures: [
@@ -316,10 +314,8 @@ export class FanboxCollector implements SourceCollector {
       );
       return { records: [summary, detail], failures: [] };
     } catch (error) {
-      // The selected creator-summary response is a separate, valid source
-      // coverage boundary.  A malformed, unavailable, or entitlement-limited
-      // detail endpoint cannot turn it into an empty source response; it only
-      // leaves the detail fact family unavailable.
+      // 所选创作者摘要响应是独立且有效的来源覆盖边界。格式错误、不可用或权限受限的
+      // 详情端点不能把它变成空来源响应；只会让详情事实族不可用。
       return {
         records: [summary],
         failures: [
@@ -461,9 +457,8 @@ export class FanboxCollector implements SourceCollector {
       throw new FanboxTransportFailure(errorMessage(error));
     }
     if (!response.ok) {
-      // A Cloudflare challenge is operational evidence, not a source response.
-      // Inspect only enough of the rejected body to classify that failure and
-      // never retain or include the body in diagnostics.
+      // Cloudflare 质询属于运维证据，而非来源响应。只检查被拒正文中足以对失败分类的部分，
+      // 绝不保留该正文或把它纳入诊断。
       let rejected: Uint8Array;
       try {
         rejected = new Uint8Array(await response.arrayBuffer());
@@ -558,9 +553,8 @@ function fanboxPrivateCredential(
     .split(/;\s*/u)
     .filter((pair) => pair.includes("="));
   if (sensitiveCookiePairs.length === 0) return undefined;
-  // Bare short values (for example A/B experiment flags) occur naturally in
-  // HTTP diagnostics.  The complete cookie pair remains private, while only
-  // token-shaped values are redacted as free-standing substrings.
+  // 裸露的短值（例如 A/B 实验标志）会自然出现在 HTTP 诊断中。完整 Cookie 对保持私有，
+  // 只有形似令牌的值会作为独立子串被遮盖。
   const sensitiveCookieValues = sensitiveCookiePairs
     .map((pair) => pair.slice(pair.indexOf("=") + 1))
     .filter((secret) => secret.length >= 8);
@@ -595,10 +589,9 @@ function fanboxPrivateCredential(
 }
 
 /**
- * A collector never retains credential material even if an upstream error
- * serializes it as JSON or URL encoding.  Browser-safe cookie values are
- * ASCII, so these variants are deterministic and do not decode arbitrary
- * attacker-controlled diagnostics before redaction.
+ * 即使上游错误将凭据材料序列化为 JSON 或 URL 编码，采集器也绝不保留它。
+ * 浏览器安全的 Cookie 值均为 ASCII，因此这些变体具有确定性，遮盖前无需解码
+ * 由攻击者控制的任意诊断内容。
  */
 function privateRepresentations(secret: string): readonly string[] {
   const escaped = JSON.stringify(secret).slice(1, -1);
@@ -634,9 +627,8 @@ function escapeRegularExpression(value: string): string {
 }
 
 /**
- * The FANBOX source-address grammar remains in this integration.  Composition
- * uses this narrow helper only to select the matching private connection;
- * Application continues to pass opaque recognition evidence.
+ * FANBOX 来源地址语法保留在该集成中。组合层只使用这个窄化辅助方法选择匹配的私有连接；
+ * 应用层继续传递不透明识别证据。
  */
 export function fanboxCreatorIdFromEvidence(
   evidence: RecognitionEvidence,
@@ -672,10 +664,8 @@ export function fanboxCreatorIdFromEvidence(
 }
 
 /**
- * Existing associations are Application-produced evidence, not an arbitrary
- * provider-address escape hatch.  Compare the complete declaration so a
- * similarly named filesystem or plugin capability cannot acquire private
- * creator credentials merely by emitting a FANBOX-looking address.
+ * 现有关联是应用层生成的证据，而不是任意提供方地址的逃生口。比较完整声明，
+ * 使名称相似的文件系统或插件能力无法仅靠发出形似 FANBOX 的地址，就取得私有创作者凭据。
  */
 function sameCapabilityCoordinate(
   actual: RecognitionEvidence["producer"],
@@ -1238,8 +1228,8 @@ function fanboxSummaryPage(
   const posts = body.items.map((item, index) => {
     if (!isRecord(item))
       throw new Error(`FANBOX creator summary item ${index} was not an object`);
-    assertPostMatchesCreator(item as FanboxPost, creatorId, "summary");
-    return item as FanboxPost;
+    assertPostMatchesCreator(item, creatorId, "summary");
+    return item;
   });
   return { posts, nextUrl: summaryNextUrl(body) };
 }
@@ -1309,10 +1299,8 @@ function postSummary(body: string, postId: string): FanboxPost {
 }
 
 /**
- * A retained creator-summary record can survive independently when protected
- * detail is unavailable.  Even when a later detail record supplies the
- * projected title, an addressed malformed summary must not quietly remain a
- * valid source input for that same post.
+ * 受保护详情不可用时，保留的创作者摘要记录仍可独立存在。即使后续详情记录提供了投影标题，
+ * 已寻址但格式错误的摘要也不得静默保留为同一帖子的有效来源输入。
  */
 function assertAddressedSummaryTitle(body: string, postId: string): void {
   const parsed = JSON.parse(body) as unknown;
@@ -1402,7 +1390,7 @@ function assertPostIdentity(
   creatorId: string,
   endpoint: "summary" | "detail",
 ): void {
-  assertPostMatchesCreator(post as FanboxPost, creatorId, endpoint);
+  assertPostMatchesCreator(post, creatorId, endpoint);
   if (post.id !== postId)
     throw new Error(
       `FANBOX ${endpoint} post identity differs from its address`,
@@ -1412,18 +1400,16 @@ function assertPostIdentity(
 function detailCompleteness(
   post: Record<string, unknown>,
 ): "complete" | "incomplete" {
-  if (isRestricted(post as FanboxPost)) return "incomplete";
+  if (isRestricted(post)) return "incomplete";
   return "complete";
 }
 
 /**
- * Each post form owns a concrete FANBOX endpoint schema.  Completeness is a
- * claim about that schema, not merely the presence of an object called body.
- * A restricted response intentionally remains incomplete because protected
- * fields may be omitted by the upstream service.
+ * 每种帖子形态拥有具体的 FANBOX 端点模式。完整性是对该模式的声明，
+ * 不只是存在一个名为 `body` 的对象。受限响应刻意保持不完整，因为上游服务可能省略受保护字段。
  */
 function validateDetailPost(post: Record<string, unknown>): void {
-  if (isRestricted(post as FanboxPost)) return;
+  if (isRestricted(post)) return;
   const form = requiredString(post.type, "detail post form");
   const body = post.body;
   if (!isRecord(body))
@@ -1747,10 +1733,8 @@ function optionalNonBlankString(value: unknown): string | undefined {
 }
 
 /**
- * FANBOX currently returns RFC 3339 publication timestamps.  Treat the date
- * portion as source identity only after validating the full endpoint value;
- * a string prefix is not a date assertion.  The original representation is
- * retained in the Source Record and later metadata projection.
+ * FANBOX 当前返回 RFC 3339 发布时间戳。只有验证完整端点值后，才能把日期部分视为
+ * 来源身份；字符串前缀不构成日期断言。原始表示会保留在来源记录和后续元数据投影中。
  */
 function publicationDateOf(value: string): string {
   const match =

@@ -3,12 +3,6 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "imports": {
-    "#/*": {
-      "default": "./src/*.ts",
-      "types": "./src/*.ts"
-    }
-  },
   "exports": {
     ".": {
       "default": "./src/index.ts",
@@ -33,6 +27,7 @@
     "valibot": "catalog:"
   },
   "devDependencies": {
+    "@digital/typescript-config": "workspace:*",
     "@types/node": "catalog:",
     "oxfmt": "catalog:",
     "oxlint": "catalog:",

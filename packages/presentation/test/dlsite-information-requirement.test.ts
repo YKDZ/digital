@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   dlsiteAssetViewInformationRequirement,
   informationRequirementForAssetView,
-} from "../src/index.ts";
+} from "../src/index";
 
 describe("DLsite Asset View information requirement", () => {
   it("declares its complete neutral input demand at the view boundary", () => {

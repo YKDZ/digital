@@ -1,20 +1,20 @@
-import type { MetadataAssertion } from "./metadata-assertion.js";
+import type { MetadataAssertion } from "./metadata-assertion.ts";
 
-export * from "./effective-metadata.js";
-export * from "./metadata-assertion.js";
-export * from "./source-refresh-run.js";
+export * from "./effective-metadata.ts";
+export * from "./metadata-assertion.ts";
+export * from "./source-refresh-run.ts";
 
-/** Open vocabulary. A role belongs to an association, never to an Artifact. */
+/** 开放词汇。角色属于关联，绝不属于产物。 */
 export type ArtifactRole = string;
 
 export type CapabilityCoordinate = {
   readonly capabilityId: string;
   readonly capabilityVersion: string;
   readonly contractVersion: string;
-  /** Present on current static declarations; absent only on retained legacy facts. */
+  /** 当前静态声明中存在；只在保留的旧事实中缺失。 */
   readonly identity?: string;
   readonly implementationVersion?: string;
-  /** Open Application contract value; Domain never enumerates capability kinds. */
+  /** 开放的 Application 契约值；领域绝不枚举能力种类。 */
   readonly kind?: string;
   readonly interpretationContractVersions?: readonly string[];
 };
@@ -22,36 +22,36 @@ export type CapabilityCoordinate = {
 export type SourceRecord = {
   readonly id: string;
   readonly sourceIdentity: string;
-  /** Opaque canonical address of the source subject, not an endpoint URL. */
+  /** 来源主体的不透明规范地址，而不是端点 URL。 */
   readonly nativeAddress: string;
   readonly mediaType: string;
   readonly acquiredAt: string;
   readonly acquisition: {
     readonly requestedAddress: string;
-    /** The bounded source request method; collectors never retain headers. */
+    /** 有界来源请求方法；采集器绝不保留请求头。 */
     readonly method: "GET" | "POST";
     readonly authorized: boolean;
   };
   readonly coverage: {
     readonly id: string;
-    /** Incomplete records may establish positive facts but never absence. */
+    /** 不完整记录可以建立正向事实，但绝不能建立缺失。 */
     readonly completeness: "complete" | "incomplete";
     readonly authority: "official";
   };
   readonly digest: string;
   readonly body: string;
-  /** The collector coordinate that captured this immutable response. */
+  /** 捕获该不可变响应的采集器坐标。 */
   readonly producer?: CapabilityCoordinate;
 };
 
 export type RecognitionEvidence = {
   readonly kind: string;
   readonly explanation: string;
-  /** Required whenever an opaque source-native address is already associated. */
+  /** 已经关联不透明来源原生地址时必需。 */
   readonly sourceIdentity?: string;
   readonly sourceAddress?: string;
   readonly producer: CapabilityCoordinate;
-  /** Open, format-produced evidence. Domain does not interpret its vocabulary. */
+  /** 由格式产生的开放证据；领域不解释其词汇。 */
   readonly inspection?: {
     readonly identifiers: readonly {
       readonly scheme: string;
@@ -73,7 +73,7 @@ export type RecognitionEvidence = {
   };
 };
 
-/** A typed durable reference to evidence whose lifecycle is owned elsewhere. */
+/** 对生命周期由其他位置持有的证据作出的类型化耐久引用。 */
 export type RecognitionEvidenceReference = {
   readonly kind: "source-record";
   readonly sourceRecordId: string;
@@ -83,61 +83,57 @@ export type SourceArtifactCandidate = {
   readonly id: string;
   readonly sourceRecordId: string;
   /**
-   * A source-resolved Entity in the same proposal that this material serves.
-   * Omission deliberately means the accepted Digital Asset, preserving the
-   * ordinary one-subject recognition path.
+   * 本材料服务的同一提议中，一个由来源解析的实体。省略时刻意表示已接受数字资产，从而
+   * 保留普通单主体识别路径。
    */
   readonly subjectId?: string;
   readonly role: ArtifactRole;
   readonly acquisitionReference: string;
   readonly mediaType: string;
-  /** The interpreter coordinate that exposed this candidate. */
+  /** 公开该候选的解释器坐标。 */
   readonly producer?: CapabilityCoordinate;
 };
 
 /**
- * A bounded format entry belonging to an observed Artifact. It is not an
- * external source response and becomes a separate Artifact only when an
- * authorized managed materialization explicitly requests it.
+ * 属于一个观察产物的有界格式条目。它不是外部来源响应；只有经授权托管物化明确请求时，
+ * 才会成为独立产物。
  */
 export type ObservedArtifactPartCandidate = {
   readonly id: string;
   readonly role: ArtifactRole;
-  /** Opaque observer-scoped reference; Domain never parses filesystem grammar. */
+  /** 观察器范围内的不透明引用；领域绝不解析文件系统语法。 */
   readonly observedArtifactReference: string;
   readonly locator: string;
   readonly mediaType: string;
-  /** The format inspector that discovered this bounded local Part. */
+  /** 发现该有界本地部分的格式检查器。 */
   readonly producer: CapabilityCoordinate;
 };
 
-/** A local format fact before Application has materialized its parent revision. */
+/** Application 物化父修订前的本地格式事实。 */
 export type ObservedArtifactMetadataCandidate = {
   readonly property: string;
   readonly sourceSlot: string;
   readonly value: string;
   readonly observedArtifactReference: string;
   readonly locator: string;
-  /** The format inspector that derived this local metadata assertion. */
+  /** 推导该本地元数据断言的格式检查器。 */
   readonly producer: CapabilityCoordinate;
 };
 
 /**
- * A content fingerprint observed while a format capability inspected a local
- * Artifact.  It lets the Application establish the parent revision before a
- * derivative Part (such as a cover) is ever requested.
+ * 格式能力检查本地产物时观察到的内容指纹。它使 Application 能在请求封面等派生部分前
+ * 建立父修订。
  */
 export type ObservedArtifactRevisionCandidate = {
   readonly observedArtifactReference: string;
   readonly blob: Blob;
-  /** The format inspector that observed this parent content fingerprint. */
+  /** 观察到该父内容指纹的格式检查器。 */
   readonly producer: CapabilityCoordinate;
 };
 
 /**
- * An exact source occurrence.  It deliberately preserves the spelling emitted
- * by the interpretation contract: identity resolution may never rewrite this
- * evidence by trimming, normalising, or de-duplicating it.
+ * 一个精确来源出现。它刻意保留解释契约产生的拼写：身份解析绝不能通过裁剪、规范化或
+ * 去重改写该证据。
  */
 export type EntityMention = {
   readonly id: string;
@@ -151,7 +147,7 @@ export type EntityMention = {
   readonly producer?: CapabilityCoordinate;
 };
 
-/** The auditable deterministic resolution of one source occurrence. */
+/** 一个来源出现的可审计确定性解析。 */
 export type EntityResolutionDecision = {
   readonly id: string;
   readonly mentionId: string;
@@ -161,7 +157,7 @@ export type EntityResolutionDecision = {
   readonly producer?: CapabilityCoordinate;
 };
 
-/** A plugin-neutral interpretation; it is not yet a Recognition Proposal. */
+/** 插件中立解释；尚不是识别提议。 */
 export type SourceInterpretationBatch = {
   readonly id: string;
   readonly producer: CapabilityCoordinate;
@@ -169,19 +165,18 @@ export type SourceInterpretationBatch = {
   readonly sourceIdentity: string;
   readonly sourceAddress: string;
   /**
-   * Source Records used to establish recognition, including records that do
-   * not describe the projected source subject.
+   * 用于建立识别的来源记录，包括不描述所投影来源主体的记录。
    */
   readonly recognitionEvidenceReferences?: readonly RecognitionEvidenceReference[];
   readonly metadata: readonly MetadataAssertion[];
   readonly sourceArtifacts: readonly SourceArtifactCandidate[];
-  /** Exact credit/circle occurrences, before any source-scoped resolution. */
+  /** 在任何来源范围解析前的精确署名／社团出现。 */
   readonly entityMentions?: readonly EntityMention[];
-  /** Explicit decisions which resolve the mentions into proposed entities. */
+  /** 将指称解析为提议实体的明确决策。 */
   readonly entityResolutionDecisions?: readonly EntityResolutionDecision[];
-  /** Source-scoped resolved identities proposed by one interpretation. */
+  /** 一份解释提议的来源范围已解析身份。 */
   readonly entities?: readonly SourcedEntity[];
-  /** Contribution facts whose roles belong to participations, never Entity kinds. */
+  /** 角色属于参与关系、绝不属于实体种类的贡献事实。 */
   readonly relationships?: readonly ProposedEntityRelationship[];
 };
 
@@ -197,9 +192,8 @@ export type RecognitionRuleResult = {
 };
 
 /**
- * The only interpretation a Recognizer may contribute. Application owns the
- * already-bound Source Interpretation Batch, input Evidence, and local format
- * facts, then joins this draft to those inputs after validating the rule.
+ * 识别器唯一可以贡献的解释。Application 持有已经绑定的来源解释批次、输入证据和本地
+ * 格式事实，并在验证规则后把该草稿与这些输入结合。
  */
 export type RecognitionProposalDraft = {
   readonly id: string;
@@ -210,11 +204,11 @@ export type RecognitionProposal = {
   readonly id: string;
   readonly interpretation: SourceInterpretationBatch;
   readonly ruleResults: readonly RecognitionRuleResult[];
-  /** Local materialization plan is separate from external source interpretation. */
+  /** 本地物化计划与外部来源解释分离。 */
   readonly observedArtifactParts?: readonly ObservedArtifactPartCandidate[];
-  /** Local format facts remain outside the external source interpretation. */
+  /** 本地格式事实保留在外部来源解释之外。 */
   readonly observedMetadata?: readonly ObservedArtifactMetadataCandidate[];
-  /** Parent revisions for locally inspected facts are independent of Parts. */
+  /** 本地检查事实的父修订独立于各部分。 */
   readonly observedArtifactRevisions?: readonly ObservedArtifactRevisionCandidate[];
 };
 
@@ -227,7 +221,7 @@ export type DigitalAsset = Entity & {
   readonly kind: "digital-asset";
 };
 
-/** A generic Entity or Persona established only inside an exact source namespace. */
+/** 只在精确来源命名空间内建立的通用实体或活动身份。 */
 export type SourcedEntity = Entity & {
   readonly kind: "entity" | "person" | "persona";
   readonly sourceIdentity: string;
@@ -238,19 +232,19 @@ export type SourcedEntity = Entity & {
   readonly producer?: CapabilityCoordinate;
 };
 
-/** One traversable sourced relationship, with the asset as its declared subject. */
+/** 一条可遍历来源关系，以资产作为其声明主体。 */
 export type EntityRelationship = {
   readonly id: string;
   readonly subjectId: string;
   readonly participantId: string;
-  /** Open relationship vocabulary; semantics and constraints belong to evidence/capabilities. */
+  /** 开放关系词汇；语义与约束属于证据／能力。 */
   readonly type: string;
   readonly role: string;
-  /** Stable source-contract slot within one coverage lineage. */
+  /** 一个覆盖 lineage 内的稳定来源契约槽位。 */
   readonly sourceSlot: string;
   readonly sourceRecordIds: readonly string[];
   readonly producer?: CapabilityCoordinate;
-  /** Open source-scoped context, for example a credited character name. */
+  /** 开放的来源范围上下文，例如署名角色名。 */
   readonly qualifiers?: readonly {
     readonly key: string;
     readonly value: string;
@@ -262,11 +256,10 @@ export type ProposedEntityRelationship = Omit<
   "id" | "subjectId"
 > & {
   /**
-   * A source-resolved Entity in this proposal. Omission deliberately means
-   * the accepted Digital Asset, preserving the ordinary one-subject path.
+   * 本提议中一个由来源解析的实体。省略时刻意表示已接受数字资产，从而保留普通单主体路径。
    */
   readonly subjectId?: string;
-  /** The source occurrences supporting the resolved participant. */
+  /** 支持已解析参与者的来源出现。 */
   readonly participantMentionIds?: readonly string[];
 };
 
@@ -306,7 +299,7 @@ export type ArtifactRevision = {
   readonly id: string;
   readonly artifactId: string;
   readonly blobDigest: string;
-  /** The capability that acquired the bytes represented by this revision. */
+  /** 获取该修订所表示字节的能力。 */
   readonly producer?: CapabilityCoordinate;
 };
 
@@ -315,13 +308,13 @@ export type ArtifactAssociation = {
   readonly subjectId: string;
   readonly artifactId: string;
   readonly role: ArtifactRole;
-  /** Empty for locally asserted associations; populated for source-owned facts. */
+  /** 本地声明关联中为空；来源持有事实中填充。 */
   readonly sourceRecordIds?: readonly string[];
-  /** The exact current Source Association that owns a managed source artifact. */
+  /** 持有一个托管来源产物的精确当前来源关联。 */
   readonly sourceAssociationId?: string;
-  /** The interpretation capability that established a source-owned association. */
+  /** 建立来源持有关联的解释能力。 */
   readonly producer?: CapabilityCoordinate;
-  /** Local container provenance; distinct from an external Source Record. */
+  /** 本地容器来源；区别于外部来源记录。 */
   readonly observedArtifactPart?: {
     readonly artifactId: string;
     readonly revisionId: string;
@@ -330,10 +323,8 @@ export type ArtifactAssociation = {
 };
 
 /**
- * An immutable end to a source-owned Artifact Association.  It is justified
- * by the reevaluation proposal and the complete Source Record(s) that made
- * the former association absent; it never repurposes the earlier Recognition
- * Decision that originally supported the association.
+ * 对来源持有产物关联作出的不可变终止。它由重新求值提议及使原关联缺失的完整来源记录
+ * 提供依据；绝不改作原先支持该关联的早期识别决策。
  */
 export type ArtifactAssociationRetraction = {
   readonly id: string;
@@ -343,8 +334,7 @@ export type ArtifactAssociationRetraction = {
 };
 
 /**
- * The complete immutable fact set established by accepting one proposal. It is
- * submitted in one Application-owned conditional transaction.
+ * 接受一个提议所建立的完整不可变事实集；在一个由 Application 持有的条件事务中提交。
  */
 export type AcceptedRecognition = {
   readonly proposal: RecognitionProposal;
@@ -392,10 +382,8 @@ export function validateRecognitionProposal(
 }
 
 /**
- * Validates every interpreter contribution before Application authorises any
- * effect.  This is intentionally a single batch boundary: a malformed credit,
- * provenance link, relationship, or artifact candidate cannot leave the rest
- * of a superficially useful projection committed.
+ * 在 Application 授权任何效果前验证每项解释器贡献。这里刻意使用单一批次边界：畸形
+ * 署名、来源链接、关系或产物候选不能让表面可用投影的其余部分被提交。
  */
 export function validateSourceInterpretationBatch(
   batch: SourceInterpretationBatch,
@@ -568,9 +556,8 @@ export type SourceSlotLifecycleChangeSet = {
 };
 
 /**
- * Domain rule for one exact source-identity/address/coverage lineage.
- * Absence has meaning only under complete coverage; slot equality is supplied
- * by the source interpretation contract rather than guessed from properties.
+ * 一个精确来源身份／地址／覆盖 lineage 的领域规则。缺失只在完整覆盖下有意义；槽位
+ * 相等性由来源解释契约提供，而不是从属性猜测。
  */
 export function deriveSourceSlotLifecycleChanges(input: {
   readonly currentSlots: readonly string[];
@@ -629,10 +616,8 @@ export function validateAcceptedRecognition(
 }
 
 /**
- * Validates an identity-preserving refresh.  Unlike an initial acceptance,
- * the new proposal supplies append-only sourced facts; it cannot rewrite the
- * immutable Association or Decision that established the current identity.
- * Identity replacement has its separate proposal-preview-supersession path.
+ * 验证身份保持刷新。不同于初次接受，新提议提供仅追加来源事实，不能改写建立当前身份的
+ * 不可变关联或决策。身份替换使用独立的提议—预览—取代路径。
  */
 export function validateReevaluatedRecognition(input: {
   readonly current: AcceptedRecognition;
@@ -819,7 +804,7 @@ function validateRecognitionFactShape(accepted: AcceptedRecognition): void {
   }
 }
 
-/** Domain facts compare structural JSON values, never object insertion order. */
+/** 领域事实比较结构化 JSON 值，绝不比较对象插入顺序。 */
 function canonicalJson(value: unknown): string {
   if (value === null) return "null";
   if (typeof value === "string" || typeof value === "boolean")
@@ -839,7 +824,7 @@ function canonicalJson(value: unknown): string {
   throw new Error("Domain fact is not JSON");
 }
 
-/** Validates the provenance required to end one source-owned association. */
+/** 验证终止一个来源持有关联所需的来源信息。 */
 export function validateArtifactAssociationRetraction(input: {
   readonly retraction: ArtifactAssociationRetraction;
   readonly predecessor: ArtifactAssociation;

@@ -27,13 +27,13 @@ const isRender = computed(() => {
     return true;
   } else {
     const filteredCurrentItem = filterState.filtered.items.get(id);
-    // If the filtered items is undefined means not in the all times map yet
-    // Do the first render to add into the map
+    // 筛选项目为 `undefined` 表示尚未进入完整映射。
+    // 先完成首次渲染，把它加入映射。
     if (filteredCurrentItem === undefined) {
       return true;
     }
 
-    // Check with filter
+    // 使用筛选器检查。
     return filteredCurrentItem > 0;
   }
 });
@@ -43,7 +43,7 @@ const currentElement = useCurrentElement(itemRef);
 onMounted(() => {
   if (!(currentElement.value instanceof HTMLElement)) return;
 
-  // textValue to perform filter
+  // 用于执行筛选的 `textValue`。
   allItems.value.set(
     id,
     currentElement.value.textContent ?? props.value?.toString() ?? "",

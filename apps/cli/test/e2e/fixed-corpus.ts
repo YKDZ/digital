@@ -33,9 +33,8 @@ export type FixedCorpusDedicatedIntegrationStatus =
   | "pending";
 
 /**
- * Local acceptance routing only.  Ownership names the issue responsible for
- * eventually proving a root's acceptance criteria; it never means that the
- * owner has completed its gate.
+ * 仅用于本地验收路由。所有权指明最终负责证明某个根满足验收标准的议题；
+ * 绝不表示所有者已经完成其闸门。
  */
 export type FixedCorpusDedicatedIntegrationOwnershipGroup = {
   readonly ownerIssue: number;
@@ -97,10 +96,8 @@ export async function fixedCorpusRoots(
 }
 
 /**
- * Validates the separately reviewed, location-independent inventory before a
- * real corpus journey starts. This intentionally never writes or regenerates
- * the baseline: accepting a changed corpus is a deliberate local review
- * action, not a test-side effect.
+ * 在真实语料旅程开始前，验证单独审核且与位置无关的清单。这里刻意绝不写入或重新生成基线：
+ * 接受变化后的语料是有意的本地审核动作，而不是测试副作用。
  */
 export async function assertFixedCorpusInventoryBaseline(
   context: CliJourneyContext,
@@ -634,9 +631,8 @@ async function fixedCorpusRoutingInput(context: CliJourneyContext): Promise<{
 }
 
 /**
- * Historical review remains separate local reference material.  It can help a
- * human choose a case to inspect, but never grants an integration owner or
- * records a live acceptance result.
+ * 历史审核保持为独立本地参考材料。它可以帮助人类选择要检查的案例，
+ * 但绝不授予集成所有者，也不记录实时验收结果。
  */
 export async function fixedCorpusHistoricallyReviewedRoots(
   context: CliJourneyContext,
@@ -646,9 +642,7 @@ export async function fixedCorpusHistoricallyReviewedRoots(
 }
 
 /**
- * Returns the five explicit integration ownership groups.  A route is an
- * accountability boundary, not an assertion that its issue's acceptance
- * criteria have passed.
+ * 返回五个显式集成所有权组。路由是责任边界，不是对其议题已经通过验收标准的断言。
  */
 export async function fixedCorpusDedicatedIntegrationOwnershipGroups(
   context: CliJourneyContext,
@@ -661,8 +655,7 @@ export async function fixedCorpusDedicatedIntegrationOwnershipGroups(
 }
 
 /**
- * The safety journey receives only the complement of explicitly routed roots.
- * It is derived from dedicated ownership, never from historical review data.
+ * 安全旅程只接收显式路由根的补集。它根据专属所有权派生，绝不根据历史审核数据派生。
  */
 export async function unsupportedFixedCorpusRoots(
   context: CliJourneyContext,

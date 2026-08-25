@@ -7,14 +7,34 @@
   ],
   "type": "module",
   "imports": {
-    "#/*": {
-      "default": "./*.ts",
-      "types": "./*.ts"
+    "#/assets/*": {
+      "types": "./assets/*",
+      "default": "./assets/*"
+    },
+    "#/components/*": {
+      "types": "./components/*",
+      "default": "./components/*"
+    },
+    "#/components/ui/*": {
+      "types": "./components/ui/*/index.ts",
+      "default": "./components/ui/*/index.ts"
+    },
+    "#/composables/*": {
+      "types": "./composables/*.ts",
+      "default": "./composables/*.ts"
+    },
+    "#/lib/*": {
+      "types": "./lib/*.ts",
+      "default": "./lib/*.ts"
+    },
+    "#/server/*": {
+      "types": "./server/*.ts",
+      "default": "./server/*.ts"
     }
   },
   "scripts": {
     "build": "vike build",
-    "deployment": "node scripts/check-standalone-deployment.ts && node scripts/check-compose-deployment.ts",
+    "deployment": "node --conditions=digital-source scripts/check-standalone-deployment.ts && node --conditions=digital-source scripts/check-compose-deployment.ts",
     "dev": "vike dev",
     "format:check": "oxfmt --list-different --config ../../oxfmt.config.ts .",
     "format:write": "oxfmt --write --config ../../oxfmt.config.ts .",
@@ -26,7 +46,7 @@
     "start": "node ./dist/server/index.mjs",
     "test": "vitest run --reporter=agent --silent=passed-only --passWithNoTests",
     "test:e2e": "node scripts/run-playwright.ts",
-    "typecheck": "node scripts/run-vue-tsc.ts --build --noEmit --pretty false"
+    "typecheck": "node --conditions=digital-source scripts/run-vue-tsc.ts --build --noEmit --pretty false"
   },
   "dependencies": {
     "@digital/application": "workspace:*",
@@ -47,6 +67,7 @@
     "vue": "catalog:"
   },
   "devDependencies": {
+    "@digital/typescript-config": "workspace:*",
     "@playwright/test": "catalog:",
     "@tailwindcss/vite": "catalog:",
     "@types/node": "catalog:",
@@ -66,5 +87,5 @@
   "engines": {
     "node": "24"
   },
-  "packageManager": "pnpm@11.17.0"
+  "packageManager": "pnpm@11.23.0"
 }

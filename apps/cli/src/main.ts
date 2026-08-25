@@ -8,8 +8,8 @@ import type {
   ChangeImpactPreviewInspection,
   InformationRequirement,
 } from "@digital/application";
-// @boundaries-ignore Composition is the only legal delivery assembly entrypoint;
-// the root checker verifies that this package declares no direct adapter dependency.
+// @boundaries-ignore 组合层是唯一合法的交付组装入口；
+// 根检查器会验证该包未声明直接适配器依赖。
 import {
   composeAssetRefresh,
   composeAutomationHost,
@@ -18,7 +18,7 @@ import {
 } from "@digital/composition";
 import { Command, CommanderError } from "commander";
 
-import { createOfflineBackup } from "./offline-backup.js";
+import { createOfflineBackup } from "./offline-backup.ts";
 
 const commandName = "cli";
 export type Greeting = {
@@ -116,9 +116,8 @@ function productDataDirectory(runtime: CliRuntime): string {
 }
 
 /**
- * Browser exports are an import input only.  Keep filesystem/JSON diagnostics
- * generic so neither the path nor a partial private export becomes a CLI
- * error surface.
+ * 浏览器导出内容只作为导入输入。文件系统/JSON 诊断应保持通用，
+ * 使路径和不完整私有导出内容都不会成为 CLI 错误面。
  */
 async function readFanboxBrowserCredentialFile(file: string): Promise<unknown> {
   let raw: string;
@@ -1320,32 +1319,6 @@ export async function runCli(
   } finally {
     await resources.close();
   }
-}
-
-async function runFormalProductionMigration(
-  runtime: CliRuntime,
-  stagingProductDataDirectory = productDataDirectory(runtime),
-): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(
-      "pnpm",
-      ["--filter", "@digital/db-migrations", "prepare-only"],
-      {
-        cwd: runtime.cwd,
-        env: {
-          ...process.env,
-          ...runtime.env,
-          DIGITAL_PRODUCT_DATA: stagingProductDataDirectory,
-        },
-        stdio: "ignore",
-      },
-    );
-    child.once("error", () => reject(new Error("无法启动正式数据库迁移命令")));
-    child.once("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error("正式数据库迁移命令失败；恢复未完成"));
-    });
-  });
 }
 
 async function runFormalOfflineRestore(

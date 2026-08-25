@@ -44,7 +44,7 @@ function setOpenMobile(value: boolean) {
   openMobile.value = value;
 }
 
-// Helper to toggle the sidebar.
+// 用于切换侧边栏的辅助方法。
 function toggleSidebar() {
   return isMobile.value
     ? setOpenMobile(!openMobile.value)
@@ -61,8 +61,8 @@ useEventListener("keydown", (event: KeyboardEvent) => {
   }
 });
 
-// We add a state so that we can do data-state="expanded" or "collapsed".
-// This makes it easier to style the sidebar with Tailwind classes.
+// 添加状态后即可使用 `data-state="expanded"` 或 `"collapsed"`。
+// 这样更容易用 Tailwind 类设置侧边栏样式。
 const state = computed(() => (open.value ? "expanded" : "collapsed"));
 
 provideSidebarContext({

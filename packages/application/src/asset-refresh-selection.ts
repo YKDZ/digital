@@ -3,8 +3,8 @@ import path from "node:path";
 import {
   decodeObservedRootSnapshot,
   normalizeObservedRelativeScope,
-} from "./observed-root-authority.js";
-import type { ObservedRootSnapshot } from "./observed-root-registrations.js";
+} from "./observed-root-authority.ts";
+import type { ObservedRootSnapshot } from "./observed-root-registrations.ts";
 
 export const assetRefreshSelectionVersion = "asset-refresh-selection/1";
 
@@ -13,12 +13,11 @@ export type AssetRefreshSelectionExplanation = {
 };
 
 /**
- * A filesystem selection is durable evidence of an authority boundary, not a
- * caller-supplied path. New workflow input must therefore retain both the
- * frozen registration snapshot and its normalized scope.
+ * 文件系统选择是权威边界的耐久证据，而不是调用方提供的路径。因此新工作流输入必须
+ * 同时保留冻结的注册快照及其规范化范围。
  */
 export type RegisteredFilesystemScope = {
-  /** Logical Location evidence retained for audit; never an authority grant. */
+  /** 为审计保留的逻辑位置证据；绝不是权威授予。 */
   readonly root: string;
   readonly observedRoot: ObservedRootSnapshot;
   readonly relativeScope: string;
@@ -31,16 +30,15 @@ export type AssetRefreshSelection = {
     readonly subjectId: string;
     readonly explanations: readonly AssetRefreshSelectionExplanation[];
   }[];
-  /** Every new filesystem scope is already bound to a registered root. */
+  /** 每个新文件系统范围都已经绑定到注册观察根。 */
   readonly filesystemScopes: readonly RegisteredFilesystemScope[];
 };
 
 export type ResolvedAssetRefreshSelection = AssetRefreshSelection;
 
 /**
- * Produces the one durable Location spelling for a frozen registered scope.
- * The spelling is evidence only; the snapshot and relative scope remain the
- * authority that permits a future descriptor bind.
+ * 为冻结的注册范围生成唯一耐久位置拼写。该拼写只作为证据；允许未来绑定描述符的
+ * 权威仍是快照与相对范围。
  */
 export function derivedRegisteredFilesystemScopeRoot(input: {
   readonly observedRoot: ObservedRootSnapshot;

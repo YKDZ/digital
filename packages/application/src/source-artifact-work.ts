@@ -17,11 +17,11 @@ export type SourceArtifactAcquisitionCheckpoint = {
   readonly sourceRecordId: string;
   readonly subjectId?: string;
   readonly role: string;
-  /** Legacy checkpoints lack this coordinate and must not be semantically reused. */
+  /** 旧检查点缺少该坐标，不得进行语义复用。 */
   readonly acquisitionReference?: string;
-  /** The interpreter that made this candidate available. */
+  /** 使该候选可用的解释器。 */
   readonly sourceArtifactProducer?: CapabilityCoordinate;
-  /** The acquirer that performed the external effect. */
+  /** 执行外部效果的获取器。 */
   readonly acquisitionProducer?: CapabilityCoordinate;
   readonly stagedReference: string;
   readonly digest: string;
@@ -33,7 +33,7 @@ export type ManagedSourceArtifactCheckpoint = {
   readonly sourceRecordId: string;
   readonly subjectId?: string;
   readonly role: string;
-  /** Preserves the acquisition coordinate through managed-store recovery. */
+  /** 在托管存储恢复期间保留获取坐标。 */
   readonly acquisitionReference?: string;
   readonly sourceArtifactProducer?: CapabilityCoordinate;
   readonly acquisitionProducer?: CapabilityCoordinate;
@@ -80,13 +80,17 @@ type ManagedArtifactStore = {
   }>;
 };
 
+type CheckpointedSourceArtifactWorkPorts = {
+  readonly acquirers: readonly SourceArtifactAcquirer[];
+  readonly managedStore: ManagedArtifactStore;
+};
+
 export class CheckpointedSourceArtifactWork {
-  constructor(
-    private readonly ports: {
-      readonly acquirers: readonly SourceArtifactAcquirer[];
-      readonly managedStore: ManagedArtifactStore;
-    },
-  ) {}
+  private readonly ports: CheckpointedSourceArtifactWorkPorts;
+
+  constructor(ports: CheckpointedSourceArtifactWorkPorts) {
+    this.ports = ports;
+  }
 
   async complete(input: {
     readonly candidates: readonly SourceArtifactCandidate[];
@@ -96,7 +100,7 @@ export class CheckpointedSourceArtifactWork {
     readonly idempotencyKey: (candidate: SourceArtifactCandidate) => string;
     readonly requireCheckpointStore: boolean;
     readonly beforeEffect?: () => void | Promise<void>;
-    /** Freeze the selected acquirer's actual coordinate before its effect. */
+    /** 在效果发生前冻结选定获取器的实际坐标。 */
     readonly beforeAcquire?: (
       capability: CapabilityCoordinate,
     ) => void | Promise<void>;
@@ -521,7 +525,8 @@ function assertAcquisitionCheckpoint(
 }
 
 function mediaTypeEssence(mediaType: string): string {
-  return mediaType.split(";", 1)[0].trim().toLowerCase();
+  const [essence] = mediaType.split(";", 1);
+  return (essence ?? "").trim().toLowerCase();
 }
 
 function sha256(bytes: Uint8Array): string {

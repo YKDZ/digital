@@ -99,8 +99,8 @@ async function prepareProductionCatalogueWithWriter(
   );
   try {
     database.exec("PRAGMA busy_timeout = 10000; PRAGMA journal_mode = WAL");
-      // 这些运行账本必须在迁移事务回滚后仍保留，运行时才能区分中断部署与未准备的
-      // catalogue。获取迁移事务前先创建它们。
+    // 这些运行账本必须在迁移事务回滚后仍保留，运行时才能区分中断部署与未准备的
+    // catalogue。获取迁移事务前先创建它们。
     database.exec(`
       CREATE TABLE IF NOT EXISTS __digital_catalogue_migrations (
         id TEXT PRIMARY KEY NOT NULL,

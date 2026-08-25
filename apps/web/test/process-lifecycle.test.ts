@@ -95,7 +95,7 @@ describe("process lifecycle registry", () => {
     `;
     const child = spawn(
       process.execPath,
-      ["--conditions=source", "--input-type=module", "--eval", source],
+      ["--conditions=digital-source", "--input-type=module", "--eval", source],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
     try {
@@ -190,7 +190,7 @@ describe("process lifecycle registry", () => {
     `;
     const child = spawn(
       process.execPath,
-      ["--conditions=source", "--input-type=module", "--eval", source],
+      ["--conditions=digital-source", "--input-type=module", "--eval", source],
       {
         env: {
           ...process.env,

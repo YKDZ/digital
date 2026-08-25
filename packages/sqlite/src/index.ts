@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-
 import type {
   AcceptedAssetState,
   AssetRefreshReuseQueries,
@@ -113,13 +112,13 @@ import {
 } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-sqlite";
 
-import { enableCatalogueWal } from "./connection.js";
+import { enableCatalogueWal } from "./connection.ts";
 import {
   assertProductionCatalogueReady,
   inspectProductionCatalogueReadiness,
   productionCatalogueMigrationPlan,
-} from "./production-readiness.js";
-import { matchesReviewedCatalogueSchema } from "./schema-contract.js";
+} from "./production-readiness.ts";
+import { matchesReviewedCatalogueSchema } from "./schema-contract.ts";
 import {
   artifactAssociationRetractions,
   artifactAssociationSupersessions,
@@ -159,23 +158,22 @@ import {
   sourceRecords,
   sourcedEntities,
   workflowExecutions,
-} from "./schema.js";
+} from "./schema.ts";
 import {
   canonicalJson,
   WorkflowExecutionPersistence,
-} from "./workflow-execution-persistence.js";
+} from "./workflow-execution-persistence.ts";
 
 /**
- * The Application layer owns the transaction boundary through its narrow
- * Persistence Port. This structural subset keeps Drizzle inside this adapter
- * rather than exposing an ORM dependency through that port.
+ * 应用层通过其窄化的持久化端口拥有事务边界。这个结构子集将 Drizzle
+ * 限定在适配器内部，避免经由该端口暴露 ORM 依赖。
  */
 type DrizzleWriteTransaction = Pick<
   ReturnType<typeof drizzle>,
   "delete" | "insert" | "select" | "update"
 >;
 
-/** Read-only structural subset shared by a Drizzle database and transaction. */
+/** Drizzle 数据库与事务共用的只读结构子集。 */
 type DrizzleReadQuery = Pick<ReturnType<typeof drizzle>, "select">;
 
 type MetadataRefreshInput = {
@@ -220,15 +218,14 @@ type CurrentCatalogueHydrationRows = {
 };
 
 /**
- * Infrastructure owns the clock which decides whether a durable recovery
- * lease still exists. It intentionally does not cross the Application Port:
- * callers can request a lease but cannot supply the time used to validate it.
+ * 基础设施层拥有用于判断持久恢复租约是否仍然有效的时钟。它刻意不跨越
+ * 应用端口：调用方可以请求租约，但不能提供验证租约时使用的时间。
  */
 export type SqliteCatalogueClock = {
   now(): Date;
 };
 
-/** Construction-only infrastructure options; production defaults to UTC now. */
+/** 仅供构造时使用的基础设施选项；生产环境默认采用当前 UTC 时间。 */
 export type SqliteCatalogueOptions = {
   readonly clock?: SqliteCatalogueClock;
 };
@@ -252,8 +249,8 @@ type WorkflowHistoryCursor = {
 
 type CurrentAttentionCursor = {
   /**
-   * v2 keys recognition rows by proposal, rather than execution, because one
-   * multi-item execution may leave more than one proposal awaiting review.
+   * v2 按提案而非执行来标识识别行，因为一次多项目执行可能留下多个
+   * 等待审核的提案。
    */
   readonly version: 2;
   readonly query: "current-attention";
@@ -266,7 +263,7 @@ type CurrentAttentionCandidate = {
   readonly item: CurrentAttentionItem;
   readonly sequence: number;
   readonly kind: 0 | 1 | 2 | 3;
-  /** Stable source-local identity retained only in the opaque continuation. */
+  /** 仅保留在不透明续传信息中的稳定来源本地身份。 */
   readonly cursorId: string;
 };
 
@@ -489,7 +486,7 @@ const systemSqliteCatalogueClock: SqliteCatalogueClock = {
   now: () => new Date(),
 };
 
-/** One SQLite implementation shared by the narrow Asset Refresh persistence Ports. */
+/** 由各个窄化资产刷新持久化端口共用的 SQLite 实现。 */
 export class SqliteCatalogue
   implements
     WorkflowExecutionCommands,
@@ -530,7 +527,7 @@ export class SqliteCatalogue
     this.workflowExecutionPersistence = new WorkflowExecutionPersistence();
   }
 
-  /** Construction is side-effect free. The workflow guard runs before ensure(). */
+  /** 构造过程无副作用；工作流守卫先于 `ensure()` 运行。 */
   static forProductData(
     productDataDirectory: string,
     options: SqliteCatalogueOptions = {},
@@ -538,7 +535,7 @@ export class SqliteCatalogue
     return new SqliteCatalogue(productDataDirectory, options);
   }
 
-  /** Runtime admission seam; it performs no schema mutation. */
+  /** 运行时准入接缝；不会更改数据库模式。 */
   static async inspectProductionReadiness(options: {
     readonly productDataDirectory: string;
   }) {
@@ -552,9 +549,8 @@ export class SqliteCatalogue
   }
 
   /**
-   * Releases this adapter's SQLite connection when its composition lifetime
-   * ends. Persistence remains usable afterwards and lazily opens a new
-   * connection on the next operation.
+   * 在该适配器的组合生命周期结束时释放其 SQLite 连接。之后持久化能力仍可用，
+   * 并会在下一次操作时惰性打开新连接。
    */
   close(): void {
     this.database?.close();
@@ -686,8 +682,7 @@ export class SqliteCatalogue
             },
             candidateSourceRecordId: record.id,
             changes,
-            // A caller can escalate an automatic run, but policy defaults and
-            // retraction review remain domain rules.
+            // 调用方可以提升自动运行的等级，但策略默认值和撤回审核仍属于领域规则。
             ...(input.requiresReview === true ? { requiresReview: true } : {}),
           });
           const changeSet = staged.changeSets.find(
@@ -795,9 +790,8 @@ export class SqliteCatalogue
             );
           }
           this.applyMetadataRefreshInTransactionWithDrizzle(transaction, {
-            // The Source Refresh Run owns this effect. Its parent execution
-            // is read authoritatively inside this same immediate
-            // transaction rather than supplied as a partial caller baseline.
+            // 来源刷新运行拥有此效果。其父执行会在同一个即时事务中权威读取，
+            // 而不是由调用方提供不完整的基线。
             expectedExecution: execution,
             execution,
             submission: {
@@ -928,9 +922,8 @@ export class SqliteCatalogue
   }
 
   /**
-   * Recovery is not a public Domain cancellation. The Workflow Execution
-   * lease, its durable Run reference, and the Domain Run state are checked in
-   * this one immediate transaction before cancellation can change a scope.
+   * 恢复并不是公开的领域取消操作。取消可以更改范围之前，会在同一个即时事务中
+   * 检查工作流执行租约、它的持久运行引用以及领域运行状态。
    */
   async cancelUncommittedRun(input: {
     readonly executionId: string;
@@ -1004,10 +997,8 @@ export class SqliteCatalogue
     query.transaction(
       (transaction) => {
         const authoritativeNow = this.authoritativeNow();
-        // The caller's `now` is retained on the Application Port for
-        // compatibility with the recovery host, but it is never a lease
-        // validity input. A stale process must not make an expired lease look
-        // current by replaying an old timestamp.
+        // 为了兼容恢复宿主，应用端口保留了调用方的 `now`，但它绝不是租约有效性输入。
+        // 过期进程不得通过重放旧时间戳，让已经失效的租约看起来仍然有效。
         const row = transaction
           .select({
             status: workflowExecutions.status,
@@ -1042,9 +1033,8 @@ export class SqliteCatalogue
               eq(workflowExecutions.status, "running"),
               or(
                 isNull(workflowExecutions.resumeClaimToken),
-                // A token without an expiry is not a valid durable lease.  It
-                // must be recoverable rather than leaving the execution busy
-                // forever after an interrupted legacy write.
+                // 没有到期时间的令牌不是有效的持久租约。它必须可被恢复，不能在旧版写入
+                // 中断后让执行永远停留在忙碌状态。
                 isNull(workflowExecutions.resumeClaimExpiresAt),
                 lte(workflowExecutions.resumeClaimExpiresAt, authoritativeNow),
               ),
@@ -1121,9 +1111,8 @@ export class SqliteCatalogue
   ): Promise<ExecutionStartDisposition> {
     const database = await this.ensure();
     let outcome: ExecutionStartDisposition = "started";
-    // Ordinary and directed scans are the tracer route. Keep their initial
-    // execution checkpoint inside Drizzle without broadening this issue into
-    // the separate automation-runtime persistence boundary.
+    // 普通扫描和定向扫描都走追踪器路径。将其初始执行检查点保留在 Drizzle 内，
+    // 不把当前议题扩展到独立的自动化运行时持久化边界。
     const automationIntentId = execution.automationIntentId;
     if (automationIntentId === undefined) {
       const query = drizzle({ client: database });
@@ -1388,8 +1377,8 @@ export class SqliteCatalogue
             "Workflow Execution cancellation must be terminal and attributable",
           );
         }
-        // Cancellation deliberately bypasses resume-claim ownership: its CAS
-        // is the durable stop signal for an active or recovered worker.
+        // 取消操作刻意绕过恢复认领所有权：它的 CAS 是发给活跃或已恢复工作进程的
+        // 持久停止信号。
         this.workflowExecutionPersistence.replaceExecutionWithDrizzle(
           transaction,
           input.execution,
@@ -1534,8 +1523,8 @@ export class SqliteCatalogue
     readonly metadataPolicyIds?: readonly string[];
     readonly resumeClaim?: { readonly token: string; readonly now: string };
   }): Promise<void> {
-    // Keep the public adapter safe for non-Application callers as well. This
-    // occurs before opening a transaction, so an invalid batch has no writes.
+    // 同样确保公开适配器对非应用层调用方安全。该检查发生在事务打开前，
+    // 因而无效批次不会产生任何写入。
     validateAcceptedRecognition(input.accepted);
     const database = await this.ensure();
     const query = drizzle({ client: database });
@@ -1586,9 +1575,8 @@ export class SqliteCatalogue
         { behavior: "immediate" },
       );
     } catch (error) {
-      // The legacy public adapter exposed SQLite constraint/trigger messages
-      // directly. Retain that contract while still letting Drizzle own the
-      // transaction and query construction.
+      // 旧版公开适配器会直接暴露 SQLite 约束或触发器消息。保留该契约，
+      // 同时仍由 Drizzle 拥有事务和查询构造。
       throw originalPersistenceError(error);
     }
   }
@@ -1684,7 +1672,7 @@ export class SqliteCatalogue
       );
   }
 
-  /** Reads immutable execution-result records with a fixed batch query plan. */
+  /** 使用固定的批量查询计划读取不可变执行结果记录。 */
   async listWorkflowHistoryPage(
     input: WorkflowHistoryPageRequest = {},
   ): Promise<WorkflowHistoryPersistencePage> {
@@ -1909,9 +1897,8 @@ export class SqliteCatalogue
   }
 
   /**
-   * Rebuilds present-tense Attention from durable conditions that are still
-   * actionable. It deliberately excludes ordinary running work and terminal
-   * failures: neither is a durable review condition on its own.
+   * 根据仍可采取行动的持久条件，重建当前的关注事项。它刻意排除普通运行中工作和
+   * 终止性失败：二者本身都不是持久审核条件。
    */
   async listCurrentAttentionPage(
     input: CurrentAttentionPageRequest = {},
@@ -1972,9 +1959,8 @@ export class SqliteCatalogue
                 gt(automationIntents.id, cursor.id),
               ),
             );
-    // Pre-bind unavailable roots have no Workflow Execution row. Give their
-    // stable intent-id order the first valid attention sequence, so the same
-    // opaque cursor can advance across those durable conditions after reopen.
+    // 绑定前不可用的根没有工作流执行行。将第一个有效关注序列赋给它们稳定的
+    // 意图 ID 顺序，使同一个不透明游标在重新打开后仍能跨越这些持久条件前进。
     const prebindSequence = 1;
     const prebindAfter =
       cursor === undefined
@@ -2020,9 +2006,8 @@ export class SqliteCatalogue
         where json_extract(work_item.value, '$.failureClassification.kind') = 'prerequisite-unavailable'
       )
     `;
-    // Select the one latest typed degradation for each durable intent in SQL,
-    // before cursoring and limiting.  Post-limit JavaScript de-duplication
-    // could let A@5,A@3 consume a page and starve B@4.
+    // 在应用游标和限制之前，先用 SQL 为每个持久意图选出最新的一条有类型降级记录。
+    // 若在限制之后才用 JavaScript 去重，A@5、A@3 可能占满一页并使 B@4 无法返回。
     const prerequisiteIsLatestForIntent = sql<boolean>`
       not exists (
         select 1
@@ -2250,9 +2235,8 @@ export class SqliteCatalogue
   }
 
   /**
-   * Current Catalogue is an accepted-subject projection, not a replay of
-   * Workflow Execution history. Its complete read path stays inside the
-   * Drizzle schema builder, including its accepted-graph hydrator.
+   * 当前目录是已接受主体的投影，而不是工作流执行历史的重放。其完整读取路径
+   * （包括已接受图装配器）都保留在 Drizzle 模式构建器内部。
    */
   async listCurrentCataloguePage(
     input: CurrentCataloguePageRequest = {},
@@ -2276,9 +2260,8 @@ export class SqliteCatalogue
           ? undefined
           : gt(sourceAssociationHeads.subjectId, anchor),
       )
-      // The reviewed schema makes subject_id unique, and this remains an
-      // explicit page-boundary guard if a future current-source join expands
-      // one subject into several physical rows.
+      // 已审核的数据库模式保证 `subject_id` 唯一；如果未来的当前来源联接把一个主体
+      // 扩展成多条物理行，这里仍是显式的分页边界守卫。
       .groupBy(sourceAssociationHeads.subjectId)
       .orderBy(asc(sourceAssociationHeads.subjectId))
       .limit(limit + 1);
@@ -2297,8 +2280,8 @@ export class SqliteCatalogue
   }
 
   /**
-   * Compatibility-only whole projection. Delivery uses
-   * `listCurrentCataloguePage` so routine browsing remains bounded.
+   * 仅用于兼容的完整投影。交付路径使用 `listCurrentCataloguePage`，
+   * 使常规浏览始终有界。
    */
   async listCurrentCatalogue(): Promise<readonly AcceptedAssetState[]> {
     const database = await this.ensure();
@@ -2391,11 +2374,8 @@ export class SqliteCatalogue
               query,
               execution.acceptedAssetId,
             );
-      // A reevaluation owns a new Proposal/Source Record baseline while its
-      // immutable Recognition Decision continues to name the original
-      // identity-establishing Proposal.  Reuse must therefore compare the
-      // current association with this execution's proposal, rather than
-      // require those two immutable proposal IDs to be equal.
+      // 重新评估拥有新的提案/来源记录基线，而其不可变识别决定仍指向最初建立身份的提案。
+      // 因此复用时必须将当前关联与本次执行的提案比较，而不能要求两个不可变提案 ID 相等。
       if (
         proposal === undefined ||
         accepted === undefined ||
@@ -2513,10 +2493,9 @@ export class SqliteCatalogue
   }
 
   /**
-   * Resolve cross-location continuity only through durable observed material
-   * facts. Artifact IDs here are deterministic hashes of an observer-owned
-   * opaque identity, never a filename or a Blob digest. A stale or retracted
-   * association is filtered by the current Accepted Asset hydration below.
+   * 仅通过持久的已观察物料事实解析跨位置连续性。这里的产物 ID 是观察者所拥有的
+   * 不透明身份的确定性哈希，绝不是文件名或 `Blob` 摘要。下方的当前已接受资产装配
+   * 会过滤过期或已撤回的关联。
    */
   async findCurrentAcceptedForObservedArtifacts(input: {
     readonly artifactIds: readonly string[];
@@ -2573,9 +2552,8 @@ export class SqliteCatalogue
   }
 
   /**
-   * Projects only facts owned by each selected current subject. `readAccepted`
-   * intentionally hydrates a bounded related-entity graph for catalogue use;
-   * this fulfillment Port strips that graph before it crosses Application.
+   * 只投影各个已选当前主体拥有的事实。`readAccepted` 会刻意为目录用途装配一个
+   * 有界的相关实体图；该履约端口会在它跨越应用层之前剥离此图。
    */
   async readCurrentInformationSubjectFacts(input: {
     readonly subjectIds: readonly string[];
@@ -2652,10 +2630,8 @@ export class SqliteCatalogue
   }
 
   /**
-   * A managed source artifact can satisfy a requirement only while at least
-   * one of its source records remains the current head of its exact Source
-   * Association. The association identity prevents one source from masking a
-   * newer candidate supplied by another association for the same subject.
+   * 只有当托管来源产物至少有一条来源记录仍是其精确来源关联的当前头部时，
+   * 它才能满足需求。关联身份可防止一个来源遮蔽同一主体下另一关联提供的更新候选项。
    */
   private isCurrentSourceArtifactAssociation(
     query: DrizzleReadQuery,
@@ -2779,10 +2755,8 @@ export class SqliteCatalogue
   }
 
   /**
-   * Reads current source-artifact candidates from the same durable lineage for
-   * both initial accepted interpretations and applied Source Refreshes.
-   * Recognition Proposals deliberately remain audit history and are never a
-   * candidate cache.
+   * 对初始已接受解释和已应用的来源刷新，都从同一条持久谱系读取当前来源产物候选项。
+   * 识别提案刻意只保留为审计历史，绝不充当候选项缓存。
    */
   async readCurrentSourceArtifactFacts(input: {
     readonly subjectId: string;
@@ -2948,9 +2922,8 @@ export class SqliteCatalogue
   }
 
   /**
-   * Commits managed bytes as ordinary Artifact facts while conditionally
-   * retaining the exact current recognition and Source Association identity.
-   * It deliberately has no Recognition Proposal or Decision input.
+   * 将托管字节提交为普通产物事实，同时有条件地保留精确的当前识别和来源关联身份。
+   * 它刻意不接受识别提案或识别决定输入。
    */
   async submitManagedSourceArtifacts(input: {
     readonly expectedExecution: WorkflowExecution;
@@ -3036,10 +3009,8 @@ export class SqliteCatalogue
   }
 
   /**
-   * Verifies the retained/current source coordinate before any Artifact DML.
-   * The Source Record can be owned by the accepted source execution rather
-   * than this later fulfillment execution, but it must remain the exact
-   * current head for the selected association's immutable coordinate.
+   * 在执行任何产物 DML 之前验证保留的当前来源坐标。来源记录可以由已接受来源执行拥有，
+   * 而非由后续的履约执行拥有，但它必须仍是所选关联不可变坐标的精确当前头部。
    */
   private assertManagedSourceArtifactCommitInputs(
     query: DrizzleReadQuery,
@@ -3179,7 +3150,7 @@ export class SqliteCatalogue
     return association;
   }
 
-  /** Drizzle-owned mutation half of managed source-artifact provenance. */
+  /** 由 Drizzle 拥有的托管来源产物溯源变更半部。 */
   private attachManagedSourceArtifactAssociationProvenanceWithDrizzle(
     transaction: DrizzleWriteTransaction,
     input: {
@@ -3314,7 +3285,7 @@ export class SqliteCatalogue
     }
   }
 
-  /** Drizzle-owned mutation half of source-owned Artifact supersession. */
+  /** 由 Drizzle 拥有的来源所有产物取代变更半部。 */
   private supersedeCurrentManagedSourceArtifactsWithDrizzle(
     transaction: DrizzleWriteTransaction,
     input: {
@@ -3431,10 +3402,8 @@ export class SqliteCatalogue
   > {
     const database = await this.ensure();
     const query = drizzle({ client: database });
-    // A no-change item is a derivation, never the source of its own original
-    // capability closure. Prefer only executions that actually performed or
-    // re-evaluated accepted work; this also keeps legacy degraded no-change
-    // audit rows from masking an implementation upgrade.
+    // 无变更项目是派生结果，绝不是其自身原始能力闭包的来源。只选择确实执行或重新评估过
+    // 已接受工作的执行；这也避免旧版降级无变更审计行遮蔽实现升级。
     const rows = query
       .select({ id: workflowExecutions.id })
       .from(workflowExecutions)
@@ -3585,9 +3554,8 @@ export class SqliteCatalogue
     readonly expectedLineageHeads: MetadataRefreshSubmission["expectedLineageHeads"];
     readonly resumeClaim?: { readonly token: string; readonly now: string };
   }): Promise<void> {
-    // A refresh appends facts from a new proposal but retains the immutable
-    // Association and Decision which established the current identity.
-    // Repeat the Domain boundary for direct callers before any transaction.
+    // 刷新会追加来自新提案的事实，但保留建立当前身份的不可变关联和决定。
+    // 对直接调用方，在任何事务开始前再次执行领域边界检查。
     validateReevaluatedRecognition({
       current: input.current,
       accepted: input.accepted,
@@ -3888,10 +3856,8 @@ export class SqliteCatalogue
   }
 
   /**
-   * Rejects an enrichment before it can create its optional Source Association.
-   * The application has already required an accepted association interpretation;
-   * this persistence boundary rechecks its frozen recognition head, retained
-   * evidence, and exact source coordinate before the first DML statement.
+   * 在丰富操作能够创建可选来源关联之前拒绝无效请求。应用层已经要求存在已接受的关联解释；
+   * 此持久化边界会在第一条 DML 语句之前，重新检查冻结的识别头、保留证据和精确来源坐标。
    */
   private assertSourceEnrichmentApplyInputs(
     query: DrizzleReadQuery,
@@ -3937,11 +3903,9 @@ export class SqliteCatalogue
         "Source Enrichment interpretation contradicts its Source Association",
       );
     }
-    // Source Association history can preserve corrections and supersessions,
-    // but an independently enriched canonical address has one current owner.
-    // A second current subject would turn a source-native identity conflict
-    // into descriptive facts before the ordinary correction path can review
-    // it, so reject it before this transaction emits its first DML.
+    // 来源关联历史可以保留更正和取代，但独立丰富的规范地址只有一个当前所有者。
+    // 第二个当前主体会在常规更正路径来得及审核前，把来源原生身份冲突变成描述性事实，
+    // 因此应在该事务发出第一条 DML 前拒绝它。
     const conflictingCurrentCoordinate = query
       .select({ subjectId: currentSourceAssociations.subjectId })
       .from(currentSourceAssociations)
@@ -4077,10 +4041,8 @@ export class SqliteCatalogue
         "Source Enrichment Source Association conflicts with durable identity",
       );
     }
-    // An enrichment may be about to establish its first current association,
-    // so the common Metadata Refresh preflight deliberately does not require
-    // that association row yet. Every batch, ownership, payload, and lineage
-    // check still completes before the association INSERT below.
+    // 丰富操作可能正要建立首个当前关联，因此通用元数据刷新预检刻意尚不要求该关联行存在。
+    // 在下方插入关联之前，仍会完成所有批次、所有权、载荷和谱系检查。
     const metadataRefreshPreflight =
       this.preflightMetadataRefreshInputsWithDrizzle(
         query,
@@ -4101,10 +4063,8 @@ export class SqliteCatalogue
         },
         { requireCurrentSourceAssociation: false },
       );
-    // A retry can carry a freshly generated association ID/proposal while a
-    // prior durable checkpoint already owns this exact source coordinate.
-    // Reuse that immutable coordinate and its original proposal reference;
-    // only an ID claimed by another coordinate is a conflict.
+    // 重试可能携带新生成的关联 ID/提案，而先前的持久检查点已经拥有该精确来源坐标。
+    // 应复用该不可变坐标及其原始提案引用；只有被另一坐标占用的 ID 才构成冲突。
     if (existing !== undefined) {
       return {
         id: existing.id,
@@ -4122,9 +4082,8 @@ export class SqliteCatalogue
   }
 
   /**
-   * Validates every member of a metadata batch before its caller emits an
-   * INSERT, UPDATE, or DELETE.  A batch must not partly advance one coverage
-   * coordinate before another member proves malformed, foreign, or stale.
+   * 在调用方发出 `INSERT`、`UPDATE` 或 `DELETE` 前验证元数据批次的每个成员。
+   * 批次不得先局部推进某个覆盖坐标，之后才发现另一成员格式错误、属于外部或已经过期。
    */
   private preflightMetadataRefreshInputsWithDrizzle(
     query: DrizzleReadQuery,
@@ -4326,9 +4285,8 @@ export class SqliteCatalogue
   }
 
   /**
-   * Transactional Drizzle helper for source-scoped metadata/relationship
-   * lineage. Recognition reevaluation, Source Refresh Runs, and accepted
-   * Source Enrichment compose this with their own immutable state changes.
+   * 用于来源范围元数据/关系谱系的事务性 Drizzle 辅助方法。识别重新评估、来源刷新运行和
+   * 已接受来源丰富会把它与各自的不可变状态变更组合起来。
    */
   private applyMetadataRefreshInTransactionWithDrizzle(
     transaction: DrizzleWriteTransaction,
@@ -4353,10 +4311,8 @@ export class SqliteCatalogue
           completeness: record.coverage.completeness,
         })
         .run();
-      // A first record establishes a new subject lineage; it has no
-      // predecessor support to withdraw. Complete coverage can retract only
-      // facts reached from this subject's exact predecessor Source Record
-      // chain, never another subject sharing the same canonical address.
+      // 首条记录会建立新的主体谱系；它没有需要撤回的前驱支持。完整覆盖只能撤回
+      // 从该主体精确前驱来源记录链抵达的事实，绝不能撤回共享同一规范地址的另一主体事实。
       if (
         record.coverage.completeness === "complete" &&
         expectedHead !== undefined
@@ -4512,8 +4468,8 @@ export class SqliteCatalogue
       .select({ previewJson: changeImpactPreviews.previewJson })
       .from(changeImpactPreviews)
       .where(eq(changeImpactPreviews.executionId, executionId))
-      // SQLite's row order is part of this historical checkpoint contract;
-      // retain it as a schema-bound expression rather than hand SQL.
+      // SQLite 的行顺序属于该历史检查点契约；将它保留为绑定数据库模式的表达式，
+      // 而不是手写 SQL。
       .orderBy(desc(sql<number>`${changeImpactPreviews}.rowid`))
       .get();
     return row === undefined
@@ -4755,9 +4711,8 @@ export class SqliteCatalogue
             .run();
           return;
         }
-        // A recognition correction invalidates every independently enriched
-        // association until the ordinary enrichment path validates it against
-        // the new identity. Immutable source records and facts remain history.
+        // 识别更正会使所有独立丰富的关联失效，直到常规丰富路径依据新身份重新验证它们。
+        // 不可变来源记录和事实仍保留为历史。
         transaction
           .delete(currentSourceAssociations)
           .where(
@@ -4860,9 +4815,8 @@ export class SqliteCatalogue
   }
 
   /**
-   * Fixture setup only. Product code must use
-   * createAutomationIntentForObservedRoot so root authorization and intent
-   * creation share one transaction.
+   * 仅用于夹具设置。产品代码必须使用 `createAutomationIntentForObservedRoot`，
+   * 使根授权与意图创建共享同一个事务。
    */
   async createAutomationIntentForTesting(
     intent: AutomationIntent,
@@ -4915,8 +4869,7 @@ export class SqliteCatalogue
             .all()
             .map(observedRootRegistrationFromDrizzle);
         } catch {
-          // A malformed durable root must fail closed before it can become
-          // authority for a new recurring configuration.
+          // 格式错误的持久根必须以关闭方式失败，不能让它成为新周期配置的权威。
           return;
         }
         const index = createObservedRootAuthorityIndex(registrations);
@@ -5209,11 +5162,9 @@ export class SqliteCatalogue
       path.join(this.productDataDirectory, "catalogue.sqlite"),
     );
     enableCatalogueWal(database);
-    // The adapter operates only on an already reviewed Drizzle schema. It
-    // must never replay a handwritten historical migration plan or invoke
-    // development schema tooling against product data. Explicit disposable
-    // preparation lives in `disposable.ts`; formal production migration
-    // readiness is intentionally owned by the follow-on migration work.
+    // 该适配器只在已经审核的 Drizzle 数据库模式上运行。绝不能对产品数据重放手写的
+    // 历史迁移计划，也不能调用开发用模式工具。显式的一次性准备位于 `disposable.ts`；
+    // 正式的生产迁移就绪性刻意由后续迁移工作负责。
     this.database = database;
     return database;
   }
@@ -5246,7 +5197,7 @@ export class SqliteCatalogue
     }
   }
 
-  /** Called only from a SQLite transaction which owns the lease mutation. */
+  /** 仅由拥有租约变更的 SQLite 事务调用。 */
   private authoritativeNow(): string {
     const now = this.clock.now();
     if (!Number.isFinite(now.getTime()))
@@ -5316,9 +5267,8 @@ export class SqliteCatalogue
   }
 
   /**
-   * The domain Run and its execution reference form one durable start
-   * checkpoint. Keep their writes inside the caller's immediate Drizzle
-   * transaction so a recovered execution never observes a half-created Run.
+   * 领域运行及其执行引用共同组成一个持久启动检查点。将两者的写入保留在调用方的
+   * Drizzle 即时事务内，使恢复后的执行绝不会观察到只创建了一半的运行。
    */
   private insertSourceRefreshRunWithDrizzle(
     transaction: DrizzleWriteTransaction,
@@ -5355,10 +5305,8 @@ export class SqliteCatalogue
         })
         .run();
     }
-    // This helper owns the execution reference it adds: it reads that current
-    // row inside the caller's immediate transaction, then carries its audit
-    // token into the final CAS. It intentionally does not accept a
-    // caller-supplied partial execution baseline.
+    // 此辅助方法拥有它新增的执行引用：它在调用方的即时事务中读取当前行，
+    // 再把该行的审计令牌带入最终 CAS。它刻意不接受调用方提供的不完整执行基线。
     const baseline =
       this.workflowExecutionPersistence.readExecutionWithAuditWithDrizzle(
         transaction,
@@ -5407,9 +5355,8 @@ export class SqliteCatalogue
   }
 
   /**
-   * The domain projection is calculated before this method. Conditional
-   * Drizzle updates make every scope/check-set transition durable with the
-   * same fact append that caused it, without opening a second raw transaction.
+   * 领域投影会在调用此方法之前计算。Drizzle 条件更新会将每次范围/检查集转换，
+   * 连同触发它的事实追加一起持久化，无需打开第二个原始事务。
    */
   private replaceSourceRefreshRunStateWithDrizzle(
     transaction: DrizzleWriteTransaction,
@@ -5497,9 +5444,8 @@ export class SqliteCatalogue
       .where(eq(sourceRefreshScopes.runId, runId))
       .orderBy(asc(sourceRefreshScopes.ordinal))
       .all();
-    // SQLite's implicit rowid preserves the historical append order of a
-    // Run's Change Sets. This schema-bound ordering fragment has no dynamic
-    // input and keeps old durable projections stable.
+    // SQLite 的隐式 `rowid` 保留一次运行中变更集的历史追加顺序。这个绑定数据库模式的
+    // 排序片段没有动态输入，并使旧有持久投影保持稳定。
     const changeSets = query
       .select()
       .from(sourceRefreshChangeSets)
@@ -5773,9 +5719,8 @@ export class SqliteCatalogue
   }
 
   /**
-   * Stable projection fingerprint used by Change Impact Preview CAS.  The
-   * emitted key names intentionally match the pre-Drizzle JSON fingerprint so
-   * an already-stored preview remains comparable after adapter adoption.
+   * 变更影响预览 CAS 使用的稳定投影指纹。输出的键名刻意与采用 Drizzle 前的 JSON
+   * 指纹一致，使已经存储的预览在采用适配器后仍可比较。
    */
   private async listCurrentChangeImpactAttentionRows(
     query: DrizzleReadQuery,
@@ -5840,7 +5785,7 @@ export class SqliteCatalogue
     return selected;
   }
 
-  /** Rebuilds exact preview validity through one bounded set of batch reads. */
+  /** 通过一组有界批量读取重建精确的预览有效性。 */
   private currentChangeImpactPreviewIds(
     query: DrizzleReadQuery,
     previews: readonly {
@@ -6131,9 +6076,8 @@ export class SqliteCatalogue
   }
 
   /**
-   * Transitions invalid awaiting previews inside the authoritative mutation's
-   * transaction. The read path reuses the same batch validity defensively,
-   * but never performs this lifecycle write.
+   * 在权威变更的事务内转换无效的等待中预览。读取路径会防御性地复用同一批次有效性检查，
+   * 但绝不执行这一生命周期写入。
    */
   private invalidateStaleChangeImpactPreviewsWithDrizzle(
     transaction: DrizzleWriteTransaction,
@@ -6333,7 +6277,7 @@ export class SqliteCatalogue
       .run();
   }
 
-  /** Every proposal reference is evidence owned by its running execution. */
+  /** 每个提案引用都是由其运行中执行拥有的证据。 */
   private assertProposalSourceRecordOwnershipWithDrizzle(
     query: DrizzleReadQuery,
     executionId: string,
@@ -6468,8 +6412,7 @@ export class SqliteCatalogue
           ),
         )
         .get();
-      // A reaccepted legacy scope may already have a newer head. Never let
-      // its older interpretation overwrite that current candidate lineage.
+      // 重新接受的旧版范围可能已经有更新的头部。绝不能让其旧解释覆盖当前候选谱系。
       if (head?.sourceRecordId !== sourceRecordId) continue;
       this.persistCurrentSourceArtifactCandidateLineageWithDrizzle(
         transaction,
@@ -6491,8 +6434,8 @@ export class SqliteCatalogue
     for (const assertion of accepted.metadata) {
       const primary = assertion.sourceRecordIds[0];
       const subjectId = assertion.subjectId ?? accepted.entity.id;
-      // A package may project a Work fact from every member Asset. The fact
-      // remains one source-owned assertion when it has the same source slot.
+      // 一个包可以从每个成员资产投影作品事实。只要来源槽相同，该事实仍是同一条
+      // 来源所有的断言。
       const context =
         primary === undefined
           ? undefined
@@ -6719,8 +6662,7 @@ export class SqliteCatalogue
   }
 
   /**
-   * Identity-preserving reevaluation appends immutable material facts and ends
-   * source-owned associations that the new complete interpretation replaces.
+   * 保持身份的重新评估会追加不可变物料事实，并结束被新完整解释取代的来源所有关联。
    */
   private insertReevaluatedArtifactFactsWithDrizzle(
     transaction: DrizzleWriteTransaction,
@@ -6789,8 +6731,8 @@ export class SqliteCatalogue
           })
           .run();
       } else if (predecessor.observedArtifactPart !== undefined) {
-        // A local format revision can simply stop exposing a part. This is a
-        // local lifecycle event, not an external source assertion.
+        // 本地格式修订可以直接停止暴露某个部分。这是本地生命周期事件，
+        // 不是外部来源断言。
         transaction
           .insert(artifactAssociationRetractions)
           .values({
@@ -6859,7 +6801,7 @@ export class SqliteCatalogue
     }
   }
 
-  /** Local format facts have their own revision lineage, never an external source lineage. */
+  /** 本地格式事实拥有自己的修订谱系，绝不属于外部来源谱系。 */
   private replaceLocalObservedMetadataWithDrizzle(
     transaction: DrizzleWriteTransaction,
     current: AcceptedRecognition,
@@ -6898,8 +6840,7 @@ export class SqliteCatalogue
           previous.property === next.property &&
           previous.sourceSlot === next.sourceSlot,
       );
-      // Old rows were initially persisted without a local lifecycle. Find
-      // their durable id by exact provenance.
+      // 旧行最初持久化时没有本地生命周期；按精确溯源查找其持久 ID。
       const predecessor =
         predecessors[0] === undefined
           ? undefined
@@ -7219,7 +7160,7 @@ export class SqliteCatalogue
       .run();
   }
 
-  /** Resolves retained evidence through the same Drizzle query owner. */
+  /** 通过同一个 Drizzle 查询所有者解析保留证据。 */
   private sourceRecordWithDrizzle(
     query: DrizzleReadQuery,
     sourceRecordId: string,
@@ -7344,11 +7285,9 @@ export class SqliteCatalogue
   }
 
   /**
-   * Resolves the same immutable predecessor chain as the historical
-   * recursive CTE, but keeps the lookup inside the caller's Drizzle query
-   * owner. A Source Record can have at most one predecessor at its exact
-   * subject/source/coverage coordinate, so following that edge preserves the
-   * CTE's de-duplicated result without exposing the native driver.
+   * 解析与历史递归 CTE 相同的不可变前驱链，但将查找保留在调用方的 Drizzle 查询所有者内。
+   * 一条来源记录在其精确主体/来源/覆盖坐标上至多有一个前驱，因此沿该边查找既能保留
+   * CTE 的去重结果，也无需暴露原生驱动。
    */
   private sourceRecordLineageIdsWithDrizzle(
     query: DrizzleReadQuery,
@@ -7541,10 +7480,8 @@ export class SqliteCatalogue
   }
 
   /**
-   * Correction-time fact withdrawal is part of the same immediate CAS
-   * transaction as the recognition-head advance.  Keep the historical scope
-   * semantics while expressing every read/write through the transaction's
-   * Drizzle query builder.
+   * 更正时的事实撤回与识别头推进属于同一个即时 CAS 事务。在保留历史范围语义的同时，
+   * 通过事务的 Drizzle 查询构建器表达每一次读写。
    */
   private retractIdentityFactsWithDrizzle(
     transaction: DrizzleWriteTransaction,
@@ -8183,9 +8120,8 @@ export class SqliteCatalogue
   }
 
   /**
-   * Hydrates one bounded Current Catalogue page through staged set reads.
-   * Later stages are keyed only by identifiers discovered in the selected
-   * page, while projection remains an in-memory grouping concern.
+   * 通过分阶段集合读取装配一个有界的当前目录页面。后续阶段只以所选页面中发现的标识符
+   * 为键，投影仍由内存分组负责。
    */
   private async readCurrentAcceptedPageWithDrizzle(
     query: DrizzleReadQuery,
@@ -8989,10 +8925,9 @@ export class SqliteCatalogue
   }
 
   /**
-   * Drizzle-only hydrator for the public Current Catalogue projection.
+   * 仅使用 Drizzle 的公开当前目录投影装配器。
    *
-   * It receives the caller's query owner so inspection and fulfilment never
-   * escape into a second native-driver query path.
+   * 它接收调用方的查询所有者，使检查和履约绝不会逸出到第二条原生驱动查询路径。
    */
   private async readCurrentAcceptedWithDrizzle(
     query: DrizzleReadQuery,
@@ -9658,7 +9593,7 @@ function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values)];
 }
 
-/** One bound JSON value avoids SQLite's variable ceiling for expanded pages. */
+/** 使用一个绑定的 JSON 值，避免展开页面触及 SQLite 变量上限。 */
 function sqliteTextSet<T extends string | number>(values: readonly T[]) {
   return sql<T>`(select value from json_each(${JSON.stringify(values)}))`;
 }
@@ -9737,9 +9672,8 @@ function deduplicateSourceRefreshChanges(
 }
 
 /**
- * A source slot is stable only inside the subject it describes.  The encoded
- * pair is used for persistence comparison and complete-coverage retraction;
- * it is intentionally not exposed as a source-defined slot.
+ * 来源槽只在它描述的主体内部稳定。编码后的二元组用于持久化比较和完整覆盖撤回；
+ * 它刻意不作为来源定义的槽对外暴露。
  */
 function sourceFactCoordinate(subjectId: string, sourceSlot: string): string {
   return JSON.stringify([subjectId, sourceSlot]);
@@ -9759,9 +9693,8 @@ function sourceFactSlotReference(
 type FactQualifier = { readonly key: string; readonly value: string };
 
 /**
- * Qualifier order is producer incidental.  Compare persisted and candidate
- * facts in a canonical form so a reordered equivalent response does not
- * manufacture a successor assertion or relationship.
+ * 限定符顺序只是生产方的偶然细节。以规范形式比较已持久化事实与候选事实，
+ * 避免顺序不同但等价的响应凭空生成后继断言或关系。
  */
 function normalizedQualifiers(
   qualifiers: readonly FactQualifier[] | undefined,
@@ -9967,9 +9900,8 @@ function observedRootIdFromAutomationScope(
       ? scope.observedRootId
       : undefined;
   } catch {
-    // A corrupt configuration must not accidentally acquire authority. It is
-    // retained for ordinary audit/repair, but cannot be a known dependent
-    // automation scope for this bounded revoke operation.
+    // 损坏的配置不得意外获得权威。它会为常规审计/修复而保留，但不能成为此次有界撤销操作中
+    // 已知的依赖自动化范围。
     return undefined;
   }
 }

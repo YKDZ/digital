@@ -1,11 +1,14 @@
 {
-  "extends": "../../tsconfig.config.json",
+  "extends": "@digital/typescript-config/base.json",
   "compilerOptions": {
-    "composite": true,
+    "customConditions": ["digital-source"],
     "declaration": true,
-    "declarationMap": true,
-    "outDir": "./dist",
-    "rootDir": "./src"
+    "erasableSyntaxOnly": true,
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "rewriteRelativeImportExtensions": true,
+    "target": "es2023",
+    "types": ["node"]
   },
   "include": ["src/**/*.ts"]
 }

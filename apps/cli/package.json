@@ -10,14 +10,14 @@
   "type": "module",
   "imports": {
     "#main": {
-      "source": "./src/main.ts",
+      "digital-source": "./src/main.ts",
       "types": "./src/main.ts",
       "default": "./dist/main.js"
     }
   },
   "exports": {
     ".": {
-      "source": "./src/main.ts",
+      "digital-source": "./src/main.ts",
       "types": "./dist/main.d.ts",
       "default": "./dist/main.js"
     }
@@ -36,10 +36,10 @@
     "pretest": "pnpm --filter @digital/sqlite build",
     "pretest:e2e": "pnpm --filter @digital/sqlite build && pnpm --filter @digital/cli build",
     "test": "vitest run test/unit test/integration --reporter=verbose",
-    "test:e2e": "node --conditions=source test/e2e/run-journeys.ts source distribution",
-    "test:e2e:bangumi-live": "DIGITAL_E2E_JOURNEY=bangumi-episodic-live node --conditions=source test/e2e/run-journeys.ts source distribution",
-    "test:e2e:tmdb-omdb-live": "DIGITAL_E2E_JOURNEY=tmdb-omdb-live node --conditions=source test/e2e/run-journeys.ts source distribution",
-    "test:e2e:deep-integrity": "DIGITAL_DEEP_CORPUS_INTEGRITY=1 node --conditions=source test/e2e/run-journeys.ts source distribution",
+    "test:e2e": "node --conditions=digital-source test/e2e/run-journeys.ts source distribution",
+    "test:e2e:bangumi-live": "DIGITAL_E2E_JOURNEY=bangumi-episodic-live node --conditions=digital-source test/e2e/run-journeys.ts source distribution",
+    "test:e2e:tmdb-omdb-live": "DIGITAL_E2E_JOURNEY=tmdb-omdb-live node --conditions=digital-source test/e2e/run-journeys.ts source distribution",
+    "test:e2e:deep-integrity": "DIGITAL_DEEP_CORPUS_INTEGRITY=1 node --conditions=digital-source test/e2e/run-journeys.ts source distribution",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false"
   },
   "dependencies": {
@@ -49,6 +49,7 @@
   },
   "devDependencies": {
     "@digital/test-support": "workspace:*",
+    "@digital/typescript-config": "workspace:*",
     "@types/node": "catalog:",
     "oxfmt": "catalog:",
     "oxlint": "catalog:",
@@ -57,6 +58,6 @@
     "vitest": "catalog:"
   },
   "engines": {
-    "node": ">=24"
+    "node": "24"
   }
 }

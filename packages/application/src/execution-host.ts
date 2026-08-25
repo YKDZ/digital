@@ -1,7 +1,7 @@
 export type ExecutionInvocationControl = {
-  /** Announces the identity only after the Workflow Execution is durable. */
+  /** 仅在工作流执行已经耐久化后公布其身份。 */
   executionStarted(executionId: string): void;
-  /** Stops process-owned work only after its latest state is durable. */
+  /** 仅在最新状态已经耐久化后停止进程持有的工作。 */
   safeCheckpoint(): void;
 };
 
@@ -17,8 +17,8 @@ export type ExecutionInvocation = (
 ) => void | Promise<void>;
 
 /**
- * Process-owned supervision for long Application Workflow invocations.
- * Durable workflow state remains owned by the workflow and its Ports.
+ * 对长时间运行的应用工作流调用提供进程级监督。耐久工作流状态仍由工作流及其
+ * 端口持有。
  */
 export class ExecutionHost {
   private readonly graceMilliseconds: number;
@@ -91,7 +91,7 @@ export class ExecutionHost {
     return started;
   }
 
-  /** Supervises delivery-independent work that has no identity response. */
+  /** 监督没有身份响应、且与交付层无关的工作。 */
   run<Result>(invocation: () => Result | Promise<Result>): Promise<Result> {
     return this.runWithControl(invocation);
   }

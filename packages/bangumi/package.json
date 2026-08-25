@@ -2,10 +2,13 @@
   "name": "@digital/bangumi",
   "version": "0.0.0",
   "private": true,
+  "files": [
+    "dist"
+  ],
   "type": "module",
   "exports": {
     ".": {
-      "source": "./dist/index.js",
+      "digital-source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
@@ -17,13 +20,14 @@
     "lint:fix": "oxlint --format=unix --config ../../oxlint.config.ts . --fix",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
     "test": "vitest run --reporter=verbose",
-    "build": "tsc -p tsconfig.json --pretty false"
+    "build": "tsc -p tsconfig.build.json --pretty false"
   },
   "dependencies": {
     "@digital/application": "workspace:*",
     "@digital/domain": "workspace:*"
   },
   "devDependencies": {
+    "@digital/typescript-config": "workspace:*",
     "@types/node": "catalog:",
     "oxfmt": "catalog:",
     "oxlint": "catalog:",
@@ -32,6 +36,6 @@
     "vitest": "catalog:"
   },
   "engines": {
-    "node": ">=24"
+    "node": "24"
   }
 }

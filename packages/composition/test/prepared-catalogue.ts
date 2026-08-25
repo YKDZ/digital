@@ -9,9 +9,8 @@ let templateRoot: string | undefined;
 let templatePreparation: Promise<string> | undefined;
 
 /**
- * Creates a per-test product-data root from one explicitly Drizzle-pushed
- * disposable schema. The template is an OS-temporary test artifact, never a
- * runtime asset, and every caller gets an isolated SQLite database file.
+ * 从一份由 Drizzle 显式推送的一次性模式创建逐测试产品数据根。模板是操作系统临时测试产物，
+ * 绝不是运行时资产；每个调用方都会得到隔离的 SQLite 数据库文件。
  */
 export async function preparedCatalogueRoot(): Promise<string> {
   const template = await preparedTemplateRoot();
@@ -20,7 +19,7 @@ export async function preparedCatalogueRoot(): Promise<string> {
   return root;
 }
 
-/** Explicitly provision a nested test product-data directory from the same template. */
+/** 从同一个模板显式配置嵌套测试产品数据目录。 */
 export async function prepareCatalogueAt(root: string): Promise<void> {
   const template = await preparedTemplateRoot();
   await copyPreparedCatalogueTo(template, root);
@@ -37,7 +36,7 @@ async function copyPreparedCatalogueTo(
   );
 }
 
-/** Releases the file-local template when the owning test suite finishes. */
+/** 所属测试套件结束时释放文件本地模板。 */
 export async function disposePreparedCatalogueTemplate(): Promise<void> {
   if (templateRoot !== undefined) {
     await rm(templateRoot, { recursive: true, force: true });
@@ -57,8 +56,8 @@ async function createPreparedTemplate(): Promise<string> {
   );
   try {
     const target = await prepareDisposableCatalogue({ root });
-    // A closed, checkpointed template can be copied as one SQLite file; test
-    // instances then open their own WAL sidecars independently.
+    // 已关闭且已设置检查点的模板可作为单个 SQLite 文件复制；
+    // 随后各测试实例独立打开自己的 WAL 伴随文件。
     const database = new DatabaseSync(target.databasePath);
     try {
       database.exec("PRAGMA wal_checkpoint(TRUNCATE)");

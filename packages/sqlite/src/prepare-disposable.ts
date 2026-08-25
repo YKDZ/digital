@@ -1,4 +1,4 @@
-import { prepareDisposableCatalogue } from "./disposable.js";
+import { prepareDisposableCatalogue } from "./disposable.ts";
 
 const root = process.env.DIGITAL_DISPOSABLE_CATALOGUE_ROOT;
 if (root === undefined || root.trim().length === 0) {

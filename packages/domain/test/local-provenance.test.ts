@@ -224,13 +224,13 @@ describe("local format provenance", () => {
   });
 
   it("rejects a local metadata assertion without either source or observed-part provenance", () => {
-    const invalid = accepted();
-    invalid.metadata = [
-      {
-        ...invalid.metadata[0],
-        observedArtifactPart: undefined,
-      },
-    ];
+    const current = accepted();
+    const metadata = { ...current.metadata[0] };
+    delete metadata.observedArtifactPart;
+    const invalid: AcceptedRecognition = {
+      ...current,
+      metadata: [metadata],
+    };
 
     expect(() => validateAcceptedRecognition(invalid)).toThrow(
       "source or observed-part provenance",
@@ -239,44 +239,53 @@ describe("local format provenance", () => {
 
   it("accepts an EPUB fact only when its parent revision belongs to its parent artifact", () => {
     expect(validateAcceptedRecognition(accepted())).toBeDefined();
-    const invalid = accepted();
-    invalid.metadata = [
-      {
-        ...invalid.metadata[0],
-        observedArtifactPart: {
-          artifactId: "cover",
-          revisionId: "epub-revision",
-          locator: "epub:opf/dc:title[1]",
+    const current = accepted();
+    const invalid: AcceptedRecognition = {
+      ...current,
+      metadata: [
+        {
+          ...current.metadata[0],
+          observedArtifactPart: {
+            artifactId: "cover",
+            revisionId: "epub-revision",
+            locator: "epub:opf/dc:title[1]",
+          },
         },
-      },
-    ];
+      ],
+    };
     expect(() => validateAcceptedRecognition(invalid)).toThrow(
       "source or observed-part provenance",
     );
   });
 
   it("rejects a metadata assertion that combines official and local provenance", () => {
-    const invalid = accepted();
-    invalid.metadata = [
-      { ...invalid.metadata[0], sourceRecordIds: ["official-record"] },
-    ];
+    const current = accepted();
+    const invalid: AcceptedRecognition = {
+      ...current,
+      metadata: [
+        { ...current.metadata[0], sourceRecordIds: ["official-record"] },
+      ],
+    };
     expect(() => validateAcceptedRecognition(invalid)).toThrow(
       "source or observed-part provenance",
     );
   });
 
   it("rejects an embedded-cover association whose revision belongs to another artifact", () => {
-    const invalid = accepted();
-    invalid.artifactAssociations = [
-      {
-        ...invalid.artifactAssociations[0],
-        observedArtifactPart: {
-          artifactId: "cover",
-          revisionId: "epub-revision",
-          locator: "epub:cover",
+    const current = accepted();
+    const invalid: AcceptedRecognition = {
+      ...current,
+      artifactAssociations: [
+        {
+          ...current.artifactAssociations[0],
+          observedArtifactPart: {
+            artifactId: "cover",
+            revisionId: "epub-revision",
+            locator: "epub:cover",
+          },
         },
-      },
-    ];
+      ],
+    };
     expect(() => validateAcceptedRecognition(invalid)).toThrow(
       "Observed Artifact Part association",
     );

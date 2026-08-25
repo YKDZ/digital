@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
   EpubPublicationInspector,
   inspectEpubPublication,
-} from "../src/index.js";
+} from "../src/index.ts";
 
 const workspace = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),

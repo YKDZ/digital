@@ -8,7 +8,7 @@ import type {
   RecognitionReevaluationPersistence,
   WorkflowExecutionQueries,
   WorkflowExecutionCommands,
-} from "../src/index.js";
+} from "../src/index.ts";
 
 const inspectionOnlyDouble: WorkflowExecutionQueries = {
   async inspectExecution() {

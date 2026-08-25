@@ -1,13 +1,14 @@
 {
+  "extends": "@digital/typescript-config/base.json",
   "compilerOptions": {
-    "composite": true,
-    "declaration": true,
-    "module": "nodenext",
-    "moduleResolution": "nodenext",
-    "strict": true,
+    "allowImportingTsExtensions": true,
+    "customConditions": ["digital-source"],
+    "erasableSyntaxOnly": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "noEmit": true,
     "target": "es2023",
-    "types": ["node"],
-    "verbatimModuleSyntax": true
+    "types": ["node"]
   },
   "include": ["src/**/*.ts"]
 }

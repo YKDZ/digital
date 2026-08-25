@@ -30,7 +30,7 @@ import {
 import { omdbSourceConnectionCapability, OmdbCollector } from "@digital/omdb";
 import { tmdbSourceConnectionCapability, TmdbCollector } from "@digital/tmdb";
 
-import { ProductBangumiSourceConnection } from "./bangumi-source-connection.js";
+import { ProductBangumiSourceConnection } from "./bangumi-source-connection.ts";
 
 const privateDirectoryName = "private-source-connections";
 const storageVersion = "product-source-connection/1";
@@ -39,7 +39,7 @@ export type SourceConnectionCredentialStatus =
   | "unconfigured"
   | "configured"
   | "revoked"
-  /** Private storage exists but cannot safely describe a usable credential. */
+  /** 私有存储存在，但无法安全地描述一份可用凭据。 */
   | "invalid";
 
 export type SourceConnectionAvailability = "available" | "unavailable";
@@ -53,7 +53,7 @@ export type SourceConnectionUnavailableReason =
   | "storage-invalid"
   | "permissions-unsafe";
 
-/** A delivery-safe operational projection; it deliberately cannot reveal a secret. */
+/** 对交付层安全的运维投影；它刻意无法泄露秘密。 */
 export type SourceConnectionInspection = {
   readonly id: string;
   readonly capability: CapabilityCoordinate;
@@ -134,7 +134,7 @@ type ConnectionVerifier = (secret: string) => Promise<void>;
 
 type SourceConnectionDefinition = {
   readonly id: string;
-  /** Safe private filename segment; display/reference ids may contain `/`. */
+  /** 安全的私有文件名片段；显示/引用 ID 可能包含 `/`。 */
   readonly storageKey?: string;
   readonly capability: CapabilityCoordinate;
   readonly bootstrapSecret: string | undefined;
@@ -142,8 +142,7 @@ type SourceConnectionDefinition = {
 };
 
 /**
- * One private, capability-owned secret record. It intentionally exposes only
- * narrow operations rather than a universal credential document or schema.
+ * 一条由能力拥有的私有秘密记录。它刻意只暴露窄化操作，而非通用凭据文档或模式。
  */
 class PrivateSourceConnection {
   private readonly privateDirectory: string;
@@ -190,10 +189,8 @@ class PrivateSourceConnection {
   }
 
   /**
-   * A capability that has already verified its private material may commit it
-   * as usable in one local write.  Ordinary connections retain their own
-   * lifecycle, while a browser-cookie importer never persists an unchecked
-   * export merely to validate it later.
+   * 已经验证过私有材料的能力，可以通过一次本地写入将其提交为可用。普通连接保留各自的
+   * 生命周期；浏览器 Cookie 导入器绝不会仅为稍后验证，而持久化未经检查的导出内容。
    */
   configureVerified(secret: string): SourceConnectionInspection {
     const previous = this.read();
@@ -254,8 +251,7 @@ class PrivateSourceConnection {
       verificationFailed = true;
     }
     const current = this.read();
-    // A concurrent replacement/revocation is the newer product state. Do not
-    // write an old verification result over it.
+    // 并发替换/撤销是更新的产品状态；不要用旧验证结果覆盖它。
     if (
       current.configurationVersion !== snapshot.configurationVersion ||
       current.credentialStatus !== "configured" ||
@@ -285,7 +281,7 @@ class PrivateSourceConnection {
     return this.inspect();
   }
 
-  /** Opaque, non-secret coordinate frozen into a Workflow Execution. */
+  /** 冻结到工作流执行中的不透明、非秘密坐标。 */
   reference(): string {
     return `source-connection/${this.definition.id}@${this.read().configurationVersion}`;
   }
@@ -387,9 +383,8 @@ class PrivateSourceConnection {
         availability: "available",
         secret: bootstrapSecret,
       };
-      // Environment is solely a first bootstrap input. It becomes product
-      // state only when a secret was actually supplied; a no-config startup
-      // remains read-only so an invalid outer request cannot create files.
+      // 环境变量仅作为首次引导输入。只有确实提供了秘密时，它才成为产品状态；
+      // 无配置启动保持只读，使无效的外部请求无法创建文件。
       try {
         this.write(bootstrapped);
         return bootstrapped;
@@ -476,10 +471,8 @@ function invalidSourceConnection(
 }
 
 /**
- * A corrupt private connection is a local operational prerequisite failure,
- * not a catalogue-startup failure. Keep the check here, at the private
- * storage boundary, so neither an environment bootstrap nor a caller can
- * accidentally overwrite evidence that needs repair.
+ * 损坏的私有连接是本地运维前置条件失败，而不是目录启动失败。将检查保留在私有存储边界，
+ * 使环境引导和调用方都无法意外覆盖需要修复的证据。
  */
 function inspectPrivateStoragePath(
   candidate: string,
@@ -640,9 +633,8 @@ export class OmdbSourceConnection {
 }
 
 /**
- * FANBOX credentials are intentionally scoped by creator.  The first public
- * projection is read-only; import, verification and collection binding are
- * added without turning browser cookies into an Application credential type.
+ * FANBOX 凭据刻意按创作者限定范围。首个公开投影为只读；导入、验证和采集绑定的加入，
+ * 不会把浏览器 Cookie 变成应用层凭据类型。
  */
 export class ProductFanboxSourceConnections {
   private readonly productDataDirectory: string;
@@ -716,9 +708,8 @@ export class ProductFanboxSourceConnections {
   }
 
   /**
-   * Creator scopes are product configuration, not recognition semantics. The
-   * FANBOX adapter receives only this minimal scope list and decides how its
-   * own evidence maps to one of them.
+   * 创作者范围属于产品配置，而非识别语义。FANBOX 适配器只接收这份最小范围列表，
+   * 并自行决定如何把证据映射到其中一项。
    */
   creatorIds(): readonly string[] {
     const privateDirectory = path.join(
@@ -733,7 +724,7 @@ export class ProductFanboxSourceConnections {
           const match = /^fanbox--([a-zA-Z0-9_-]+)\.json$/u.exec(name);
           return match === null ? [] : [match[1]!];
         })
-        .sort();
+        .toSorted();
     } catch {
       return [];
     }
@@ -840,11 +831,9 @@ async function verifyFanboxBrowserCredentials(
   creatorId: string,
   cookieHeader: string,
 ): Promise<void> {
-  // post.listCreator is a public preview endpoint, so a successful response
-  // proves neither the imported browser session nor its current identity.
-  // The protected identity endpoint deliberately has no creator-specific
-  // entitlement claim: a valid signed-in session may still have only partial
-  // access to the configured creator during a later refresh.
+  // `post.listCreator` 是公开预览端点，因此成功响应既不能证明导入的浏览器会话有效，
+  // 也不能证明其当前身份。受保护身份端点刻意没有创作者特定的授权声明：有效的已登录会话
+  // 在后续刷新时仍可能只对所配置创作者拥有部分访问权限。
   const endpoint = new URL("https://api.fanbox.cc/user.me");
   let response: Response;
   try {
@@ -909,9 +898,8 @@ function isJsonMediaType(value: string | null): boolean {
 }
 
 /**
- * Product-owned registry for the currently deployed source connections.
- * It stays in composition because only composition knows which integration
- * receives which private handle; Application sees opaque configuration refs.
+ * 由产品拥有的当前已部署来源连接注册表。它保留在组合层，因为只有组合层知道哪个集成
+ * 接收哪个私有句柄；应用层只看到不透明配置引用。
  */
 export class ProductSourceConnections implements SourceConnectionExecutionConfiguration {
   private readonly byCollectorCapability: ReadonlyMap<
@@ -993,9 +981,8 @@ export class ProductSourceConnections implements SourceConnectionExecutionConfig
       input.collector.capabilityId,
     );
     if (connection === undefined) return { configurationReferences: [] };
-    // Once this execution owns a reference, never replace it with a newer
-    // configuration. A later replacement makes it fail explicitly rather
-    // than silently borrowing the current secret.
+    // 一旦本次执行拥有某个引用，就绝不以更新配置替换它。之后发生替换时应显式失败，
+    // 而不是静默借用当前秘密。
     if (
       input.configurationReferences.some((reference) =>
         connection.ownsReference(reference),
@@ -1010,9 +997,8 @@ export class ProductSourceConnections implements SourceConnectionExecutionConfig
     const connection = this.all.find((candidate) =>
       candidate.ownsReference(reference),
     );
-    // Static workflow references are checked by composition's separate
-    // registry. This capability must never bless an arbitrary opaque value
-    // merely because it is not one of its own references.
+    // 静态工作流引用由组合层的独立注册表检查。该能力绝不能仅因为某个任意不透明值
+    // 不属于自己的引用，就认可它。
     return (
       connection?.isCurrentUsableReference(reference) === true ||
       this.bangumi.isConfigurationReferenceCurrent(reference) ||
@@ -1083,9 +1069,8 @@ async function verifyOmdbApiKey(apiKey: string): Promise<void> {
   endpoint.searchParams.set("i", "tt3896198");
   const response = await fetch(endpoint);
   if (!response.ok) throw new Error("OMDb 来源连接验证失败");
-  // OMDb reports a rejected key in a successful HTTP response. Treat only its
-  // explicit successful payload as a usable connection, while keeping the
-  // remote diagnostic private because it can contain request context.
+  // OMDb 会在成功 HTTP 响应中报告密钥被拒绝。只有其显式成功载荷才可视为可用连接；
+  // 远端诊断可能包含请求上下文，因此应保持私有。
   let payload: unknown;
   try {
     payload = JSON.parse(

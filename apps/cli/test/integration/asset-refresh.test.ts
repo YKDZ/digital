@@ -72,7 +72,13 @@ async function registerRoot(input: {
   return (JSON.parse(command.stdout()) as { readonly id: string }).id;
 }
 
-async function tree(root: string): Promise<readonly string[]> {
+async function tree(
+  root: string,
+  options: { readonly ignoreDirectoryModifiedAt?: readonly string[] } = {},
+): Promise<readonly string[]> {
+  const ignoredDirectoryModifiedAt = new Set(
+    options.ignoreDirectoryModifiedAt ?? [],
+  );
   return (
     await captureRawFilesystemSnapshot(root, { contentDigests: true })
   ).entries
@@ -81,10 +87,14 @@ async function tree(root: string): Promise<readonly string[]> {
         entry.relativePath !== "." &&
         !entry.relativePath.split("/").includes("runtime-state"),
     )
-    .map(
-      (entry) =>
-        `${entry.relativePath}:${entry.kind}:${entry.byteLength}:${entry.modifiedAtNanoseconds}:${entry.symbolicLinkTarget ?? ""}:${entry.contentDigest ?? ""}`,
-    );
+    .map((entry) => {
+      const modifiedAtNanoseconds =
+        entry.kind === "directory" &&
+        ignoredDirectoryModifiedAt.has(entry.relativePath)
+          ? "<ignored>"
+          : entry.modifiedAtNanoseconds;
+      return `${entry.relativePath}:${entry.kind}:${entry.byteLength}:${modifiedAtNanoseconds}:${entry.symbolicLinkTarget ?? ""}:${entry.contentDigest ?? ""}`;
+    });
 }
 
 describe("Asset Refresh CLI", () => {
@@ -322,7 +332,12 @@ describe("Asset Refresh CLI", () => {
     await writeFile(path.join(source, "ordinary.txt"), "source");
     const inside = path.join(source, "product-data");
     await prepareCliProductData(inside);
-    const before = await tree(source);
+    // 打开已存在的产品数据库会短暂创建并移除 SQLite WAL，从而只改变这个已知可写目录的
+    // mtime；这里仍完整比较其他目录、所有条目及文件摘要。
+    const snapshotOptions = {
+      ignoreDirectoryModifiedAt: ["product-data"],
+    } as const;
+    const before = await tree(source, snapshotOptions);
 
     const scan = runtime(["root-create", "重叠位置", source], {
       cwd: source,
@@ -331,7 +346,7 @@ describe("Asset Refresh CLI", () => {
     await expect(runCli(scan.runtime)).resolves.toBe(1);
 
     expect(scan.stderr()).toContain("不能与产品数据或托管产物目录重叠");
-    expect(await tree(source)).toEqual(before);
+    expect(await tree(source, snapshotOptions)).toEqual(before);
   });
 
   it("rejects a symlinked product-data alias before any source mutation", async () => {
@@ -342,7 +357,10 @@ describe("Asset Refresh CLI", () => {
     await symlink(source, alias, "dir");
     const productData = path.join(alias, "product-data");
     await prepareCliProductData(productData);
-    const before = await tree(source);
+    const snapshotOptions = {
+      ignoreDirectoryModifiedAt: ["product-data"],
+    } as const;
+    const before = await tree(source, snapshotOptions);
 
     const scan = runtime(["root-create", "链接重叠位置", source], {
       cwd: source,
@@ -351,7 +369,7 @@ describe("Asset Refresh CLI", () => {
     await expect(runCli(scan.runtime)).resolves.toBe(1);
 
     expect(scan.stderr()).toContain("不能与产品数据或托管产物目录重叠");
-    expect(await tree(source)).toEqual(before);
+    expect(await tree(source, snapshotOptions)).toEqual(before);
   });
 
   it("does not treat legacy FANBOX environment variables as startup configuration", async () => {

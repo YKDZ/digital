@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
-import { cp, mkdir, readFile, rm, stat } from "node:fs/promises";
+import { readFile, rm, stat } from "node:fs/promises";
 import { readdir } from "node:fs/promises";
-import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
@@ -41,45 +40,14 @@ async function build(name) {
     if (version === "workspace:*" && closure.has(dependency))
       await build(dependency);
   }
-  // Composite TypeScript can accept a stale build-info file after Docker has
-  // excluded its dist output. Remove only this package's build-info so a
-  // successful build always materializes its declared output.
+  // Docker 排除 `dist` 输出后，TypeScript 组合构建可能仍接受过期的构建信息文件。
+  // 只移除当前包的构建信息，使成功构建总会实体化其声明输出。
   await rm(resolve(item.directory, "tsconfig.tsbuildinfo"), { force: true });
   await command("pnpm", ["--filter", name, "run", "build"]);
   const sourceDist = resolve(item.directory, "dist");
   const sourceExport = item.manifest.exports?.["."]?.default;
   if (!(await exists(sourceDist)) && !sourceExport?.startsWith("./src/")) {
     throw new Error(`${name} build 未生成 dist`);
-  }
-  for (const consumerName of closure) {
-    const consumer = manifests.get(consumerName);
-    if (
-      consumerName === name ||
-      consumer.manifest.dependencies?.[name] !== "workspace:*"
-    )
-      continue;
-    const link = resolve(
-      consumer.directory,
-      "node_modules",
-      ...name.split("/"),
-    );
-    const target = await realpath(link);
-    if (!target.includes("/node_modules/"))
-      throw new Error(`${consumerName} 的 ${name} 不指向 node_modules`);
-    const targetManifest = JSON.parse(
-      await readFile(resolve(target, "package.json"), "utf8"),
-    );
-    if (
-      targetManifest.name !== name ||
-      targetManifest.version !== item.manifest.version
-    )
-      throw new Error(`${name} injected copy 身份不匹配`);
-    if (!(await exists(sourceDist))) continue;
-    await rm(resolve(target, "dist"), { recursive: true, force: true });
-    await mkdir(resolve(target, "dist"), { recursive: true });
-    await cp(sourceDist, resolve(target, "dist"), { recursive: true });
-    if (!(await exists(resolve(target, "dist", "index.d.ts"))))
-      throw new Error(`${name} injected copy 缺少 dist entry`);
   }
   built.add(name);
 }

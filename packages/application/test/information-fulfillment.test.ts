@@ -493,8 +493,7 @@ describe("Information Fulfillment", () => {
       await expect(fulfillment.fulfill(request)).resolves.toMatchObject({
         subjects: [
           {
-            // Optional terminal work remains visible but cannot block the
-            // subject; callers can still inspect the exact durable attempt.
+            // 可选终态工作仍然可见，但不能阻塞主体；调用方仍可检查精确的持久尝试。
             status: "available",
             inputs: [
               {

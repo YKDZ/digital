@@ -18,7 +18,7 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 
-import { ProductDataOperations } from "./index.js";
+import { ProductDataOperations } from "./index.ts";
 
 const disposableProductRootEntries = new Set([
   "cache",
@@ -169,9 +169,8 @@ async function copyDurableProductRoot(
 }
 
 /**
- * `/proc/self/fd/<n>` keeps traversal anchored at an already-open Linux
- * directory descriptor. A later ancestor rename or symlink swap therefore
- * cannot redirect this copy to an attacker-controlled tree.
+ * `/proc/self/fd/<n>` 使遍历始终锚定在已经打开的 Linux 目录描述符上。因此后续的
+ * 祖先改名或符号链接替换无法把本次复制重定向到攻击者控制的目录树。
  */
 function descriptorPath(descriptor: number): string {
   return `/proc/self/fd/${descriptor}`;
@@ -241,7 +240,7 @@ async function createVerifiedDirectory(
     await child?.close();
     if (error instanceof Error && error.message === "复制目标目录必须为空")
       throw error;
-    throw new Error("复制目标目录必须是非符号链接目录");
+    throw new Error("复制目标目录必须是非符号链接目录", { cause: error });
   } finally {
     await parent.close();
   }
@@ -428,7 +427,7 @@ async function assertNoSymlinkAncestors(
     } catch (error) {
       if (errorCode(error) !== "ENOENT") throw error;
       if (current !== absolute || !allowMissingLeaf)
-        throw new Error("路径祖先不存在；拒绝离线维护");
+        throw new Error("路径祖先不存在；拒绝离线维护", { cause: error });
       missingLeaf = true;
     }
     const parent = path.dirname(current);
@@ -468,7 +467,7 @@ async function publishDurableEntries(
     }
   } catch (error) {
     const rollbackErrors: unknown[] = [];
-    for (const name of published.reverse()) {
+    for (const name of published.toReversed()) {
       try {
         await rename(
           path.join(descriptorPath(destination.fd), name),

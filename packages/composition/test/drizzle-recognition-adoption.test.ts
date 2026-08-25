@@ -111,7 +111,7 @@ function instrumentedRegistrationId(directory: string): string {
   return registrationId;
 }
 
-/** Test migration bridge: invokes only the public registered-root scan API. */
+/** 测试迁移桥接：只调用公开已注册根扫描 API。 */
 async function scanInstrumentedObservedScope(
   workflow: Pick<AssetRefreshWorkflow, "scanObservedScope">,
   input: Omit<
@@ -218,8 +218,7 @@ it("commits one validated recognition adoption without direct DatabaseSync queri
   cleanup.push(root);
   const catalogue = SqliteCatalogue.forProductData(root);
 
-  // Open the explicitly prepared WAL catalogue before arming the guard: this
-  // test proves the recognition route, not schema preparation.
+  // 启用守卫前打开显式准备的 WAL 目录：本测试验证识别路径，而非数据库模式准备。
   await catalogue.listExecutions();
   await catalogue.createExecution(runningExecution());
   await retainSourceRecords(catalogue, "dlsite-execution", [sourceRecord()]);
@@ -308,8 +307,7 @@ it("uses only Drizzle queries while a real OMDb source result advances one persi
     awards: "Nominated for 1 Oscar.",
   });
 
-  // Bootstrap the already-adopted identity before arming the route guard.
-  // The test begins at the durable Source Refresh Run boundary.
+  // 启用路径守卫前引导已经采用的身份。测试从持久来源刷新运行边界开始。
   await catalogue.createExecution(omdbExecution("omdb-initial-execution"));
   await retainSourceRecords(catalogue, "omdb-initial-execution", [
     initial.record,
@@ -475,9 +473,8 @@ it("uses only Drizzle writes through the public Metadata Refresh persistence por
     }),
   ]);
 
-  // Metadata Refresh may advance only the Source Record checkpoint owned by
-  // its own Workflow Execution; a record retained by another execution is
-  // never transferable evidence.
+  // 元数据刷新只能推进由自身工作流执行拥有的来源记录检查点；另一执行保留的记录
+  // 绝不是可转移证据。
   const foreignRecord = await omdbSourceResult({
     awards: "Foreign execution must not write this.",
   });
@@ -684,8 +681,7 @@ it("requires exact interpretation Source Record provenance before Metadata Refre
     accepted: omdbAcceptedRecognition(initial),
   });
 
-  // Establish an independently valid second coverage head and fact. The
-  // malformed candidate below must not alter this unrelated scope.
+  // 建立独立有效的第二覆盖头和事实。下方格式错误候选项不得更改该无关范围。
   const oldOtherScope = withOmdbCoverage(
     await omdbSourceResult({ awards: "Old other-scope award." }),
     "omdb.movie.other-scope",
@@ -976,8 +972,7 @@ it("uses only Drizzle writes when Source Enrichment checkpoints real OMDb eviden
   ).resolves.toBeUndefined();
   catalogue.close();
 
-  // The authorizer deliberately rejects bootstrap PRAGMAs too; reopening is
-  // the persistence assertion, not part of the guarded checkpoint write.
+  // 授权器也刻意拒绝引导 PRAGMA；重新打开是持久化断言，不属于受守卫检查点写入。
   vi.restoreAllMocks();
   const reopened = SqliteCatalogue.forProductData(root);
   await expect(
@@ -1004,9 +999,8 @@ it("uses shipped TMDB collection and interpretation while OMDb enrichment establ
   const catalogue = SqliteCatalogue.forProductData(root);
   const baseline = await tmdbAcceptedRecognitionFromShippedAdapter();
 
-  // The accepted TMDB identity is deliberately distinct from the real OMDb
-  // source below: enrichment may add a current association, but must never
-  // replace the recognition head that justified this subject.
+  // 已接受 TMDB 身份刻意不同于下方真实 OMDb 来源：丰富可以新增当前关联，
+  // 但绝不能替换证明该主体正当性的识别头。
   await catalogue.createExecution(omdbExecution("tmdb-initial-execution"));
   await retainSourceRecords(catalogue, "tmdb-initial-execution", [
     ...baseline.records,
@@ -1093,9 +1087,8 @@ it("uses shipped TMDB collection and interpretation while OMDb enrichment establ
     }),
   ]);
 
-  // Project the durable, independently retained assertions through the real
-  // product policy. TMDB wins the shared title and genre group, while OMDb
-  // remains inspectable where it supplies an assertion of its own.
+  // 通过真实产品策略投影持久且独立保留的断言。TMDB 在共享标题和类型组中胜出；
+  // OMDb 自己提供断言的地方仍可检查。
   vi.restoreAllMocks();
   const policyWorkflow = composeAssetRefresh(root);
   try {
@@ -1217,7 +1210,7 @@ it("uses shipped TMDB collection and interpretation while OMDb enrichment establ
     }),
   ).resolves.toMatchObject({ outcome: "succeeded" });
 
-  // The partial record omits awards, but omission is not an absence claim.
+  // 部分记录省略了奖项，但省略不构成缺失声明。
   await expect(
     catalogue.findAcceptedForSubjects(["tmdb-film"]),
   ).resolves.toEqual([
@@ -1318,8 +1311,8 @@ it("reuses an exact durable enrichment association and rejects a replay before f
     nativeAddress: "omdb:imdb:tt1234567",
     proposalId: "source-enrichment:omdb-replayed-execution",
   } as const;
-  // A prior durable checkpoint can already contain this exact association.
-  // Reapplying its final effect must attach it, not attempt another INSERT.
+  // 先前持久检查点可能已包含该精确关联。重新应用其最终效果必须附加它，
+  // 而不是再次尝试 `INSERT`。
   catalogue.close();
   const ledger = new DatabaseSync(path.join(root, "catalogue.sqlite"));
   try {
@@ -1377,9 +1370,8 @@ it("reuses an exact durable enrichment association and rejects a replay before f
     expect.arrayContaining([association]),
   );
 
-  // A later optional enrichment is not a Source Refresh: it cannot silently
-  // append a second record to the same source coverage coordinate. That
-  // lineage rejection must happen before it can add associations or facts.
+  // 后续可选丰富并非来源刷新：它不能静默向同一个来源覆盖坐标追加第二条记录。
+  // 谱系拒绝必须发生在它新增关联或事实之前。
   const laterSource = await omdbSourceResult({ awards: "Different award." });
   const laterPending = omdbEnrichmentExecution({
     id: "omdb-replayed-lineage-execution",
@@ -1428,8 +1420,7 @@ it("rejects an enrichment identity conflict when another current subject already
   cleanup.push(root);
   const catalogue = SqliteCatalogue.forProductData(root);
 
-  // Asset A already follows this exact OMDb coordinate as a current Source
-  // Association. Asset B has its own, independent TMDB recognition head.
+  // 资产 A 已经通过当前来源关联跟随该精确 OMDb 坐标。资产 B 拥有独立的 TMDB 识别头。
   const ownerSource = await omdbSourceResult({ awards: "Owner award." });
   await catalogue.createExecution(omdbExecution("omdb-owner-initial"));
   await retainSourceRecords(catalogue, "omdb-owner-initial", [
@@ -1626,9 +1617,8 @@ it("scopes complete OMDb omissions to one subject record chain while retaining o
   cleanup.push(root);
   const catalogue = SqliteCatalogue.forProductData(root);
 
-  // These are deliberately recognition-created/legacy duplicate canonical
-  // coordinates. The enrichment gate is not involved: this test exercises
-  // only public Metadata Refresh lineage behavior.
+  // 这些刻意采用由识别创建的/旧版重复规范坐标。丰富闸门不参与：
+  // 本测试只验证公开元数据刷新谱系行为。
   const ownerSource = await omdbSourceResult({ awards: "A award." });
   const owner = omdbAcceptedRecognitionForAsset({
     source: ownerSource,
@@ -1691,8 +1681,8 @@ it("scopes complete OMDb omissions to one subject record chain while retaining o
     accepted: target,
   });
 
-  // B opens a brand-new `omdb.movie` lineage. A complete omission here must
-  // not scan or retract A's separately-owned `omdb.movie` lineage.
+  // B 打开全新的 `omdb.movie` 谱系。这里的完整省略不得扫描或撤回 A 独立拥有的
+  // `omdb.movie` 谱系。
   const firstBRecord = await omdbSourceResult({ awards: "B award." });
   const bSecondary = {
     id: "lineage-b-secondary",
@@ -1759,9 +1749,8 @@ it("scopes complete OMDb omissions to one subject record chain while retaining o
     },
   });
 
-  // Now B advances its own existing head with a complete omission. It must
-  // retract B's root and sourced-secondary facts, while leaving A's root and
-  // sourced-secondary facts intact despite the identical source coordinate.
+  // 现在 B 用完整省略推进自己的现有头部。它必须撤回 B 的根和来源次要事实；
+  // 即使来源坐标相同，也应保持 A 的根和来源次要事实不变。
   const secondBRecord = await omdbSourceResult({});
   const secondBInterpretation: SourceInterpretationBatch = {
     ...secondBRecord.interpretation,
@@ -2037,9 +2026,8 @@ it("keeps public manual and automatic refresh execution writes inside Drizzle", 
     new AssetRefreshAutomation(manualAndAutomatic, {
       executionQueries: catalogue,
       automationQueries: catalogue,
-      // This test intentionally uses an in-memory observed-root fixture to
-      // isolate the Drizzle write boundary. Real root authorization is
-      // covered by SqliteCatalogue lifecycle tests.
+      // 本测试刻意使用内存观察根夹具来隔离 Drizzle 写入边界。
+      // 真实根授权由 `SqliteCatalogue` 生命周期测试覆盖。
       automationCommands: {
         async createAutomationIntentForObservedRoot({ intent }) {
           await catalogue.createAutomationIntentForTesting(intent);
@@ -2055,9 +2043,8 @@ it("keeps public manual and automatic refresh execution writes inside Drizzle", 
     }),
   );
 
-  // Prepare schema/migration state before proving the actual Application
-  // routes. The guard rejects raw DML and transactions even from inside a
-  // Drizzle callback.
+  // 验证实际应用层路径前，先准备数据库模式/迁移状态。即使从 Drizzle 回调内部发出，
+  // 守卫也会拒绝原始 DML 和事务。
   await catalogue.listExecutions();
   rejectDirectDatabaseWrites();
 
@@ -2216,12 +2203,12 @@ it("keeps disposable tooling on the explicit SQLite testing subpath", async () =
   );
   expect(JSON.parse(packageManifest).exports).toEqual({
     ".": {
-      source: "./dist/index.js",
+      "digital-source": "./src/index.ts",
       types: "./dist/index.d.ts",
       default: "./dist/index.js",
     },
     "./testing": {
-      source: "./dist/testing.js",
+      "digital-source": "./src/testing.ts",
       types: "./dist/testing.d.ts",
       default: "./dist/testing.js",
     },
@@ -2255,7 +2242,7 @@ it("uses SQLite authorization actions for direct-write spellings a prefix guard 
     transaction.exec("BEGIN");
     rejectDirectDatabaseWrites();
 
-    // BOM, comments, empty statements, and CTEs do not hide DML from SQLite.
+    // BOM、注释、空语句和 CTE 都无法对 SQLite 隐藏 DML。
     expect(() =>
       dml.exec(
         "\uFEFF/* leading */; -- a prefix parser would stop here\nWITH source(id) AS (SELECT 1) INSERT INTO guarded SELECT id FROM source",
@@ -2335,8 +2322,7 @@ it("uses only Drizzle writes across the complete initial recognition route", asy
   const catalogue = SqliteCatalogue.forProductData(root);
   const workflow = instrumentedRecognitionWorkflow(catalogue);
 
-  // Bootstrap is outside the observed route; from the first execution
-  // checkpoint onward every DatabaseSync write must originate in Drizzle.
+  // 引导位于受观察路径之外；从第一个执行检查点起，每次 `DatabaseSync` 写入都必须源自 Drizzle。
   await catalogue.listExecutions();
   const originalAcceptance = catalogue.acceptRecognition.bind(catalogue);
   let expectedAcceptance: WorkflowExecution | undefined;
@@ -2692,9 +2678,8 @@ it("reevaluates a changed ordinary DLsite evidence-array observation without rew
     await originalReevaluation(input);
   };
 
-  // The path, accepted source identity/address, source payload, and managed
-  // bytes stay stable.  Only the new File Observation changes its opaque
-  // observation version and mtime, so it is not eligible for ordinary reuse.
+  // 路径、已接受来源身份/地址、来源载荷和托管字节保持稳定。只有新的文件观察更改其
+  // 不透明观察版本和修改时间，因此不符合普通复用条件。
   observation.version = 2;
   rejectDirectDatabaseWrites();
   const second = await scanInstrumentedObservedScope(workflow, {
@@ -3264,7 +3249,7 @@ it("keeps equal title, managed path, and Blob as independent identity facts", as
     blobs: 1,
     currentSourceArtifactCandidateLineages: 2,
     currentSourceAssociations: 2,
-    // Two Digital Assets plus the first work's independently sourced credit.
+    // 两个数字资产，加上第一部作品独立获取的演职员事实。
     entities: 3,
     locations: 2,
     metadataAssertions: 2,
@@ -3503,11 +3488,11 @@ function instrumentedRecognitionWorkflow(
   catalogue: SqliteCatalogue,
   options?: {
     readonly explicitWorkPlan?: boolean;
-    /** Mutable test observation state; changing it simulates a fresh scan. */
+    /** 可变测试观察状态；更改它可模拟全新扫描。 */
     readonly observation?: { version: number };
-    /** Exercise the shipped non-explicit DLsite evidence-array interpreter. */
+    /** 验证随产品交付的非显式 DLsite 证据数组解释器。 */
     readonly useExactDlsiteDirectory?: boolean;
-    /** Use distinct durable source identities to exercise identity boundaries. */
+    /** 使用不同的持久来源身份验证身份边界。 */
     readonly identity?: {
       readonly key: string;
       readonly sourceIdentity: string;
@@ -3640,8 +3625,7 @@ function instrumentedRecognitionWorkflow(
                   completeness: "complete" as const,
                   authority: "official" as const,
                 },
-                // The source payload remains byte-identical across scans; a
-                // new Source Record still belongs to each observation.
+                // 来源载荷在各次扫描间逐字节相同；每次观察仍各自拥有新的来源记录。
                 digest: `instrumented-${identity.key}-record-digest`,
                 body: "{}",
               },
@@ -3768,10 +3752,8 @@ function rejectDirectDatabaseWrites(): void {
 }
 
 /**
- * A Persistence Port may use the native SQLite driver only through Drizzle.
- * This deliberately guards reads as well as writes: an authorizer can prove
- * the latter, but a hand-prepared SELECT can otherwise remain invisible while
- * reproducing a legacy query path.
+ * 持久化端口只能通过 Drizzle 使用原生 SQLite 驱动。这里刻意同时守卫读取和写入：
+ * 授权器可以证明后者，但手动准备的 `SELECT` 否则可能在重现旧查询路径时保持不可见。
  */
 function rejectDirectDatabaseQueries(): void {
   const prepare = DatabaseSync.prototype.prepare;
@@ -3801,10 +3783,9 @@ function databaseCallOriginatesInDrizzle(): boolean {
 }
 
 /**
- * A preflight has to reject its input before the first INSERT/UPDATE/DELETE,
- * including Drizzle-generated statements. Transactions themselves remain
- * allowed so this guard observes the persistence boundary at the statement
- * level rather than rejecting `BEGIN IMMEDIATE` before preflight runs.
+ * 预检必须在第一条 `INSERT`/`UPDATE`/`DELETE` 前拒绝输入，包括 Drizzle 生成的语句。
+ * 事务本身仍获准，使守卫在语句层观察持久化边界，而不是在预检运行前拒绝
+ * `BEGIN IMMEDIATE`。
  */
 function rejectAllMetadataRefreshDml(): void {
   const prepare = DatabaseSync.prototype.prepare;
@@ -3904,7 +3885,7 @@ const directWriteAuthorizers = new WeakMap<
   DirectWriteAuthorizerState
 >();
 
-/** SQLite reports these action codes while compiling, irrespective of SQL text. */
+/** SQLite 会在编译时报告这些动作码，与 SQL 文本无关。 */
 const directWriteActions = new Map<number, string>([
   [sqliteConstants.SQLITE_INSERT, "SQLITE_INSERT"],
   [sqliteConstants.SQLITE_UPDATE, "SQLITE_UPDATE"],
@@ -4914,7 +4895,7 @@ function continuityConflictRecognition(): AcceptedRecognition {
         {
           property: "asset.title",
           sourceSlot: "dlsite.title",
-          // Equal text must not collapse a distinct accepted identity.
+          // 相同文本不得折叠不同的已接受身份。
           value: "DLsite work",
           sourceRecordIds: [sourceRecordId],
         },
@@ -4947,8 +4928,7 @@ function continuityConflictRecognition(): AcceptedRecognition {
       {
         id: "dlsite-continuity-cover-location",
         artifactId: "dlsite-continuity-cover",
-        // Equal managed path and equal Blob remain material facts, not an
-        // implicit permission to rewrite a stable Artifact Association.
+        // 相同托管路径和相同 `Blob` 仍是物料事实，不是重写稳定产物关联的隐式许可。
         address: "/managed/dlsite-cover",
         kind: "managed",
       },

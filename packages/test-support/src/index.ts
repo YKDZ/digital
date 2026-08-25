@@ -4,10 +4,8 @@ import { lstat, readdir, readlink } from "node:fs/promises";
 import path from "node:path";
 
 /**
- * A test-only implementation of the same capability contract used by the
- * descriptor-bound production adapter.  It deliberately owns scope binding,
- * observation, byte opening, and release together, so Application tests do
- * not resurrect a raw-path or per-fixture filesystem seam.
+ * 仅供测试使用的实现，与绑定描述符的生产适配器采用相同能力契约。它刻意同时拥有范围绑定、
+ * 观察、字节打开和释放，使应用层测试不会重新引入原始路径或逐夹具文件系统接缝。
  */
 export type InMemoryCapabilityCoordinate = {
   readonly capabilityId: string;
@@ -258,10 +256,8 @@ export class InMemoryObservedFilesystemCapability {
 }
 
 /**
- * A deliberately shallow persistence adapter for registration tests. It owns
- * only records and optimistic version checks; Application's real
- * ObservedRootRegistrations remains the sole authority evaluator, scope
- * binder, normalizer, and ownership boundary.
+ * 为注册测试刻意保持浅层的持久化适配器。它只拥有记录和乐观版本检查；应用层真正的
+ * `ObservedRootRegistrations` 仍是唯一的权威评估器、范围绑定器、规范化器和所有权边界。
  */
 export type InMemoryVersionedRegistration = {
   readonly id: string;
@@ -316,7 +312,7 @@ export class InMemoryObservedRootRegistrationStore<
   }
 }
 
-/** A harmless collection sink for Application-owned cleanup audit contracts. */
+/** 供应用层所有清理审计契约使用的无害收集槽。 */
 export class InMemoryObservedRootCleanupReporter {
   readonly cleanupFailures: unknown[] = [];
   readonly reportingFailures: unknown[] = [];

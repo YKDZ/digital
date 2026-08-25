@@ -1,4 +1,4 @@
-import type { AssetViewFacts } from "./index.js";
+import type { AssetViewFacts } from "./index";
 
 export type BangumiEpisodeViewModel = {
   readonly assetId: string;
@@ -31,7 +31,7 @@ export type BangumiSeriesViewModel = {
   readonly summary?: string;
   readonly date?: string;
   readonly cover?: string;
-  /** Synthetic grouping nodes never own Application actions. */
+  /** 合成分组节点绝不拥有应用层动作。 */
   readonly actionTarget?: never;
   readonly works: readonly BangumiWorkViewModel[];
   readonly episodes: readonly BangumiEpisodeViewModel[];
@@ -122,9 +122,8 @@ function episodeFrom(
 }
 
 /**
- * Projects the complete accepted catalogue into finite Bangumi browse roots.
- * The relationship graph is read only to select explicit Work chains; emitted
- * children are Presentation nodes and never become Domain containment.
+ * 将完整已接受目录投影为有限的 Bangumi 浏览根。读取关系图只为选择显式作品链；
+ * 发出的子项是展示节点，绝不会成为领域包含关系。
  */
 export function projectBangumiCatalogue(
   facts: readonly AssetViewFacts[],
@@ -140,15 +139,18 @@ export function projectBangumiCatalogue(
         entity.identityNamespace !== "bangumi.subject"
       )
         continue;
-      const work = works.get(entity.id) ?? {
+      const work: WorkState = works.get(entity.id) ?? {
         id: entity.id,
         label: entity.label,
-        sourceKey: entity.sourceKey,
+        ...(entity.sourceKey === undefined
+          ? {}
+          : { sourceKey: entity.sourceKey }),
         metadata: [],
         facts: [],
       };
       work.label = entity.label;
-      work.sourceKey = entity.sourceKey;
+      if (entity.sourceKey === undefined) delete work.sourceKey;
+      else work.sourceKey = entity.sourceKey;
       work.facts.push(fact);
       work.metadata.push(
         ...fact.metadata.filter((item) => item.subjectId === entity.id),
@@ -239,6 +241,7 @@ export function projectBangumiCatalogue(
         work.label;
       const summary = metadata(work.metadata, "bangumi.subject.description");
       const date = metadata(work.metadata, "bangumi.subject.date");
+      const cover = managedArtwork(work.facts, work.id);
       const episodes = accepted
         .filter((fact) =>
           fact.relationships?.some(
@@ -264,9 +267,7 @@ export function projectBangumiCatalogue(
         title,
         ...(summary === undefined ? {} : { summary }),
         ...(date === undefined ? {} : { date }),
-        ...(managedArtwork(work.facts, work.id) === undefined
-          ? {}
-          : { cover: managedArtwork(work.facts, work.id) }),
+        ...(cover === undefined ? {} : { cover }),
         ...(work.sourceKey === undefined
           ? {}
           : { officialPage: `https://bgm.tv/subject/${work.sourceKey}` }),

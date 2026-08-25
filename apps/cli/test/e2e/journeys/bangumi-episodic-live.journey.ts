@@ -16,9 +16,8 @@ const baselines = new Map<string, ReadonlyMap<string, readonly string[]>>();
 const liveProductDataEnvironment = "DIGITAL_BANGUMI_LIVE_PRODUCT_DATA";
 
 /**
- * The human checkpoint supplies a disposable Digital product-data root that
- * was authorized through Digital's own begin/callback flow. This journey
- * never reads or imports an OAuth export from another product.
+ * 人工检查点提供一个一次性 Digital 产品数据根，它已通过 Digital 自己的开始/回调流程授权。
+ * 本旅程绝不读取或导入其他产品的 OAuth 导出内容。
  */
 function liveProductDataDirectory(): string {
   const productData = process.env[liveProductDataEnvironment]?.trim();
@@ -45,9 +44,8 @@ async function seedDisposableDigitalConnections(
       "Bangumi live journey Digital OAuth connection is unavailable",
     );
   }
-  // This is a short-lived copy of Digital's own grant into two disposable
-  // product-data roots, one per source/distribution journey. It is removed
-  // with context.workDir and never imports another product's OAuth export.
+  // 这是把 Digital 自身授权短暂复制到两个一次性产品数据根中，每个来源/分发旅程各一个。
+  // 它随 `context.workDir` 一起删除，且绝不导入其他产品的 OAuth 导出内容。
   await Promise.all(
     ["bloom", "frieren"].map(async (name) => {
       const privateDirectory = path.join(

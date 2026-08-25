@@ -4,14 +4,14 @@ import {
   freezeAssetRefreshSelection,
   type AssetRefreshSelection,
   type ResolvedAssetRefreshSelection,
-} from "./asset-refresh-selection.js";
+} from "./asset-refresh-selection.ts";
 import type {
   BoundObservedScope,
   ObservedRootRegistrations,
-} from "./observed-root-registrations.js";
-import { atPublicWorkflowBoundary } from "./workflow-invocation-lifecycle.js";
+} from "./observed-root-registrations.ts";
+import { atPublicWorkflowBoundary } from "./workflow-invocation-lifecycle.ts";
 
-/** Input accepted by every new filesystem operation in Application. */
+/** Application 中每个新文件系统操作共同接受的输入。 */
 export type RegisteredObservedRootRequest = {
   readonly registrationId: string;
   readonly relativeScope: string;
@@ -19,9 +19,8 @@ export type RegisteredObservedRootRequest = {
 };
 
 /**
- * The complete, already-authorized invocation context. No callback receives
- * a path that it can later resolve, and all durable selection evidence came
- * from the same descriptor binding.
+ * 完整且已经授权的调用上下文。回调不会收到可供稍后重新解析的路径；所有耐久选择
+ * 证据都来自同一个描述符绑定。
  */
 export type RegisteredObservedRootInvocation = {
   readonly scope: BoundObservedScope;
@@ -29,19 +28,21 @@ export type RegisteredObservedRootInvocation = {
   readonly resolvedSelection: ResolvedAssetRefreshSelection;
 };
 
+type ObservedRootExecutionRegistrations = Pick<
+  ObservedRootRegistrations,
+  "resolveActiveScope" | "closeBoundScope" | "reportCleanupFailure"
+>;
+
 /**
- * Deep registered-scope execution seam shared by scan, re-scrape, and
- * directed recognition. It owns the ordering that must never be copied by
- * callers: resolve authority, freeze its selection, invoke work, release the
- * exact adapter-owned descriptor.
+ * 扫描、重新刮削和定向识别共享的深层注册范围执行接缝。它持有调用方绝不能复制的
+ * 顺序：解析权威、冻结选择、调用工作、释放适配器持有的精确描述符。
  */
 export class ObservedRootExecution {
-  constructor(
-    private readonly registrations: Pick<
-      ObservedRootRegistrations,
-      "resolveActiveScope" | "closeBoundScope" | "reportCleanupFailure"
-    >,
-  ) {}
+  private readonly registrations: ObservedRootExecutionRegistrations;
+
+  constructor(registrations: ObservedRootExecutionRegistrations) {
+    this.registrations = registrations;
+  }
 
   async invoke<Result>(
     request: RegisteredObservedRootRequest,
@@ -119,9 +120,8 @@ export class ObservedRootExecution {
   }
 
   /**
-   * The registration service normally routes reporter errors to its separate
-   * fallback sink. Keep this boundary defensive as well: a substituted outer
-   * adapter is never allowed to overwrite the work/close primary error.
+   * 注册服务通常会把报告器错误送往独立的后备接收端。此边界仍需保持防御性：替换的
+   * 外层适配器绝不能覆盖工作或关闭阶段的主错误。
    */
   private async reportCleanupFailure(
     input: Parameters<ObservedRootRegistrations["reportCleanupFailure"]>[0],
@@ -129,9 +129,8 @@ export class ObservedRootExecution {
     try {
       await this.registrations.reportCleanupFailure(input);
     } catch {
-      // Reporting failure is suppressed operational evidence, never workflow
-      // control flow. The concrete registration service already attempts its
-      // configured fallback before this last defensive boundary.
+      // 报告失败是被抑制的操作证据，绝不是工作流控制流。具体注册服务在到达这个最终
+      // 防御边界前，已经尝试了配置的后备接收端。
     }
   }
 }

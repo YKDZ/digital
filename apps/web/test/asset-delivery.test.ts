@@ -31,7 +31,7 @@ import {
   updateAutomation,
 } from "#/server/catalogue";
 
-import { prepareWebProductData } from "./prepare-catalogue.ts";
+import { prepareWebProductData } from "./prepare-catalogue";
 
 describe("asset delivery view", () => {
   it("exposes Bangumi authorization, browser callback, and revoke through one safe HTTP surface", async () => {
@@ -692,9 +692,8 @@ describe("asset delivery view", () => {
       expect(automatedScan).toMatchObject({
         automationIntentId: enabled.intent.id,
       });
-      // The recurring intent and its scan execution retain only neutral
-      // automation coordinates; the complete Presentation requirement is
-      // reconstructed after acceptance instead of becoming persisted input.
+      // 周期意图及其扫描执行只保留中立自动化坐标；完整展示需求在接受后重建，
+      // 而不会成为持久化输入。
       expect(automatedScan).not.toHaveProperty("informationRequirement");
       expect(enabled.intent).not.toHaveProperty("informationRequirement");
 

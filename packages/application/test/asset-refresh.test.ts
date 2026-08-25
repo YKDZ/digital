@@ -127,7 +127,7 @@ async function scanFixtureObservedScope(
     Parameters<AssetRefreshWorkflow["scanObservedScope"]>[0],
     "registrationId" | "relativeScope"
   > & {
-    /** Test fixture spelling, mapped to the explicitly registered root. */
+    /** 测试夹具拼写，映射到显式注册的根。 */
     readonly directory?: "/observed/work";
   },
 ) {
@@ -142,9 +142,8 @@ async function scanFixtureObservedScope(
 }
 
 /**
- * Migration adapter for pre-registration test cases. It is intentionally a
- * test helper rather than a workflow method: every branch calls the current
- * public registered-root entrypoint and no raw directory reaches Application.
+ * 用于注册机制引入前测试案例的迁移适配器。它刻意作为测试辅助方法而非工作流方法：
+ * 每个分支都调用当前公开已注册根入口，且没有原始目录进入应用层。
  */
 async function refreshFixtureObservedScope(
   workflow: Pick<
@@ -341,7 +340,7 @@ function refreshFixture(options?: {
   readonly emptyWorkItemBoundary?: boolean;
   readonly overlappingInterpreter?: boolean;
   readonly sharedSourceArtifact?: boolean;
-  /** Same source candidate, but each work item's accepted asset is its subject. */
+  /** 同一个来源候选项，但每个工作项目都以各自已接受资产为主体。 */
   readonly sharedImplicitSourceArtifact?: boolean;
   readonly singletonExplicit?: boolean;
   readonly snapshotVersion?: (relativePath: string) => number;
@@ -353,9 +352,9 @@ function refreshFixture(options?: {
   readonly sourceAddressForSnapshotVersion?: (version: number) => string;
   readonly sharedCollectionScope?: boolean;
   readonly automationInformationRequirement?: InformationRequirement;
-  /** Present in Composition but never applicable to this execution's evidence. */
+  /** 存在于组合层，但绝不适用于本次执行的证据。 */
   readonly unusedConfiguredCollector?: boolean;
-  /** Lets a later deployment add an inapplicable collector after an execution. */
+  /** 允许后续部署在一次执行后新增不适用的采集器。 */
   readonly unusedConfiguredCollectorState?: { enabled: boolean };
   readonly incompleteSnapshot?: boolean;
   readonly thirdIndependentBoundary?: boolean;
@@ -370,17 +369,16 @@ function refreshFixture(options?: {
   readonly observedEpubPartOnly?: boolean;
   readonly formatFactsOnly?: boolean;
   readonly formatIncludesTitle?: boolean;
-  /** Lets a format inspector report another capability as evidence producer. */
+  /** 允许格式检查器把另一项能力报告为证据生产者。 */
   readonly formatEvidenceProducerSpoof?: boolean;
   readonly sourceOmitsTitle?: boolean;
   readonly sourceRelationshipQualifiers?: boolean;
   readonly sourceEnrichmentFails?: boolean;
   readonly sourceEnrichmentSucceeds?: boolean;
-  /** Lets a source-association candidate interpreter spoof its producer. */
+  /** 允许来源关联候选解释器伪造其生产者。 */
   readonly sourceEnrichmentCandidateProducerSpoof?: boolean;
   /**
-   * Lets a configured candidate interpreter appear only after an accepted
-   * recognition, then fail before it can produce a durable enrichment intent.
+   * 允许已配置候选解释器只在识别获接受后出现，随后在生成持久丰富意图前失败。
    */
   readonly sourceEnrichmentCandidateFailureState?: {
     enabled: boolean;
@@ -388,9 +386,8 @@ function refreshFixture(options?: {
   };
   readonly sourceEnrichmentPartialFailure?: boolean;
   /**
-   * Exercises durable failure handling between independently configured
-   * enrichments. The first collector throws normally; the second can be held
-   * mid-collection to model a process exit before its next checkpoint.
+   * 验证独立配置的丰富操作之间的持久失败处理。第一个采集器正常抛错；第二个可暂停在采集中，
+   * 用于模拟进程在下一检查点前退出。
    */
   readonly sourceEnrichmentFailureThenInterrupted?: boolean;
   readonly sourceEnrichmentFirstFailureStage?: "collection" | "interpretation";
@@ -430,36 +427,34 @@ function refreshFixture(options?: {
     capabilityVersion: string;
     contractVersion: string;
   };
-  /** Lets a rogue recognizer impersonate the product-trusted rule coordinate. */
+  /** 允许恶意识别器冒充产品信任的规则坐标。 */
   readonly recognizerSpoofState?: { enabled: boolean };
   /**
-   * Lets the otherwise trusted recognizer try to author Source Interpreter and
-   * Artifact Format Inspector facts through its proposal response.
+   * 允许原本受信任的识别器尝试通过提案响应创作来源解释器和产物格式检查器事实。
    */
   readonly recognizerProposalForgery?:
     | "interpretation"
     | "evidence"
     | "observed"
     | "all";
-  /** Lets a directory interpreter report another capability as evidence producer. */
+  /** 允许目录解释器把另一项能力报告为证据生产者。 */
   readonly directoryEvidenceProducerSpoof?: boolean;
-  /** Can fail interpretation after a prior checkpoint or accepted refresh. */
+  /** 可在先前检查点或已接受刷新后让解释失败。 */
   readonly sourceInterpreterFailureState?: { enabled: boolean };
-  /** Can fail recognition after source interpretation has completed. */
+  /** 可在来源解释完成后让识别失败。 */
   readonly recognizerFailureState?: { enabled: boolean };
-  /** Can fail the observer after its coordinate has been durably frozen. */
+  /** 可在观察者坐标持久冻结后让观察者失败。 */
   readonly observerFailureState?: { enabled: boolean };
-  /** Simulates an adapter attempting to smuggle an unbound snapshot location. */
+  /** 模拟适配器尝试夹带未绑定的快照位置。 */
   readonly spoofedSnapshotRoot?: string;
-  /** Ensures the collector observes its actual coordinate before network I/O. */
+  /** 确保采集器在网络 I/O 前观察其真实坐标。 */
   readonly requireCollectorCoordinateBeforeInvocation?: boolean;
-  /** Ensures the observer observes its coordinate before filesystem I/O. */
+  /** 确保观察者在文件系统 I/O 前观察其坐标。 */
   readonly requireObserverCoordinateBeforeInvocation?: boolean;
-  /** Holds ordinary collection after its Source Refresh scope has begun. */
+  /** 在来源刷新范围开始后暂停普通采集。 */
   readonly collectionBarrier?: () => Promise<void>;
   /**
-   * Observer-owned structural evidence. Tests use it to exercise aliases
-   * without teaching Application any filesystem-specific naming convention.
+   * 观察者拥有的结构证据。测试用它验证别名，而不让应用层了解任何文件系统特定命名约定。
    */
   readonly observedFiles?: readonly {
     readonly relativePath: string;
@@ -467,7 +462,7 @@ function refreshFixture(options?: {
     readonly objectIdentity?: import("../src/index.ts").FilesystemObjectIdentity;
   }[];
   readonly objectIdentityContract?: FilesystemObjectIdentityContract;
-  /** Test seam for the exact observed-Artifact reuse Port. */
+  /** 精确已观察产物复用端口的测试接缝。 */
   readonly observedArtifactReuseMatch?: import("../src/index.ts").ObservedArtifactReuseMatch;
   readonly observedScopeTracker?: {
     resolveCalls: number;
@@ -496,9 +491,8 @@ function refreshFixture(options?: {
   let lineageFrozen = false;
   const persisted = new Map<string, ExecutionInspection>();
   /**
-   * SQLite reuse only sees an accepted execution whose recognition decision is
-   * still the current association head. Keep that distinct from a proposal
-   * identifier: fixture proposals deliberately reuse simple ids.
+   * SQLite 复用只会看到识别决定仍为当前关联头的已接受执行。应将它与提案标识符区分开：
+   * 夹具提案刻意复用简单 ID。
    */
   const currentRecognitionHeadExecutionByAsset = new Map<string, string>();
   const changePreviews = new Map<string, ChangeImpactPreview>();
@@ -6181,9 +6175,8 @@ describe("Asset Refresh acceptance", () => {
       ]),
     );
 
-    // The original process remains stopped in its external collection effect.
-    // Resolving it after the resumed execution is terminal would only model a
-    // stale process waking up, which is outside this recovery assertion.
+    // 原进程仍停在外部采集效果中。在恢复执行终止后再解除它，只能模拟过期进程醒来，
+    // 不属于本恢复断言范围。
     void interrupted.catch(() => {});
     void releaseInitialSecondCollection;
   });
@@ -7946,9 +7939,8 @@ describe("Asset Refresh acceptance", () => {
       ...durable,
       execution: {
         ...durable.execution,
-        // This is the only shape a legacy persisted decoder may produce for
-        // a former `{ root }` selection: preserved historical directory
-        // evidence, but no executable filesystem scope.
+        // 这是旧版持久解码器可为原 `{ root }` 选择生成的唯一结构：保留历史目录证据，
+        // 但不提供可执行文件系统范围。
         requestedSelection: undefined,
         resolvedSelection: undefined,
       },
@@ -8082,9 +8074,8 @@ describe("Asset Refresh acceptance", () => {
       acceptTrusted: true,
     });
     const durable = subject.persisted.get(initial.execution.id)!;
-    // This is the exact durable acceptance state between accepting recognition
-    // and beginning optional candidate planning. A new process must terminally
-    // record its candidate failure rather than leave this execution reusable.
+    // 这是接受识别与开始可选候选规划之间的精确持久接受状态。新进程必须以终态记录
+    // 候选项失败，而不是让本次执行保持可复用。
     subject.persisted.set(initial.execution.id, {
       ...durable,
       execution: {

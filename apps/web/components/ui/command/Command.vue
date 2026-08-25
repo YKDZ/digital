@@ -30,11 +30,11 @@ const { contains } = useFilter({ sensitivity: "base" });
 const filterState = reactive({
   search: "",
   filtered: {
-    /** The count of all visible items. */
+    /** 所有可见项目的数量。 */
     count: 0,
-    /** Map from visible item id to its search score. */
+    /** 从可见项目 ID 到搜索分数的映射。 */
     items: new Map() as Map<string, number>,
-    /** Set of groups with at least one visible item. */
+    /** 至少包含一个可见项目的分组集合。 */
     groups: new Set() as Set<string>,
   },
 });
@@ -42,22 +42,22 @@ const filterState = reactive({
 function filterItems() {
   if (!filterState.search) {
     filterState.filtered.count = allItems.value.size;
-    // Do nothing, each item will know to show itself because search is empty
+    // 无需操作；搜索为空时，每个项目都知道应显示自身。
     return;
   }
 
-  // Reset the groups
+  // 重置分组。
   filterState.filtered.groups = new Set();
   let itemCount = 0;
 
-  // Check which items should be included
+  // 检查应包含哪些项目。
   for (const [id, value] of allItems.value) {
     const score = contains(value, filterState.search);
     filterState.filtered.items.set(id, score ? 1 : 0);
     if (score) itemCount++;
   }
 
-  // Check which groups have at least 1 item shown
+  // 检查哪些分组至少显示一个项目。
   for (const [groupId, group] of allGroups.value) {
     for (const itemId of group) {
       if (filterState.filtered.items.get(itemId)! > 0) {

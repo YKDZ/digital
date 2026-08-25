@@ -2,7 +2,9 @@
   "boundaries": {
     "tags": {
       "application": {
-        "dependencies": { "allow": ["application", "domain", "test-support"] }
+        "dependencies": {
+          "allow": ["application", "domain", "test-support", "tooling"]
+        }
       },
       "composition": {
         "dependencies": {
@@ -28,25 +30,33 @@
           ]
         }
       },
-      "domain": { "dependencies": { "allow": ["domain", "test-support"] } },
+      "domain": {
+        "dependencies": { "allow": ["domain", "test-support", "tooling"] }
+      },
       "infrastructure": {
         "dependencies": {
-          "allow": ["application", "domain", "test-support"]
+          "allow": ["application", "domain", "test-support", "tooling"]
         }
       },
       "integration": {
         "dependencies": {
-          "allow": ["application", "domain", "test-support"]
+          "allow": ["application", "domain", "test-support", "tooling"]
         }
       },
       "presentation": {
         "dependencies": {
-          "allow": ["presentation", "application", "domain", "test-support"]
+          "allow": [
+            "presentation",
+            "application",
+            "domain",
+            "test-support",
+            "tooling"
+          ]
         }
       },
       "test-support": {
         "dependencies": {
-          "allow": ["test-support"]
+          "allow": ["test-support", "tooling"]
         }
       },
       "tooling": {
@@ -72,7 +82,7 @@
     "//#typecheck": { "outputs": [] },
     "format:check": { "outputs": [] },
     "lint": { "outputs": [] },
-    "typecheck": { "dependsOn": ["^build"], "outputs": [] },
+    "typecheck": { "dependsOn": ["^typecheck"], "outputs": [] },
     "build": { "dependsOn": ["^build"] },
     "test": { "dependsOn": ["build"], "outputs": [] },
     "test:e2e": {

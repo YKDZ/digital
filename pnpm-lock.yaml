@@ -3,7 +3,6 @@ lockfileVersion: '9.0'
 settings:
   autoInstallPeers: false
   excludeLinksFromLockfile: false
-  injectWorkspacePackages: true
 
 catalogs:
   default:
@@ -14,7 +13,7 @@ catalogs:
       specifier: ^1.61.1
       version: 1.62.0
     '@tailwindcss/vite':
-      specifier: ^4.3.2
+      specifier: ^4.3.3
       version: 4.3.3
     '@types/node':
       specifier: ^24.13.3
@@ -47,8 +46,8 @@ catalogs:
       specifier: ^1.73.0
       version: 1.75.0
     oxlint-tsgolint:
-      specifier: ^0.24.0
-      version: 0.24.0
+      specifier: ^7.0.2001
+      version: 7.0.2001
     srvx:
       specifier: ^0.12.1
       version: 0.12.4
@@ -74,7 +73,7 @@ catalogs:
       specifier: ^0.9.12
       version: 0.9.13
     vite:
-      specifier: ^8.1.4
+      specifier: ^8.1.5
       version: 8.1.5
     vitest:
       specifier: ^4.1.10
@@ -102,10 +101,10 @@ importers:
         version: 0.58.0
       oxlint:
         specifier: 'catalog:'
-        version: 1.75.0(oxlint-tsgolint@0.24.0)
+        version: 1.75.0(oxlint-tsgolint@7.0.2001)
       oxlint-tsgolint:
         specifier: 'catalog:'
-        version: 0.24.0
+        version: 7.0.2001
       turbo:
         specifier: 'catalog:'
         version: 2.10.5
@@ -117,17 +116,20 @@ importers:
     dependencies:
       '@digital/application':
         specifier: workspace:*
-        version: file:packages/application(typescript@7.0.2)
+        version: link:../../packages/application
       '@digital/composition':
         specifier: workspace:*
-        version: file:packages/composition(typescript@7.0.2)
+        version: link:../../packages/composition
       commander:
         specifier: 'catalog:'
         version: 15.0.0
     devDependencies:
       '@digital/test-support':
         specifier: workspace:*
-        version: file:packages/test-support
+        version: link:../../packages/test-support
+      '@digital/typescript-config':
+        specifier: workspace:*
+        version: link:../../packages/typescript-config
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.3
@@ -136,10 +138,10 @@ importers:
         version: 0.58.0
       oxlint:
         specifier: 'catalog:'
-        version: 1.75.0(oxlint-tsgolint@0.24.0)
+        version: 1.75.0(oxlint-tsgolint@7.0.2001)
       oxlint-tsgolint:
         specifier: 'catalog:'
-        version: 0.24.0
+        version: 7.0.2001
       typescript-7:
         specifier: 'catalog:'
         version: typescript@7.0.2
@@ -151,13 +153,13 @@ importers:
     dependencies:
       '@digital/application':
         specifier: workspace:*
-        version: file:packages/application(@typescript/typescript6@6.0.2)
+        version: link:../../packages/application
       '@digital/composition':
         specifier: workspace:*
-        version: file:packages/composition(@typescript/typescript6@6.0.2)
+        version: link:../../packages/composition
       '@digital/presentation':
         specifier: workspace:*
-        version: file:packages/presentation(@typescript/typescript6@6.0.2)
+        version: link:../../packages/presentation
       '@lucide/vue':
         specifier: ^1.27.0
         version: 1.27.0(vue@3.5.40(@typescript/typescript6@6.0.2))
@@ -198,6 +200,9 @@ importers:
         specifier: 'catalog:'
         version: 3.5.40(@typescript/typescript6@6.0.2)
     devDependencies:
+      '@digital/typescript-config':
+        specifier: workspace:*
+        version: link:../../packages/typescript-config
       '@playwright/test':
         specifier: 'catalog:'
         version: 1.62.0
@@ -218,10 +223,10 @@ importers:
         version: 0.58.0
       oxlint:
         specifier: 'catalog:'
-        version: 1.75.0(oxlint-tsgolint@0.24.0)
+        version: 1.75.0(oxlint-tsgolint@7.0.2001)
       oxlint-tsgolint:
         specifier: 'catalog:'
-        version: 0.24.0
+        version: 7.0.2001
       tailwindcss:
         specifier: 'catalog:'
         version: 4.3.3
@@ -248,11 +253,14 @@ importers:
     dependencies:
       '@digital/domain':
         specifier: workspace:*
-        version: file:packages/domain(typescript@7.0.2)
+        version: link:../domain
     devDependencies:
       '@digital/test-support':
         specifier: workspace:*
-        version: file:packages/test-support
+        version: link:../test-support
+      '@digital/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.3
@@ -261,10 +269,10 @@ importers:
         version: 0.58.0
       oxlint:
         specifier: 'catalog:'
-        version: 1.75.0(oxlint-tsgolint@0.24.0)
+        version: 1.75.0(oxlint-tsgolint@7.0.2001)
       oxlint-tsgolint:
         specifier: 'catalog:'
-        version: 0.24.0
+        version: 7.0.2001
       typescript-7:
         specifier: 'catalog:'
         version: typescript@7.0.2
@@ -276,11 +284,14 @@ importers:
     dependencies:
       '@digital/application':
         specifier: workspace:*
-        version: file:packages/application(typescript@7.0.2)
+        version: link:../application
       '@digital/domain':
         specifier: workspace:*
-        version: file:packages/domain(typescript@7.0.2)
+        version: link:../domain
     devDependencies:
+      '@digital/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.3
@@ -289,10 +300,10 @@ importers:
         version: 0.58.0
       oxlint:
         specifier: 'catalog:'
-        version: 1.75.0(oxlint-tsgolint@0.24.0)
+        version: 1.75.0(oxlint-tsgolint@7.0.2001)
       oxlint-tsgolint:
         specifier: 'catalog:'
-        version: 0.24.0
+        version: 7.0.2001
       typescript-7:
         specifier: 'catalog:'
         version: typescript@7.0.2
@@ -304,44 +315,47 @@ importers:
     dependencies:
       '@digital/application':
         specifier: workspace:*
-        version: file:packages/application(typescript@7.0.2)
+        version: link:../application
       '@digital/bangumi':
         specifier: workspace:*
-        version: file:packages/bangumi(typescript@7.0.2)
+        version: link:../bangumi
       '@digital/dlsite':
         specifier: workspace:*
-        version: file:packages/dlsite(typescript@7.0.2)
+        version: link:../dlsite
       '@digital/domain':
         specifier: workspace:*
-        version: file:packages/domain(typescript@7.0.2)
+        version: link:../domain
       '@digital/epub':
         specifier: workspace:*
-        version: file:packages/epub(typescript@7.0.2)
+        version: link:../epub
       '@digital/fanbox':
         specifier: workspace:*
-        version: file:packages/fanbox(typescript@7.0.2)
+        version: link:../fanbox
       '@digital/filesystem':
         specifier: workspace:*
-        version: file:packages/filesystem(typescript@7.0.2)
+        version: link:../filesystem
       '@digital/nbinet':
         specifier: workspace:*
-        version: file:packages/nbinet(typescript@7.0.2)
+        version: link:../nbinet
       '@digital/omdb':
         specifier: workspace:*
-        version: file:packages/omdb(typescript@7.0.2)
+        version: link:../omdb
       '@digital/product-data':
         specifier: workspace:*
-        version: file:packages/product-data
+        version: link:../product-data
       '@digital/sqlite':
         specifier: workspace:*
-        version: file:packages/sqlite(@libsql/client@0.17.4)(typescript@7.0.2)(valibot@1.4.2(typescript@7.0.2))
+        version: link:../sqlite
       '@digital/tmdb':
         specifier: workspace:*
-        version: file:packages/tmdb(typescript@7.0.2)
+        version: link:../tmdb
     devDependencies:
       '@digital/test-support':
         specifier: workspace:*
-        version: file:packages/test-support
+        version: link:../test-support
+      '@digital/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.3
@@ -350,10 +364,10 @@ importers:
         version: 0.58.0
       oxlint:
         specifier: 'catalog:'
-        version: 1.75.0(oxlint-tsgolint@0.24.0)
+        version: 1.75.0(oxlint-tsgolint@7.0.2001)
       oxlint-tsgolint:
         specifier: 'catalog:'
-        version: 0.24.0
+        version: 7.0.2001
       typescript-7:
         specifier: 'catalog:'
         version: typescript@7.0.2
@@ -365,14 +379,17 @@ importers:
     dependencies:
       '@digital/product-data':
         specifier: workspace:*
-        version: file:packages/product-data
+        version: link:../product-data
       '@digital/sqlite':
         specifier: workspace:*
-        version: file:packages/sqlite(@libsql/client@0.17.4)(typescript@7.0.2)(valibot@1.4.2(typescript@7.0.2))
+        version: link:../sqlite
       drizzle-orm:
         specifier: 'catalog:'
         version: 1.0.0-rc.4-de6c356(@libsql/client@0.17.4)(valibot@1.4.2(typescript@7.0.2))
     devDependencies:
+      '@digital/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.3
@@ -381,10 +398,10 @@ importers:
         version: 0.58.0
       oxlint:
         specifier: 'catalog:'
-        version: 1.75.0(oxlint-tsgolint@0.24.0)
+        version: 1.75.0(oxlint-tsgolint@7.0.2001)
       oxlint-tsgolint:
         specifier: 'catalog:'
-        version: 0.24.0
+        version: 7.0.2001
       typescript-7:
         specifier: 'catalog:'
         version: typescript@7.0.2
@@ -396,11 +413,14 @@ importers:
     dependencies:
       '@digital/application':
         specifier: workspace:*
-        version: file:packages/application(typescript@7.0.2)
+        version: link:../application
       '@digital/domain':
         specifier: workspace:*
-        version: file:packages/domain(typescript@7.0.2)
+        version: link:../domain
     devDependencies:
+      '@digital/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.3
@@ -409,10 +429,10 @@ importers:
         version: 0.58.0
       oxlint:
         specifier: 'catalog:'
-        version: 1.75.0(oxlint-tsgolint@0.24.0)
+        version: 1.75.0(oxlint-tsgolint@7.0.2001)
       oxlint-tsgolint:
         specifier: 'catalog:'
-        version: 0.24.0
+        version: 7.0.2001
       typescript-7:
         specifier: 'catalog:'
         version: typescript@7.0.2
@@ -426,6 +446,9 @@ importers:
         specifier: 'catalog:'
         version: 1.4.2(typescript@7.0.2)
     devDependencies:
+      '@digital/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.3
@@ -434,10 +457,10 @@ importers:
         version: 0.58.0
       oxlint:
         specifier: 'catalog:'
-        version: 1.75.0(oxlint-tsgolint@0.24.0)
+        version: 1.75.0(oxlint-tsgolint@7.0.2001)
       oxlint-tsgolint:
         specifier: 'catalog:'
-        version: 0.24.0
+        version: 7.0.2001
       typescript-7:
         specifier: 'catalog:'
         version: typescript@7.0.2
@@ -449,11 +472,14 @@ importers:
     dependencies:
       '@digital/application':
         specifier: workspace:*
-        version: file:packages/application(typescript@7.0.2)
+        version: link:../application
       '@digital/domain':
         specifier: workspace:*
-        version: file:packages/domain(typescript@7.0.2)
+        version: link:../domain
     devDependencies:
+      '@digital/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.3
@@ -462,10 +488,10 @@ importers:
         version: 0.58.0
       oxlint:
         specifier: 'catalog:'
-        version: 1.75.0(oxlint-tsgolint@0.24.0)
+        version: 1.75.0(oxlint-tsgolint@7.0.2001)
       oxlint-tsgolint:
         specifier: 'catalog:'
-        version: 0.24.0
+        version: 7.0.2001
       typescript-7:
         specifier: 'catalog:'
         version: typescript@7.0.2
@@ -477,11 +503,14 @@ importers:
     dependencies:
       '@digital/application':
         specifier: workspace:*
-        version: file:packages/application(typescript@7.0.2)
+        version: link:../application
       '@digital/domain':
         specifier: workspace:*
-        version: file:packages/domain(typescript@7.0.2)
+        version: link:../domain
     devDependencies:
+      '@digital/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.3
@@ -490,10 +519,10 @@ importers:
         version: 0.58.0
       oxlint:
         specifier: 'catalog:'
-        version: 1.75.0(oxlint-tsgolint@0.24.0)
+        version: 1.75.0(oxlint-tsgolint@7.0.2001)
       oxlint-tsgolint:
         specifier: 'catalog:'
-        version: 0.24.0
+        version: 7.0.2001
       typescript-7:
         specifier: 'catalog:'
         version: typescript@7.0.2
@@ -505,11 +534,14 @@ importers:
     dependencies:
       '@digital/application':
         specifier: workspace:*
-        version: file:packages/application(typescript@7.0.2)
+        version: link:../application
     devDependencies:
       '@digital/test-support':
         specifier: workspace:*
-        version: file:packages/test-support
+        version: link:../test-support
+      '@digital/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.3
@@ -518,10 +550,10 @@ importers:
         version: 0.58.0
       oxlint:
         specifier: 'catalog:'
-        version: 1.75.0(oxlint-tsgolint@0.24.0)
+        version: 1.75.0(oxlint-tsgolint@7.0.2001)
       oxlint-tsgolint:
         specifier: 'catalog:'
-        version: 0.24.0
+        version: 7.0.2001
       typescript-7:
         specifier: 'catalog:'
         version: typescript@7.0.2
@@ -533,11 +565,14 @@ importers:
     dependencies:
       '@digital/application':
         specifier: workspace:*
-        version: file:packages/application(typescript@7.0.2)
+        version: link:../application
       '@digital/domain':
         specifier: workspace:*
-        version: file:packages/domain(typescript@7.0.2)
+        version: link:../domain
     devDependencies:
+      '@digital/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.3
@@ -546,10 +581,10 @@ importers:
         version: 0.58.0
       oxlint:
         specifier: 'catalog:'
-        version: 1.75.0(oxlint-tsgolint@0.24.0)
+        version: 1.75.0(oxlint-tsgolint@7.0.2001)
       oxlint-tsgolint:
         specifier: 'catalog:'
-        version: 0.24.0
+        version: 7.0.2001
       typescript-7:
         specifier: 'catalog:'
         version: typescript@7.0.2
@@ -561,11 +596,14 @@ importers:
     dependencies:
       '@digital/application':
         specifier: workspace:*
-        version: file:packages/application(typescript@7.0.2)
+        version: link:../application
       '@digital/domain':
         specifier: workspace:*
-        version: file:packages/domain(typescript@7.0.2)
+        version: link:../domain
     devDependencies:
+      '@digital/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.3
@@ -574,10 +612,10 @@ importers:
         version: 0.58.0
       oxlint:
         specifier: 'catalog:'
-        version: 1.75.0(oxlint-tsgolint@0.24.0)
+        version: 1.75.0(oxlint-tsgolint@7.0.2001)
       oxlint-tsgolint:
         specifier: 'catalog:'
-        version: 0.24.0
+        version: 7.0.2001
       typescript-7:
         specifier: 'catalog:'
         version: typescript@7.0.2
@@ -589,11 +627,14 @@ importers:
     dependencies:
       '@digital/application':
         specifier: workspace:*
-        version: file:packages/application(typescript@7.0.2)
+        version: link:../application
       valibot:
         specifier: 'catalog:'
         version: 1.4.2(typescript@7.0.2)
     devDependencies:
+      '@digital/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.3
@@ -602,10 +643,10 @@ importers:
         version: 0.58.0
       oxlint:
         specifier: 'catalog:'
-        version: 1.75.0(oxlint-tsgolint@0.24.0)
+        version: 1.75.0(oxlint-tsgolint@7.0.2001)
       oxlint-tsgolint:
         specifier: 'catalog:'
-        version: 0.24.0
+        version: 7.0.2001
       typescript-7:
         specifier: 'catalog:'
         version: typescript@7.0.2
@@ -615,6 +656,9 @@ importers:
 
   packages/product-data:
     devDependencies:
+      '@digital/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.3
@@ -623,10 +667,10 @@ importers:
         version: 0.58.0
       oxlint:
         specifier: 'catalog:'
-        version: 1.75.0(oxlint-tsgolint@0.24.0)
+        version: 1.75.0(oxlint-tsgolint@7.0.2001)
       oxlint-tsgolint:
         specifier: 'catalog:'
-        version: 0.24.0
+        version: 7.0.2001
       typescript-7:
         specifier: 'catalog:'
         version: typescript@7.0.2
@@ -638,14 +682,17 @@ importers:
     dependencies:
       '@digital/application':
         specifier: workspace:*
-        version: file:packages/application(typescript@7.0.2)
+        version: link:../application
       '@digital/domain':
         specifier: workspace:*
-        version: file:packages/domain(typescript@7.0.2)
+        version: link:../domain
       drizzle-orm:
         specifier: 'catalog:'
         version: 1.0.0-rc.4-de6c356(@libsql/client@0.17.4)(valibot@1.4.2(typescript@7.0.2))
     devDependencies:
+      '@digital/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
       '@libsql/client':
         specifier: 'catalog:'
         version: 0.17.4
@@ -660,16 +707,19 @@ importers:
         version: 0.58.0
       oxlint:
         specifier: 'catalog:'
-        version: 1.75.0(oxlint-tsgolint@0.24.0)
+        version: 1.75.0(oxlint-tsgolint@7.0.2001)
       oxlint-tsgolint:
         specifier: 'catalog:'
-        version: 0.24.0
+        version: 7.0.2001
       typescript-7:
         specifier: 'catalog:'
         version: typescript@7.0.2
 
   packages/test-support:
     devDependencies:
+      '@digital/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.3
@@ -678,10 +728,10 @@ importers:
         version: 0.58.0
       oxlint:
         specifier: 'catalog:'
-        version: 1.75.0(oxlint-tsgolint@0.24.0)
+        version: 1.75.0(oxlint-tsgolint@7.0.2001)
       oxlint-tsgolint:
         specifier: 'catalog:'
-        version: 0.24.0
+        version: 7.0.2001
       typescript-7:
         specifier: 'catalog:'
         version: typescript@7.0.2
@@ -693,11 +743,14 @@ importers:
     dependencies:
       '@digital/application':
         specifier: workspace:*
-        version: file:packages/application(typescript@7.0.2)
+        version: link:../application
       '@digital/domain':
         specifier: workspace:*
-        version: file:packages/domain(typescript@7.0.2)
+        version: link:../domain
     devDependencies:
+      '@digital/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.3
@@ -706,16 +759,22 @@ importers:
         version: 0.58.0
       oxlint:
         specifier: 'catalog:'
-        version: 1.75.0(oxlint-tsgolint@0.24.0)
+        version: 1.75.0(oxlint-tsgolint@7.0.2001)
       oxlint-tsgolint:
         specifier: 'catalog:'
-        version: 0.24.0
+        version: 7.0.2001
       typescript-7:
         specifier: 'catalog:'
         version: typescript@7.0.2
       vitest:
         specifier: 'catalog:'
         version: 4.1.10(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)
+
+  packages/typescript-config:
+    devDependencies:
+      oxfmt:
+        specifier: 'catalog:'
+        version: 0.58.0
 
 packages:
 
@@ -797,66 +856,6 @@ packages:
 
   '@brillout/vite-plugin-server-entry@0.7.19':
     resolution: {integrity: sha512-XIT5xAB4x3XPTLF+WfXI92zFAcIcYZqkFkYY1tpg7wrsTWMzllRF2Fbnzy8S/Dilsw9y1qJOHUVrmLtNp2/6Yw==}
-
-  '@digital/application@file:packages/application':
-    resolution: {directory: packages/application, type: directory}
-    engines: {node: '24'}
-
-  '@digital/bangumi@file:packages/bangumi':
-    resolution: {directory: packages/bangumi, type: directory}
-    engines: {node: '>=24'}
-
-  '@digital/composition@file:packages/composition':
-    resolution: {directory: packages/composition, type: directory}
-    engines: {node: '>=24'}
-
-  '@digital/dlsite@file:packages/dlsite':
-    resolution: {directory: packages/dlsite, type: directory}
-    engines: {node: '>=24'}
-
-  '@digital/domain@file:packages/domain':
-    resolution: {directory: packages/domain, type: directory}
-    engines: {node: '24'}
-
-  '@digital/epub@file:packages/epub':
-    resolution: {directory: packages/epub, type: directory}
-    engines: {node: '>=24'}
-
-  '@digital/fanbox@file:packages/fanbox':
-    resolution: {directory: packages/fanbox, type: directory}
-    engines: {node: '>=24'}
-
-  '@digital/filesystem@file:packages/filesystem':
-    resolution: {directory: packages/filesystem, type: directory}
-    engines: {node: '>=24'}
-
-  '@digital/nbinet@file:packages/nbinet':
-    resolution: {directory: packages/nbinet, type: directory}
-    engines: {node: '>=24'}
-
-  '@digital/omdb@file:packages/omdb':
-    resolution: {directory: packages/omdb, type: directory}
-    engines: {node: '>=24'}
-
-  '@digital/presentation@file:packages/presentation':
-    resolution: {directory: packages/presentation, type: directory}
-    engines: {node: '24'}
-
-  '@digital/product-data@file:packages/product-data':
-    resolution: {directory: packages/product-data, type: directory}
-    engines: {node: '>=24'}
-
-  '@digital/sqlite@file:packages/sqlite':
-    resolution: {directory: packages/sqlite, type: directory}
-    engines: {node: '>=24'}
-
-  '@digital/test-support@file:packages/test-support':
-    resolution: {directory: packages/test-support, type: directory}
-    engines: {node: '>=24'}
-
-  '@digital/tmdb@file:packages/tmdb':
-    resolution: {directory: packages/tmdb, type: directory}
-    engines: {node: '>=24'}
 
   '@drizzle-team/brocli@0.12.0':
     resolution: {integrity: sha512-mlUE+rZ8CatQekLhnaiN91Iemdd+e2gFKooGlnRB3oPTL3VghLfX24dx7HrzMNeC1JrIB/0kpsfyty3f5HNfxQ==}
@@ -1514,33 +1513,33 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@oxlint-tsgolint/darwin-arm64@0.24.0':
-    resolution: {integrity: sha512-C2uMmwK5Bc4ri4ysZ6sA8Rcu+A5zBQTp6ml2u0CLLbRZp4kMFPV3yWk8B5DK9Aw7y9bbjogIm75tUwGLFzlsYQ==}
+  '@oxlint-tsgolint/darwin-arm64@7.0.2001':
+    resolution: {integrity: sha512-CUJEdbSZ54+Xy9OXqOhWLTKZKV0BBiV7C2i/ygyVmXtkUNXx5YCzN8DpSSshTAKktoL7S+tnQ/ftFG/i7X896w==}
     cpu: [arm64]
     os: [darwin]
 
-  '@oxlint-tsgolint/darwin-x64@0.24.0':
-    resolution: {integrity: sha512-Wgvt/1lRbDxmoNqWQKKcL+UIiqLmdJ+EWLpQa1qzoNVAfNB0PJpa82/8dH1twT/3rSs4zrP5TXPWl4juB71WuQ==}
+  '@oxlint-tsgolint/darwin-x64@7.0.2001':
+    resolution: {integrity: sha512-pXfBb5BqONCcgrXQNUZWXgiYmRSWJzd97S8i41VVOh6ut0tyo+cJ5FKFpczDHxiVNfj/3e7c9B4MtztNdpIVCw==}
     cpu: [x64]
     os: [darwin]
 
-  '@oxlint-tsgolint/linux-arm64@0.24.0':
-    resolution: {integrity: sha512-PB1rxII7KV83+ASY4sSkXtqvpij6ME66+QCRL49uksi/ofs2Rf/UVboYr095n0Rkbl2wgvlsHGl6DHC361jQUQ==}
+  '@oxlint-tsgolint/linux-arm64@7.0.2001':
+    resolution: {integrity: sha512-roP7zujb/QDPzDwEKsFFpzNHHy91/Y7oX9vQXk78ekyZtcQj1QXDIMH33gjDdHBfRl4K9pZ36xhRgrP4Zr+R8A==}
     cpu: [arm64]
     os: [linux]
 
-  '@oxlint-tsgolint/linux-x64@0.24.0':
-    resolution: {integrity: sha512-xcz3CxKmjTQLREtE/UShh+ruWmm9nAb7UM9zKcD65BStiuYgOakAKkPHl4YS5DztpVcDrE0+HqbOolTlRKYWmw==}
+  '@oxlint-tsgolint/linux-x64@7.0.2001':
+    resolution: {integrity: sha512-UDezNqdECVmngu2TPnjaS1YoAmcTaBoI5lV9vk3VahBxoi+I5r9k3iJTT7qZoYWOXTD/7T7bNcwRgrocR6BscQ==}
     cpu: [x64]
     os: [linux]
 
-  '@oxlint-tsgolint/win32-arm64@0.24.0':
-    resolution: {integrity: sha512-A2i6ZGBec3i20S7RaxkgHc6r3HYtD5Mn7j/mb22NkTz14u0JuudvTu6JggAnbGMcv8+dBKQI//EasxSPJLD8pw==}
+  '@oxlint-tsgolint/win32-arm64@7.0.2001':
+    resolution: {integrity: sha512-uJZhqB6pdXLuN+AD1F5082byyQti/NPmJA77GtcFlmT2HzRelqbNls3SaIqxpjdFgvSBF9g0yOKGBkGFg7kX8Q==}
     cpu: [arm64]
     os: [win32]
 
-  '@oxlint-tsgolint/win32-x64@0.24.0':
-    resolution: {integrity: sha512-0ZbGd9qRB6zs82moekaKdEvncRANq49EAwfNX62JpTS46feXUhKAuoyVDvZMj6Rywejylrmmu79Wo6faYCo4Ew==}
+  '@oxlint-tsgolint/win32-x64@7.0.2001':
+    resolution: {integrity: sha512-FkDRm8hx9OwzGQqyWG1tO5QrTLRApff9DzSgpz9QZau37BR8d1VYKOxMLGf6shPZntJFoTwIIJYT68VndYDCog==}
     cpu: [x64]
     os: [win32]
 
@@ -2185,6 +2184,11 @@ packages:
 
   '@volar/typescript@2.4.28':
     resolution: {integrity: sha512-Ja6yvWrbis2QtN4ClAKreeUZPVYMARDYZl9LMEv1iQ1QdepB6wn0jTRxA9MftYmYa4DQ4k/DaSZpFPUfxl8giw==}
+    peerDependencies:
+      typescript: '*'
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   '@vue/compiler-core@3.5.40':
     resolution: {integrity: sha512-39E8IgOhTbVDnoJFMKc2DvYnypcZwUqgUhQkccva/0m6FUwtIKSGV7n1hpVmYcFaoRAwf9pBcwnKlCEsN63ZEQ==}
@@ -2786,8 +2790,8 @@ packages:
       vite-plus:
         optional: true
 
-  oxlint-tsgolint@0.24.0:
-    resolution: {integrity: sha512-giCk5sEvG02d5tzPmFMX3hem8ndzEEu1xvGYS5OwNfO2WGl6ZVxt5LjE0yiMDoz94INI7XkXwgFAQiydPvVHDw==}
+  oxlint-tsgolint@7.0.2001:
+    resolution: {integrity: sha512-KjK/XLcXr1DSyonKhsuFqJRiuKqcyG9j3LJ8nkOsrLzGvodBPqzHOKauy10asLMDI0sUpvb+1sxlzff3udZvfg==}
     hasBin: true
 
   oxlint@1.75.0:
@@ -3265,449 +3269,6 @@ snapshots:
       '@brillout/import': 0.2.6
       '@brillout/picocolors': 1.0.31
 
-  '@digital/application@file:packages/application(@typescript/typescript6@6.0.2)':
-    dependencies:
-      '@digital/domain': file:packages/domain(@typescript/typescript6@6.0.2)
-    transitivePeerDependencies:
-      - typescript
-
-  '@digital/application@file:packages/application(typescript@7.0.2)':
-    dependencies:
-      '@digital/domain': file:packages/domain(typescript@7.0.2)
-    transitivePeerDependencies:
-      - typescript
-
-  '@digital/bangumi@file:packages/bangumi(@typescript/typescript6@6.0.2)':
-    dependencies:
-      '@digital/application': file:packages/application(@typescript/typescript6@6.0.2)
-      '@digital/domain': file:packages/domain(@typescript/typescript6@6.0.2)
-    transitivePeerDependencies:
-      - typescript
-
-  '@digital/bangumi@file:packages/bangumi(typescript@7.0.2)':
-    dependencies:
-      '@digital/application': file:packages/application(typescript@7.0.2)
-      '@digital/domain': file:packages/domain(typescript@7.0.2)
-    transitivePeerDependencies:
-      - typescript
-
-  '@digital/composition@file:packages/composition(@typescript/typescript6@6.0.2)':
-    dependencies:
-      '@digital/application': file:packages/application(@typescript/typescript6@6.0.2)
-      '@digital/bangumi': file:packages/bangumi(@typescript/typescript6@6.0.2)
-      '@digital/dlsite': file:packages/dlsite(@typescript/typescript6@6.0.2)
-      '@digital/domain': file:packages/domain(@typescript/typescript6@6.0.2)
-      '@digital/epub': file:packages/epub(@typescript/typescript6@6.0.2)
-      '@digital/fanbox': file:packages/fanbox(@typescript/typescript6@6.0.2)
-      '@digital/filesystem': file:packages/filesystem(@typescript/typescript6@6.0.2)
-      '@digital/nbinet': file:packages/nbinet(@typescript/typescript6@6.0.2)
-      '@digital/omdb': file:packages/omdb(@typescript/typescript6@6.0.2)
-      '@digital/product-data': file:packages/product-data
-      '@digital/sqlite': file:packages/sqlite(@typescript/typescript6@6.0.2)
-      '@digital/tmdb': file:packages/tmdb(@typescript/typescript6@6.0.2)
-    transitivePeerDependencies:
-      - '@aws-sdk/client-rds-data'
-      - '@cloudflare/workers-types'
-      - '@effect/sql-d1'
-      - '@effect/sql-libsql'
-      - '@effect/sql-mysql2'
-      - '@effect/sql-pg'
-      - '@effect/sql-pglite'
-      - '@effect/sql-sqlite-bun'
-      - '@effect/sql-sqlite-do'
-      - '@effect/sql-sqlite-node'
-      - '@effect/sql-sqlite-wasm'
-      - '@electric-sql/pglite'
-      - '@libsql/client'
-      - '@libsql/client-wasm'
-      - '@neondatabase/serverless'
-      - '@op-engineering/op-sqlite'
-      - '@opentelemetry/api'
-      - '@planetscale/database'
-      - '@sinclair/typebox'
-      - '@sqlitecloud/drivers'
-      - '@tidbcloud/serverless'
-      - '@tursodatabase/database'
-      - '@tursodatabase/database-common'
-      - '@tursodatabase/database-wasm'
-      - '@tursodatabase/serverless'
-      - '@tursodatabase/sync'
-      - '@types/better-sqlite3'
-      - '@types/mssql'
-      - '@types/pg'
-      - '@types/sql.js'
-      - '@upstash/redis'
-      - '@vercel/postgres'
-      - '@xata.io/client'
-      - arktype
-      - better-sqlite3
-      - bun-types
-      - effect
-      - expo-sqlite
-      - minipg
-      - mssql
-      - mysql2
-      - pg
-      - postgres
-      - sql.js
-      - sqlite3
-      - typebox
-      - typescript
-      - valibot
-      - zod
-
-  '@digital/composition@file:packages/composition(typescript@7.0.2)':
-    dependencies:
-      '@digital/application': file:packages/application(typescript@7.0.2)
-      '@digital/bangumi': file:packages/bangumi(typescript@7.0.2)
-      '@digital/dlsite': file:packages/dlsite(typescript@7.0.2)
-      '@digital/domain': file:packages/domain(typescript@7.0.2)
-      '@digital/epub': file:packages/epub(typescript@7.0.2)
-      '@digital/fanbox': file:packages/fanbox(typescript@7.0.2)
-      '@digital/filesystem': file:packages/filesystem(typescript@7.0.2)
-      '@digital/nbinet': file:packages/nbinet(typescript@7.0.2)
-      '@digital/omdb': file:packages/omdb(typescript@7.0.2)
-      '@digital/product-data': file:packages/product-data
-      '@digital/sqlite': file:packages/sqlite(typescript@7.0.2)
-      '@digital/tmdb': file:packages/tmdb(typescript@7.0.2)
-    transitivePeerDependencies:
-      - '@aws-sdk/client-rds-data'
-      - '@cloudflare/workers-types'
-      - '@effect/sql-d1'
-      - '@effect/sql-libsql'
-      - '@effect/sql-mysql2'
-      - '@effect/sql-pg'
-      - '@effect/sql-pglite'
-      - '@effect/sql-sqlite-bun'
-      - '@effect/sql-sqlite-do'
-      - '@effect/sql-sqlite-node'
-      - '@effect/sql-sqlite-wasm'
-      - '@electric-sql/pglite'
-      - '@libsql/client'
-      - '@libsql/client-wasm'
-      - '@neondatabase/serverless'
-      - '@op-engineering/op-sqlite'
-      - '@opentelemetry/api'
-      - '@planetscale/database'
-      - '@sinclair/typebox'
-      - '@sqlitecloud/drivers'
-      - '@tidbcloud/serverless'
-      - '@tursodatabase/database'
-      - '@tursodatabase/database-common'
-      - '@tursodatabase/database-wasm'
-      - '@tursodatabase/serverless'
-      - '@tursodatabase/sync'
-      - '@types/better-sqlite3'
-      - '@types/mssql'
-      - '@types/pg'
-      - '@types/sql.js'
-      - '@upstash/redis'
-      - '@vercel/postgres'
-      - '@xata.io/client'
-      - arktype
-      - better-sqlite3
-      - bun-types
-      - effect
-      - expo-sqlite
-      - minipg
-      - mssql
-      - mysql2
-      - pg
-      - postgres
-      - sql.js
-      - sqlite3
-      - typebox
-      - typescript
-      - valibot
-      - zod
-
-  '@digital/dlsite@file:packages/dlsite(@typescript/typescript6@6.0.2)':
-    dependencies:
-      '@digital/application': file:packages/application(@typescript/typescript6@6.0.2)
-      '@digital/domain': file:packages/domain(@typescript/typescript6@6.0.2)
-    transitivePeerDependencies:
-      - typescript
-
-  '@digital/dlsite@file:packages/dlsite(typescript@7.0.2)':
-    dependencies:
-      '@digital/application': file:packages/application(typescript@7.0.2)
-      '@digital/domain': file:packages/domain(typescript@7.0.2)
-    transitivePeerDependencies:
-      - typescript
-
-  '@digital/domain@file:packages/domain(@typescript/typescript6@6.0.2)':
-    dependencies:
-      valibot: 1.4.2(@typescript/typescript6@6.0.2)
-    transitivePeerDependencies:
-      - typescript
-
-  '@digital/domain@file:packages/domain(typescript@7.0.2)':
-    dependencies:
-      valibot: 1.4.2(typescript@7.0.2)
-    transitivePeerDependencies:
-      - typescript
-
-  '@digital/epub@file:packages/epub(@typescript/typescript6@6.0.2)':
-    dependencies:
-      '@digital/application': file:packages/application(@typescript/typescript6@6.0.2)
-      '@digital/domain': file:packages/domain(@typescript/typescript6@6.0.2)
-    transitivePeerDependencies:
-      - typescript
-
-  '@digital/epub@file:packages/epub(typescript@7.0.2)':
-    dependencies:
-      '@digital/application': file:packages/application(typescript@7.0.2)
-      '@digital/domain': file:packages/domain(typescript@7.0.2)
-    transitivePeerDependencies:
-      - typescript
-
-  '@digital/fanbox@file:packages/fanbox(@typescript/typescript6@6.0.2)':
-    dependencies:
-      '@digital/application': file:packages/application(@typescript/typescript6@6.0.2)
-      '@digital/domain': file:packages/domain(@typescript/typescript6@6.0.2)
-    transitivePeerDependencies:
-      - typescript
-
-  '@digital/fanbox@file:packages/fanbox(typescript@7.0.2)':
-    dependencies:
-      '@digital/application': file:packages/application(typescript@7.0.2)
-      '@digital/domain': file:packages/domain(typescript@7.0.2)
-    transitivePeerDependencies:
-      - typescript
-
-  '@digital/filesystem@file:packages/filesystem(@typescript/typescript6@6.0.2)':
-    dependencies:
-      '@digital/application': file:packages/application(@typescript/typescript6@6.0.2)
-    transitivePeerDependencies:
-      - typescript
-
-  '@digital/filesystem@file:packages/filesystem(typescript@7.0.2)':
-    dependencies:
-      '@digital/application': file:packages/application(typescript@7.0.2)
-    transitivePeerDependencies:
-      - typescript
-
-  '@digital/nbinet@file:packages/nbinet(@typescript/typescript6@6.0.2)':
-    dependencies:
-      '@digital/application': file:packages/application(@typescript/typescript6@6.0.2)
-      '@digital/domain': file:packages/domain(@typescript/typescript6@6.0.2)
-    transitivePeerDependencies:
-      - typescript
-
-  '@digital/nbinet@file:packages/nbinet(typescript@7.0.2)':
-    dependencies:
-      '@digital/application': file:packages/application(typescript@7.0.2)
-      '@digital/domain': file:packages/domain(typescript@7.0.2)
-    transitivePeerDependencies:
-      - typescript
-
-  '@digital/omdb@file:packages/omdb(@typescript/typescript6@6.0.2)':
-    dependencies:
-      '@digital/application': file:packages/application(@typescript/typescript6@6.0.2)
-      '@digital/domain': file:packages/domain(@typescript/typescript6@6.0.2)
-    transitivePeerDependencies:
-      - typescript
-
-  '@digital/omdb@file:packages/omdb(typescript@7.0.2)':
-    dependencies:
-      '@digital/application': file:packages/application(typescript@7.0.2)
-      '@digital/domain': file:packages/domain(typescript@7.0.2)
-    transitivePeerDependencies:
-      - typescript
-
-  '@digital/presentation@file:packages/presentation(@typescript/typescript6@6.0.2)':
-    dependencies:
-      '@digital/application': file:packages/application(@typescript/typescript6@6.0.2)
-      valibot: 1.4.2(@typescript/typescript6@6.0.2)
-    transitivePeerDependencies:
-      - typescript
-
-  '@digital/product-data@file:packages/product-data': {}
-
-  '@digital/sqlite@file:packages/sqlite(@libsql/client@0.17.4)(typescript@7.0.2)(valibot@1.4.2(typescript@7.0.2))':
-    dependencies:
-      '@digital/application': file:packages/application(typescript@7.0.2)
-      '@digital/domain': file:packages/domain(typescript@7.0.2)
-      drizzle-orm: 1.0.0-rc.4-de6c356(@libsql/client@0.17.4)(valibot@1.4.2(typescript@7.0.2))
-    transitivePeerDependencies:
-      - '@aws-sdk/client-rds-data'
-      - '@cloudflare/workers-types'
-      - '@effect/sql-d1'
-      - '@effect/sql-libsql'
-      - '@effect/sql-mysql2'
-      - '@effect/sql-pg'
-      - '@effect/sql-pglite'
-      - '@effect/sql-sqlite-bun'
-      - '@effect/sql-sqlite-do'
-      - '@effect/sql-sqlite-node'
-      - '@effect/sql-sqlite-wasm'
-      - '@electric-sql/pglite'
-      - '@libsql/client'
-      - '@libsql/client-wasm'
-      - '@neondatabase/serverless'
-      - '@op-engineering/op-sqlite'
-      - '@opentelemetry/api'
-      - '@planetscale/database'
-      - '@sinclair/typebox'
-      - '@sqlitecloud/drivers'
-      - '@tidbcloud/serverless'
-      - '@tursodatabase/database'
-      - '@tursodatabase/database-common'
-      - '@tursodatabase/database-wasm'
-      - '@tursodatabase/serverless'
-      - '@tursodatabase/sync'
-      - '@types/better-sqlite3'
-      - '@types/mssql'
-      - '@types/pg'
-      - '@types/sql.js'
-      - '@upstash/redis'
-      - '@vercel/postgres'
-      - '@xata.io/client'
-      - arktype
-      - better-sqlite3
-      - bun-types
-      - effect
-      - expo-sqlite
-      - minipg
-      - mssql
-      - mysql2
-      - pg
-      - postgres
-      - sql.js
-      - sqlite3
-      - typebox
-      - typescript
-      - valibot
-      - zod
-
-  '@digital/sqlite@file:packages/sqlite(@typescript/typescript6@6.0.2)':
-    dependencies:
-      '@digital/application': file:packages/application(@typescript/typescript6@6.0.2)
-      '@digital/domain': file:packages/domain(@typescript/typescript6@6.0.2)
-      drizzle-orm: 1.0.0-rc.4-de6c356(@libsql/client@0.17.4)(valibot@1.4.2(typescript@7.0.2))
-    transitivePeerDependencies:
-      - '@aws-sdk/client-rds-data'
-      - '@cloudflare/workers-types'
-      - '@effect/sql-d1'
-      - '@effect/sql-libsql'
-      - '@effect/sql-mysql2'
-      - '@effect/sql-pg'
-      - '@effect/sql-pglite'
-      - '@effect/sql-sqlite-bun'
-      - '@effect/sql-sqlite-do'
-      - '@effect/sql-sqlite-node'
-      - '@effect/sql-sqlite-wasm'
-      - '@electric-sql/pglite'
-      - '@libsql/client'
-      - '@libsql/client-wasm'
-      - '@neondatabase/serverless'
-      - '@op-engineering/op-sqlite'
-      - '@opentelemetry/api'
-      - '@planetscale/database'
-      - '@sinclair/typebox'
-      - '@sqlitecloud/drivers'
-      - '@tidbcloud/serverless'
-      - '@tursodatabase/database'
-      - '@tursodatabase/database-common'
-      - '@tursodatabase/database-wasm'
-      - '@tursodatabase/serverless'
-      - '@tursodatabase/sync'
-      - '@types/better-sqlite3'
-      - '@types/mssql'
-      - '@types/pg'
-      - '@types/sql.js'
-      - '@upstash/redis'
-      - '@vercel/postgres'
-      - '@xata.io/client'
-      - arktype
-      - better-sqlite3
-      - bun-types
-      - effect
-      - expo-sqlite
-      - minipg
-      - mssql
-      - mysql2
-      - pg
-      - postgres
-      - sql.js
-      - sqlite3
-      - typebox
-      - typescript
-      - valibot
-      - zod
-
-  '@digital/sqlite@file:packages/sqlite(typescript@7.0.2)':
-    dependencies:
-      '@digital/application': file:packages/application(typescript@7.0.2)
-      '@digital/domain': file:packages/domain(typescript@7.0.2)
-      drizzle-orm: 1.0.0-rc.4-de6c356(@libsql/client@0.17.4)(valibot@1.4.2(typescript@7.0.2))
-    transitivePeerDependencies:
-      - '@aws-sdk/client-rds-data'
-      - '@cloudflare/workers-types'
-      - '@effect/sql-d1'
-      - '@effect/sql-libsql'
-      - '@effect/sql-mysql2'
-      - '@effect/sql-pg'
-      - '@effect/sql-pglite'
-      - '@effect/sql-sqlite-bun'
-      - '@effect/sql-sqlite-do'
-      - '@effect/sql-sqlite-node'
-      - '@effect/sql-sqlite-wasm'
-      - '@electric-sql/pglite'
-      - '@libsql/client'
-      - '@libsql/client-wasm'
-      - '@neondatabase/serverless'
-      - '@op-engineering/op-sqlite'
-      - '@opentelemetry/api'
-      - '@planetscale/database'
-      - '@sinclair/typebox'
-      - '@sqlitecloud/drivers'
-      - '@tidbcloud/serverless'
-      - '@tursodatabase/database'
-      - '@tursodatabase/database-common'
-      - '@tursodatabase/database-wasm'
-      - '@tursodatabase/serverless'
-      - '@tursodatabase/sync'
-      - '@types/better-sqlite3'
-      - '@types/mssql'
-      - '@types/pg'
-      - '@types/sql.js'
-      - '@upstash/redis'
-      - '@vercel/postgres'
-      - '@xata.io/client'
-      - arktype
-      - better-sqlite3
-      - bun-types
-      - effect
-      - expo-sqlite
-      - minipg
-      - mssql
-      - mysql2
-      - pg
-      - postgres
-      - sql.js
-      - sqlite3
-      - typebox
-      - typescript
-      - valibot
-      - zod
-
-  '@digital/test-support@file:packages/test-support': {}
-
-  '@digital/tmdb@file:packages/tmdb(@typescript/typescript6@6.0.2)':
-    dependencies:
-      '@digital/application': file:packages/application(@typescript/typescript6@6.0.2)
-      '@digital/domain': file:packages/domain(@typescript/typescript6@6.0.2)
-    transitivePeerDependencies:
-      - typescript
-
-  '@digital/tmdb@file:packages/tmdb(typescript@7.0.2)':
-    dependencies:
-      '@digital/application': file:packages/application(typescript@7.0.2)
-      '@digital/domain': file:packages/domain(typescript@7.0.2)
-    transitivePeerDependencies:
-      - typescript
-
   '@drizzle-team/brocli@0.12.0': {}
 
   '@emnapi/core@1.11.1':
@@ -4115,22 +3676,22 @@ snapshots:
   '@oxfmt/binding-win32-x64-msvc@0.58.0':
     optional: true
 
-  '@oxlint-tsgolint/darwin-arm64@0.24.0':
+  '@oxlint-tsgolint/darwin-arm64@7.0.2001':
     optional: true
 
-  '@oxlint-tsgolint/darwin-x64@0.24.0':
+  '@oxlint-tsgolint/darwin-x64@7.0.2001':
     optional: true
 
-  '@oxlint-tsgolint/linux-arm64@0.24.0':
+  '@oxlint-tsgolint/linux-arm64@7.0.2001':
     optional: true
 
-  '@oxlint-tsgolint/linux-x64@0.24.0':
+  '@oxlint-tsgolint/linux-x64@7.0.2001':
     optional: true
 
-  '@oxlint-tsgolint/win32-arm64@0.24.0':
+  '@oxlint-tsgolint/win32-arm64@7.0.2001':
     optional: true
 
-  '@oxlint-tsgolint/win32-x64@0.24.0':
+  '@oxlint-tsgolint/win32-x64@7.0.2001':
     optional: true
 
   '@oxlint/binding-android-arm-eabi@1.75.0':
@@ -4608,11 +4169,13 @@ snapshots:
 
   '@volar/source-map@2.4.28': {}
 
-  '@volar/typescript@2.4.28':
+  '@volar/typescript@2.4.28(@typescript/typescript6@6.0.2)':
     dependencies:
       '@volar/language-core': 2.4.28
       path-browserify: 1.0.1
       vscode-uri: 3.1.0
+    optionalDependencies:
+      typescript: '@typescript/typescript6@6.0.2'
 
   '@vue/compiler-core@3.5.40':
     dependencies:
@@ -5080,16 +4643,16 @@ snapshots:
       '@oxfmt/binding-win32-ia32-msvc': 0.58.0
       '@oxfmt/binding-win32-x64-msvc': 0.58.0
 
-  oxlint-tsgolint@0.24.0:
+  oxlint-tsgolint@7.0.2001:
     optionalDependencies:
-      '@oxlint-tsgolint/darwin-arm64': 0.24.0
-      '@oxlint-tsgolint/darwin-x64': 0.24.0
-      '@oxlint-tsgolint/linux-arm64': 0.24.0
-      '@oxlint-tsgolint/linux-x64': 0.24.0
-      '@oxlint-tsgolint/win32-arm64': 0.24.0
-      '@oxlint-tsgolint/win32-x64': 0.24.0
+      '@oxlint-tsgolint/darwin-arm64': 7.0.2001
+      '@oxlint-tsgolint/darwin-x64': 7.0.2001
+      '@oxlint-tsgolint/linux-arm64': 7.0.2001
+      '@oxlint-tsgolint/linux-x64': 7.0.2001
+      '@oxlint-tsgolint/win32-arm64': 7.0.2001
+      '@oxlint-tsgolint/win32-x64': 7.0.2001
 
-  oxlint@1.75.0(oxlint-tsgolint@0.24.0):
+  oxlint@1.75.0(oxlint-tsgolint@7.0.2001):
     optionalDependencies:
       '@oxlint/binding-android-arm-eabi': 1.75.0
       '@oxlint/binding-android-arm64': 1.75.0
@@ -5110,7 +4673,7 @@ snapshots:
       '@oxlint/binding-win32-arm64-msvc': 1.75.0
       '@oxlint/binding-win32-ia32-msvc': 1.75.0
       '@oxlint/binding-win32-x64-msvc': 1.75.0
-      oxlint-tsgolint: 0.24.0
+      oxlint-tsgolint: 7.0.2001
 
   path-browserify@1.0.1: {}
 
@@ -5304,10 +4867,6 @@ snapshots:
       escalade: 3.2.0
       picocolors: 1.1.1
 
-  valibot@1.4.2(@typescript/typescript6@6.0.2):
-    optionalDependencies:
-      typescript: '@typescript/typescript6@6.0.2'
-
   valibot@1.4.2(typescript@7.0.2):
     optionalDependencies:
       typescript: 7.0.2
@@ -5424,7 +4983,7 @@ snapshots:
 
   vue-tsc@3.3.8(@typescript/typescript6@6.0.2):
     dependencies:
-      '@volar/typescript': 2.4.28
+      '@volar/typescript': 2.4.28(@typescript/typescript6@6.0.2)
       '@vue/language-core': 3.3.8
       typescript: '@typescript/typescript6@6.0.2'
 

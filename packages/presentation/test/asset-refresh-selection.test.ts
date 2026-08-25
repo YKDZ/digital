@@ -1,7 +1,7 @@
 import type { AssetRefreshWorkflow } from "@digital/application";
 import { describe, expect, it } from "vitest";
 
-import { resolveAssetRefreshSelection } from "../src/index.ts";
+import { resolveAssetRefreshSelection } from "../src/index";
 
 describe("Asset Refresh Selection resolver", () => {
   it("resolves a synthetic parent and explicit multi-selection without losing repeated subject paths", () => {

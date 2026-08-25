@@ -56,7 +56,7 @@ function escaped(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
-/** Never let a journey's configured credential values reach a failure diagnostic. */
+/** 绝不让旅程配置的凭据值进入失败诊断。 */
 export function redactJourneyDiagnostic(
   value: string,
   commands: readonly CliJourneyCommand[],
@@ -92,9 +92,8 @@ function diagnosticText(
 }
 
 /**
- * Some live commands produce identifiers required by every following command.
- * If one of those prerequisites fails, surface its own safe diagnostic instead
- * of letting a dependent command fail while decoding a missing identifier.
+ * 某些实时命令会生成后续每条命令都需要的标识符。如果其中一项前置条件失败，
+ * 应显示其自身的安全诊断，而不是让依赖命令在解码缺失标识符时失败。
  */
 export function assertHaltedJourneyCommand(
   command: CliJourneyCommand,
@@ -222,7 +221,7 @@ function invocation(
       return {
         executable: process.execPath,
         prefix: [
-          "--conditions=source",
+          "--conditions=digital-source",
           path.join(packageRoot, "src", "cli.ts"),
         ],
       };

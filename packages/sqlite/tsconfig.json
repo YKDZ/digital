@@ -1,12 +1,15 @@
 {
-  "extends": "../../tsconfig.config.json",
+  "extends": "@digital/typescript-config/base.json",
   "compilerOptions": {
-    "composite": true,
+    "customConditions": ["digital-source"],
     "declaration": true,
-    "declarationMap": true,
-    "rootDir": "./src",
-    "outDir": "./dist",
-    "skipLibCheck": true
+    "erasableSyntaxOnly": true,
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "rewriteRelativeImportExtensions": true,
+    "skipLibCheck": true,
+    "target": "es2023",
+    "types": ["node"]
   },
-  "include": ["src/**/*.ts"]
+  "include": ["drizzle.config.ts", "src/**/*.ts"]
 }

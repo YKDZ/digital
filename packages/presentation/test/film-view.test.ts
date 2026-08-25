@@ -4,7 +4,7 @@ import {
   filmViewInformationRequirement,
   informationRequirementForAssetView,
   projectAssetView,
-} from "../src/index.ts";
+} from "../src/index";
 
 describe("Film View", () => {
   it("requests the neutral facts consumed by the formal film presentation", () => {

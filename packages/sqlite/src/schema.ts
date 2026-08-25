@@ -9,10 +9,9 @@ import {
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 
-// Drizzle Kit intentionally omits `.notNull()` from every one-column INTEGER
-// primary key because SQLite usually implies it. This historical table was
-// explicitly `INTEGER PRIMARY KEY NOT NULL`; preserve that observable SQLite
-// contract by placing the constraint in its reviewed physical type fragment.
+// Drizzle Kit 刻意在每个单列 INTEGER 主键上省略 `.notNull()`，因为 SQLite 通常隐含
+// 该约束。这个历史表明确使用 `INTEGER PRIMARY KEY NOT NULL`；把约束放进已审阅物理
+// 类型片段，以保留可观察 SQLite 契约。
 const explicitlyRequiredInteger = customType<{
   data: number;
   driverData: number;
@@ -21,10 +20,8 @@ const explicitlyRequiredInteger = customType<{
 });
 
 /**
- * Every persistent payload that is retained as a whole carries a stable
- * format coordinate. The Drizzle adapter owns its current read/write shape;
- * historical payload versions remain explicit data, not a runtime migration
- * compatibility path.
+ * 每个整体保留的持久载荷都携带稳定格式坐标。Drizzle 适配器持有其当前读写形状；历史
+ * 载荷版本保留为明确数据，而不是运行时迁移兼容路径。
  */
 export type VersionedJson<T = unknown> = {
   readonly version: string;
@@ -33,9 +30,8 @@ export type VersionedJson<T = unknown> = {
 
 export const workflowExecutionAuditVersion = "workflow-execution-audit/1";
 /**
- * Compatibility marker written by the short-lived pre-release 0031 shape.
- * Real 0031 upgrades leave historical rows NULL; new production writes always
- * replace this coordinate with a complete versioned execution payload.
+ * 短期预发布 0031 形状写入的兼容标记。真实 0031 升级让历史行保持 NULL；新的生产
+ * 写入始终以完整版本化执行载荷替换该坐标。
  */
 export const workflowExecutionAuditLegacyMarker = JSON.stringify({
   version: workflowExecutionAuditVersion,
@@ -43,14 +39,11 @@ export const workflowExecutionAuditLegacyMarker = JSON.stringify({
 });
 
 /**
- * The reviewed, complete catalogue structure.  It deliberately lives beside
- * the infrastructure adapter: Domain, Application, Presentation, and
- * Delivery import only their own use-case contracts.
+ * 已审阅的完整 Catalogue 结构。它刻意与基础设施适配器并置：领域、Application、
+ * Presentation 和交付层只导入各自的用例契约。
  *
- * Keep this list exhaustive. `schema_migrations` remains a historical
- * physical ledger so a reviewed existing catalogue retains its shape, but
- * SqliteCatalogue never reads or writes it. Formal generated-migration
- * readiness is intentionally owned outside this adapter.
+ * 该清单必须完整。`schema_migrations` 保留为历史物理账本，使已审阅既有 Catalogue
+ * 保持形状，但 `SqliteCatalogue` 绝不读写它。正式生成迁移的就绪权威刻意位于该适配器之外。
  */
 export const schemaMigrations = sqliteTable(
   "schema_migrations",
@@ -101,9 +94,9 @@ export const workflowExecutions = sqliteTable(
       .notNull()
       .default("[]"),
     auditJson: text("audit_json"),
-    /** Complete non-secret input retained for restart-safe Asset Refresh. */
+    /** 为重启安全资产刷新保留的完整非秘密输入。 */
     workflowInputJson: text("workflow_input_json"),
-    /** Explicit actor-attributed terminal Workflow Execution cancellation. */
+    /** 明确归因于行为主体的终态工作流执行取消。 */
     cancellationJson: text("cancellation_json"),
   },
   (table) => [
@@ -376,7 +369,7 @@ export const entityResolutionDecisions = sqliteTable(
   ],
 );
 
-/** The compare-and-append head for one exact source coverage coordinate. */
+/** 一个精确来源覆盖坐标的比较并追加头。 */
 export const sourceLineageHeads = sqliteTable(
   "source_lineage_heads",
   {
@@ -474,7 +467,7 @@ export const automationRuntime = sqliteTable(
   ],
 );
 
-/** Application configuration; deliberately independent of Automation Intent. */
+/** Application 配置；刻意独立于自动化意图。 */
 export const observedRootRegistrations = sqliteTable(
   "observed_root_registrations",
   {
@@ -496,7 +489,7 @@ export const observedRootRegistrations = sqliteTable(
   ],
 );
 
-/** One current recognition authority for each accepted subject. */
+/** 每个已接受主体对应一个当前识别权威。 */
 export const sourceAssociationHeads = sqliteTable(
   "source_association_heads",
   {
@@ -544,7 +537,7 @@ export const metadataAssertionSources = sqliteTable(
   ],
 );
 
-/** Source slot continuity makes metadata supersession auditable and atomic. */
+/** 来源槽位连续性使元数据取代可审计且具原子性。 */
 export const metadataAssertionLifecycles = sqliteTable(
   "metadata_assertion_lifecycles",
   {
@@ -705,7 +698,7 @@ export const metadataPolicyEnrollments = sqliteTable(
   (table) => [primaryKey({ columns: [table.subjectId, table.policyId] })],
 );
 
-/** Domain-owned Source Refresh Run authority; executions retain only IDs. */
+/** 领域持有的来源刷新运行权威；执行只保留 ID。 */
 export const sourceRefreshRuns = sqliteTable(
   "source_refresh_runs",
   {
@@ -778,7 +771,7 @@ export const sourceRefreshChangeSets = sqliteTable(
   ],
 );
 
-/** Current source-artifact candidates are tied to one exact source lineage. */
+/** 当前来源产物候选绑定到一个精确来源 lineage。 */
 export const currentSourceArtifactCandidateLineages = sqliteTable(
   "current_source_artifact_candidate_lineages",
   {
@@ -810,7 +803,7 @@ export const currentSourceArtifactCandidateLineages = sqliteTable(
   ],
 );
 
-/** The complete schema object passed to the node:sqlite Drizzle query builder. */
+/** 传给 node:sqlite Drizzle 查询构建器的完整 schema 对象。 */
 export const catalogueSchema = {
   schemaMigrations,
   workflowExecutions,

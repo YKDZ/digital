@@ -1,4 +1,4 @@
-import { prepareDisposableProductDataCatalogue } from "./disposable.js";
+import { prepareDisposableProductDataCatalogue } from "./disposable.ts";
 
 const productDataDirectory = process.env.DIGITAL_DISPOSABLE_PRODUCT_DATA_ROOT;
 if (

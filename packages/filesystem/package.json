@@ -2,10 +2,13 @@
   "name": "@digital/filesystem",
   "version": "0.0.0",
   "private": true,
+  "files": [
+    "dist"
+  ],
   "type": "module",
   "exports": {
     ".": {
-      "source": "./dist/index.js",
+      "digital-source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
@@ -18,13 +21,14 @@
     "test:public-interface": "pnpm build && tsc -p tsconfig.public-interface.json --noEmit --pretty false",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
     "test": "vitest run --reporter=verbose",
-    "build": "tsc -p tsconfig.json --pretty false"
+    "build": "tsc -p tsconfig.build.json --pretty false"
   },
   "dependencies": {
     "@digital/application": "workspace:*"
   },
   "devDependencies": {
     "@digital/test-support": "workspace:*",
+    "@digital/typescript-config": "workspace:*",
     "@types/node": "catalog:",
     "oxfmt": "catalog:",
     "oxlint": "catalog:",
@@ -33,6 +37,6 @@
     "vitest": "catalog:"
   },
   "engines": {
-    "node": ">=24"
+    "node": "24"
   }
 }

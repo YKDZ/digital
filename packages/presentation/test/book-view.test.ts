@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { projectCatalogue } from "../src/index.ts";
+import { projectCatalogue } from "../src/index";
 
 describe("Book View", () => {
   it("dispatches generic accepted book facts through one book component", () => {

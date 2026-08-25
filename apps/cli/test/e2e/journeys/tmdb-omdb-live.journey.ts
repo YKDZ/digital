@@ -90,9 +90,8 @@ function inspection(result: CliJourneyResult | undefined): JourneyInspection {
 }
 
 /**
- * Application's public inspection deliberately retains its legacy
- * single-boundary projection while explicit package work is itemized.  The
- * journey must verify the shape actually emitted by each public workflow.
+ * 在显式包工作逐项列出时，应用层公开检查刻意保留旧版单边界投影。
+ * 旅程必须验证每个公开工作流实际发出的结构。
  */
 export function acceptedProjection(
   value: JourneyInspection,

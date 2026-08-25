@@ -1,15 +1,14 @@
 {
+  "extends": "@digital/typescript-config/base.json",
   "compilerOptions": {
-    "composite": true,
+    "customConditions": ["digital-source"],
     "declaration": true,
+    "erasableSyntaxOnly": true,
     "module": "nodenext",
     "moduleResolution": "nodenext",
-    "strict": true,
+    "rewriteRelativeImportExtensions": true,
     "target": "es2023",
-    "types": ["node"],
-    "outDir": "dist",
-    "rootDir": "src",
-    "verbatimModuleSyntax": true
+    "types": ["node"]
   },
   "include": ["src/**/*.ts"]
 }

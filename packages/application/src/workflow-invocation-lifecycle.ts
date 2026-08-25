@@ -1,11 +1,14 @@
 export type WorkflowInvocationLifecycle<Checkpoint> = {
-  readonly onCheckpoint?: (checkpoint: Checkpoint) => void;
-  readonly onHostCheckpoint?: (checkpoint: Checkpoint) => void;
+  readonly onCheckpoint?: ((checkpoint: Checkpoint) => void) | undefined;
+  readonly onHostCheckpoint?: ((checkpoint: Checkpoint) => void) | undefined;
 };
 
 export class WorkflowLifecycleInterruption extends Error {
-  constructor(readonly cause: unknown) {
+  override readonly cause: unknown;
+
+  constructor(cause: unknown) {
     super(cause instanceof Error ? cause.message : String(cause));
+    this.cause = cause;
   }
 }
 

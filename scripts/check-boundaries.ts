@@ -91,15 +91,25 @@ for (const [packageName, tags] of packageTags) {
     peerDependencies?: Record<string, string>;
   };
   const dependencies = [
-    manifest.dependencies,
-    manifest.devDependencies,
-    manifest.peerDependencies,
-  ].flatMap((group) => Object.keys(group ?? {}));
-  for (const dependency of dependencies) {
+    ...Object.keys(manifest.dependencies ?? {}).map(
+      (dependency) => [dependency, false] as const,
+    ),
+    ...Object.keys(manifest.devDependencies ?? {}).map(
+      (dependency) => [dependency, true] as const,
+    ),
+    ...Object.keys(manifest.peerDependencies ?? {}).map(
+      (dependency) => [dependency, false] as const,
+    ),
+  ];
+  for (const [dependency, developmentOnly] of dependencies) {
     const dependencyTags = packageTags.get(dependency);
     if (
       dependencyTags !== undefined &&
-      !dependencyTags.some((tag) => deliveryDirectDependencyTags.has(tag))
+      !dependencyTags.some(
+        (tag) =>
+          deliveryDirectDependencyTags.has(tag) ||
+          (developmentOnly && tag === "tooling"),
+      )
     ) {
       invalidDeliveryDependencies.push(
         `${packageName}: direct dependency ${dependency} has forbidden tag ${dependencyTags.join(", ")}`,
@@ -136,11 +146,9 @@ const boundaryResult = spawnSync(
     "turbo",
     "boundaries",
     "--no-color",
-    // Turbo 2.10.5 checks a delivery package against Composition's complete
-    // adapter closure. That rejects the only permitted delivery entrypoint as
-    // if it directly imported each adapter. Delivery packages are therefore
-    // checked above against their direct workspace dependencies; every other
-    // package remains under Turbo's strict tag rules here.
+    // Turbo 2.10.5 会依据组合层的完整适配器闭包检查交付包，导致唯一获准的交付入口
+    // 被当作直接导入了每个适配器而遭拒。因此上方依据交付包的直接工作区依赖检查它们；
+    // 其他所有包仍在此接受 Turbo 的严格标签规则检查。
     ...[...packageTags]
       .filter(([, tags]) => tags.includes("delivery"))
       .map(([packageName]) => `--filter=!${packageName}`),

@@ -22,7 +22,7 @@ import {
   writePrivateJsonDurably,
 } from "@digital/product-data";
 
-import type { SourceConnectionInspection } from "./source-connections.js";
+import type { SourceConnectionInspection } from "./source-connections.ts";
 
 const privateDirectoryName = "private-source-connections";
 const storageVersion = "bangumi-oauth-connection/1";
@@ -56,7 +56,7 @@ type PrivateBangumiConnectionRecord =
       readonly credentialStatus: "configured";
       readonly availability: "unavailable";
       readonly reason: "authorization-failed";
-      /** Keep the last complete grant intact for auditable repair only. */
+      /** 仅为可审计修复而原样保留最后一份完整授权。 */
       readonly grant: BangumiOAuthGrant;
     }
   | {
@@ -65,9 +65,8 @@ type PrivateBangumiConnectionRecord =
       readonly credentialStatus: "configured";
       readonly availability: "unavailable";
       /**
-       * The provider may have rotated this grant after the durable preflight
-       * marker but before the replacement grant was committed.  It is only
-       * repairable by fresh user authorization, never retried automatically.
+       * 提供方可能已在写入持久预检标记后、提交替代授权前轮换了该授权。
+       * 此状态只能通过用户重新授权修复，绝不能自动重试。
        */
       readonly reason: "authorization-uncertain";
       readonly grant: BangumiOAuthGrant;
@@ -111,11 +110,9 @@ type PendingAuthorization = ProductPrivateLeaseRecord & {
 };
 
 /**
- * A product-private, single-host lease. Its fingerprint binds the lease to
- * one exact persisted grant without putting a token in a filename or public
- * diagnostic. Its immutable generation is owned by one same-boot exact
- * PID/start-time identity, so a live holder cannot overlap another mutation;
- * a dead or reused PID remains recoverable without exposing a secret.
+ * 产品私有的单宿主租约。其指纹将租约绑定到一份精确的已持久化授权，且不会把令牌
+ * 放入文件名或公开诊断。其不可变世代由同一次启动中的精确 PID/启动时间身份拥有，
+ * 因而存活的持有者不会与另一变更重叠；失效或被复用的 PID 仍可恢复，且不暴露秘密。
  */
 type RefreshInProgress = {
   readonly version: "bangumi-oauth-refresh-in-progress/1";
@@ -130,7 +127,7 @@ type RefreshLease = ProductPrivateLeaseRecord & {
   readonly grantFingerprint: string;
 };
 
-/** Serializes only the tiny read-compare-write critical sections. */
+/** 只串行化很小的“读取—比较—写入”临界区。 */
 type ConnectionMutationLease = ProductPrivateLeaseRecord & {
   readonly version: "bangumi-oauth-connection-mutation/1";
 };
@@ -141,9 +138,8 @@ export type BangumiAuthorizationStart = {
 };
 
 /**
- * Capability-specific OAuth lifecycle owned by Composition.  The plugin
- * understands Bangumi's protocol; this product adapter owns private files,
- * one-time callback state, and the execution-version bridge.
+ * 由组合层拥有、特定于能力的 OAuth 生命周期。插件理解 Bangumi 协议；
+ * 该产品适配器拥有私有文件、一次性回调状态和执行版本桥接。
  */
 export class ProductBangumiSourceConnection {
   readonly capability = bangumiSourceConnectionCapability;
@@ -161,7 +157,7 @@ export class ProductBangumiSourceConnection {
   private readonly now: () => Date;
   private readonly nextState: () => string;
   private readonly beforeRefreshGrantCommit: (() => void) | undefined;
-  /** Test-only interleaving point immediately after mutation ownership check. */
+  /** 仅供测试使用的交错点，位于变更所有权检查之后。 */
   private readonly afterConnectionMutationOwnershipCheck:
     | (() => void)
     | undefined;
@@ -176,14 +172,14 @@ export class ProductBangumiSourceConnection {
     readonly environment: Readonly<Record<string, string | undefined>>;
     readonly request?: BangumiOAuthTransport;
     readonly now?: () => Date;
-    /** Test-only deterministic Linux monotonic clock. */
+    /** 仅供测试使用的确定性 Linux 单调时钟。 */
     readonly monotonicNow?: () => number;
-    /** Test-only deterministic Linux boot identity. */
+    /** 仅供测试使用的确定性 Linux 启动身份。 */
     readonly bootId?: () => string;
     readonly nextState?: () => string;
-    /** Test-only interruption point for the durable OAuth rotation window. */
+    /** 仅供测试使用的持久 OAuth 轮换窗口中断点。 */
     readonly beforeRefreshGrantCommit?: () => void;
-    /** Test-only interleaving point after mutation ownership is verified. */
+    /** 仅供测试使用的交错点，位于变更所有权验证之后。 */
     readonly afterConnectionMutationOwnershipCheck?: () => void;
   }) {
     this.privateDirectory = path.join(
@@ -209,9 +205,8 @@ export class ProductBangumiSourceConnection {
     this.environment = input.environment;
     this.request = input.request;
     this.now = input.now ?? (() => new Date());
-    // Production takes the private lease module's /proc-backed defaults. A
-    // deliberately injected wall clock is a test seam, so preserve its
-    // deterministic expiry behavior unless that test supplies monotonic time.
+    // 生产环境采用私有租约模块由 `/proc` 支持的默认值。刻意注入的墙钟是测试接缝，
+    // 因此除非测试提供单调时间，否则保留其确定性过期行为。
     this.leaseClock = {
       ...(input.monotonicNow === undefined
         ? input.now === undefined
@@ -375,9 +370,8 @@ export class ProductBangumiSourceConnection {
     } catch (error) {
       if (error instanceof Error && error.message.includes("配置已变化"))
         throw error;
-      // Do not reflect an authorization code, a client secret, token response,
-      // or a transport error into CLI/Web diagnostics.
-      throw new Error("Bangumi OAuth 回调换取授权失败");
+      // 不要把授权码、客户端密钥、令牌响应或传输错误映射到 CLI/Web 诊断中。
+      throw new Error("Bangumi OAuth 回调换取授权失败", { cause: error });
     } finally {
       processing.retire();
     }
@@ -424,11 +418,9 @@ export class ProductBangumiSourceConnection {
       return false;
     }
     if (record.availability === "available") return true;
-    // A normal token rotation is private maintenance of the same
-    // configuration version. It stays current while its exact same-boot
-    // owner remains live; a dead, boot-changed, or malformed marker becomes
-    // ordinary unavailable repair work instead of silently retrying an old
-    // refresh token.
+    // 正常令牌轮换是同一配置版本的私有维护。只要同次启动中的精确所有者仍存活，
+    // 它就保持当前状态；失效、启动已变化或格式错误的标记会变成普通的不可用修复工作，
+    // 而不是静默重试旧刷新令牌。
     return (
       record.reason === "authorization-uncertain" &&
       this.refreshLease({
@@ -482,9 +474,8 @@ export class ProductBangumiSourceConnection {
   }
 
   /**
-   * A second process may observe the durable pre-provider marker.  It waits
-   * only for that one lease generation to settle; it never retries the old
-   * refresh grant if a stopped process leaves the marker uncertain.
+   * 第二个进程可能观察到持久的提供方调用前标记。它只等待该租约世代完成；
+   * 如果已停止进程留下不确定标记，它绝不会重试旧刷新授权。
    */
   private async awaitRefreshResolution(
     observed: Extract<
@@ -496,8 +487,7 @@ export class ProductBangumiSourceConnection {
       connectionVersion: observed.configurationVersion,
       grantFingerprint: observed.refreshInProgress.grantFingerprint,
     });
-    // A post-crash uncertain marker must never authorize reuse of its old
-    // token.  It may still clean a bounded stale/invalid lease immediately.
+    // 崩溃后遗留的不确定标记绝不能授权复用旧令牌，但仍可立即清理有界的过期/无效租约。
     refreshLease.reclaimStale();
     const startedAt = boundedWaitNow();
     while (boundedWaitNow() - startedAt <= refreshLeaseWaitMilliseconds) {
@@ -529,15 +519,13 @@ export class ProductBangumiSourceConnection {
         ) {
           return latest.grant.accessToken;
         }
-        // The prior holder had a known failed attempt. Do not turn one
-        // contention wave into an immediate second provider request.
+        // 前一持有者已有一次已知失败尝试。不要把一次争用波次变成紧随其后的第二次提供方请求。
         throw new Error("Bangumi OAuth 授权更新失败");
       }
       if (latest.reason !== "authorization-uncertain")
         throw new Error("Bangumi 来源连接当前不可用");
     }
-    // A no-longer-live uncertain lease can be retired for storage hygiene,
-    // but no later process may reuse the possibly-rotated old refresh grant.
+    // 已不再存活的不确定租约可为存储卫生而退役，但后续进程不得复用可能已轮换的旧刷新授权。
     refreshLease.reclaimStale();
     throw new Error("Bangumi 来源连接当前不可用");
   }
@@ -578,10 +566,8 @@ export class ProductBangumiSourceConnection {
       ) {
         return beforeRefresh.grant.accessToken;
       }
-      // Another process that held this generation's lease has already made
-      // the one allowed provider attempt. Its transient failure remains
-      // retryable for a later operation, but this waiting operation must not
-      // turn one contention wave into a second concurrent refresh request.
+      // 持有本世代租约的另一进程已经完成唯一获准的提供方尝试。其暂时性失败仍可由后续操作
+      // 重试，但当前等待操作不得把一次争用波次变成第二个并发刷新请求。
       if (acquiredLease.waitedForOtherRefresh) {
         throw new Error("Bangumi OAuth 授权更新失败");
       }
@@ -599,16 +585,14 @@ export class ProductBangumiSourceConnection {
         if (isBangumiOAuthAuthorizationRejected(error)) {
           this.markRefreshAuthorizationFailure(current, lease);
         } else if (isBangumiOAuthRetryableResponse(error)) {
-          // A completed HTTP retryable response (for example 503) proves the
-          // endpoint answered this request. The source policy permits a later
-          // refresh attempt with the retained token.
+          // 已完成且可重试的 HTTP 响应（例如 503）证明端点已答复本次请求。
+          // 来源策略允许之后使用保留令牌再次尝试刷新。
           this.restoreRefreshAvailability(current, lease);
         } else {
-          // A transport abort cannot prove that the old refresh token was not
-          // consumed. Keep the durable authorization-uncertain marker and
-          // never restore or automatically retry that token.
+          // 传输中止无法证明旧刷新令牌未被消费。保留持久的授权不确定标记，
+          // 绝不恢复或自动重试该令牌。
         }
-        throw new Error("Bangumi OAuth 授权更新失败");
+        throw new Error("Bangumi OAuth 授权更新失败", { cause: error });
       }
       try {
         this.beforeRefreshGrantCommit?.();
@@ -643,8 +627,8 @@ export class ProductBangumiSourceConnection {
         ) {
           throw error;
         }
-        // The old file is retained until the atomic rename succeeds.
-        throw new Error("Bangumi OAuth 授权更新失败");
+        // 旧文件会一直保留到原子重命名成功。
+        throw new Error("Bangumi OAuth 授权更新失败", { cause: error });
       }
     } finally {
       ownership.retire();
@@ -810,8 +794,7 @@ export class ProductBangumiSourceConnection {
         });
       });
     } catch {
-      // A storage error must never overwrite the old private grant or surface
-      // its value. The next inspection remains the authoritative repair path.
+      // 存储错误绝不能覆盖旧私有授权或暴露其值。下一次检查仍是权威修复路径。
     }
   }
 
@@ -848,17 +831,14 @@ export class ProductBangumiSourceConnection {
         });
       });
     } catch {
-      // If recovery cannot durably prove that the old token is usable, retain
-      // the uncertain marker and require ordinary reauthorization instead.
+      // 如果恢复过程无法持久证明旧令牌可用，则保留不确定标记并要求正常重新授权。
     }
   }
 
   /**
-   * Connection records are replaced with rename(2), but rename alone has no
-   * compare-and-swap condition. Every record-changing operation therefore
-   * enters this tiny product-private critical section, re-reads the record,
-   * and commits only its still-current expectation. No network work happens
-   * under this lock, so revoke and reauthorization remain responsive.
+   * 连接记录通过 `rename(2)` 替换，但单独的重命名不具备比较并交换条件。因此每个
+   * 更改记录的操作都会进入这个很小的产品私有临界区，重新读取记录，并只提交仍为当前的
+   * 预期值。锁内不执行网络工作，因此撤销和重新授权仍能及时响应。
    */
   private withConnectionMutation<T>(work: () => T): T {
     const ownership = this.acquireConnectionMutationLease();
@@ -866,8 +846,7 @@ export class ProductBangumiSourceConnection {
       if (!ownership.isCurrent())
         throw new Error("Bangumi 来源连接正在被其他操作修改，请刷新后重试");
       this.afterConnectionMutationOwnershipCheck?.();
-      // A test seam may simulate an awaited boundary or a process state
-      // change. Revalidate immediately before the protected mutation.
+      // 测试接缝可能模拟异步等待边界或进程状态变化；在受保护变更前立即重新验证。
       if (!ownership.isCurrent())
         throw new Error("Bangumi 来源连接正在被其他操作修改，请刷新后重试");
       return work();
@@ -970,9 +949,8 @@ export class ProductBangumiSourceConnection {
   }
 
   /**
-   * Processing is a distinct immutable namespace slot. Pending is closed only
-   * after the processing generation is durably published, so a crash cannot
-   * make a callback code available for a second token exchange.
+   * 处理中状态是独立的不可变命名空间槽。只有在处理世代持久发布后才关闭待处理状态，
+   * 因而崩溃不会让同一个回调码再次用于令牌交换。
    */
   private assertNoCallbackInProgress(): void {
     let processing: PendingAuthorization | undefined;
@@ -993,7 +971,7 @@ export class ProductBangumiSourceConnection {
       ) {
         throw error;
       }
-      throw new Error("Bangumi OAuth 私有存储不可用");
+      throw new Error("Bangumi OAuth 私有存储不可用", { cause: error });
     }
   }
 
@@ -1033,8 +1011,8 @@ export class ProductBangumiSourceConnection {
     try {
       this.pendingLease.retireExact(this.readPending());
     } catch {
-      // A stale or malformed pending record can only leave later callbacks
-      // fail-closed. Do not replace it or reveal private filesystem details.
+      // 过期或格式错误的待处理记录只能让后续回调以关闭方式失败。
+      // 不要替换它，也不要暴露私有文件系统细节。
     }
   }
 

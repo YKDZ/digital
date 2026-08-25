@@ -3,10 +3,10 @@
 ARG DEPLOYMENT_BUILD_ID="local"
 
 FROM node:24-bookworm-slim AS base
-ARG PACKAGE_MANAGER_PIN="pnpm@11.17.0"
+ARG PACKAGE_MANAGER_PIN="pnpm@11.23.0"
 ENV COREPACK_HOME="/corepack"
 ENV PNPM_HOME="/pnpm"
-ENV PATH="$PNPM_HOME:$PATH"
+ENV PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"
 WORKDIR /repo
 RUN install -d -m 0755 "$COREPACK_HOME" "$PNPM_HOME" \
   && corepack enable --install-directory "$PNPM_HOME" \
@@ -20,9 +20,8 @@ RUN install -d -m 0755 "$COREPACK_HOME" "$PNPM_HOME" \
 FROM base AS pruner
 COPY pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm fetch
-# The Web production dependency closure includes workspace packages (notably
-# application). Give pnpm the complete workspace manifest graph before the
-# frozen install that provides Turbo for pruning.
+# Web 的生产依赖闭包包含工作区包（尤其是 application）。在为 Turbo prune
+# 提供冻结安装前，先向 pnpm 提供完整的工作区清单图。
 COPY . .
 RUN pnpm install --offline --frozen-lockfile
 RUN pnpm exec turbo prune --scope=@digital/web --scope=@digital/db-migrations --docker
@@ -36,11 +35,10 @@ COPY --from=pruner /repo/out/json/ ./
 RUN pnpm install --offline --frozen-lockfile
 COPY --from=pruner /repo/out/full/ ./
 COPY --from=pruner /repo/scripts/build-production-workspace.mjs ./scripts/build-production-workspace.mjs
-# Injected workspace packages must be refreshed from their newly emitted dist
-# files before dependent workspace builds resolve their package exports.
+# 先构建工作区依赖，再由 deploy 在隔离的部署目录中定点注入其发布文件。
 RUN node scripts/build-production-workspace.mjs
-RUN pnpm --filter ./apps/web deploy --prod /runtime-deploy
-RUN pnpm --filter ./packages/db-migrations deploy --prod /migration-deploy
+RUN pnpm --config.inject-workspace-packages=true --filter ./apps/web deploy --prod /runtime-deploy
+RUN pnpm --config.inject-workspace-packages=true --filter ./packages/db-migrations deploy --prod /migration-deploy
 
 FROM node:24-bookworm-slim AS application-runtime
 ARG DEPLOYMENT_BUILD_ID
@@ -55,15 +53,14 @@ COPY --chmod=755 apps/web/scripts/compose-entrypoint.sh /usr/local/bin/compose-e
 COPY --from=build --chown=app:nodejs /runtime-deploy/node_modules ./node_modules
 COPY --from=build --chown=app:nodejs /repo/apps/web/dist ./dist
 
-# Start-only deployment: it deliberately has no migration CLI, migration SQL,
-# or preparation entrypoint. An unprepared data volume must therefore refuse
-# readiness instead of self-migrating.
+# 仅启动部署刻意不携带迁移 CLI、迁移 SQL 或准备入口。未准备的数据卷必须拒绝
+# readiness，而不是自行迁移。
 FROM application-runtime AS runtime
 USER app
 EXPOSE 3000
 CMD ["node", "/app/dist/server/index.mjs"]
 
-# Combined deployment is the only image that carries formal preparation.
+# 组合部署是唯一携带正式准备能力的镜像。
 FROM application-runtime AS standalone
 COPY --from=build --chown=app:nodejs /migration-deploy /migration
 COPY --chmod=755 apps/web/scripts/container-entrypoint.sh /usr/local/bin/container-entrypoint

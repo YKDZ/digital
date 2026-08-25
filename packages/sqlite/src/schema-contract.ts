@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { getTableConfig, SQLiteDialect } from "drizzle-orm/sqlite-core";
 
-import { catalogueSchema } from "./schema.js";
+import { catalogueSchema } from "./schema.ts";
 
 export type SqliteColumnSignature = {
   readonly name: string;
@@ -22,9 +22,8 @@ export type SqliteSchemaSignature = {
 };
 
 /**
- * The same physical fingerprint is used for test parity and safe adoption of
- * an empty-ledger Drizzle database. It is derived from the reviewed Drizzle
- * declarations, rather than maintained as a second hand-written table list.
+ * 同一个物理指纹用于测试一致性和安全接管空账本 Drizzle 数据库。它从已审阅 Drizzle
+ * 声明派生，而不是维护第二份手写表清单。
  */
 export const reviewedCatalogueSchemaContract = schemaContractFromDrizzle();
 
@@ -114,7 +113,7 @@ export function readSqliteSchemaSignature(
   }
 }
 
-/** A damaged or merely similarly named database must never be baselined. */
+/** 损坏或仅名称相似的数据库绝不能建立基线。 */
 export function matchesReviewedCatalogueSchema(
   database: DatabaseSync,
 ): boolean {
@@ -190,8 +189,8 @@ function schemaContractFromDrizzle(): SqliteSchemaSignature {
     indexes: tableContracts
       .flatMap(([, contract]) => contract.indexes)
       .toSorted(),
-    // The reviewed schema declares neither. Keeping these coordinates in the
-    // fingerprint makes an injected trigger or CHECK constraint fail closed.
+    // 已审阅 schema 两者都未声明。把这些坐标保留在指纹中，使注入的触发器或 CHECK
+    // 约束失败闭合。
     triggers: [],
     checks: [],
   };
@@ -254,9 +253,8 @@ function physicalNotNull(
   primaryKeyColumnCount: number,
 ): number {
   if (/\bNOT\s+NULL\b/iu.test(sqlType)) return 1;
-  // SQLite reports `notnull = 0` for an inline INTEGER PRIMARY KEY even when
-  // Drizzle marks the column as required. This is the only Kit-specific
-  // physical rule retained in the reviewed contract.
+  // 即使 Drizzle 把列标为必需，SQLite 对内联 INTEGER PRIMARY KEY 仍报告
+  // `notnull = 0`。这是已审阅契约中保留的唯一 Drizzle Kit 专用物理规则。
   if (
     primaryKeyPosition === 1 &&
     primaryKeyColumnCount === 1 &&
@@ -294,8 +292,7 @@ function hasWorkflowExecutionAuditContract(
     auditColumn.defaultValue !== null
   )
     return false;
-  // The physical contract deliberately permits NULL only for pre-0031 rows.
-  // New writes validate the audit envelope version at hydration time.
+  // 物理契约刻意只允许 0031 前的行使用 NULL。新写入在装载时验证审计封装版本。
   return true;
 }
 

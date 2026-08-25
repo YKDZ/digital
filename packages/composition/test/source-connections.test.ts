@@ -830,9 +830,7 @@ describe("product-managed Bangumi OAuth source connection", () => {
     expect(JSON.stringify(connection.inspect())).not.toContain(rotatedAccess);
     expect(JSON.stringify(connection.inspect())).not.toContain(rotatedRefresh);
 
-    // A complete 503 response follows the configured retry policy: the
-    // endpoint answered the request, so the old token may be used by one
-    // later refresh attempt.
+    // 完整 503 响应遵循已配置重试策略：端点已答复请求，因此后续一次刷新尝试可以使用旧令牌。
     stage = "retry-after-503";
     await expect(connection.authorization().bearer(context)).resolves.toBe(
       retriedAccess,

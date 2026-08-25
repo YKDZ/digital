@@ -1,4 +1,4 @@
-/** A stable source fact coordinate; its coverage boundary is never inferred from a UI selector. */
+/** 稳定的来源事实坐标；其覆盖边界绝不从界面选择器推断。 */
 export type SourceCoverageScope = {
   readonly sourceIdentity: string;
   readonly nativeAddress: string;
@@ -6,8 +6,8 @@ export type SourceCoverageScope = {
 };
 
 /**
- * A caller's request to reacquire facts from one already-current Source
- * Association. It is intent, not the coverage authority of a response.
+ * 调用方请求从一个当前有效的来源关联重新获取事实。它表达意图，而不是响应的
+ * 覆盖权威。
  */
 export type SourceRefreshSelection = {
   readonly subjectId: string;
@@ -17,7 +17,7 @@ export type SourceRefreshSelection = {
   readonly selectors: readonly SourceRefreshFactSelector[];
 };
 
-/** Open fact coordinates retain their domain namespace rather than UI labels. */
+/** 开放的事实坐标保留领域命名空间，而不是界面标签。 */
 export type SourceRefreshFactSelector =
   | { readonly kind: "metadata-property"; readonly property: string }
   | { readonly kind: "relationship-type"; readonly relationshipType: string }
@@ -35,14 +35,14 @@ export type SourceRefreshLineageHead = SourceCoverageScope & {
 export type SourceRefreshScope = {
   readonly coverage: SourceCoverageScope;
   readonly baselineSourceRecordId?: string;
-  /** Durable scope checkpoint; `acquiring` means an external request began. */
+  /** 耐久的范围检查点；`acquiring` 表示外部请求已经开始。 */
   readonly state:
     | "planned"
     | "acquiring"
     | "awaiting-review"
     | "applying"
     | "terminal";
-  /** Increments before each bounded transport attempt; no retry policy is implied. */
+  /** 每次有界传输尝试前递增；不隐含任何重试策略。 */
   readonly acquisitionAttempt: number;
   readonly changeSetId?: string;
   readonly candidateSourceRecordId?: string;
@@ -80,7 +80,7 @@ export type SourceRefreshChange = {
     | "conflicted"
     | "skipped"
     | "rejected";
-  /** An opaque fact or lifecycle reference; review never alters individual entries. */
+  /** 不透明的事实或生命周期引用；审阅绝不改写单个条目。 */
   readonly factReference: string;
 };
 
@@ -96,9 +96,8 @@ export type SourceRefreshChangeSet = {
 };
 
 /**
- * The durable domain process for one source-specific metadata reacquisition.
- * Its overall outcome will always be derived from its independently completed
- * scopes rather than maintained as another mutable workflow status.
+ * 一次特定来源元数据重新获取的耐久领域过程。整体结果始终从各自独立完成的范围
+ * 推导，而不维护为另一份可变的工作流状态。
  */
 export type SourceRefreshRun = {
   readonly id: string;
@@ -121,7 +120,7 @@ export type CreateSourceRefreshRunInput = {
   readonly baselineLineageHeads: readonly SourceRefreshLineageHead[];
 };
 
-/** Creates a Run before transport begins, freezing only the lineage it observed. */
+/** 在传输开始前创建来源刷新运行，只冻结当时观察到的 lineage。 */
 export function createSourceRefreshRun(
   input: CreateSourceRefreshRunInput,
 ): SourceRefreshRun {
@@ -183,9 +182,8 @@ export function createSourceRefreshRun(
 }
 
 /**
- * Records the durable boundary immediately before one bounded collector call.
- * A later retry policy may create another attempt, but this domain transition
- * does not decide whether or when to retry.
+ * 在一次有界采集器调用前立即记录耐久边界。后续重试策略可以创建另一次尝试，
+ * 但这个领域迁移不决定是否重试或何时重试。
  */
 export function beginSourceRefreshScopeAcquisition(
   run: SourceRefreshRun,
@@ -216,14 +214,13 @@ export type StageSourceRefreshChangeSetInput = {
   readonly coverage: SourceCoverageScope;
   readonly candidateSourceRecordId: string;
   readonly changes: readonly SourceRefreshChange[];
-  /** Retraction, expansion, or identity conflict may force review under an automatic policy. */
+  /** 即使采用自动策略，撤回、范围扩张或身份冲突也可能强制进入审阅。 */
   readonly requiresReview?: boolean;
 };
 
 /**
- * Attaches exactly one candidate scope to a Run. The candidate remains
- * non-current evidence until the whole Change Set reaches `applying` and the
- * persistence boundary successfully compare-and-appends it.
+ * 向一次来源刷新运行附加且仅附加一个候选范围。在整个变更集进入 `applying`，
+ * 且持久化边界成功完成比较并追加之前，候选始终是非当前证据。
  */
 export function stageSourceRefreshChangeSet(
   run: SourceRefreshRun,
@@ -265,9 +262,8 @@ export function stageSourceRefreshChangeSet(
     );
   if (scope.state !== "acquiring")
     throw new Error("Source Refresh Scope has no acquisition checkpoint");
-  // Retraction is an absence claim made at a complete source boundary. It is
-  // consequential even when a caller selected automatic policy, so this
-  // aggregate—not an adapter—always promotes it to whole-Change-Set review.
+  // 撤回是在完整来源边界上作出的缺失声明。即使调用方选择了自动策略，它仍会
+  // 产生实质影响，因此始终由这个聚合而非适配器将其提升为整份变更集审阅。
   const requiresReview =
     input.requiresReview === true ||
     run.reviewPolicy === "review" ||
@@ -310,7 +306,7 @@ export type CompleteSourceRefreshChangeSetInput = {
   readonly outcome: Extract<SourceRefreshScopeOutcome, "applied" | "unchanged">;
 };
 
-/** Completes only one compare-and-append scope; siblings keep their own state. */
+/** 只完成一个比较并追加范围；同级范围各自保留自己的状态。 */
 export function completeSourceRefreshChangeSet(
   run: SourceRefreshRun,
   input: CompleteSourceRefreshChangeSetInput,
@@ -341,8 +337,7 @@ export type ReviewSourceRefreshChangeSetInput = {
 };
 
 /**
- * Reviews the complete externally authored Change Set. A rejection keeps its
- * candidate record as non-current evidence and ends only that one scope.
+ * 审阅完整的外部来源变更集。拒绝时保留候选记录作为非当前证据，并且只结束该范围。
  */
 export function reviewSourceRefreshChangeSet(
   run: SourceRefreshRun,
@@ -379,9 +374,8 @@ export function reviewSourceRefreshChangeSet(
 }
 
 /**
- * Cancellation is forward-only: it terminates scopes that have not committed
- * their compare-and-append and deliberately leaves accepted sibling history
- * intact.
+ * 取消只向前生效：终止尚未提交比较并追加的范围，并刻意保持已接受同级范围的历史
+ * 完整不变。
  */
 export function cancelSourceRefreshRun(
   run: SourceRefreshRun,
@@ -405,7 +399,7 @@ export type FailSourceRefreshScopeInput = {
   readonly reason: string;
 };
 
-/** Records a terminal operational or stale-lineage result for exactly one scope. */
+/** 为且仅为一个范围记录终态操作结果或过期 lineage 结果。 */
 export function failSourceRefreshScope(
   run: SourceRefreshRun,
   input: FailSourceRefreshScopeInput,
@@ -434,7 +428,7 @@ export function failSourceRefreshScope(
   return withDerivedTerminalOutcome({ ...run, scopes });
 }
 
-/** Rebuilds the read model of a persisted Run from its authoritative scopes. */
+/** 从各权威范围重建已持久化来源刷新运行的读取模型。 */
 export function projectSourceRefreshRun(
   run: Omit<SourceRefreshRun, "phase" | "outcome">,
 ): SourceRefreshRun {

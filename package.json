@@ -4,16 +4,16 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "boundaries": "node scripts/check-boundaries.ts",
+    "boundaries": "node --conditions=digital-source scripts/check-boundaries.ts",
     "db:migrate": "pnpm --filter @digital/db-migrations prepare-only",
-    "test:boundaries": "node scripts/check-boundaries-negative-fixtures.ts",
+    "test:boundaries": "node --conditions=digital-source scripts/check-boundaries-negative-fixtures.ts",
     "check": "pnpm test:boundaries && turbo run boundaries format:check lint typecheck build test test:e2e --continue=dependencies-successful --output-logs=errors-only --log-order=grouped --log-prefix=task",
     "check:deployment": "turbo run deployment --output-logs=errors-only --log-order=grouped --log-prefix=task",
     "fix": "turbo run lint:fix format:write --continue=dependencies-successful --output-logs=full --log-order=grouped --log-prefix=task",
-    "format:check": "node scripts/run-root-owned-task.ts format:check",
-    "format:write": "node scripts/run-root-owned-task.ts format:write",
-    "lint": "node scripts/run-root-owned-task.ts lint",
-    "lint:fix": "node scripts/run-root-owned-task.ts lint:fix",
+    "format:check": "node --conditions=digital-source scripts/run-root-owned-task.ts format:check",
+    "format:write": "node --conditions=digital-source scripts/run-root-owned-task.ts format:write",
+    "lint": "node --conditions=digital-source scripts/run-root-owned-task.ts lint",
+    "lint:fix": "node --conditions=digital-source scripts/run-root-owned-task.ts lint:fix",
     "prototype": "pnpm --filter @digital/web dev",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false"
   },
@@ -28,5 +28,5 @@
   "engines": {
     "node": "24"
   },
-  "packageManager": "pnpm@11.17.0"
+  "packageManager": "pnpm@11.23.0"
 }

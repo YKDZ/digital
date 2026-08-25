@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
 
-import { describe, expect, it } from "vitest";
-
 import { prerequisiteUnavailableFailure } from "@digital/application";
+import { describe, expect, it } from "vitest";
 
 import {
   OmdbArtifactAcquirer,

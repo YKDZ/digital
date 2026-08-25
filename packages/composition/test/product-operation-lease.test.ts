@@ -135,7 +135,7 @@ function startLeaseHolder(
   `;
   const child = spawn(
     process.execPath,
-    ["--conditions=source", "--input-type=module", "--eval", source],
+    ["--conditions=digital-source", "--input-type=module", "--eval", source],
     { stdio: ["pipe", "pipe", "pipe"] },
   );
   let stdout = "";

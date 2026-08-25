@@ -106,21 +106,18 @@ type ProductPrivateLeaseInput<T extends ProductPrivateLeaseRecord> = {
   readonly failureMessage: string;
   /** 产品级权威可要求损坏状态始终硬失败。 */
   readonly reclaimCorrupt?: boolean;
-  /** Test-only deterministic interleaving point before immutable publication. */
+  /** 仅供测试：不可变发布前的确定性交错点。 */
   readonly beforePublish?: () => void;
-  /** Test-only deterministic interleaving point before closing an expired generation. */
+  /** 仅供测试：关闭过期世代前的确定性交错点。 */
   readonly beforeRetire?: () => void;
 };
 
 /**
- * Owns one in-process execution of a durable lease generation.
+ * 持有一个耐久租约世代在进程内的一次执行。
  *
- * The holder's record remains durable for crash recovery. Same-boot
- * PID/start-time proof distinguishes an executing holder from both a crashed
- * process and PID reuse. The process identity, rather than a guessed elapsed
- * duration, remains authoritative until it is released or no longer exact.
- * Every durable mutation still checks `isCurrent()` immediately before
- * commit.
+ * 持有者记录保持耐久，以供崩溃恢复。同一启动期内的 PID／启动时间证明可以区分仍在
+ * 执行的持有者、已崩溃进程和 PID 复用。进程身份而非猜测的经过时长始终具有权威，
+ * 直到它被释放或不再精确。每次耐久变更仍须在提交前立即检查 `isCurrent()`。
  */
 export class ProductPrivateLeaseOwnership<T extends ProductPrivateLeaseRecord> {
   private readonly lease: ProductPrivateLease<T>;
@@ -135,20 +132,19 @@ export class ProductPrivateLeaseOwnership<T extends ProductPrivateLeaseRecord> {
     this.envelope = input.envelope;
   }
 
-  /** The record owned by this process; it is never a capability boundary. */
+  /** 本进程持有的记录；它绝不是能力边界。 */
   record(): T {
     return this.envelope.record;
   }
 
   /**
-   * Checks exact immutable generation ownership. Call this immediately before
-   * a durable business mutation after any awaited work.
+   * 检查精确的不可变世代持有权。任何异步等待结束后，都应在耐久业务变更前立即调用。
    */
   isCurrent(): boolean {
     return !this.closed && this.lease.isCurrent(this.envelope);
   }
 
-  /** Finishes this generation without touching any later generation. */
+  /** 结束该世代，且不触碰任何后续世代。 */
   retire(): boolean {
     if (this.closed) return false;
     this.closed = true;
@@ -157,15 +153,13 @@ export class ProductPrivateLeaseOwnership<T extends ProductPrivateLeaseRecord> {
 }
 
 /**
- * Immutable, generation-specific private lease namespace.
+ * 按世代隔离的不可变私有租约命名空间。
  *
- * There is deliberately no reusable `.reclaim`, `.retired`, or fixed lease
- * pathname. Each acquire links one fully fsync'd immutable generation record
- * to its next deterministic name. Each release/reclaim writes a separate,
- * immutable close marker for exactly that generation. Competing publishers
- * race only on `link(2)` for one generation name; a delayed cleanup can at
- * most write the same old marker and therefore cannot unlink, rename, or
- * overwrite a later generation (the former ABA bug class).
+ * 这里刻意不存在可复用的 `.reclaim`、`.retired` 或固定租约路径名。每次取得租约都把
+ * 一条已经完整 `fsync` 的不可变世代记录链接到下一个确定名称；每次释放或回收只为
+ * 该世代写入独立且不可变的关闭标记。竞争发布者只在一个世代名称的 `link(2)` 上竞态；
+ * 延迟清理最多重复写入同一个旧标记，因此不能删除、改名或覆盖后续世代，从而消除
+ * 先前的 ABA 缺陷类型。
  */
 export class ProductPrivateLease<T extends ProductPrivateLeaseRecord> {
   private readonly input: Required<
@@ -218,12 +212,12 @@ export class ProductPrivateLease<T extends ProductPrivateLeaseRecord> {
     };
   }
 
-  /** Publishes a durable record and immediately leaves it unattached. */
+  /** 发布一条耐久记录，并立即使其脱离进程持有。 */
   tryAcquire(candidate: T): boolean {
     return this.publish(candidate, false) !== undefined;
   }
 
-  /** Publishes a durable record while retaining in-process execution ownership. */
+  /** 发布一条耐久记录，同时保留进程内执行持有权。 */
   acquire(candidate: T): ProductPrivateLeaseOwnership<T> | undefined {
     const envelope = this.publish(candidate, true);
     if (envelope === undefined) return undefined;
@@ -239,8 +233,7 @@ export class ProductPrivateLease<T extends ProductPrivateLeaseRecord> {
       observed?.active !== undefined &&
       this.isLiveEnvelope(observed.active)
     ) {
-      // A contending caller must not even touch private directory metadata
-      // while a same-boot exact owner is authoritative.
+      // 同一启动期的精确持有者仍具权威时，竞争调用方甚至不能触碰私有目录元数据。
       return undefined;
     }
     this.reclaimStale();
@@ -279,16 +272,15 @@ export class ProductPrivateLease<T extends ProductPrivateLeaseRecord> {
       current.generation !== generation ||
       !samePrivateLease(current.record, candidate)
     ) {
-      // The immutable record remains audit-safe; we do not try to remove it.
+      // 不可变记录仍可安全审计；这里不尝试删除它。
       return undefined;
     }
     return envelope;
   }
 
   /**
-   * Reclaims only detached expired, dead/reused-owner, boot-changed, or
-   * corrupt generations by writing their own immutable close markers. It
-   * never deletes or renames an index that another process can have reused.
+   * 仅通过写入各自的不可变关闭标记，回收已脱离且过期、持有者死亡或被复用、启动期
+   * 已改变、或已经损坏的世代。它绝不删除或改名可能被其他进程复用的索引。
    */
   reclaimStale(): boolean {
     const observed = this.readExistingNamespaceState();
@@ -302,8 +294,8 @@ export class ProductPrivateLease<T extends ProductPrivateLeaseRecord> {
       observedCorrupt === undefined &&
       (observed.active === undefined || this.isLiveEnvelope(observed.active))
     ) {
-      // The common contended case remains read-only. In particular, do not
-      // chmod/fsync a namespace merely to discover its exact owner is live.
+      // 常见竞争路径保持只读。尤其不能仅为发现精确持有者仍存活，就对命名空间执行
+      // `chmod` 或 `fsync`。
       return false;
     }
     this.assertNamespaceWritable();
@@ -336,7 +328,7 @@ export class ProductPrivateLease<T extends ProductPrivateLeaseRecord> {
     throw this.failure();
   }
 
-  /** Returns whether a currently visible generation remains live. */
+  /** 返回当前可见世代是否仍然有效。 */
   isLive(): boolean {
     if (this.namespaceMissing()) return false;
     this.assertNamespaceReadable();
@@ -344,19 +336,19 @@ export class ProductPrivateLease<T extends ProductPrivateLeaseRecord> {
     return state.active !== undefined && this.isLiveEnvelope(state.active);
   }
 
-  /** Returns the active durable record without granting ownership. */
+  /** 返回活动的耐久记录，但不授予持有权。 */
   currentRecord(): T | undefined {
     if (this.namespaceMissing()) return undefined;
     this.assertNamespaceReadable();
     return this.scan().active?.record;
   }
 
-  /** Releases an exact record without ever touching a later generation. */
+  /** 释放一条精确记录，绝不触碰后续世代。 */
   release(expected: T): void {
     this.retireExact(expected);
   }
 
-  /** Retires exactly the current record if it still denotes `expected`. */
+  /** 仅当当前记录仍表示 `expected` 时，精确结束该记录。 */
   retireExact(expected: T): boolean {
     this.assertNamespaceWritable();
     const state = this.scan();
@@ -367,9 +359,8 @@ export class ProductPrivateLease<T extends ProductPrivateLeaseRecord> {
   }
 
   /**
-   * Consumes one exact source generation into a target slot. A target that was
-   * already published by a crashed predecessor is intentionally not resumed:
-   * callers fail closed rather than replay a possibly delivered OAuth code.
+   * 把一个精确来源世代消费进目标槽位。由已崩溃前序进程发布的目标刻意不恢复：调用方
+   * 失败闭合，而不是重放可能已经交付的 OAuth 授权码。
    */
   consumeToActive(
     expected: T,
@@ -380,12 +371,9 @@ export class ProductPrivateLease<T extends ProductPrivateLeaseRecord> {
     const source = this.scan().active;
     if (source === undefined || !samePrivateLease(source.record, expected))
       return undefined;
-    // Publishing the processing generation is the irreversible point for an
-    // OAuth code. If a process crashed after that publication but before it
-    // could close pending, a later callback must consume pending into a
-    // terminal close—not publish another processing generation and replay a
-    // possibly delivered code. Closed generations remain immutable evidence
-    // precisely for this recovery decision.
+    // 发布处理中世代是 OAuth 授权码的不可逆点。如果进程在发布后、关闭待处理世代前
+    // 崩溃，后续回调必须把待处理世代消费为终态关闭，而不是再次发布处理中世代并重放
+    // 可能已经交付的授权码。已关闭世代保持为不可变证据，正是为了支持该恢复决策。
     if (target.hasPublishedExact(expected)) {
       this.closeExactEnvelope(source, "released");
       return undefined;
@@ -400,7 +388,7 @@ export class ProductPrivateLease<T extends ProductPrivateLeaseRecord> {
     return ownership;
   }
 
-  /** Internal ownership check used by ProductPrivateLeaseOwnership. */
+  /** `ProductPrivateLeaseOwnership` 使用的内部持有权检查。 */
   isCurrent(envelope: LeaseEnvelope<T>): boolean {
     try {
       this.assertNamespaceReadable();
@@ -416,7 +404,7 @@ export class ProductPrivateLease<T extends ProductPrivateLeaseRecord> {
     }
   }
 
-  /** Internal exact close used by an ownership handle. */
+  /** 持有权句柄使用的内部精确关闭。 */
   closeExactEnvelope(
     envelope: LeaseEnvelope<T>,
     reason: LeaseClosedMarker["reason"],
@@ -605,15 +593,14 @@ export class ProductPrivateLease<T extends ProductPrivateLeaseRecord> {
         try {
           closeSync(descriptor);
         } catch {
-          // The safe failure below remains the only visible outcome.
+          // 下方的安全失败仍是唯一可见结果。
         }
       }
       try {
         unlinkSync(temporary);
       } catch {
-        // A random, private temporary is never an authority-bearing name.
-        // Leaving it for filesystem cleanup cannot change the publication
-        // result and must not mask a successful durable generation.
+        // 随机私有临时项绝不是承载权威的名称。把它留给文件系统清理不会改变发布结果，
+        // 也不能掩盖成功的耐久世代。
       }
     }
   }
@@ -638,7 +625,7 @@ export class ProductPrivateLease<T extends ProductPrivateLeaseRecord> {
         try {
           closeSync(descriptor);
         } catch {
-          // The checked read result is the only relevant outcome.
+          // 已检查的读取结果是唯一相关结果。
         }
       }
     }
@@ -664,7 +651,7 @@ export class ProductPrivateLease<T extends ProductPrivateLeaseRecord> {
     return namespace === "missing";
   }
 
-  /** Reads an existing namespace without creating or chmod-ing anything. */
+  /** 读取既有命名空间，不创建任何内容，也不执行 `chmod`。 */
   private readExistingNamespaceState(): NamespaceState<T> | undefined {
     if (this.namespaceMissing()) return undefined;
     this.assertNamespaceReadable();
@@ -785,22 +772,22 @@ export function writePrivateJsonDurably(input: {
         try {
           closeSync(descriptor);
         } catch {
-          // Keep the delivery boundary sanitized after write failure.
+          // 写入失败后仍保持交付边界已净化。
         }
       }
       try {
         unlinkSync(temporary);
       } catch {
-        // The random temporary is inert and does not grant authority.
+        // 随机临时项不具活性，也不授予权威。
       }
       if (error instanceof Error && error.message === input.failureMessage)
         throw error;
-      throw new Error(input.failureMessage);
+      throw new Error(input.failureMessage, { cause: error });
     }
   } catch (error) {
     if (error instanceof Error && error.message === input.failureMessage)
       throw error;
-    throw new Error(input.failureMessage);
+    throw new Error(input.failureMessage, { cause: error });
   }
 }
 
@@ -898,7 +885,7 @@ function canonicalNow(now: () => Date, failureMessage: string): string {
     return value;
   } catch (error) {
     if (error instanceof Error && error.message === failureMessage) throw error;
-    throw new Error(failureMessage);
+    throw new Error(failureMessage, { cause: error });
   }
 }
 
@@ -951,9 +938,8 @@ function linuxOwnerAlive(owner: {
     return linuxProcessStartTimeTicks(owner.pid) === owner.startTimeTicks;
   } catch (error) {
     if (errorCode(error) === "ENOENT") return false;
-    // An inability to inspect /proc is not evidence that an in-flight owner
-    // died. Fail closed rather than turn an infrastructure issue into a
-    // concurrent refresh or configuration mutation.
+    // 无法检查 `/proc` 不代表进行中的持有者已经死亡。应失败闭合，不能把基础设施问题
+    // 转化为并发刷新或配置变更。
     throw error;
   }
 }
@@ -967,16 +953,14 @@ export function linuxProcessStartTimeTicks(pid: number): string {
     .slice(closingParenthesis + 1)
     .trim()
     .split(/\s+/u);
-  // `/proc/<pid>/stat` field 22 is starttime; fields after `comm` begin at 3.
+  // `/proc/<pid>/stat` 的第 22 个字段是启动时间；`comm` 后的字段从第 3 个开始。
   const startTimeTicks = fields[19];
   if (startTimeTicks === undefined || !/^[0-9]+$/u.test(startTimeTicks))
     throw new Error("invalid process stat");
   return startTimeTicks;
 }
 
-/**
- * Creates a private directory one component at a time and fsyncs each parent.
- */
+/** 逐级创建私有目录，并对每一级父目录执行 `fsync`。 */
 function ensurePrivateDirectoryDurably(
   directory: string,
   failureMessage: string,
@@ -993,18 +977,21 @@ function ensurePrivateDirectoryDurably(
       } catch (error) {
         if (error instanceof Error && error.message === failureMessage)
           throw error;
-        if (errorCode(error) !== "ENOENT") throw new Error(failureMessage);
+        if (errorCode(error) !== "ENOENT")
+          throw new Error(failureMessage, { cause: error });
         const parent = path.dirname(existing);
-        if (parent === existing) throw new Error(failureMessage);
+        if (parent === existing)
+          throw new Error(failureMessage, { cause: error });
         missing.push(existing);
         existing = parent;
       }
     }
-    for (const candidate of missing.reverse()) {
+    for (const candidate of missing.toReversed()) {
       try {
         mkdirSync(candidate, { mode: 0o700 });
       } catch (error) {
-        if (errorCode(error) !== "EEXIST") throw new Error(failureMessage);
+        if (errorCode(error) !== "EEXIST")
+          throw new Error(failureMessage, { cause: error });
       }
       chmodSync(candidate, 0o700);
       if (inspectPrivatePath(candidate, "directory") !== "usable")
@@ -1017,7 +1004,7 @@ function ensurePrivateDirectoryDurably(
     fsyncPrivateDirectory(directory, failureMessage);
   } catch (error) {
     if (error instanceof Error && error.message === failureMessage) throw error;
-    throw new Error(failureMessage);
+    throw new Error(failureMessage, { cause: error });
   }
 }
 
@@ -1029,21 +1016,20 @@ function fsyncPrivateDirectory(
   try {
     descriptor = openSync(directory, constants.O_RDONLY | constants.O_NOFOLLOW);
     const status = fstatSync(descriptor);
-    // This helper also fsyncs ancestors such as /tmp while creating a fresh
-    // private leaf. Only the leaf itself is an authority boundary and has
-    // already been checked as 0700; rejecting a sticky public ancestor would
-    // make secure subdirectories unusable in ordinary test/container setups.
+    // 该辅助函数创建新的私有叶目录时，也会对 `/tmp` 等祖先执行 `fsync`。只有叶目录
+    // 本身是权威边界，并且已经检查为 0700；若拒绝带 sticky 位的公共祖先，普通测试或
+    // 容器环境中的安全子目录将无法使用。
     if (!status.isDirectory()) throw new Error(failureMessage);
     fsyncSync(descriptor);
   } catch (error) {
     if (error instanceof Error && error.message === failureMessage) throw error;
-    throw new Error(failureMessage);
+    throw new Error(failureMessage, { cause: error });
   } finally {
     if (descriptor !== undefined) {
       try {
         closeSync(descriptor);
       } catch {
-        // The fsync result already determines the safe outcome.
+        // `fsync` 结果已经决定了安全结果。
       }
     }
   }

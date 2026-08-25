@@ -5,7 +5,7 @@ import type {
   ObservedRootRegistration,
   ObservedRootSnapshot,
   ObservedRootSymlinkMode,
-} from "./observed-root-registrations.js";
+} from "./observed-root-registrations.ts";
 
 export type ObservedRootAutomationScope = {
   readonly observedRootId: string;
@@ -13,9 +13,8 @@ export type ObservedRootAutomationScope = {
 };
 
 /**
- * The non-path portion of a one-time Automation authorization. SQLite uses
- * this value inside its immediate transaction, while the descriptor boundary
- * owns the preceding bind. Neither layer has to reinterpret the target graph.
+ * 一次性自动化授权中不含路径的部分。SQLite 在即时事务内使用该值，前序绑定则由
+ * 描述符边界持有；两层都无需重新解释目标图。
  */
 export type ObservedRootAutomationAuthorization = {
   readonly observedRootId: string;
@@ -46,9 +45,8 @@ export type ObservedRootDecodeResult<Value> =
   | { readonly valid: false; readonly reason: string };
 
 /**
- * Builds the immutable lookup used by every authority decision. Callers own
- * their transaction or query lifetime; this module owns only pure graph and
- * version semantics.
+ * 构建每个权威决策使用的不可变索引。调用方持有自己的事务或查询生命周期；本模块
+ * 只持有纯粹的图与版本语义。
  */
 export function createObservedRootAuthorityIndex(
   registrations: readonly ObservedRootRegistration[],
@@ -62,10 +60,8 @@ export function createObservedRootAuthorityIndex(
 }
 
 /**
- * Resolves the complete directed target closure without teaching a caller how
- * to traverse, sort, or reject inactive registrations. A cycle is bounded by
- * registration identity and never promotes the root itself into its target
- * closure.
+ * 解析完整的有向目标闭包，不让调用方了解如何遍历、排序或拒绝非活动注册。循环由
+ * 注册身份限制，且绝不会把根本身提升进它的目标闭包。
  */
 export function resolveObservedRootAuthority(
   index: ObservedRootAuthorityIndex,
@@ -114,7 +110,7 @@ export function resolveObservedRootAuthority(
   };
 }
 
-/** Creates the durable descriptor-binding evidence from one live authority. */
+/** 从一个当前有效的权威创建耐久描述符绑定证据。 */
 export function freezeObservedRootSnapshot(
   authority: Extract<
     ObservedRootAuthorityResolution,
@@ -140,9 +136,8 @@ export function freezeObservedRootSnapshot(
 }
 
 /**
- * Compares one frozen authority against the current registration graph. A
- * pre-closure snapshot is compatible only for an empty target declaration;
- * otherwise recovery would invent target spellings that it never froze.
+ * 将一个冻结权威与当前注册图比较。闭包机制引入前的快照只在目标声明为空时兼容；
+ * 否则恢复过程会捏造从未冻结过的目标拼写。
  */
 export function hasCurrentObservedRootAuthority(
   frozen: ObservedRootSnapshot,
@@ -171,8 +166,7 @@ export function hasCurrentObservedRootAuthority(
 }
 
 /**
- * The root itself and every transitive dependent must lose future Automation
- * authority when a target registration is revoked.
+ * 目标注册撤销后，根本身及所有传递依赖方都必须失去未来的自动化权威。
  */
 export function observedRootIdsDependingOn(
   index: ObservedRootAuthorityIndex,
@@ -194,9 +188,8 @@ export function observedRootIdsDependingOn(
 }
 
 /**
- * Evaluates the exact non-path evidence used by SQLite before it writes an
- * Automation Intent. Relative-scope parsing and target closure are shared
- * with registration and recovery rather than reimplemented by persistence.
+ * 求值 SQLite 写入自动化意图前所使用的精确无路径证据。相对范围解析与目标闭包由
+ * 注册和恢复共同复用，而不是在持久化层重新实现。
  */
 export function isAutomationObservedRootAuthorizationCurrent(input: {
   readonly scope: ObservedRootAutomationScope;
@@ -236,10 +229,8 @@ export function isAutomationObservedRootAuthorizationCurrent(input: {
 }
 
 /**
- * Projects the frozen descriptor authorization into the path-free evidence
- * carried to the atomic Automation persistence boundary. This does not
- * resolve live registrations; SQLite does that with the same evaluator while
- * holding its transaction.
+ * 把冻结的描述符授权投影为传递到原子自动化持久化边界的无路径证据。这里不解析当前
+ * 注册；SQLite 在持有事务期间使用同一个求值器完成解析。
  */
 export function freezeObservedRootAutomationAuthorization(
   root: ObservedRootSnapshot,
@@ -288,7 +279,7 @@ export function isObservedRootAutomationScope(
   }
 }
 
-/** Canonicalizes the persisted spelling used by registered scopes and intents. */
+/** 规范化注册范围与意图使用的持久化拼写。 */
 export function normalizeObservedRelativeScope(value: string): string {
   if (path.isAbsolute(value)) throw new Error("文件位置范围必须是相对路径");
   const normalized = path.normalize(value || ".");
@@ -376,7 +367,7 @@ export function decodeObservedRootSnapshot(
   };
 }
 
-/** Strictly decodes a SQLite transport row after its JSON field becomes unknown. */
+/** 在 JSON 字段进入 unknown 边界后，严格解码 SQLite 传输行。 */
 export function decodeObservedRootRegistration(
   value: unknown,
 ): ObservedRootDecodeResult<ObservedRootRegistration> {

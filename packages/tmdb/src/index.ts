@@ -45,9 +45,8 @@ const collectorCapability = declareCapability({
   interpretationContractVersions: ["2"],
 });
 /**
- * Product-managed private access is a distinct deployed capability from the
- * public collection contract. Its secret shape remains in this integration
- * and outer composition, never in Domain.
+ * 产品管理的私有访问是独立于公开采集契约的已部署能力。其秘密结构只保留在该集成和
+ * 外层组合中，绝不进入领域层。
  */
 export const tmdbSourceConnectionCapability = declareCapability({
   identity: "tmdb.source-connection",
@@ -104,8 +103,7 @@ type FetchLike = (
 type SearchAddress = { readonly title: string; readonly year: string };
 
 /**
- * TMDB owns this deliberately small local convention. It only contributes
- * evidence: title and year are never Domain identity.
+ * TMDB 拥有这个刻意保持精简的本地约定。它只贡献证据：标题和年份绝不是领域身份。
  */
 export class TmdbStrictFilmDirectoryInterpreter implements DirectoryInterpreter {
   readonly capability = directoryCapability;
@@ -136,7 +134,7 @@ export class TmdbStrictFilmDirectoryInterpreter implements DirectoryInterpreter 
   }
 }
 
-/** Live official collection; bearer credentials stay in outer configuration. */
+/** 实时官方采集；不记名凭据保留在外层配置中。 */
 export class TmdbCollector implements SourceCollector {
   readonly capability = collectorCapability;
   private readonly accessToken: string | undefined;
@@ -450,8 +448,8 @@ export class TmdbCollector implements SourceCollector {
       accessToken,
       "incomplete",
     );
-    // One retained payload supports two independent fact scopes. Source Record
-    // completeness describes the declared scope, not every field in the body.
+    // 一份保留载荷支持两个独立事实范围。来源记录完整性描述的是所声明范围，
+    // 而不是正文中的每个字段。
     return [
       {
         ...leadingCast,
@@ -489,9 +487,8 @@ export class TmdbCollector implements SourceCollector {
   }
 
   /**
-   * Localized titles are descriptive evidence, not recognition authority. A
-   * failed supplemental response therefore cannot retract a complete
-   * movie-and-credits recognition path.
+   * 本地化标题是描述性证据，而非识别权威。因此补充响应失败不能撤回完整的
+   * 影片与演职员表识别路径。
    */
   private async captureTranslationsForMetadata(
     movieId: string,
@@ -502,9 +499,8 @@ export class TmdbCollector implements SourceCollector {
       if (translationResponseMovieId(record.body) === movieId)
         return { records: [record], failures: [] };
       return {
-        // Preserve the official response for inspection, but make its failed
-        // subject confirmation explicit. It is not an eligible complete
-        // translation scope for the source interpreter.
+        // 保留官方响应用于检查，但明确标示其主体确认失败。它不能作为来源解释器的
+        // 合格完整翻译范围。
         records: [
           {
             ...record,
@@ -553,9 +549,8 @@ export class TmdbCollector implements SourceCollector {
         },
       });
     } catch {
-      // Request errors are not a safe diagnostic channel: implementations may
-      // expose the Authorization header. The retained execution only needs a
-      // stable, repairable failure classification.
+      // 请求错误并非安全诊断通道：实现可能暴露 `Authorization` 标头。
+      // 保留的执行只需要稳定且可修复的失败分类。
       throw new Error("网络请求未完成");
     }
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -571,9 +566,8 @@ export class TmdbCollector implements SourceCollector {
       id: `source-record_tmdb_${randomUUID()}`,
       sourceIdentity: "tmdb",
       nativeAddress,
-      // This collector retains JSON protocol evidence. Do not reflect an
-      // arbitrary response header into a Source Record, where a hostile
-      // intermediary could otherwise echo private request material.
+      // 该采集器保留 JSON 协议证据。不要把任意响应标头映射进来源记录，否则恶意中间方
+      // 可能借此回显私有请求材料。
       mediaType: "application/json",
       acquiredAt: new Date().toISOString(),
       acquisition: { requestedAddress, method: "GET", authorized: true },
@@ -582,16 +576,15 @@ export class TmdbCollector implements SourceCollector {
         completeness,
         authority: "official",
       },
-      // The retained body is the authority for later reinterpretation, so its
-      // digest must describe the sanitized body rather than private transport
-      // bytes that were deliberately discarded at this collector boundary.
+      // 保留正文是之后重新解释的权威，因此其摘要必须描述净化后的正文，
+      // 而不是在采集器边界刻意丢弃的私有传输字节。
       digest: createHash("sha256").update(body).digest("hex"),
       body,
     };
   }
 }
 
-/** Maps one verified TMDB movie plus its complete credits response to generic facts. */
+/** 将一部已验证 TMDB 影片及其完整演职员表响应映射为通用事实。 */
 export class TmdbSourceInterpreter implements SourceInterpreter {
   readonly capability = interpreterCapability;
 
@@ -818,7 +811,7 @@ export class TmdbSourceInterpreter implements SourceInterpreter {
   }
 }
 
-/** Recognition never treats provider order as trust. The rule is exact and versioned. */
+/** 识别绝不把提供方顺序当作信任依据；该规则精确且有版本。 */
 export class TmdbStrictFilmRecognizer implements Recognizer {
   readonly capability = recognizerCapability;
   canRecognize(input: SourceInterpretationBatch): boolean {
@@ -1033,8 +1026,7 @@ function parseMovie(body: string): Movie {
       ? String(value.id)
       : undefined;
   if (id === undefined) throw new Error("TMDB 电影响应没有有效标识");
-  // Keep meaningful source text byte-for-byte for strict identity comparison.
-  // Whitespace-only transport values carry no semantic value and are omitted.
+  // 逐字节保留有意义的来源文本，以进行严格身份比较。仅含空白的传输值没有语义，应省略。
   const strings = (input: unknown) =>
     typeof input === "string" && input.trim().length > 0 ? input : undefined;
   const title = strings(value.title);
@@ -1278,8 +1270,7 @@ function metadataFromMovie(movie: Movie, sourceRecordId: string) {
     movie.runtime === undefined ? undefined : String(movie.runtime),
   );
   add("tmdb.movie.id", "tmdb.movie.id", movie.id);
-  // The value is a generic external identifier while its Source Record and
-  // slot retain TMDB provenance; it is not an association with that catalogue.
+  // 该值是通用外部标识符，其来源记录和槽保留 TMDB 溯源；它不是与该目录的关联。
   add("external.imdb-id", "tmdb.movie.imdb-id", movie.imdbId);
   for (const alternative of movie.alternatives)
     add(
@@ -1357,7 +1348,7 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Keep useful HTTP/schema diagnostics while never retaining a bearer value. */
+/** 保留有用的 HTTP/模式诊断，同时绝不保留不记名凭据值。 */
 function safeTmdbDiagnostic(error: unknown, accessToken: string): string {
   return message(error)
     .replaceAll(accessToken, "[REDACTED]")
@@ -1365,10 +1356,8 @@ function safeTmdbDiagnostic(error: unknown, accessToken: string): string {
 }
 
 /**
- * TMDB responses should never echo authorization material, but an external
- * source is an untrusted boundary. Remove the exact private token before a
- * response can become a Domain Source Record; Domain and Application remain
- * deliberately unaware that this capability used a bearer credential.
+ * TMDB 响应本不应回显授权材料，但外部来源是不可信边界。响应成为领域来源记录前，
+ * 应移除精确的私有令牌；领域层和应用层刻意不知道该能力使用了不记名凭据。
  */
 function redactTmdbResponseBody(body: string, accessToken: string): string {
   const representations = new Set([

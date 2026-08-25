@@ -6,7 +6,7 @@ export type CliJourneyCommand = {
     | readonly string[]
     | ((previousResults: readonly CliJourneyResult[]) => readonly string[]);
   readonly env?: Readonly<Record<string, string>>;
-  /** A live prerequisite failed: stop before later dependent commands obscure it. */
+  /** 实时前置条件失败：在后续依赖命令掩盖它之前停止。 */
   readonly haltOnFailure?: boolean;
 };
 
@@ -17,7 +17,7 @@ export type CliJourneyResult = {
   readonly stderr: string;
 };
 
-/** Read the identity returned by the CLI's formal observed-root registration. */
+/** 读取 CLI 正式观察根注册返回的身份。 */
 export function registeredObservedRootId(
   result: CliJourneyResult | undefined,
 ): string {

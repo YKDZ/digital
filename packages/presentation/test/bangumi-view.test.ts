@@ -5,7 +5,7 @@ import {
   projectCatalogue,
   projectBangumiCatalogue,
   type AssetViewFacts,
-} from "../src/index.ts";
+} from "../src/index";
 
 function bloomFacts(): readonly AssetViewFacts[] {
   const workId = "entity_bangumi-subject_243981";

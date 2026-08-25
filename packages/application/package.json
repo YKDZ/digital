@@ -2,16 +2,13 @@
   "name": "@digital/application",
   "version": "0.0.0",
   "private": true,
+  "files": [
+    "dist"
+  ],
   "type": "module",
-  "imports": {
-    "#/*": {
-      "default": "./src/*.ts",
-      "types": "./src/*.ts"
-    }
-  },
   "exports": {
     ".": {
-      "source": "./dist/index.js",
+      "digital-source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
@@ -21,15 +18,16 @@
     "format:write": "oxfmt --write --config ../../oxfmt.config.ts .",
     "lint": "oxlint --quiet --format=unix --config ../../oxlint.config.ts --ignore-pattern node_modules .",
     "lint:fix": "oxlint --format=unix --config ../../oxlint.config.ts . --fix",
-    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false && tsc -p tsconfig.type-test.json --pretty false",
+    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
     "test": "vitest run --reporter=verbose",
-    "build": "tsc -p tsconfig.json --pretty false"
+    "build": "tsc -p tsconfig.build.json --pretty false"
   },
   "dependencies": {
     "@digital/domain": "workspace:*"
   },
   "devDependencies": {
     "@digital/test-support": "workspace:*",
+    "@digital/typescript-config": "workspace:*",
     "@types/node": "catalog:",
     "oxfmt": "catalog:",
     "oxlint": "catalog:",

@@ -1,31 +1,30 @@
-import type { CapabilityDeclaration, InformationRequirement } from "./index.js";
+import type { CapabilityDeclaration, InformationRequirement } from "./index.ts";
 
-/** A finite, view-independent set of already stable Domain subjects. */
+/** 有限、与视图无关且已经稳定的领域主体集合。 */
 export type InformationSubjectSelection = {
   readonly subjectIds: readonly string[];
 };
 
-/** The facts Application is allowed to compare before it plans any work. */
+/** Application 规划任何工作前允许比较的事实。 */
 export type InformationSubjectFacts = {
   readonly subjectId: string;
   readonly metadata: readonly { readonly property: string }[];
   readonly relationships: readonly { readonly type: string }[];
-  /** `available` means the ordinary association has accessible bytes. */
+  /** `available` 表示普通关联具有可访问字节。 */
   readonly artifactAssociations: readonly {
     readonly role: string;
     readonly available?: boolean;
   }[];
-  /** Current source associations already applicable to this exact subject. */
+  /** 已经适用于该精确主体的当前来源关联。 */
   readonly sourceAssociations: readonly {
     readonly sourceIdentity: string;
-    /** Preserves the current association selected for the later work plan. */
+    /** 保留为后续工作计划选定的当前关联。 */
     readonly sourceAssociationId?: string;
   }[];
 };
 
 /**
- * This is deliberately a declaration of one narrow fulfilment path, not a
- * provider model. Coordinates and source identities remain open strings.
+ * 这里刻意声明一条窄履行路径，而不是提供方模型。坐标和来源身份保持开放字符串。
  */
 export type InformationFulfillmentCapability = {
   readonly declaration: CapabilityDeclaration;
@@ -39,7 +38,7 @@ export type InformationFulfillmentCapability = {
   readonly artifactRoles?: readonly string[];
   readonly cost: "low" | "consequential";
   readonly availability: "available" | "unavailable" | "blocked";
-  /** Sanitized again at the Application boundary before it reaches callers. */
+  /** 到达调用方前，在 Application 边界再次净化。 */
   readonly reason?: string;
 };
 
@@ -54,11 +53,9 @@ export type InformationExecutionReference = {
 };
 
 /**
- * Application-only provenance for a fulfillment requested after an existing
- * Workflow Execution accepted a subject. The stable parent ID is deliberately
- * narrower than an automation intent: a recovered child must keep its own
- * frozen Workflow Input rather than recomputing provenance from current
- * automation configuration.
+ * 既有工作流执行接受主体后所请求履行的 Application 专用来源。稳定父 ID 刻意比自动化
+ * 意图更窄：恢复的子执行必须保留自己的冻结工作流输入，而不是从当前自动化配置重新
+ * 计算来源。
  */
 export type InformationFulfillmentInitiation = {
   readonly version: "information-fulfillment-initiation/1";
@@ -76,26 +73,25 @@ export type InformationInputReadiness = {
 
 export type InformationSubjectReadiness = {
   readonly subjectId: string;
-  /** Required inputs determine this summary; optional absence remains visible. */
+  /** 必需输入决定该摘要；可选缺失仍保持可见。 */
   readonly status: InformationReadinessStatus;
   readonly inputs: readonly InformationInputReadiness[];
 };
 
-/** A rebuildable Application result, never a Domain availability fact. */
+/** 可重建的 Application 结果，绝不是领域可用性事实。 */
 export type InformationReadiness = {
   readonly requirement: InformationRequirement;
   readonly subjects: readonly InformationSubjectReadiness[];
 };
 
 /**
- * One planned low-cost work item. It contains only neutral selection and
- * requirement coordinates, so the scheduler cannot branch on a View, route,
- * component, or provider output model.
+ * 一个已规划低成本工作项。它只包含中立选择与需求坐标，因此调度器不能根据视图、路由、
+ * 组件或提供方输出模型分支。
  */
 export type InformationFulfillmentPlan = {
   readonly subjectId: string;
   readonly sourceIdentity: string;
-  /** Opaque current-association identity; absent only for legacy/test facts. */
+  /** 不透明当前关联身份；只在旧版／测试事实中缺失。 */
   readonly sourceAssociationId?: string;
   readonly operation: InformationFulfillmentCapability["operation"];
   readonly capability: CapabilityDeclaration;
@@ -105,7 +101,7 @@ export type InformationFulfillmentPlan = {
 type InformationFulfillmentTerminal = {
   readonly status: "unavailable" | "blocked";
   readonly reason: string;
-  /** Retains the durable attempt after a pending execution reaches terminal. */
+  /** 等待中执行进入终态后保留耐久尝试。 */
   readonly workflowExecutionId?: string;
 };
 
@@ -117,18 +113,16 @@ export type InformationFulfillmentStart =
   | InformationFulfillmentTerminal;
 
 /**
- * A durable execution may finish after the first readiness projection. This
- * boundary turns its persisted terminal state into a stable readiness result
- * without retrying the same source work on every delivery refresh.
+ * 耐久执行可能在首次就绪投影后完成。该边界把其持久终态转换为稳定就绪结果，而不会在
+ * 每次交付刷新时重试相同来源工作。
  */
 export type InformationFulfillmentPendingReconciliation =
   | { readonly status: "pending" }
   | InformationFulfillmentTerminal;
 
 /**
- * Product policy may permit a bounded exact enrichment. Returning no
- * candidate is the ordinary case; declared integrations never fan out merely
- * because they happen to be deployed.
+ * 产品策略可以允许有界精确来源补充。没有返回候选是普通情况；已声明集成绝不会仅因
+ * 碰巧已经部署就扇出。
  */
 export type InformationFulfillmentPolicy = {
   readonly permittedSourceEnrichments?: (input: {
@@ -150,7 +144,7 @@ export type InformationFulfillmentPorts = {
     plan: InformationFulfillmentPlan,
     initiation?: InformationFulfillmentInitiation,
   ) => Promise<InformationFulfillmentStart>;
-  /** Optional because only a durable workflow can reconcile an execution ID. */
+  /** 可选，因为只有耐久工作流能够协调执行 ID。 */
   readonly reconcilePending?: (input: {
     readonly plan: InformationFulfillmentPlan;
     readonly workflowExecutionId: string;
@@ -158,9 +152,8 @@ export type InformationFulfillmentPorts = {
 };
 
 /**
- * Lifecycle shutdown does not retry, cancel, or reinterpret work already
- * planned by a caller. It reports the same neutral readiness shape instead
- * of allowing a new fulfillment to reach a closing persistence owner.
+ * 生命周期关闭不会重试、取消或重新解释调用方已经规划的工作。它改为报告相同的中立
+ * 就绪形状，不允许新履行到达正在关闭的持久化持有者。
  */
 export function blockedInformationReadiness(
   input: {
@@ -205,7 +198,7 @@ type PlannedInput = {
   readonly subjectId: string;
   readonly input: RequestedInput;
   readonly sourceIdentity: string;
-  /** Keeps separate current associations from being coalesced by identity. */
+  /** 防止不同当前关联仅因身份相同而合并。 */
   readonly sourceAssociationId?: string;
   readonly capability: InformationFulfillmentCapability;
 };
@@ -216,20 +209,21 @@ type PendingInformationWork = {
 };
 
 /**
- * Deep, delivery-independent input planning. Current facts are reused first;
- * only an exact missing coordinate with an applicable low-cost declaration
- * can cause a scheduler request. The instance memoizes pending work so the
- * same interactive and automated requirement deduplicates naturally.
+ * 深层、交付层无关输入规划。优先复用当前事实；只有具备适用低成本声明的精确缺失坐标
+ * 才能触发调度请求。实例记忆等待中工作，使相同交互和自动需求自然去重。
  */
 export class InformationFulfillment {
   private readonly pending = new Map<string, PendingInformationWork>();
+  private readonly ports: InformationFulfillmentPorts;
 
-  constructor(private readonly ports: InformationFulfillmentPorts) {}
+  constructor(ports: InformationFulfillmentPorts) {
+    this.ports = ports;
+  }
 
   async fulfill(input: {
     readonly selection: InformationSubjectSelection;
     readonly requirement: InformationRequirement;
-    /** Internal Application provenance; delivery callers do not synthesize it. */
+    /** Application 内部来源；交付调用方不构造它。 */
     readonly initiation?: InformationFulfillmentInitiation;
   }): Promise<InformationReadiness> {
     validateSelection(input.selection);
@@ -289,6 +283,7 @@ export class InformationFulfillment {
       const start = await this.start(group.plan, input.initiation);
       for (const plannedInput of group.inputs) {
         const key = readinessKey(plannedInput.subjectId, plannedInput.input.id);
+        const executionReferences = executionReferencesFor(start);
         initial.set(
           key,
           start.status === "pending"
@@ -306,11 +301,9 @@ export class InformationFulfillment {
                   start.status,
                 ),
                 reason: sanitizeInformationReason(start.reason),
-                ...(executionReferencesFor(start) === undefined
+                ...(executionReferences === undefined
                   ? {}
-                  : {
-                      executionReferences: executionReferencesFor(start),
-                    }),
+                  : { executionReferences }),
               },
         );
       }
@@ -339,15 +332,13 @@ export class InformationFulfillment {
   }
 
   /**
-   * A newly terminal Source Refresh is the only ordinary event that makes a
-   * previously terminal source-work memo obsolete. This is intentionally not
-   * a general retry button: unchanged delivery polling retains terminal
-   * unavailable/blocked readiness instead of replaying remote work.
+   * 新进入终态的来源刷新，是唯一能使先前终态来源工作记忆过期的普通事件。这里刻意不是
+   * 通用重试按钮：没有变化的交付轮询保留终态不可用／阻塞就绪，而不重放远程工作。
    */
   invalidateForSourceFacts(input: {
     readonly subjectId: string;
     readonly sourceIdentity: string;
-    /** When supplied, do not evict a sibling current Source Association. */
+    /** 提供时，不逐出同级当前来源关联。 */
     readonly sourceAssociationId?: string;
     readonly operations?: readonly InformationFulfillmentCapability["operation"][];
   }): void {
@@ -505,9 +496,8 @@ export class InformationFulfillment {
           reconciled.workflowExecutionId ?? started.workflowExecutionId,
       };
       const terminal = Promise.resolve(terminalResult);
-      // Keep this terminal observation until current facts change or an
-      // explicit new workflow replaces it; catalogue polling must not turn a
-      // failed/cancelled source run into an implicit retry loop.
+      // 保留该终态观察，直到当前事实变化或明确的新工作流替换它；Catalogue 轮询不得把
+      // 失败／取消的来源运行变成隐式重试循环。
       this.pending.set(key, { plan, result: terminal });
       return terminalResult;
     }
@@ -625,7 +615,7 @@ function readinessIdentity(
   };
 }
 
-/** A terminal failure of optional work is absence, never a subject blocker. */
+/** 可选工作的终态失败表示缺失，绝不是主体阻塞条件。 */
 function readinessStatusForInput(
   input: RequestedInput,
   status: InformationReadinessStatus,
@@ -759,7 +749,7 @@ function validateInitiation(
     );
 }
 
-/** Remove likely credentials and transport details from caller-visible state. */
+/** 从调用方可见状态中移除疑似凭据和传输细节。 */
 export function sanitizeInformationReason(reason: string): string {
   return reason
     .replace(/[\r\n\t]+/gu, " ")

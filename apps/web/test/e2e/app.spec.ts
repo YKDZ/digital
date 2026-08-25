@@ -12,8 +12,7 @@ test("serves formal routes as Simplified Chinese SSR documents", async ({
 });
 
 test("renders the formal asset browser", async ({ page }) => {
-  // Vike can retain background browser requests after its interactive page is
-  // ready; the visible UI assertions below are the actual readiness contract.
+  // Vike 可能在交互页面就绪后仍保留后台浏览器请求；下方可见 UI 断言才是真正的就绪契约。
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await expect(page.getByRole("heading", { name: "全部内容" })).toBeVisible();
   await expect(

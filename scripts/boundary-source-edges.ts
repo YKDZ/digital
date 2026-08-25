@@ -16,7 +16,7 @@ type Manifest = {
 };
 
 type AliasTarget = {
-  /** An unresolved module specifier or a path relative to `base`. */
+  /** 未解析模块说明符，或相对于 `base` 的路径。 */
   readonly specifier: string;
   readonly base: string;
 };
@@ -27,7 +27,7 @@ type AliasMapping = {
 };
 
 type AliasContext = {
-  /** Bare package aliases declared in package.json dependency values. */
+  /** 在 `package.json` 依赖值中声明的裸包别名。 */
   readonly dependencyAliases: ReadonlyMap<string, readonly string[]>;
   readonly mappings: readonly AliasMapping[];
   readonly tsconfigAliasCycles: readonly TsconfigAliasCycle[];
@@ -59,18 +59,18 @@ type TsconfigResolverContext = {
 };
 
 type TsconfigAliasState = {
-  /** Effective, absolute compilerOptions.baseUrl. */
+  /** 生效的绝对 `compilerOptions.baseUrl`。 */
   readonly baseUrl?: string;
-  /** The effective compilerOptions.paths object, if one was configured. */
+  /** 如果已配置，表示生效的 `compilerOptions.paths` 对象。 */
   readonly paths?: ReadonlyMap<string, readonly string[]>;
-  /** The config directory that supplied the effective paths option. */
+  /** 提供生效 `paths` 选项的配置目录。 */
   readonly pathsBasePath?: string;
 };
 
 type WorkspaceResolution = {
   readonly kind: "workspace";
   readonly target: PackageRoot;
-  /** A package export is legal when tags and dependencies permit it. */
+  /** 标签和依赖均允许时，包导出才合法。 */
   readonly access: "package-export" | "source-file";
 };
 
@@ -106,9 +106,8 @@ type ModuleResolution =
   | UnresolvablePathResolution;
 
 /**
- * Checks resolved source edges, not only source text that happens to start
- * with `@digital/`. Internal package imports and TypeScript path aliases can
- * otherwise disguise a cross-package import or a persistence implementation.
+ * 检查解析后的来源边，而不只检查恰好以 `@digital/` 开头的源码文本。否则内部包导入和
+ * TypeScript 路径别名可能掩盖跨包导入或持久化实现。
  */
 export async function checkSourceEdges(options: {
   readonly packagePaths: ReadonlyMap<string, string>;
@@ -430,8 +429,9 @@ function resolveDependencyAliasSpecifiers(
   aliasesSeen: ReadonlySet<string> = new Set(),
 ): readonly DependencyAliasSpecifierResolution[] {
   const targets = matchingDependencyAliasTargets(dependencyAliases, specifier);
-  if (targets.length === 0) return [{ kind: "resolved", specifier }];
-  const alias = targets[0].alias;
+  const firstTarget = targets[0];
+  if (firstTarget === undefined) return [{ kind: "resolved", specifier }];
+  const alias = firstTarget.alias;
   if (aliasesSeen.has(alias)) return [{ kind: "alias-cycle", specifier }];
   const nextAliases = new Set(aliasesSeen).add(alias);
   return targets.flatMap((target) =>
@@ -873,7 +873,7 @@ function matchingAliasTargets(
   });
 }
 
-/** `null` means an exact alias match; `undefined` means no match. */
+/** `null` 表示别名精确匹配；`undefined` 表示不匹配。 */
 function aliasReplacement(
   pattern: string,
   specifier: string,
@@ -1041,5 +1041,7 @@ function moduleSpecifiers(source: string): readonly string[] {
     ...source.matchAll(
       /(?:from\s*|import\s*\(|import\s*|require\s*\()["']([^"']+)["']/gu,
     ),
-  ].map((match) => match[1]);
+  ]
+    .map((match) => match[1])
+    .filter((specifier): specifier is string => specifier !== undefined);
 }

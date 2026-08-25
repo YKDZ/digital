@@ -58,10 +58,10 @@ describe("root Turbo private integration environment", () => {
       ),
     ) as { readonly scripts?: Readonly<Record<string, string>> };
     expect(cliPackage.scripts?.["test:e2e:tmdb-omdb-live"]).toBe(
-      "DIGITAL_E2E_JOURNEY=tmdb-omdb-live node --conditions=source test/e2e/run-journeys.ts source distribution",
+      "DIGITAL_E2E_JOURNEY=tmdb-omdb-live node --conditions=digital-source test/e2e/run-journeys.ts source distribution",
     );
     expect(cliPackage.scripts?.["test:e2e:bangumi-live"]).toBe(
-      "DIGITAL_E2E_JOURNEY=bangumi-episodic-live node --conditions=source test/e2e/run-journeys.ts source distribution",
+      "DIGITAL_E2E_JOURNEY=bangumi-episodic-live node --conditions=digital-source test/e2e/run-journeys.ts source distribution",
     );
   });
 });

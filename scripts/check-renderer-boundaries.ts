@@ -23,10 +23,8 @@ const webDirectory = ["apps", "web"] as const;
 const rendererContracts = "@digital/presentation/renderer-contracts";
 
 /**
- * These are concrete child-renderer membranes rather than a package-wide
- * convention: each can consume its supplied readonly projection and visual
- * primitives, but cannot construct a View, invoke an action, or touch a
- * browser/global effect boundary.
+ * 这些是具体的子渲染器隔膜，而非包级约定：每个渲染器都能消费提供给它的只读投影和
+ * 视觉原语，但不能构造视图、调用动作或触及浏览器/全局效果边界。
  */
 const targets: readonly RendererTarget[] = [
   {
@@ -142,9 +140,8 @@ const componentPolymorphicAttributes = new Set([
   "xlink:href",
 ]);
 
-// The checker intentionally uses the web app's already-installed parsers.
-// Keeping that resolution anchored at this workspace is what lets disposable
-// fixture roots exercise the same formal command without a copied toolchain.
+// 检查器刻意使用 Web 应用已安装的解析器。将解析锚定在当前工作区，
+// 才能让一次性夹具根在不复制工具链的情况下运行同一个正式命令。
 const webRequire = createRequire(
   path.join(process.cwd(), "apps", "web", "package.json"),
 );
@@ -152,13 +149,11 @@ const ts = webRequire("typescript");
 const vue = webRequire("vue/compiler-sfc");
 
 /**
- * Runs as part of the official root `pnpm boundaries` command. The optional
- * root exists solely so boundary negative fixtures can exercise that exact
- * command against disposable Vue SFCs.
+ * 作为官方根命令 `pnpm boundaries` 的一部分运行。可选根只用于让边界反例夹具针对
+ * 一次性 Vue SFC 运行这条精确命令。
  *
- * The graph is deliberately small: only the two renderer roots, their local
- * display dependencies, and their export symbols are traversed. It is not a
- * second general-purpose static analyser.
+ * 该图刻意保持精简：只遍历两个渲染器根、其本地显示依赖和导出符号。
+ * 它不是第二个通用静态分析器。
  */
 export async function checkRendererBoundaries(options?: {
   readonly root?: string;
@@ -987,7 +982,11 @@ function statementsOf(sourceFile: any): readonly any[] {
 }
 
 function startsWithUppercase(value: string): boolean {
-  return value.length > 0 && value[0] !== value[0].toLocaleLowerCase();
+  const firstCharacter = value[0];
+  return (
+    firstCharacter !== undefined &&
+    firstCharacter !== firstCharacter.toLocaleLowerCase()
+  );
 }
 
 function moduleCandidates(base: string): readonly string[] {

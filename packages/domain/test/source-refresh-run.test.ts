@@ -9,7 +9,7 @@ import {
   reviewSourceRefreshChangeSet,
   stageSourceRefreshChangeSet,
   type SourceRefreshSelection,
-} from "../src/index.js";
+} from "../src/index.ts";
 
 describe("Source Refresh Run", () => {
   test("creates an inspectable run with its initiator, selection, and scoped lineage baselines", () => {

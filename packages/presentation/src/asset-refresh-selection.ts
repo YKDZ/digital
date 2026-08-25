@@ -12,8 +12,7 @@ export type AssetRefreshSelectionNode = {
 };
 
 /**
- * Resolves only the finite projection supplied by the caller. It has no query
- * or graph dependency and therefore cannot silently expand the selected set.
+ * 只解析调用方提供的有限投影。它没有查询或图依赖，因此无法静默扩大所选集合。
  */
 export function resolveAssetRefreshSelection(
   selectedRoots: readonly AssetRefreshSelectionNode[],
@@ -47,10 +46,8 @@ export function resolveAssetRefreshSelection(
       subjectId,
       explanations,
     })),
-    // A presentation projection has no authority to reconstruct an observed
-    // filesystem scope from a node. Filesystem actions enter Application only
-    // through the registered-root entrypoints, which resolve and freeze that
-    // authority at their own boundary.
+    // 展示投影无权从节点重建已观察文件系统范围。文件系统动作只能经由已注册根入口进入应用层；
+    // 这些入口会在自身边界解析并冻结该权威。
     filesystemScopes: [],
   };
 }

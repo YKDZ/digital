@@ -6,14 +6,14 @@ import type { CapabilityCoordinate } from "@digital/domain";
 import type {
   FilesystemObjectIdentityContract,
   FilesystemPackageSnapshot,
-} from "./index.js";
+} from "./index.ts";
 import {
   createObservedRootAuthorityIndex,
   freezeObservedRootSnapshot,
   hasCurrentObservedRootAuthority,
   normalizeObservedRelativeScope,
   resolveObservedRootAuthority,
-} from "./observed-root-authority.js";
+} from "./observed-root-authority.ts";
 
 type BoundScopeOwnership = {
   readonly registrations: ObservedRootRegistrations;
@@ -21,9 +21,8 @@ type BoundScopeOwnership = {
 };
 
 /**
- * Bound scopes are adapter-owned opaque values. This module-level registry
- * adds the Application ownership proof that ties each one to the exact
- * registration service which bound it.
+ * 绑定范围是适配器持有的不透明值。这个模块级登记表补充 Application 持有权证明，
+ * 将每个范围绑定到实际创建它的精确注册服务。
  */
 const boundScopeOwnership = new WeakMap<
   BoundObservedScope,
@@ -38,9 +37,9 @@ export type ObservedRootSymlinkMode =
 export type ObservedRootRegistration = {
   readonly id: string;
   readonly displayName: string;
-  /** Absolute path in the running container. Never a host path mapping. */
+  /** 运行容器内的绝对路径；绝不是宿主机路径映射。 */
   readonly containerPath: string;
-  /** Symlink-aware identity retained for overlap and reconnect checks. */
+  /** 为重叠与重新连接检查保留的、感知符号链接的身份。 */
   readonly canonicalPath: string;
   readonly status: "active" | "revoked";
   readonly configVersion: number;
@@ -55,17 +54,15 @@ export type ObservedRootSnapshot = {
   readonly configVersion: number;
   readonly containerPath: string;
   /**
-   * Canonical identity frozen with the execution.  This is boundary evidence,
-   * not a Location and never belongs to a Domain fact.
+   * 随执行一同冻结的规范身份。它是边界证据，不是位置，也绝不属于领域事实。
    */
   readonly canonicalPath: string;
   readonly readOnly: true;
   readonly symlinkMode: ObservedRootSymlinkMode;
   readonly allowedTargetRootIds: readonly string[];
   /**
-   * Complete active transitive authorization closure frozen at the workflow
-   * boundary.  A filesystem adapter receives paths from this list but never
-   * has to interpret registration IDs or infer permission from a link.
+   * 在工作流边界冻结的完整活动传递授权闭包。文件系统适配器从该列表接收路径，但
+   * 无需解释注册 ID，也无需从链接推断权限。
    */
   readonly authorizedTargetRoots?: readonly AuthorizedObservedRootTarget[];
 };
@@ -74,24 +71,21 @@ export type AuthorizedObservedRootTarget = {
   readonly id: string;
   readonly configVersion: number;
   /**
-   * The registered container-visible spelling, frozen with the descriptor
-   * authority. It may itself be a symbolic-link alias and is never inferred
-   * from a resolved link target.
+   * 已注册且容器可见的路径拼写，与描述符权威一同冻结。它自身可以是符号链接别名，
+   * 并且绝不从解析后的链接目标反推。
    */
   readonly containerPath: string;
-  /** Canonical identity verified when this exact spelling is bound. */
+  /** 绑定这个精确路径拼写时验证的规范身份。 */
   readonly canonicalPath: string;
 };
 
 /**
- * Application-internal filesystem authority resolved for one exact byte
- * source. Delivery may pass this to an infrastructure reader, but no caller
- * supplies an arbitrary server path and no Domain value carries this shape.
+ * 为一个精确字节来源解析的 Application 内部文件系统权威。交付层可以将其传给
+ * 基础设施读取器，但调用方不能提供任意服务器路径，领域值也不携带这种形状。
  */
 /**
- * An Application-owned, adapter-bound observation scope. Its logical location
- * is retained only as Location evidence; filesystem consumers receive the
- * already-bound object rather than a path which they could resolve later.
+ * 由 Application 持有、适配器绑定的观察范围。其逻辑位置只作为位置证据保留；
+ * 文件系统消费者收到已经绑定的对象，而不是可供稍后重新解析的路径。
  */
 export abstract class BoundObservedScope {
   readonly version = "bound-observed-scope/1" as const;
@@ -102,23 +96,22 @@ export abstract class BoundObservedScope {
 }
 
 /**
- * A one-file read capability created by a BoundObservedScope. Consumers get
- * bytes, never an observed filesystem path or a descriptor they can reopen.
+ * 由绑定观察范围创建的单文件读取能力。消费者只能取得字节，绝不会取得观察文件
+ * 系统路径或可重新打开的描述符。
  */
 export abstract class ObservedByteSource {
   abstract readonly logicalLocation: string;
 
-  /** Reads the already-opened source and closes its underlying capability. */
+  /** 读取已经打开的来源，并关闭其底层能力。 */
   abstract read(): Promise<Uint8Array>;
 
-  /** Idempotently releases an unread source when a workflow aborts early. */
+  /** 工作流提前中止时，幂等释放尚未读取的来源。 */
   abstract close(): Promise<void>;
 }
 
 /**
- * A cleanup incident is an operational audit fact, rather than a Domain
- * outcome. It deliberately retains the original error separately so cleanup
- * must never rewrite the public result of an already-failed operation.
+ * 清理事件是操作审计事实，而不是领域结果。它刻意单独保留原始错误，因此清理过程
+ * 绝不能改写已经失败操作的公开结果。
  */
 export type ObservedRootCleanupFailure = {
   readonly operation: "observed-root-execution" | "open-active-byte-source";
@@ -130,18 +123,16 @@ export type ObservedRootCleanupFailure = {
 };
 
 /**
- * Application owns the audit contract while outer composition chooses where
- * it is recorded. Implementations must make cleanup failures observable and
- * must not turn a cleanup incident into a silent best-effort operation.
+ * Application 持有审计契约，外层组合负责选择记录位置。实现必须让清理失败可观察，
+ * 不能把清理事件降格为静默的尽力而为操作。
  */
 export type ObservedRootCleanupFailureReporter = {
   reportCleanupFailure(input: ObservedRootCleanupFailure): void | Promise<void>;
 };
 
 /**
- * The primary audit adapter is itself an outer capability and can fail.  This
- * fallback receives that operational incident without being allowed to affect
- * filesystem cleanup or the public failure selected by the workflow.
+ * 主审计适配器本身也是外层能力，因此可能失败。该后备接收端接收此操作事件，但不得
+ * 影响文件系统清理，也不得改变工作流选定的公开失败。
  */
 export type ObservedRootCleanupReportingFailure = {
   readonly cleanupFailure: ObservedRootCleanupFailure;
@@ -170,10 +161,8 @@ export type ObservedRootRegistrationCommands = {
     readonly registration: ObservedRootRegistration;
   }): Promise<boolean>;
   /**
-   * One durable application operation: revoke future filesystem authority and
-   * disable every Automation Intent whose selected scope depends on it.  The
-   * persistence adapter owns the transaction; this configuration service does
-   * not learn Automation's storage shape.
+   * 一个耐久应用操作：撤销未来文件系统权威，并停用所有选定范围依赖它的自动化意图。
+   * 持久化适配器持有事务；此配置服务无需了解自动化的存储形状。
    */
   revokeObservedRootRegistration(input: {
     readonly expectedVersion: number;
@@ -190,18 +179,16 @@ export type ObservedRootPathInspector = {
 };
 
 /**
- * One adapter-owned descriptor capability for every observed-root operation.
- * The opaque bound scope is valid only for the adapter instance that created
- * it; Application never rebuilds it from a path or asks a concrete adapter
- * for private descriptor details.
+ * 所有观察根操作共用一个由适配器持有的描述符能力。不透明绑定范围只对创建它的
+ * 适配器实例有效；Application 绝不从路径重建它，也不向具体适配器索取私有描述符细节。
  */
 export type ObservedFilesystemCapability = ObservedRootPathInspector & {
-  /** The same deployed capability that binds, observes, opens, and closes. */
+  /** 负责绑定、观察、打开和关闭的同一个已部署能力。 */
   readonly capability: CapabilityCoordinate;
-  /** Omitted when this capability emits no object-identity evidence. */
+  /** 该能力不产生对象身份凭证时省略。 */
   readonly objectIdentityContract?: FilesystemObjectIdentityContract;
   bindScope(input: {
-    /** Frozen actual authority, including the exact target-root closure. */
+    /** 冻结的实际权威，包括精确的目标根闭包。 */
     readonly root: ObservedRootSnapshot;
     readonly relativeScope: string;
   }): Promise<BoundObservedScope>;
@@ -227,24 +214,27 @@ export class ObservedRootUnavailable extends Error {
   }
 }
 
+type ObservedRootRegistrationPorts = {
+  readonly commands: ObservedRootRegistrationCommands;
+  readonly queries: ObservedRootRegistrationQueries;
+  readonly filesystem: ObservedFilesystemCapability;
+  readonly productDataDirectory: string;
+  readonly managedArtifactDirectory: string;
+  readonly cleanupFailureReporter: ObservedRootCleanupFailureReporter;
+  /** 主清理审计失败时使用的独立外层接收端。 */
+  readonly cleanupFailureFallback: ObservedRootCleanupFailureFallback;
+};
+
 export class ObservedRootRegistrations {
-  constructor(
-    private readonly ports: {
-      readonly commands: ObservedRootRegistrationCommands;
-      readonly queries: ObservedRootRegistrationQueries;
-      readonly filesystem: ObservedFilesystemCapability;
-      readonly productDataDirectory: string;
-      readonly managedArtifactDirectory: string;
-      readonly cleanupFailureReporter: ObservedRootCleanupFailureReporter;
-      /** A separate outer sink for failures of the primary cleanup audit. */
-      readonly cleanupFailureFallback: ObservedRootCleanupFailureFallback;
-    },
-  ) {}
+  private readonly ports: ObservedRootRegistrationPorts;
+
+  constructor(ports: ObservedRootRegistrationPorts) {
+    this.ports = ports;
+  }
 
   /**
-   * Capability provenance is exposed only through the registration authority,
-   * ensuring a workflow cannot bind scopes through one adapter and freeze the
-   * declarations of another.
+   * 能力来源只通过注册权威公开，确保工作流不能通过一个适配器绑定范围，却冻结另一个
+   * 适配器的声明。
    */
   get capability(): CapabilityCoordinate {
     return this.ports.filesystem.capability;
@@ -255,9 +245,8 @@ export class ObservedRootRegistrations {
   }
 
   /**
-   * Cleanup reporting is intentionally non-throwing. Reporter failure is an
-   * observable operational incident, but an audit adapter cannot overwrite a
-   * work/open/close failure or prevent the next actual cleanup step.
+   * 清理报告刻意不抛出错误。报告器失败是可观察的操作事件，但审计适配器不能覆盖
+   * 工作、打开或关闭失败，也不能阻止下一个实际清理步骤。
    */
   async reportCleanupFailure(input: ObservedRootCleanupFailure): Promise<void> {
     try {
@@ -269,9 +258,8 @@ export class ObservedRootRegistrations {
           reporterError,
         });
       } catch {
-        // A last-resort audit sink is still an outer adapter. Its failure is
-        // suppressed so it cannot control descriptor release or public error
-        // precedence. There is no further sink to invoke without recursion.
+        // 最终后备审计接收端仍是外层适配器。其失败会被抑制，因而无法控制描述符释放
+        // 或公开错误的优先级；若要避免递归，已不存在可继续调用的接收端。
       }
     }
   }
@@ -391,7 +379,7 @@ export class ObservedRootRegistrations {
     readonly registrationId: string;
     readonly relativeScope: string;
   }): Promise<{
-    /** Bound authority for this invocation; it is intentionally not durable. */
+    /** 本次调用的绑定权威；刻意不作耐久化。 */
     readonly scope: BoundObservedScope;
     readonly relativeScope: string;
     readonly root: ObservedRootSnapshot;
@@ -426,9 +414,8 @@ export class ObservedRootRegistrations {
   }
 
   /**
-   * Opens one byte source only after proving current root authority. This is
-   * the shared delivery seam for a later download or Playback Rendition; it
-   * never returns a pathname that a caller can reopen after authorization.
+   * 只有在证明当前根权威后才打开一个字节来源。这是未来下载或播放呈现共用的交付
+   * 接缝；它绝不返回调用方可在授权后重新打开的路径名。
    */
   async openActiveByteSource(input: {
     readonly registrationId: string;
@@ -494,8 +481,8 @@ export class ObservedRootRegistrations {
   }
 
   /**
-   * Observes an already-bound scope through the same capability that created
-   * it. A workflow never receives a second filesystem observer seam.
+   * 通过创建范围的同一个能力观察已经绑定的范围。工作流绝不会取得第二个文件系统
+   * 观察器接缝。
    */
   async observeBoundScope(
     scope: BoundObservedScope,
@@ -505,8 +492,8 @@ export class ObservedRootRegistrations {
     try {
       snapshot = await this.ports.filesystem.observe(scope);
     } catch {
-      // A descriptor can outlive a mount, permission, or entry change. Do not
-      // leak adapter errors or make callers parse errno diagnostics.
+      // 描述符可能比挂载、权限或目录项变更存活更久。不要泄漏适配器错误，也不要迫使
+      // 调用方解析 errno 诊断。
       throw new ObservedRootUnavailable("文件位置当前缺失、不可读或范围越界");
     }
     if (snapshot.root !== ownership.expectedRoot) {
@@ -516,9 +503,8 @@ export class ObservedRootRegistrations {
   }
 
   /**
-   * A workflow returns its opaque scope to the registration capability for
-   * every byte open.  It cannot reopen a logical location after authority was
-   * frozen at the boundary.
+   * 工作流每次打开字节时都把不透明范围交回注册能力。权威在边界冻结后，它不能重新
+   * 打开逻辑位置。
    */
   async openBoundByteSource(input: {
     readonly scope: BoundObservedScope;
@@ -532,7 +518,7 @@ export class ObservedRootRegistrations {
     }
   }
 
-  /** Releases one adapter-owned descriptor scope exactly through its binder. */
+  /** 严格通过绑定器释放一个由适配器持有的描述符范围。 */
   async closeBoundScope(scope: BoundObservedScope): Promise<void> {
     this.requireOwnedBoundScope(scope);
     try {
@@ -543,8 +529,7 @@ export class ObservedRootRegistrations {
   }
 
   /**
-   * A recovered execution must bind its original authorization again instead
-   * of resolving current mutable paths or silently adopting later settings.
+   * 恢复的执行必须重新绑定原始授权，而不是解析当前可变路径或静默采用后续设置。
    */
   async rebindFrozenScope(input: {
     readonly root: ObservedRootSnapshot;
@@ -594,9 +579,8 @@ export class ObservedRootRegistrations {
   }
 
   /**
-   * Resolves graph semantics once in the Application evaluator, then retains
-   * the outer adapter's responsibility for proving each registered spelling
-   * is still readable in this process.
+   * 在 Application 求值器中只解析一次图语义，同时保留外层适配器的责任：证明每个
+   * 注册路径拼写在本进程中仍然可读。
    */
   private async resolveActiveAuthority(
     registration: ObservedRootRegistration,
@@ -618,8 +602,8 @@ export class ObservedRootRegistrations {
   }
 
   /**
-   * Recovery and compatibility checks share the exact frozen closure rule
-   * used by live binding. Filesystem reachability remains checked by rebind.
+   * 恢复和兼容性检查与实时绑定共用完全相同的冻结闭包规则。文件系统可达性仍由重新
+   * 绑定检查。
    */
   async assertFrozenRootsCurrent(
     roots: readonly ObservedRootSnapshot[],
@@ -645,7 +629,7 @@ export class ObservedRootRegistrations {
     });
   }
 
-  /** Reports only after every concrete cleanup has been attempted. */
+  /** 仅在所有具体清理都已经尝试后报告。 */
   private async reportCleanupFailures(
     failures: readonly ObservedRootCleanupFailure[],
   ): Promise<void> {
