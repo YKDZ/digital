@@ -1,9 +1,12 @@
 import type { Server } from "vike/types";
 
-import { createApp } from "#/server/app";
+import { createWebServer } from "#/server/app";
 
 const port = Number.parseInt(process.env.PORT ?? "3000", 10);
-const app = createApp();
+const app = createWebServer({
+  productDataDirectory: process.env.DIGITAL_PRODUCT_DATA,
+  environment: process.env,
+});
 
 export default {
   fetch: app.fetch,

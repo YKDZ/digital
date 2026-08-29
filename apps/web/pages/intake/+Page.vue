@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { sendAction } from "@digital/web-delivery";
 import { ref } from "vue";
 
 import ExecutionList from "#/components/formal/ExecutionList.vue";
@@ -13,7 +14,6 @@ import {
   SelectValue,
 } from "#/components/ui/select";
 import { useCatalogue } from "#/composables/use-catalogue";
-import { sendAction } from "#/lib/catalogue";
 
 const observedRootId = ref("");
 const relativeScope = ref(".");

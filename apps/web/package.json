@@ -49,9 +49,9 @@
     "typecheck": "node --conditions=digital-source scripts/run-vue-tsc.ts --build --noEmit --pretty false"
   },
   "dependencies": {
-    "@digital/application": "workspace:*",
     "@digital/composition": "workspace:*",
     "@digital/presentation": "workspace:*",
+    "@digital/web-delivery": "workspace:*",
     "@lucide/vue": "^1.27.0",
     "@tanstack/vue-table": "^8.21.3",
     "@vikejs/hono": "catalog:",
@@ -67,6 +67,7 @@
     "vue": "catalog:"
   },
   "devDependencies": {
+    "@digital/application": "workspace:*",
     "@digital/typescript-config": "workspace:*",
     "@playwright/test": "catalog:",
     "@tailwindcss/vite": "catalog:",

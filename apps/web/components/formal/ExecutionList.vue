@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { Badge } from "#/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "#/components/ui/card";
 import {
   executionOutcomeLabel,
   type ExecutionViewModel,
-} from "#/lib/catalogue";
+} from "@digital/web-delivery";
+
+import { Badge } from "#/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "#/components/ui/card";
 
 defineProps<{ readonly executions: readonly ExecutionViewModel[] }>();
 

@@ -58,7 +58,7 @@ import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import {
   composeAssetRefresh,
   composeOwnedAutomationHost,
-} from "../src/index.ts";
+} from "../src/runtime.ts";
 import {
   disposePreparedCatalogueTemplate,
   preparedCatalogueRoot,

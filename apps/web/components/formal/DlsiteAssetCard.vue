@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import type { DlsiteCardRendererProjection } from "@digital/presentation/renderer-contracts";
+import type { AssetViewModel } from "@digital/presentation";
 
 import { Badge } from "#/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "#/components/ui/card";
 
 import AssetCover from "./AssetCover.vue";
 
-defineProps<{ readonly asset: DlsiteCardRendererProjection }>();
+defineProps<{ readonly asset: AssetViewModel }>();
 </script>
 
 <template>

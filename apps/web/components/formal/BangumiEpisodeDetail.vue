@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import { ArrowLeft } from "@lucide/vue";
-
-import { Badge } from "#/components/ui/badge";
-import { Button } from "#/components/ui/button";
 import type {
   BangumiEpisodeViewModel,
   BangumiSeriesViewModel,
   BangumiWorkViewModel,
-} from "#/lib/catalogue";
+} from "@digital/web-delivery";
+import { ArrowLeft } from "@lucide/vue";
+
+import { Badge } from "#/components/ui/badge";
+import { Button } from "#/components/ui/button";
 
 import AssetActions from "./AssetActions.vue";
 

@@ -8,7 +8,7 @@ import {
   InProcessObservedRootCleanupEmergencyJournal,
   composeAssetRefresh,
   observedRootCleanupEmergencyJournalCapacity,
-} from "../src/index.ts";
+} from "../src/runtime.ts";
 import {
   disposePreparedCatalogueTemplate,
   prepareCatalogueAt,

@@ -1,7 +1,8 @@
 <script setup lang="ts">
+import type { AssetViewModel } from "@digital/web-delivery";
+
 import { Badge } from "#/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "#/components/ui/card";
-import type { AssetViewModel } from "#/lib/catalogue";
 
 defineProps<{ readonly asset: AssetViewModel }>();
 </script>

@@ -1,11 +1,11 @@
-import { afterEach, expect, it, vi } from "vitest";
-
-import { useCatalogue } from "#/composables/use-catalogue";
 import {
   requestCatalogue,
   type CatalogueSnapshot,
   type CatalogueSurfaceResponse,
-} from "#/lib/catalogue";
+} from "@digital/web-delivery";
+import { afterEach, expect, it, vi } from "vitest";
+
+import { useCatalogue } from "#/composables/use-catalogue";
 
 function snapshot(input: {
   readonly assets?: readonly { readonly id: string }[];

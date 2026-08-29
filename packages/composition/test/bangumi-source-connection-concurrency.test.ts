@@ -3,9 +3,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { ProductBangumiSourceConnection } from "@digital/bangumi";
+import { ProductSourceConnectionPrivateState } from "@digital/product-data";
 import { afterEach, describe, expect, it, vi } from "vitest";
-
-import { ProductBangumiSourceConnection } from "../src/index.ts";
 
 const temporaryRoots: string[] = [];
 const environment = {
@@ -51,7 +51,8 @@ describe("Bangumi OAuth refresh across product processes", () => {
       bootId: () => "test-linux-boot",
     };
     const seed = new ProductBangumiSourceConnection({
-      productDataDirectory,
+      privateState:
+        ProductSourceConnectionPrivateState.forRoot(productDataDirectory),
       environment,
       now: () => currentTime,
       request,
@@ -63,7 +64,8 @@ describe("Bangumi OAuth refresh across product processes", () => {
     let interleaved = false;
     let secondProcess: ProductBangumiSourceConnection;
     const firstProcess = new ProductBangumiSourceConnection({
-      productDataDirectory,
+      privateState:
+        ProductSourceConnectionPrivateState.forRoot(productDataDirectory),
       environment,
       now: () => currentTime,
       request,
@@ -76,7 +78,7 @@ describe("Bangumi OAuth refresh across product processes", () => {
         monotonicNow = 60_000;
         const mutationNamespace = path.join(
           privateDirectory,
-          "bangumi-oauth-connection.mutation.json.namespace",
+          "bangumi-oauth-connection-mutation.json.namespace",
         );
         const namesBeforeWaiter = readdirSync(mutationNamespace).toSorted();
         const connectionBeforeWaiter = readFileSync(
@@ -103,7 +105,8 @@ describe("Bangumi OAuth refresh across product processes", () => {
       },
     });
     secondProcess = new ProductBangumiSourceConnection({
-      productDataDirectory,
+      privateState:
+        ProductSourceConnectionPrivateState.forRoot(productDataDirectory),
       environment,
       now: () => currentTime,
       request,
@@ -167,7 +170,8 @@ describe("Bangumi OAuth refresh across product processes", () => {
     });
     const productDataDirectory = path.join(root, "product-data");
     const firstProcess = new ProductBangumiSourceConnection({
-      productDataDirectory,
+      privateState:
+        ProductSourceConnectionPrivateState.forRoot(productDataDirectory),
       environment,
       now: () => currentTime,
       request,
@@ -176,7 +180,8 @@ describe("Bangumi OAuth refresh across product processes", () => {
     await authorize(firstProcess, "initial-code");
     currentTime = new Date("2026-08-12T01:00:00.000Z");
     const secondProcess = new ProductBangumiSourceConnection({
-      productDataDirectory,
+      privateState:
+        ProductSourceConnectionPrivateState.forRoot(productDataDirectory),
       environment,
       now: () => currentTime,
       request,
@@ -210,7 +215,8 @@ describe("Bangumi OAuth refresh across product processes", () => {
     expect(refreshRequests).toBe(1);
 
     const restartedProcess = new ProductBangumiSourceConnection({
-      productDataDirectory,
+      privateState:
+        ProductSourceConnectionPrivateState.forRoot(productDataDirectory),
       environment,
       now: () => currentTime,
       request,
@@ -251,7 +257,8 @@ describe("Bangumi OAuth refresh across product processes", () => {
     });
     const productDataDirectory = path.join(root, "product-data");
     const firstProcess = new ProductBangumiSourceConnection({
-      productDataDirectory,
+      privateState:
+        ProductSourceConnectionPrivateState.forRoot(productDataDirectory),
       environment,
       now: () => currentTime,
       request,
@@ -260,7 +267,8 @@ describe("Bangumi OAuth refresh across product processes", () => {
     await authorize(firstProcess, "initial-code");
     currentTime = new Date("2026-08-12T01:00:00.000Z");
     const secondProcess = new ProductBangumiSourceConnection({
-      productDataDirectory,
+      privateState:
+        ProductSourceConnectionPrivateState.forRoot(productDataDirectory),
       environment,
       now: () => currentTime,
       request,
@@ -316,7 +324,8 @@ describe("Bangumi OAuth refresh across product processes", () => {
     });
     const productDataDirectory = path.join(root, "product-data");
     const connection = new ProductBangumiSourceConnection({
-      productDataDirectory,
+      privateState:
+        ProductSourceConnectionPrivateState.forRoot(productDataDirectory),
       environment,
       now: () => currentTime,
       request,
@@ -370,7 +379,8 @@ describe("Bangumi OAuth refresh across product processes", () => {
     });
     const productDataDirectory = path.join(root, "product-data");
     const refreshingProcess = new ProductBangumiSourceConnection({
-      productDataDirectory,
+      privateState:
+        ProductSourceConnectionPrivateState.forRoot(productDataDirectory),
       environment,
       now: () => currentTime,
       request,
@@ -379,7 +389,8 @@ describe("Bangumi OAuth refresh across product processes", () => {
     await authorize(refreshingProcess, "initial-code");
     currentTime = new Date("2026-08-12T01:00:00.000Z");
     const settingsProcess = new ProductBangumiSourceConnection({
-      productDataDirectory,
+      privateState:
+        ProductSourceConnectionPrivateState.forRoot(productDataDirectory),
       environment,
       now: () => currentTime,
       request,
@@ -448,7 +459,8 @@ describe("Bangumi OAuth refresh across product processes", () => {
     });
     const productDataDirectory = path.join(root, "product-data");
     const refreshingProcess = new ProductBangumiSourceConnection({
-      productDataDirectory,
+      privateState:
+        ProductSourceConnectionPrivateState.forRoot(productDataDirectory),
       environment,
       now: () => currentTime,
       request,
@@ -457,7 +469,8 @@ describe("Bangumi OAuth refresh across product processes", () => {
     await authorize(refreshingProcess, "initial-code");
     currentTime = new Date("2026-08-12T01:00:00.000Z");
     const settingsProcess = new ProductBangumiSourceConnection({
-      productDataDirectory,
+      privateState:
+        ProductSourceConnectionPrivateState.forRoot(productDataDirectory),
       environment,
       now: () => currentTime,
       request,

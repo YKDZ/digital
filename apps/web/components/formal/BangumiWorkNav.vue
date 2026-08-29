@@ -1,6 +1,7 @@
 <script setup lang="ts">
+import type { BangumiWorkViewModel } from "@digital/web-delivery";
+
 import { TabsList, TabsTrigger } from "#/components/ui/tabs";
-import type { BangumiWorkViewModel } from "#/lib/catalogue";
 
 defineProps<{
   readonly works: readonly BangumiWorkViewModel[];

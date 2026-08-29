@@ -32,6 +32,7 @@
     "@digital/filesystem": "workspace:*",
     "@digital/nbinet": "workspace:*",
     "@digital/omdb": "workspace:*",
+    "@digital/product-application": "workspace:*",
     "@digital/product-data": "workspace:*",
     "@digital/sqlite": "workspace:*",
     "@digital/tmdb": "workspace:*"

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { BangumiEpisodeViewModel } from "#/lib/catalogue";
+import type { BangumiEpisodeViewModel } from "@digital/web-delivery";
 
 import BangumiEpisodeRow from "./BangumiEpisodeRow.vue";
 

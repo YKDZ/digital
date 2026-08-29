@@ -10,7 +10,7 @@ import {
   composeAssetRefresh,
   composeAssetRefreshRuntime,
   composeAutomationHost,
-} from "../src/index.ts";
+} from "../src/runtime.ts";
 
 const temporaryRoots: string[] = [];
 

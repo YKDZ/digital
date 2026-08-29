@@ -88,6 +88,8 @@ export * from "./workflow-invocation-lifecycle.ts";
 export * from "./observed-root-registrations.ts";
 export * from "./observed-root-authority.ts";
 export * from "./observed-root-execution.ts";
+export * from "./source-connection-private-state.ts";
+export * from "./source-connection.ts";
 
 export * from "./asset-refresh-selection.ts";
 export {

@@ -23,7 +23,20 @@
           "allow": [
             "delivery",
             "presentation",
+            "application",
+            "domain",
+            "test-support",
+            "tooling"
+          ]
+        }
+      },
+      "composition-root": {
+        "dependencies": {
+          "allow": [
+            "composition-root",
             "composition",
+            "delivery",
+            "presentation",
             "application",
             "domain",
             "integration",

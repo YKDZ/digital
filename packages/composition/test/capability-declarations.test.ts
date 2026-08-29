@@ -6,12 +6,11 @@ import {
   FanboxSourceInterpreter,
 } from "@digital/fanbox";
 import { ReadOnlyFilesystemObserver } from "@digital/filesystem";
-import { describe, expect, test } from "vitest";
-
 import {
   curatedInitialRecognitionPolicy,
   validateCapabilityDeclarations,
-} from "../src/index.ts";
+} from "@digital/product-application";
+import { describe, expect, test } from "vitest";
 
 describe("capability declarations", () => {
   test("fails composition before startup when a deployed declaration omits its stable identity", () => {

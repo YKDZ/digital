@@ -1336,7 +1336,25 @@ export class ContentAddressedManagedArtifactStore implements ManagedArtifactStor
   private readonly root: string;
 
   constructor(root: string) {
-    this.root = root;
+    this.root = path.resolve(root);
+  }
+
+  /** 将内部文件位置收窄为交付安全的内容摘要。 */
+  reference(address: string): { readonly digest: string } | undefined {
+    const resolved = path.resolve(address);
+    if (!resolved.startsWith(`${this.root}${path.sep}`)) return undefined;
+    const digest = path.basename(resolved);
+    if (!/^[a-f0-9]{64}$/u.test(digest)) return undefined;
+    const expected = path.join(this.root, digest.slice(0, 2), digest);
+    return resolved === expected ? { digest } : undefined;
+  }
+
+  /** 通过摘要读取一个正式托管产物，不接受文件系统路径。 */
+  async read(digest: string): Promise<Uint8Array> {
+    if (!/^[a-f0-9]{64}$/u.test(digest)) throw new Error("未找到托管产物");
+    return new Uint8Array(
+      await readFile(path.join(this.root, digest.slice(0, 2), digest)),
+    );
   }
 
   async store(content: {

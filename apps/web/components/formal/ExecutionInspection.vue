@@ -1,14 +1,14 @@
 <script setup lang="ts">
+import {
+  executionOutcomeLabel,
+  sendAction,
+  type ExecutionViewModel,
+} from "@digital/web-delivery";
 import { computed, ref } from "vue";
 
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "#/components/ui/card";
-import {
-  executionOutcomeLabel,
-  sendAction,
-  type ExecutionViewModel,
-} from "#/lib/catalogue";
 
 import AssetDetail from "./AssetDetail.vue";
 

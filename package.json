@@ -4,11 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "architecture:check": "node --conditions=digital-source scripts/check-project-architecture.ts",
-    "architecture:test": "node --conditions=digital-source scripts/test-project-architecture.ts",
     "boundaries": "turbo boundaries --no-color",
     "db:migrate": "pnpm --filter @digital/db-migrations prepare-only",
-    "check": "pnpm boundaries && pnpm architecture:test && pnpm architecture:check && turbo run format:check lint typecheck build test test:e2e --continue=dependencies-successful --output-logs=errors-only --log-order=grouped --log-prefix=task",
+    "check": "pnpm boundaries && turbo run format:check lint typecheck build test test:e2e --continue=dependencies-successful --output-logs=errors-only --log-order=grouped --log-prefix=task",
     "check:deployment": "turbo run deployment --output-logs=errors-only --log-order=grouped --log-prefix=task",
     "fix": "turbo run lint:fix format:write --continue=dependencies-successful --output-logs=full --log-order=grouped --log-prefix=task",
     "format:check": "oxfmt --list-different --config oxfmt.config.ts package.json pnpm-workspace.yaml pnpm-lock.yaml turbo.json tsconfig.json tsconfig.config.json oxfmt.config.ts oxlint.config.ts .gitignore .vscode .github .devcontainer scripts",

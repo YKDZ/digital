@@ -1,7 +1,8 @@
 <script setup lang="ts">
+import type { BangumiSeriesViewModel } from "@digital/web-delivery";
+
 import { Badge } from "#/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "#/components/ui/card";
-import type { BangumiSeriesViewModel } from "#/lib/catalogue";
 
 import AssetCover from "./AssetCover.vue";
 

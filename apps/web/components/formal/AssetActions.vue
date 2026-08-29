@@ -1,8 +1,8 @@
 <script setup lang="ts">
+import { sendAction } from "@digital/web-delivery";
 import { ref } from "vue";
 
 import { Button } from "#/components/ui/button";
-import { sendAction } from "#/lib/catalogue";
 
 const props = defineProps<{
   readonly target: { readonly subjectId: string };

@@ -11,7 +11,7 @@ import {
   startRefresh,
   updateAutomation,
   updatePreview,
-} from "#/server/catalogue";
+} from "./web-delivery.ts";
 
 type ApiCommands = {
   readonly startRefresh: typeof startRefresh;

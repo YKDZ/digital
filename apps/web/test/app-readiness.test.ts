@@ -1,10 +1,45 @@
-import { Hono } from "hono";
-import { describe, expect, it } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
-import { createApp } from "#/server/app";
-import { catalogueReadinessFailure } from "#/server/catalogue";
+import {
+  catalogueReadinessFailure,
+  createWebDelivery,
+} from "@digital/web-delivery";
+import { Hono } from "hono";
+import { describe, expect, it, vi } from "vitest";
+
+import { createWebServer } from "#/server/app";
+import { processLifecycle } from "#/server/process-lifecycle";
+
+import { prepareWebProductData } from "./prepare-catalogue";
 
 describe("catalogue startup delivery gates", () => {
+  it("injects one product application into Web delivery at the executable composition root", async () => {
+    let configured: boolean | undefined;
+    const app = createWebServer(
+      { environment: {} },
+      {
+        attachVike: false,
+        createDelivery(application) {
+          configured = application.configured;
+          return {
+            api: new Hono(),
+            catalogueReady: () => false,
+            catalogueReadinessFailure: () => undefined,
+            shutdown: async () => undefined,
+            startCatalogueAutomation: async () => undefined,
+          };
+        },
+      },
+    );
+
+    await expect(app.request("/api/live")).resolves.toMatchObject({
+      status: 200,
+    });
+    expect(configured).toBe(false);
+  });
+
   it("gives an actionable, path-free readiness reason when product data is not configured", () => {
     const previous = process.env.DIGITAL_PRODUCT_DATA;
     delete process.env.DIGITAL_PRODUCT_DATA;
@@ -14,6 +49,73 @@ describe("catalogue startup delivery gates", () => {
     } finally {
       if (previous === undefined) delete process.env.DIGITAL_PRODUCT_DATA;
       else process.env.DIGITAL_PRODUCT_DATA = previous;
+    }
+  });
+
+  it("starts the newly bound product after the prior composition root closes in the same process", async () => {
+    const root = await mkdtemp(
+      path.join(tmpdir(), "digital-disposable-web-restart-"),
+    );
+    const productDataDirectory = path.join(root, "product-data");
+    let closeReplacement: (() => Promise<void>) | undefined;
+    try {
+      await prepareWebProductData(productDataDirectory);
+      const configuration = { productDataDirectory, environment: {} };
+      let initialStart: Promise<void> | undefined;
+      createWebServer(configuration, {
+        attachVike: false,
+        createDelivery(application) {
+          const startAutomation = application.startAutomation.bind(application);
+          vi.spyOn(application, "startAutomation").mockImplementation(
+            async (options) => {
+              initialStart = startAutomation(options);
+              await initialStart;
+            },
+          );
+          return createWebDelivery(application);
+        },
+      });
+      await initialStart;
+
+      const replacement = processLifecycle.register({
+        async shutdown() {},
+      });
+      closeReplacement = async () => await replacement.dispose();
+      await replacement.ready;
+
+      let reboundStartCalls = 0;
+      let reboundStart: Promise<void> | undefined;
+      const rebound = createWebServer(configuration, {
+        attachVike: false,
+        createDelivery(application) {
+          const startAutomation = application.startAutomation.bind(application);
+          vi.spyOn(application, "startAutomation").mockImplementation(
+            async (options) => {
+              reboundStartCalls += 1;
+              reboundStart = startAutomation(options);
+              await reboundStart;
+            },
+          );
+          return createWebDelivery(application);
+        },
+      });
+
+      expect(reboundStartCalls).toBe(1);
+      await reboundStart;
+      await expect(rebound.request("/api/ready")).resolves.toMatchObject({
+        status: 200,
+      });
+      await expect(rebound.request("/api/catalogue")).resolves.toMatchObject({
+        status: 200,
+      });
+    } finally {
+      const closer = processLifecycle.register({
+        async shutdown() {},
+      });
+      await closer.ready;
+      await closer.dispose();
+      await closeReplacement?.();
+      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -28,12 +130,24 @@ describe("catalogue startup delivery gates", () => {
       catalogueCalls += 1;
       return context.json({ catalogue: true });
     });
-    const app = createApp({
-      api,
-      startCatalogueAutomation: () => startup,
-      catalogueReady: () => ready,
-      attachVike: false,
-    });
+    const app = createWebServer(
+      { environment: {} },
+      {
+        api,
+        startCatalogueAutomation: () => startup,
+        catalogueReady: () => ready,
+        attachVike: false,
+        createDelivery() {
+          return {
+            api,
+            catalogueReady: () => ready,
+            catalogueReadinessFailure: () => undefined,
+            shutdown: async () => undefined,
+            startCatalogueAutomation: () => startup,
+          };
+        },
+      },
+    );
 
     await expect(app.request("/api/live")).resolves.toMatchObject({
       status: 200,

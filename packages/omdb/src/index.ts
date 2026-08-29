@@ -46,6 +46,7 @@ const collectorCapability = declareCapability({
   contractVersion: "1",
   interpretationContractVersions: ["1"],
 });
+export const omdbOfficialCollectionCapability = collectorCapability;
 /** 私有 OMDb 访问与丰富采集分别声明。 */
 export const omdbSourceConnectionCapability = declareCapability({
   identity: "omdb.source-connection",
@@ -75,6 +76,33 @@ type FetchLike = (input: string) => Promise<{
   readonly headers: { get(name: string): string | null };
   arrayBuffer(): Promise<ArrayBuffer>;
 }>;
+
+/** 验证一份 OMDb API 密钥；响应正文与请求细节不会越过该能力。 */
+export async function verifyOmdbApiKey(
+  apiKey: string,
+  request: FetchLike = fetch,
+): Promise<void> {
+  const endpoint = new URL(apiOrigin);
+  endpoint.searchParams.set("apikey", apiKey);
+  endpoint.searchParams.set("i", "tt3896198");
+  const response = await request(endpoint.toString());
+  if (!response.ok) throw new Error("OMDb 来源连接验证失败");
+  let payload: unknown;
+  try {
+    payload = JSON.parse(
+      new TextDecoder().decode(await response.arrayBuffer()),
+    ) as unknown;
+  } catch {
+    throw new Error("OMDb 来源连接验证失败");
+  }
+  if (
+    typeof payload !== "object" ||
+    payload === null ||
+    (payload as Record<string, unknown>).Response !== "True"
+  ) {
+    throw new Error("OMDb 来源连接验证失败");
+  }
+}
 
 /** 由应用层提供、与提供方无关的主体快照，绝不是影片实体。 */
 export type SourceEnrichmentInput = {

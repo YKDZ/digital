@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { sendAction } from "@digital/web-delivery";
 import { ref } from "vue";
 
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
@@ -11,7 +12,6 @@ import {
   CardTitle,
 } from "#/components/ui/card";
 import { useCatalogue } from "#/composables/use-catalogue";
-import { sendAction } from "#/lib/catalogue";
 
 const {
   catalogue,

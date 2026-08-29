@@ -1,0 +1,18 @@
+{
+  "extends": "@digital/typescript-config/base.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "composite": true,
+    "customConditions": ["digital-source"],
+    "erasableSyntaxOnly": true,
+    "exactOptionalPropertyTypes": false,
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "rewriteRelativeImportExtensions": false,
+    "target": "es2023",
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"]
+}

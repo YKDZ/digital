@@ -1,10 +1,10 @@
 <script setup lang="ts">
+import type { AssetViewModel } from "@digital/web-delivery";
 import { ExternalLink } from "@lucide/vue";
 
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "#/components/ui/card";
-import type { AssetViewModel } from "#/lib/catalogue";
 
 import AssetActions from "./AssetActions.vue";
 import AssetCover from "./AssetCover.vue";

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { DlsiteDetailRendererProjection } from "@digital/presentation/renderer-contracts";
+import type { AssetViewModel } from "@digital/presentation";
 import { ExternalLink } from "@lucide/vue";
 
 import { Badge } from "#/components/ui/badge";
@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "#/components/ui/card";
 
 import AssetCover from "./AssetCover.vue";
 
-defineProps<{ readonly asset: DlsiteDetailRendererProjection }>();
+defineProps<{ readonly asset: AssetViewModel }>();
 </script>
 
 <template>

@@ -3,9 +3,9 @@ import { mkdir, mkdtemp, readdir, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { ProductBangumiSourceConnection } from "@digital/bangumi";
+import { ProductSourceConnectionPrivateState } from "@digital/product-data";
 import { afterEach, describe, expect, it, vi } from "vitest";
-
-import { ProductBangumiSourceConnection } from "../src/index.ts";
 
 const temporaryRoots: string[] = [];
 const environment = {
@@ -59,7 +59,8 @@ describe("Bangumi OAuth immutable private lease namespaces", () => {
     await authorize(initial, "initial-code");
     currentTime = new Date("2026-08-12T01:00:00.000Z");
     const interrupted = new ProductBangumiSourceConnection({
-      productDataDirectory,
+      privateState:
+        ProductSourceConnectionPrivateState.forRoot(productDataDirectory),
       environment,
       now: () => currentTime,
       request,
@@ -168,7 +169,7 @@ describe("Bangumi OAuth immutable private lease namespaces", () => {
     );
     const leasePath = path.join(
       privateDirectory,
-      `bangumi-oauth-refresh-1-${fingerprint}.lease.json`,
+      `bangumi-oauth-refresh-1-${fingerprint}.json`,
     );
     await mkdir(privateDirectory, { recursive: true, mode: 0o700 });
     await symlink(path.join(root, "outside"), `${leasePath}.namespace`);
@@ -232,7 +233,9 @@ function connection(input: {
   ) => Promise<ReturnType<typeof response>>;
 }): ProductBangumiSourceConnection {
   return new ProductBangumiSourceConnection({
-    productDataDirectory: input.productDataDirectory,
+    privateState: ProductSourceConnectionPrivateState.forRoot(
+      input.productDataDirectory,
+    ),
     environment,
     ...(input.now === undefined ? {} : { now: input.now }),
     request: input.request,

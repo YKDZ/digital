@@ -1,6 +1,7 @@
 <script setup lang="ts">
+import type { AssetViewModel } from "@digital/web-delivery";
+
 import { Card, CardContent, CardHeader, CardTitle } from "#/components/ui/card";
-import type { AssetViewModel } from "#/lib/catalogue";
 
 import AssetCover from "./AssetCover.vue";
 

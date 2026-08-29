@@ -1,12 +1,23 @@
 import { randomUUID } from "node:crypto";
-import { lstatSync, readFileSync, readlinkSync } from "node:fs";
+import { lstatSync, readFileSync, readlinkSync, readdirSync } from "node:fs";
 import path from "node:path";
+
+import type {
+  SourceConnectionPrivateLease,
+  SourceConnectionPrivateLeaseOwnership,
+  SourceConnectionPrivateLeaseRecord,
+  SourceConnectionPrivateStateListing,
+  SourceConnectionPrivateStatePort,
+  SourceConnectionPrivateStateRead,
+} from "@digital/application";
 
 import {
   ProductPrivateLease,
   errorCode,
+  inspectPrivatePath,
   isCanonicalTimestamp,
   linuxProcessStartTimeTicks,
+  writePrivateJsonDurably,
   type ProductPrivateLeaseOwnership,
   type ProductPrivateLeaseOwner,
   type ProductPrivateLeaseRecord,
@@ -27,6 +38,166 @@ export {
   restoreOfflineProductDataBackup,
 } from "./offline-product-data.ts";
 export type { ProductDataRestoreStage } from "./offline-product-data.ts";
+
+const sourceConnectionPrivateDirectory = "private-source-connections";
+
+/** 产品数据对来源连接私密状态端口的唯一文件系统 Adapter。 */
+export class ProductSourceConnectionPrivateState implements SourceConnectionPrivateStatePort {
+  readonly #directory: string;
+
+  private constructor(productDataDirectory: string) {
+    this.#directory = path.join(
+      path.resolve(productDataDirectory),
+      sourceConnectionPrivateDirectory,
+    );
+  }
+
+  static forRoot(
+    productDataDirectory: string,
+  ): ProductSourceConnectionPrivateState {
+    return new ProductSourceConnectionPrivateState(productDataDirectory);
+  }
+
+  read(key: string): SourceConnectionPrivateStateRead {
+    const target = this.#recordPath(key);
+    const directory = inspectPrivatePath(this.#directory, "directory");
+    if (directory !== "usable") return { status: directory };
+    const file = inspectPrivatePath(target, "file");
+    if (file !== "usable") return { status: file };
+    try {
+      return {
+        status: "usable",
+        value: JSON.parse(readFileSync(target, "utf8")),
+      };
+    } catch {
+      return { status: "storage-invalid" };
+    }
+  }
+
+  write(input: {
+    readonly key: string;
+    readonly value: unknown;
+    readonly failureMessage: string;
+  }): void {
+    writePrivateJsonDurably({
+      directory: this.#directory,
+      target: this.#recordPath(input.key),
+      value: input.value,
+      failureMessage: input.failureMessage,
+    });
+  }
+
+  list(): SourceConnectionPrivateStateListing {
+    const status = inspectPrivatePath(this.#directory, "directory");
+    if (status !== "usable") return { status, keys: [] };
+    try {
+      return {
+        status: "usable",
+        keys: readdirSync(this.#directory)
+          .flatMap((name) =>
+            name.endsWith(".json") ? [name.slice(0, -".json".length)] : [],
+          )
+          .toSorted(),
+      };
+    } catch {
+      return { status: "storage-invalid", keys: [] };
+    }
+  }
+
+  lease<Record extends SourceConnectionPrivateLeaseRecord>(input: {
+    readonly key: string;
+    readonly namespaceKey?: string;
+    readonly now: () => Date;
+    readonly monotonicNow?: () => number;
+    readonly bootId?: () => string;
+    readonly isRecord: (value: unknown) => value is Record;
+    readonly failureMessage: string;
+  }): SourceConnectionPrivateLease<Record> {
+    const key = privateStateKey(input.key);
+    const namespaceKey =
+      input.namespaceKey === undefined
+        ? undefined
+        : privateStateKey(input.namespaceKey);
+    return new ProductSourceConnectionPrivateLeaseAdapter(
+      new ProductPrivateLease({
+        directory: this.#directory,
+        path: path.join(this.#directory, `${key}.json`),
+        ...(namespaceKey === undefined
+          ? {}
+          : {
+              namespacePath: path.join(
+                this.#directory,
+                `${namespaceKey}.lease-namespace`,
+              ),
+            }),
+        now: input.now,
+        ...(input.monotonicNow === undefined
+          ? {}
+          : { monotonicNow: input.monotonicNow }),
+        ...(input.bootId === undefined ? {} : { bootId: input.bootId }),
+        isRecord: input.isRecord,
+        failureMessage: input.failureMessage,
+      }),
+    );
+  }
+
+  #recordPath(key: string): string {
+    return path.join(this.#directory, `${privateStateKey(key)}.json`);
+  }
+}
+
+class ProductSourceConnectionPrivateLeaseAdapter<
+  Record extends SourceConnectionPrivateLeaseRecord,
+> implements SourceConnectionPrivateLease<Record> {
+  readonly #lease: ProductPrivateLease<Record>;
+
+  constructor(lease: ProductPrivateLease<Record>) {
+    this.#lease = lease;
+  }
+
+  tryAcquire(candidate: Record): boolean {
+    return this.#lease.tryAcquire(candidate);
+  }
+
+  acquire(
+    candidate: Record,
+  ): SourceConnectionPrivateLeaseOwnership<Record> | undefined {
+    return this.#lease.acquire(candidate);
+  }
+
+  reclaimStale(): boolean {
+    return this.#lease.reclaimStale();
+  }
+
+  isLive(): boolean {
+    return this.#lease.isLive();
+  }
+
+  currentRecord(): Record | undefined {
+    return this.#lease.currentRecord();
+  }
+
+  retireExact(expected: Record): boolean {
+    return this.#lease.retireExact(expected);
+  }
+
+  consumeToActive(
+    expected: Record,
+    target: SourceConnectionPrivateLease<Record>,
+  ): SourceConnectionPrivateLeaseOwnership<Record> | undefined {
+    if (!(target instanceof ProductSourceConnectionPrivateLeaseAdapter)) {
+      throw new Error("来源连接私密租约 Adapter 不兼容");
+    }
+    return this.#lease.consumeToActive(expected, target.#lease);
+  }
+}
+
+function privateStateKey(value: string): string {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u.test(value)) {
+    throw new Error("来源连接私密状态键无效");
+  }
+  return value;
+}
 
 const productOperationStateSuffix = ".digital-operation-state";
 const productOperationLeaseFileName = "product-operation.lease.json";

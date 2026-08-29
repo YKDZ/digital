@@ -7,10 +7,6 @@
     ".": {
       "default": "./src/index.ts",
       "types": "./src/index.ts"
-    },
-    "./renderer-contracts": {
-      "default": "./src/renderer-contracts.ts",
-      "types": "./src/renderer-contracts.ts"
     }
   },
   "scripts": {

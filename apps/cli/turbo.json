@@ -1,6 +1,6 @@
 {
   "extends": ["//"],
-  "tags": ["delivery"],
+  "tags": ["composition-root"],
   "tasks": {
     "build": { "outputs": ["dist/**"] },
     "test": { "dependsOn": ["build", "@digital/sqlite#build"] },

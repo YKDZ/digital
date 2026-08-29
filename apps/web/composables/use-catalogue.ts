@@ -1,10 +1,9 @@
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-
 import {
   emptyCatalogue,
   requestCatalogue,
   type CatalogueSnapshot,
-} from "#/lib/catalogue";
+} from "@digital/web-delivery";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 
 export function useCatalogue() {
   const catalogue = ref<CatalogueSnapshot>(emptyCatalogue);

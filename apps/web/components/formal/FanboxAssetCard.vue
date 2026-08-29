@@ -1,9 +1,9 @@
 <script setup lang="ts">
+import type { AssetViewModel } from "@digital/web-delivery";
 import { MessageCircle, Heart } from "@lucide/vue";
 
 import { Badge } from "#/components/ui/badge";
 import { Card, CardContent } from "#/components/ui/card";
-import type { AssetViewModel } from "#/lib/catalogue";
 
 import AssetCover from "./AssetCover.vue";
 

@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { composeAssetRefreshRuntime } from "@digital/composition";
+import { runProduct } from "@digital/composition";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { runCli, type CliRuntime } from "../../src/main.ts";
@@ -122,16 +122,18 @@ describe("离线备份与恢复维护命令", () => {
       });
     });
 
-    const activeRuntime = composeAssetRefreshRuntime(sourceProductData, {
-      configuration: {},
-    });
+    const activeProduct = runProduct(
+      { productDataDirectory: sourceProductData, environment: {} },
+      { start: (application) => application },
+    );
+    void activeProduct.result.workflow;
     const whileRunning = runtime(
       ["offline-backup", backupDirectory],
       sourceProductData,
     );
     await expect(runCli(whileRunning.runtime)).resolves.toBe(1);
     expect(whileRunning.stderr()).toContain("产品正在运行");
-    await activeRuntime.close();
+    await activeProduct.close();
 
     const registered = runtime(
       ["root-create", "恢复演练文件位置", observedRoot],

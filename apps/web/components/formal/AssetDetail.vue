@@ -1,7 +1,6 @@
 <script setup lang="ts">
+import type { CatalogueAssetViewModel } from "@digital/web-delivery";
 import { computed } from "vue";
-
-import type { CatalogueAssetViewModel } from "#/lib/catalogue";
 
 import AssetActions from "./AssetActions.vue";
 import BangumiAssetDetail from "./BangumiAssetDetail.vue";

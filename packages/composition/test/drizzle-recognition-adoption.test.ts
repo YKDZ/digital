@@ -35,7 +35,7 @@ import {
 } from "@digital/tmdb";
 import { afterAll, afterEach, expect, it, vi } from "vitest";
 
-import { composeAssetRefresh } from "../src/index.ts";
+import { composeAssetRefresh } from "../src/runtime.ts";
 import {
   disposePreparedCatalogueTemplate,
   preparedCatalogueRoot,

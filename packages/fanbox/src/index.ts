@@ -94,6 +94,121 @@ type CapturedFanboxResponse = {
   readonly envelopeBody: Record<string, unknown>;
 };
 
+/** 解析并验证 FANBOX 自己拥有的浏览器导出格式，再返回仅供能力使用的 Cookie 头。 */
+export async function validatedFanboxBrowserCredential(input: {
+  readonly creatorId: string;
+  readonly browserCookies: unknown;
+  readonly request?: FetchLike;
+}): Promise<string> {
+  if (!isFanboxCreatorId(input.creatorId))
+    throw new Error("FANBOX 创作者范围无效");
+  const cookieHeader = fanboxBrowserCookieHeader(input.browserCookies);
+  await verifyFanboxStoredCredential({
+    creatorId: input.creatorId,
+    cookieHeader,
+    ...(input.request === undefined ? {} : { request: input.request }),
+  });
+  return cookieHeader;
+}
+
+/** 验证已存储的不透明 FANBOX Cookie 头，不向 Application 暴露其格式。 */
+export async function verifyFanboxStoredCredential(input: {
+  readonly creatorId: string;
+  readonly cookieHeader: string;
+  readonly request?: FetchLike;
+}): Promise<void> {
+  if (!isFanboxCreatorId(input.creatorId))
+    throw new Error("FANBOX 创作者范围无效");
+  const request = input.request ?? fetch;
+  let response: Awaited<ReturnType<FetchLike>>;
+  try {
+    response = await request("https://api.fanbox.cc/user.me", {
+      headers: {
+        Accept: "application/json",
+        Cookie: input.cookieHeader,
+        Origin: "https://www.fanbox.cc",
+        Referer: `https://www.fanbox.cc/@${input.creatorId}`,
+        "User-Agent": "digital-fanbox-integration/1",
+      },
+    });
+  } catch {
+    throw new Error("FANBOX 来源连接验证失败");
+  }
+  if (!response.ok || !isJsonMediaType(response.headers.get("content-type")))
+    throw new Error("FANBOX 来源连接验证失败");
+  let envelope: unknown;
+  try {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength === 0 || bytes.byteLength > maximumResponseBytes)
+      throw new Error("invalid response");
+    envelope = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+  } catch {
+    throw new Error("FANBOX 来源连接验证失败");
+  }
+  if (!fanboxAuthenticatedUser(envelope))
+    throw new Error("FANBOX 来源连接验证失败");
+}
+
+function fanboxBrowserCookieHeader(value: unknown): string {
+  if (!Array.isArray(value)) throw new Error("FANBOX 浏览器凭据格式无效");
+  const pairs: string[] = [];
+  let hasSession = false;
+  for (const item of value) {
+    if (item === null || typeof item !== "object" || Array.isArray(item))
+      throw new Error("FANBOX 浏览器凭据格式无效");
+    const cookie = item as {
+      readonly name?: unknown;
+      readonly value?: unknown;
+      readonly domain?: unknown;
+    };
+    if (
+      typeof cookie.name !== "string" ||
+      !/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/u.test(cookie.name) ||
+      typeof cookie.value !== "string" ||
+      cookie.value.length === 0 ||
+      !/^[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]+$/u.test(cookie.value) ||
+      (cookie.domain !== undefined &&
+        cookie.domain !== "fanbox.cc" &&
+        cookie.domain !== ".fanbox.cc")
+    ) {
+      throw new Error("FANBOX 浏览器凭据格式无效");
+    }
+    pairs.push(`${cookie.name}=${cookie.value}`);
+    hasSession ||= cookie.name === "FANBOXSESSID";
+  }
+  if (pairs.length === 0 || !hasSession)
+    throw new Error("FANBOX 浏览器凭据缺少有效会话");
+  return pairs.join("; ");
+}
+
+function fanboxAuthenticatedUser(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const envelope = value as Record<string, unknown>;
+  if (
+    !Object.hasOwn(envelope, "body") ||
+    (Object.hasOwn(envelope, "error") &&
+      envelope.error !== undefined &&
+      envelope.error !== null &&
+      envelope.error !== false &&
+      envelope.error !== "") ||
+    (Object.hasOwn(envelope, "errors") &&
+      envelope.errors !== undefined &&
+      envelope.errors !== null &&
+      envelope.errors !== false)
+  ) {
+    return false;
+  }
+  const body = envelope.body;
+  if (body === null || typeof body !== "object" || Array.isArray(body))
+    return false;
+  const userId = (body as Record<string, unknown>).userId;
+  return (
+    (typeof userId === "string" && userId.trim().length > 0) ||
+    (typeof userId === "number" && Number.isSafeInteger(userId) && userId > 0)
+  );
+}
+
 /**
  * 被拒绝的传输仍可留下有效但范围更窄的摘要记录；无效的 HTTP 成功 JSON 则不行，
  * 因为它根本没有形成来源证据。

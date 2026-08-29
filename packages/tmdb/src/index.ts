@@ -44,6 +44,7 @@ const collectorCapability = declareCapability({
   contractVersion: "2",
   interpretationContractVersions: ["2"],
 });
+export const tmdbOfficialCollectionCapability = collectorCapability;
 /**
  * 产品管理的私有访问是独立于公开采集契约的已部署能力。其秘密结构只保留在该集成和
  * 外层组合中，绝不进入领域层。
@@ -101,6 +102,20 @@ type FetchLike = (
 }>;
 
 type SearchAddress = { readonly title: string; readonly year: string };
+
+/** 验证一份 TMDB 访问令牌；远端诊断不会越过该能力。 */
+export async function verifyTmdbAccessToken(
+  accessToken: string,
+  request: FetchLike = fetch,
+): Promise<void> {
+  const response = await request(`${apiOrigin}/authentication`, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: "application/json",
+    },
+  });
+  if (!response.ok) throw new Error("TMDB 来源连接验证失败");
+}
 
 /**
  * TMDB 拥有这个刻意保持精简的本地约定。它只贡献证据：标题和年份绝不是领域身份。

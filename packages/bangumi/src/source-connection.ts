@@ -1,8 +1,15 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 
-import type { SourceCollectionExecutionContext } from "@digital/application";
+import type {
+  SourceCollectionExecutionContext,
+  SourceConnectionPrivateLease,
+  SourceConnectionPrivateLeaseOwnership,
+  SourceConnectionPrivateLeaseRecord,
+  SourceConnectionPrivateStatePort,
+  SourceConnectionInspection,
+} from "@digital/application";
+import type { RecognitionEvidence } from "@digital/domain";
+
 import {
   type BangumiOAuthGrant,
   type BangumiOAuthTransport,
@@ -12,19 +19,8 @@ import {
   isBangumiOAuthAuthorizationRejected,
   isBangumiOAuthRetryableResponse,
   refreshBangumiOAuthGrant,
-} from "@digital/bangumi";
-import type { RecognitionEvidence } from "@digital/domain";
-import {
-  ProductPrivateLease,
-  type ProductPrivateLeaseOwnership,
-  type ProductPrivateLeaseRecord,
-  inspectPrivatePath,
-  writePrivateJsonDurably,
-} from "@digital/product-data";
+} from "./capability.ts";
 
-import type { SourceConnectionInspection } from "./source-connections.ts";
-
-const privateDirectoryName = "private-source-connections";
 const storageVersion = "bangumi-oauth-connection/1";
 const authorizationLifetimeMilliseconds = 10 * 60 * 1000;
 const expiryLeewayMilliseconds = 30_000;
@@ -99,7 +95,7 @@ type ReadBangumiConnectionRecord =
   | PrivateBangumiConnectionRecord
   | InvalidBangumiConnectionRecord;
 
-type PendingAuthorization = ProductPrivateLeaseRecord & {
+type PendingAuthorization = SourceConnectionPrivateLeaseRecord & {
   readonly schema: "product-private-lease/1";
   readonly version: "bangumi-oauth-pending/1";
   readonly state: string;
@@ -121,14 +117,14 @@ type RefreshInProgress = {
   readonly startedAt: string;
 };
 
-type RefreshLease = ProductPrivateLeaseRecord & {
+type RefreshLease = SourceConnectionPrivateLeaseRecord & {
   readonly version: "bangumi-oauth-refresh-lease/1";
   readonly connectionVersion: number;
   readonly grantFingerprint: string;
 };
 
 /** 只串行化很小的“读取—比较—写入”临界区。 */
-type ConnectionMutationLease = ProductPrivateLeaseRecord & {
+type ConnectionMutationLease = SourceConnectionPrivateLeaseRecord & {
   readonly version: "bangumi-oauth-connection-mutation/1";
 };
 
@@ -143,15 +139,11 @@ export type BangumiAuthorizationStart = {
  */
 export class ProductBangumiSourceConnection {
   readonly capability = bangumiSourceConnectionCapability;
-  private readonly privateDirectory: string;
-  private readonly connectionPath: string;
-  private readonly pendingPath: string;
-  private readonly processingPath: string;
-  private readonly connectionMutationPath: string;
+  private readonly privateState: SourceConnectionPrivateStatePort;
   private readonly instanceNonce: string;
-  private readonly pendingLease: ProductPrivateLease<PendingAuthorization>;
-  private readonly processingLease: ProductPrivateLease<PendingAuthorization>;
-  private readonly connectionMutationLease: ProductPrivateLease<ConnectionMutationLease>;
+  private readonly pendingLease: SourceConnectionPrivateLease<PendingAuthorization>;
+  private readonly processingLease: SourceConnectionPrivateLease<PendingAuthorization>;
+  private readonly connectionMutationLease: SourceConnectionPrivateLease<ConnectionMutationLease>;
   private readonly environment: Readonly<Record<string, string | undefined>>;
   private readonly request: BangumiOAuthTransport | undefined;
   private readonly now: () => Date;
@@ -168,7 +160,7 @@ export class ProductBangumiSourceConnection {
   private refreshing: Promise<string> | undefined;
 
   constructor(input: {
-    readonly productDataDirectory: string;
+    readonly privateState: SourceConnectionPrivateStatePort;
     readonly environment: Readonly<Record<string, string | undefined>>;
     readonly request?: BangumiOAuthTransport;
     readonly now?: () => Date;
@@ -182,26 +174,7 @@ export class ProductBangumiSourceConnection {
     /** 仅供测试使用的交错点，位于变更所有权验证之后。 */
     readonly afterConnectionMutationOwnershipCheck?: () => void;
   }) {
-    this.privateDirectory = path.join(
-      input.productDataDirectory,
-      privateDirectoryName,
-    );
-    this.connectionPath = path.join(
-      this.privateDirectory,
-      "bangumi-oauth.json",
-    );
-    this.pendingPath = path.join(
-      this.privateDirectory,
-      "bangumi-oauth-pending.json",
-    );
-    this.processingPath = path.join(
-      this.privateDirectory,
-      "bangumi-oauth-pending.processing.json",
-    );
-    this.connectionMutationPath = path.join(
-      this.privateDirectory,
-      "bangumi-oauth-connection.mutation.json",
-    );
+    this.privateState = input.privateState;
     this.environment = input.environment;
     this.request = input.request;
     this.now = input.now ?? (() => new Date());
@@ -216,31 +189,24 @@ export class ProductBangumiSourceConnection {
       ...(input.bootId === undefined ? {} : { bootId: input.bootId }),
     };
     this.instanceNonce = randomUUID();
-    const callbackNamespacePath = path.join(
-      this.privateDirectory,
-      "bangumi-oauth-callback.lease-namespace",
-    );
-    this.pendingLease = new ProductPrivateLease({
-      directory: this.privateDirectory,
-      path: this.pendingPath,
-      namespacePath: callbackNamespacePath,
+    this.pendingLease = this.privateState.lease({
+      key: "bangumi-oauth-pending",
+      namespaceKey: "bangumi-oauth-callback",
       now: this.now,
       ...this.leaseClock,
       isRecord: isPendingAuthorization,
       failureMessage: privateStorageFailure,
     });
-    this.processingLease = new ProductPrivateLease({
-      directory: this.privateDirectory,
-      path: this.processingPath,
-      namespacePath: callbackNamespacePath,
+    this.processingLease = this.privateState.lease({
+      key: "bangumi-oauth-pending-processing",
+      namespaceKey: "bangumi-oauth-callback",
       now: this.now,
       ...this.leaseClock,
       isRecord: isPendingAuthorization,
       failureMessage: privateStorageFailure,
     });
-    this.connectionMutationLease = new ProductPrivateLease({
-      directory: this.privateDirectory,
-      path: this.connectionMutationPath,
+    this.connectionMutationLease = this.privateState.lease({
+      key: "bangumi-oauth-connection-mutation",
       now: this.now,
       ...this.leaseClock,
       isRecord: isConnectionMutationLease,
@@ -645,7 +611,7 @@ export class ProductBangumiSourceConnection {
     >,
   ): Promise<{
     readonly lease: RefreshLease;
-    readonly ownership: ProductPrivateLeaseOwnership<RefreshLease>;
+    readonly ownership: SourceConnectionPrivateLeaseOwnership<RefreshLease>;
     readonly waitedForOtherRefresh: boolean;
   }> {
     const startedAt = boundedWaitNow();
@@ -695,23 +661,12 @@ export class ProductBangumiSourceConnection {
     };
   }
 
-  private refreshLeasePathFor(lease: {
-    readonly connectionVersion: number;
-    readonly grantFingerprint: string;
-  }): string {
-    return path.join(
-      this.privateDirectory,
-      `bangumi-oauth-refresh-${lease.connectionVersion}-${lease.grantFingerprint}.lease.json`,
-    );
-  }
-
   private refreshLease(lease: {
     readonly connectionVersion: number;
     readonly grantFingerprint: string;
-  }): ProductPrivateLease<RefreshLease> {
-    return new ProductPrivateLease({
-      directory: this.privateDirectory,
-      path: this.refreshLeasePathFor(lease),
+  }): SourceConnectionPrivateLease<RefreshLease> {
+    return this.privateState.lease({
+      key: `bangumi-oauth-refresh-${lease.connectionVersion}-${lease.grantFingerprint}`,
       now: this.now,
       ...this.leaseClock,
       isRecord: (value): value is RefreshLease =>
@@ -855,7 +810,7 @@ export class ProductBangumiSourceConnection {
     }
   }
 
-  private acquireConnectionMutationLease(): ProductPrivateLeaseOwnership<ConnectionMutationLease> {
+  private acquireConnectionMutationLease(): SourceConnectionPrivateLeaseOwnership<ConnectionMutationLease> {
     const candidate = this.newConnectionMutationLease();
     const startedAt = boundedWaitNow();
     while (
@@ -918,24 +873,12 @@ export class ProductBangumiSourceConnection {
   }
 
   private readConnection(): ReadBangumiConnectionRecord {
-    const directory = inspectPrivatePath(this.privateDirectory, "directory");
-    if (directory === "permissions-unsafe" || directory === "storage-invalid")
-      return invalid(directory);
-    if (directory === "missing") return unconfigured();
-    const file = inspectPrivatePath(this.connectionPath, "file");
-    if (file === "permissions-unsafe" || file === "storage-invalid")
-      return invalid(file);
-    if (file === "missing") return unconfigured();
-    try {
-      const record = JSON.parse(
-        readFileSync(this.connectionPath, "utf8"),
-      ) as unknown;
-      return isPrivateBangumiConnectionRecord(record)
-        ? record
-        : invalid("storage-invalid");
-    } catch {
-      return invalid("storage-invalid");
-    }
+    const stored = this.privateState.read("bangumi-oauth");
+    if (stored.status === "missing") return unconfigured();
+    if (stored.status !== "usable") return invalid(stored.status);
+    return isPrivateBangumiConnectionRecord(stored.value)
+      ? stored.value
+      : invalid("storage-invalid");
   }
 
   private readPending(): PendingAuthorization {
@@ -977,7 +920,7 @@ export class ProductBangumiSourceConnection {
 
   private consumePending(
     expected: PendingAuthorization,
-  ): ProductPrivateLeaseOwnership<PendingAuthorization> {
+  ): SourceConnectionPrivateLeaseOwnership<PendingAuthorization> {
     try {
       const ownership = this.pendingLease.consumeToActive(
         expected,
@@ -995,14 +938,9 @@ export class ProductBangumiSourceConnection {
   private writeConnectionUnchecked(
     record: PrivateBangumiConnectionRecord,
   ): void {
-    this.writePrivateJson(this.connectionPath, record);
-  }
-
-  private writePrivateJson(target: string, value: unknown): void {
-    writePrivateJsonDurably({
-      directory: this.privateDirectory,
-      target,
-      value,
+    this.privateState.write({
+      key: "bangumi-oauth",
+      value: record,
       failureMessage: privateStorageFailure,
     });
   }

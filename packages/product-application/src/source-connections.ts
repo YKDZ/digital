@@ -1,68 +1,17 @@
-import {
-  chmodSync,
-  lstatSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  writeFileSync,
-} from "node:fs";
-import path from "node:path";
-
 import type {
   SourceCollectionExecutionContext,
+  SourceCollector,
   SourceConnectionExecutionConfiguration,
+  SourceConnectionInspection,
+  SourceConnectionPrivateStatePort,
+  SourceConnectionUnavailableReason,
 } from "@digital/application";
-import {
-  BangumiCollector,
-  bangumiOfficialCollectionCapability,
-} from "@digital/bangumi";
 import type {
   CapabilityCoordinate,
   RecognitionEvidence,
 } from "@digital/domain";
-import {
-  FanboxCollector,
-  fanboxCreatorIdFromEvidence,
-  fanboxOfficialCollectionCapability,
-  fanboxSourceConnectionCapability,
-} from "@digital/fanbox";
-import { omdbSourceConnectionCapability, OmdbCollector } from "@digital/omdb";
-import { tmdbSourceConnectionCapability, TmdbCollector } from "@digital/tmdb";
 
-import { ProductBangumiSourceConnection } from "./bangumi-source-connection.ts";
-
-const privateDirectoryName = "private-source-connections";
 const storageVersion = "product-source-connection/1";
-
-export type SourceConnectionCredentialStatus =
-  | "unconfigured"
-  | "configured"
-  | "revoked"
-  /** 私有存储存在，但无法安全地描述一份可用凭据。 */
-  | "invalid";
-
-export type SourceConnectionAvailability = "available" | "unavailable";
-
-export type SourceConnectionUnavailableReason =
-  | "not-configured"
-  | "revoked"
-  | "verification-failed"
-  | "authorization-failed"
-  | "authorization-uncertain"
-  | "storage-invalid"
-  | "permissions-unsafe";
-
-/** 对交付层安全的运维投影；它刻意无法泄露秘密。 */
-export type SourceConnectionInspection = {
-  readonly id: string;
-  readonly capability: CapabilityCoordinate;
-  readonly version: number;
-  readonly credentialStatus: SourceConnectionCredentialStatus;
-  readonly availability: SourceConnectionAvailability;
-  readonly verifiedAt?: string;
-  readonly reason?: SourceConnectionUnavailableReason;
-};
 
 type PrivateSourceConnectionRecordBase = {
   readonly version: typeof storageVersion;
@@ -141,27 +90,98 @@ type SourceConnectionDefinition = {
   readonly verify: ConnectionVerifier;
 };
 
+export type ProductBangumiSourceConnection = {
+  readonly capability: CapabilityCoordinate;
+  inspect(): SourceConnectionInspection;
+  beginAuthorization(): {
+    readonly authorizationUrl: string;
+    readonly expiresAt: string;
+  };
+  completeAuthorizationCallback(
+    callbackUrl: string,
+  ): Promise<SourceConnectionInspection>;
+  revoke(expectedVersion?: number): SourceConnectionInspection;
+  bindCollector(input: {
+    readonly evidence: RecognitionEvidence;
+    readonly configurationReferences: readonly string[];
+  }): { readonly configurationReferences: readonly string[] };
+  isConfigurationReferenceCurrent(reference: string): boolean;
+  authorization(): {
+    readonly bearer: (
+      context?: SourceCollectionExecutionContext,
+    ) => Promise<string>;
+  };
+};
+
+export type ProductSourceConnectionAdapters = {
+  readonly privateState: SourceConnectionPrivateStatePort;
+  readonly environment: Readonly<Record<string, string | undefined>>;
+  readonly bangumi: {
+    readonly connection: ProductBangumiSourceConnection;
+    readonly collectorCapability: CapabilityCoordinate;
+    createCollector(input: {
+      readonly authorization: ReturnType<
+        ProductBangumiSourceConnection["authorization"]
+      >;
+    }): SourceCollector;
+  };
+  readonly fanbox: {
+    readonly connectionCapability: CapabilityCoordinate;
+    readonly collectorCapability: CapabilityCoordinate;
+    creatorIdFromEvidence(evidence: RecognitionEvidence): string | undefined;
+    validatedBrowserCredential(input: {
+      readonly creatorId: string;
+      readonly browserCookies: unknown;
+    }): Promise<string>;
+    verifyStoredCredential(input: {
+      readonly creatorId: string;
+      readonly cookieHeader: string;
+    }): Promise<void>;
+    createCollector(input: {
+      readonly creatorIds: () => readonly string[];
+      readonly cookieHeaderForExecution: (input: {
+        readonly creatorId: string;
+        readonly context: SourceCollectionExecutionContext | undefined;
+      }) => string | undefined;
+    }): SourceCollector;
+  };
+  readonly tmdb: {
+    readonly connectionCapability: CapabilityCoordinate;
+    readonly collectorCapability: CapabilityCoordinate;
+    verifyAccessToken(accessToken: string): Promise<void>;
+    createCollector(input: {
+      readonly accessTokenForExecution: (
+        context: SourceCollectionExecutionContext | undefined,
+      ) => string | undefined;
+    }): SourceCollector;
+  };
+  readonly omdb: {
+    readonly connectionCapability: CapabilityCoordinate;
+    readonly collectorCapability: CapabilityCoordinate;
+    verifyApiKey(apiKey: string): Promise<void>;
+    createCollector(input: {
+      readonly apiKeyForExecution: (
+        context: SourceCollectionExecutionContext | undefined,
+      ) => string | undefined;
+    }): SourceCollector;
+  };
+};
+
 /**
  * 一条由能力拥有的私有秘密记录。它刻意只暴露窄化操作，而非通用凭据文档或模式。
  */
 class PrivateSourceConnection {
-  private readonly privateDirectory: string;
-  private readonly filePath: string;
+  private readonly privateState: SourceConnectionPrivateStatePort;
+  private readonly storageKey: string;
   private readonly definition: SourceConnectionDefinition;
 
   constructor(
     definition: SourceConnectionDefinition,
-    productDataDirectory: string,
+    privateState: SourceConnectionPrivateStatePort,
   ) {
     this.definition = definition;
-    this.privateDirectory = path.join(
-      productDataDirectory,
-      privateDirectoryName,
-    );
-    this.filePath = path.join(
-      this.privateDirectory,
-      `${definition.storageKey ?? definition.id}.json`,
-    );
+    this.privateState = privateState;
+    this.storageKey = definition.storageKey ?? definition.id;
   }
 
   inspect(): SourceConnectionInspection {
@@ -365,37 +385,8 @@ class PrivateSourceConnection {
   }
 
   private read(): ReadPrivateSourceConnectionRecord {
-    const directory = inspectPrivateStoragePath(
-      this.privateDirectory,
-      "directory",
-    );
-    if (directory === "permissions-unsafe")
-      return invalidSourceConnection(directory);
-    if (directory === "storage-invalid")
-      return invalidSourceConnection(directory);
-    if (directory === "missing") {
-      const bootstrapSecret = normalisedSecret(this.definition.bootstrapSecret);
-      if (bootstrapSecret === undefined) return unconfiguredSourceConnection();
-      const bootstrapped: PrivateSourceConnectionRecord = {
-        version: storageVersion,
-        configurationVersion: 1,
-        credentialStatus: "configured",
-        availability: "available",
-        secret: bootstrapSecret,
-      };
-      // 环境变量仅作为首次引导输入。只有确实提供了秘密时，它才成为产品状态；
-      // 无配置启动保持只读，使无效的外部请求无法创建文件。
-      try {
-        this.write(bootstrapped);
-        return bootstrapped;
-      } catch {
-        return invalidSourceConnection("storage-invalid");
-      }
-    }
-    const file = inspectPrivateStoragePath(this.filePath, "file");
-    if (file === "permissions-unsafe") return invalidSourceConnection(file);
-    if (file === "storage-invalid") return invalidSourceConnection(file);
-    if (file === "missing") {
+    const stored = this.privateState.read(this.storageKey);
+    if (stored.status === "missing") {
       const bootstrapSecret = normalisedSecret(this.definition.bootstrapSecret);
       if (bootstrapSecret === undefined) return unconfiguredSourceConnection();
       const bootstrapped: PrivateSourceConnectionRecord = {
@@ -412,28 +403,19 @@ class PrivateSourceConnection {
         return invalidSourceConnection("storage-invalid");
       }
     }
-    let value: unknown;
-    try {
-      value = JSON.parse(readFileSync(this.filePath, "utf8"));
-    } catch {
+    if (stored.status !== "usable")
+      return invalidSourceConnection(stored.status);
+    if (!isPrivateSourceConnectionRecord(stored.value))
       return invalidSourceConnection("storage-invalid");
-    }
-    if (!isPrivateSourceConnectionRecord(value))
-      return invalidSourceConnection("storage-invalid");
-    return value;
+    return stored.value;
   }
 
   private write(record: PrivateSourceConnectionRecord): void {
-    mkdirSync(this.privateDirectory, { recursive: true, mode: 0o700 });
-    chmodSync(this.privateDirectory, 0o700);
-    const temporary = `${this.filePath}.next`;
-    writeFileSync(temporary, JSON.stringify(record), {
-      encoding: "utf8",
-      mode: 0o600,
+    this.privateState.write({
+      key: this.storageKey,
+      value: record,
+      failureMessage: "私有来源连接存储不可用",
     });
-    chmodSync(temporary, 0o600);
-    renameSync(temporary, this.filePath);
-    chmodSync(this.filePath, 0o600);
   }
 }
 
@@ -468,36 +450,6 @@ function invalidSourceConnection(
     availability: "unavailable",
     reason,
   };
-}
-
-/**
- * 损坏的私有连接是本地运维前置条件失败，而不是目录启动失败。将检查保留在私有存储边界，
- * 使环境引导和调用方都无法意外覆盖需要修复的证据。
- */
-function inspectPrivateStoragePath(
-  candidate: string,
-  expected: "directory" | "file",
-): "missing" | "permissions-unsafe" | "storage-invalid" | "usable" {
-  try {
-    const stat = lstatSync(candidate);
-    if (
-      stat.isSymbolicLink() ||
-      (expected === "directory" ? !stat.isDirectory() : !stat.isFile())
-    ) {
-      return "storage-invalid";
-    }
-    return (stat.mode & 0o077) === 0 ? "usable" : "permissions-unsafe";
-  } catch (error) {
-    if (
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error &&
-      (error as { readonly code?: unknown }).code === "ENOENT"
-    ) {
-      return "missing";
-    }
-    return "storage-invalid";
-  }
 }
 
 function isPrivateSourceConnectionRecord(
@@ -637,10 +589,15 @@ export class OmdbSourceConnection {
  * 不会把浏览器 Cookie 变成应用层凭据类型。
  */
 export class ProductFanboxSourceConnections {
-  private readonly productDataDirectory: string;
+  private readonly privateState: SourceConnectionPrivateStatePort;
+  private readonly adapter: ProductSourceConnectionAdapters["fanbox"];
 
-  constructor(productDataDirectory: string) {
-    this.productDataDirectory = productDataDirectory;
+  constructor(input: {
+    readonly privateState: SourceConnectionPrivateStatePort;
+    readonly adapter: ProductSourceConnectionAdapters["fanbox"];
+  }) {
+    this.privateState = input.privateState;
+    this.adapter = input.adapter;
   }
 
   inspect(creatorId: string): SourceConnectionInspection & {
@@ -662,8 +619,7 @@ export class ProductFanboxSourceConnections {
     }
   > {
     assertFanboxCreatorId(input.creatorId);
-    const cookieHeader = fanboxBrowserCookieHeader(input.browserCookies);
-    await verifyFanboxBrowserCredentials(input.creatorId, cookieHeader);
+    const cookieHeader = await this.adapter.validatedBrowserCredential(input);
     const connection = this.connectionFor(input.creatorId);
     return {
       ...connection.configureVerified(cookieHeader),
@@ -681,8 +637,7 @@ export class ProductFanboxSourceConnections {
     }
   > {
     assertFanboxCreatorId(input.creatorId);
-    const cookieHeader = fanboxBrowserCookieHeader(input.browserCookies);
-    await verifyFanboxBrowserCredentials(input.creatorId, cookieHeader);
+    const cookieHeader = await this.adapter.validatedBrowserCredential(input);
     const connection = this.connectionFor(input.creatorId);
     return {
       ...connection.replaceVerified(cookieHeader, input.expectedVersion),
@@ -712,29 +667,21 @@ export class ProductFanboxSourceConnections {
    * 并自行决定如何把证据映射到其中一项。
    */
   creatorIds(): readonly string[] {
-    const privateDirectory = path.join(
-      this.productDataDirectory,
-      privateDirectoryName,
-    );
-    if (inspectPrivateStoragePath(privateDirectory, "directory") !== "usable")
-      return [];
-    try {
-      return readdirSync(privateDirectory)
-        .flatMap((name) => {
-          const match = /^fanbox--([a-zA-Z0-9_-]+)\.json$/u.exec(name);
-          return match === null ? [] : [match[1]!];
-        })
-        .toSorted();
-    } catch {
-      return [];
-    }
+    const listing = this.privateState.list();
+    if (listing.status !== "usable") return [];
+    return listing.keys
+      .flatMap((key) => {
+        const match = /^fanbox--([a-zA-Z0-9_-]+)$/u.exec(key);
+        return match === null ? [] : [match[1]!];
+      })
+      .toSorted();
   }
 
   bindCollector(input: {
     readonly evidence: RecognitionEvidence;
     readonly configurationReferences: readonly string[];
   }): { readonly configurationReferences: readonly string[] } {
-    const creatorId = fanboxCreatorIdFromEvidence(input.evidence);
+    const creatorId = this.adapter.creatorIdFromEvidence(input.evidence);
     if (creatorId === undefined || !this.creatorIds().includes(creatorId))
       return { configurationReferences: [] };
     const connection = this.connectionFor(creatorId);
@@ -768,8 +715,8 @@ export class ProductFanboxSourceConnections {
     );
   }
 
-  collector(): FanboxCollector {
-    return new FanboxCollector({
+  collector(): SourceCollector {
+    return this.adapter.createCollector({
       creatorIds: () => this.creatorIds(),
       cookieHeaderForExecution: (input) => this.cookieHeaderForExecution(input),
     });
@@ -780,12 +727,15 @@ export class ProductFanboxSourceConnections {
       {
         id: `fanbox/${creatorId}`,
         storageKey: `fanbox--${creatorId}`,
-        capability: fanboxSourceConnectionCapability,
+        capability: this.adapter.connectionCapability,
         bootstrapSecret: undefined,
         verify: async (cookieHeader) =>
-          await verifyFanboxBrowserCredentials(creatorId, cookieHeader),
+          await this.adapter.verifyStoredCredential({
+            creatorId,
+            cookieHeader,
+          }),
       },
-      this.productDataDirectory,
+      this.privateState,
     );
   }
 }
@@ -795,157 +745,51 @@ function assertFanboxCreatorId(value: string): void {
     throw new Error("FANBOX 创作者范围无效");
 }
 
-function fanboxBrowserCookieHeader(value: unknown): string {
-  if (!Array.isArray(value)) throw new Error("FANBOX 浏览器凭据格式无效");
-  const pairs: string[] = [];
-  let hasSession = false;
-  for (const item of value) {
-    if (item === null || typeof item !== "object" || Array.isArray(item))
-      throw new Error("FANBOX 浏览器凭据格式无效");
-    const cookie = item as {
-      readonly name?: unknown;
-      readonly value?: unknown;
-      readonly domain?: unknown;
-    };
-    if (
-      typeof cookie.name !== "string" ||
-      !/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/u.test(cookie.name) ||
-      typeof cookie.value !== "string" ||
-      cookie.value.length === 0 ||
-      !/^[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]+$/u.test(cookie.value) ||
-      (cookie.domain !== undefined &&
-        cookie.domain !== "fanbox.cc" &&
-        cookie.domain !== ".fanbox.cc")
-    ) {
-      throw new Error("FANBOX 浏览器凭据格式无效");
-    }
-    pairs.push(`${cookie.name}=${cookie.value}`);
-    hasSession ||= cookie.name === "FANBOXSESSID";
-  }
-  if (pairs.length === 0 || !hasSession)
-    throw new Error("FANBOX 浏览器凭据缺少有效会话");
-  return pairs.join("; ");
-}
-
-async function verifyFanboxBrowserCredentials(
-  creatorId: string,
-  cookieHeader: string,
-): Promise<void> {
-  // `post.listCreator` 是公开预览端点，因此成功响应既不能证明导入的浏览器会话有效，
-  // 也不能证明其当前身份。受保护身份端点刻意没有创作者特定的授权声明：有效的已登录会话
-  // 在后续刷新时仍可能只对所配置创作者拥有部分访问权限。
-  const endpoint = new URL("https://api.fanbox.cc/user.me");
-  let response: Response;
-  try {
-    response = await fetch(endpoint, {
-      headers: {
-        Accept: "application/json",
-        Cookie: cookieHeader,
-        Origin: "https://www.fanbox.cc",
-        Referer: `https://www.fanbox.cc/@${creatorId}`,
-        "User-Agent": "digital-fanbox-integration/1",
-      },
-    });
-  } catch {
-    throw new Error("FANBOX 来源连接验证失败");
-  }
-  if (!response.ok) throw new Error("FANBOX 来源连接验证失败");
-  if (!isJsonMediaType(response.headers.get("content-type")))
-    throw new Error("FANBOX 来源连接验证失败");
-  let envelope: unknown;
-  try {
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength === 0 || bytes.byteLength > 2 * 1024 * 1024)
-      throw new Error("invalid response");
-    envelope = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
-  } catch {
-    throw new Error("FANBOX 来源连接验证失败");
-  }
-  if (!fanboxAuthenticatedUser(envelope))
-    throw new Error("FANBOX 来源连接验证失败");
-}
-
-function fanboxAuthenticatedUser(value: unknown): boolean {
-  if (value === null || typeof value !== "object" || Array.isArray(value))
-    return false;
-  const envelope = value as Record<string, unknown>;
-  if (
-    !Object.hasOwn(envelope, "body") ||
-    (Object.hasOwn(envelope, "error") &&
-      envelope.error !== undefined &&
-      envelope.error !== null &&
-      envelope.error !== false &&
-      envelope.error !== "") ||
-    (Object.hasOwn(envelope, "errors") &&
-      envelope.errors !== undefined &&
-      envelope.errors !== null &&
-      envelope.errors !== false)
-  ) {
-    return false;
-  }
-  const body = envelope.body;
-  if (body === null || typeof body !== "object" || Array.isArray(body))
-    return false;
-  const userId = (body as Record<string, unknown>).userId;
-  return (
-    (typeof userId === "string" && userId.trim().length > 0) ||
-    (typeof userId === "number" && Number.isSafeInteger(userId) && userId > 0)
-  );
-}
-
-function isJsonMediaType(value: string | null): boolean {
-  return value?.split(";", 1)[0]?.trim().toLowerCase() === "application/json";
-}
-
 /**
- * 由产品拥有的当前已部署来源连接注册表。它保留在组合层，因为只有组合层知道哪个集成
- * 接收哪个私有句柄；应用层只看到不透明配置引用。
+ * 由产品应用拥有的当前已部署来源连接入口。组合层只注入具体适配器；应用层只看到
+ * 不透明配置引用，且这里不提供按字符串查询的通用注册表。
  */
 export class ProductSourceConnections implements SourceConnectionExecutionConfiguration {
-  private readonly byCollectorCapability: ReadonlyMap<
-    string,
-    PrivateSourceConnection
-  >;
   private readonly all: readonly PrivateSourceConnection[];
+  private readonly tmdbPrivate: PrivateSourceConnection;
+  private readonly omdbPrivate: PrivateSourceConnection;
   readonly tmdb: TmdbSourceConnection;
   readonly omdb: OmdbSourceConnection;
   readonly fanbox: ProductFanboxSourceConnections;
   readonly bangumi: ProductBangumiSourceConnection;
+  readonly #adapters: ProductSourceConnectionAdapters;
 
-  constructor(
-    productDataDirectory: string,
-    environment: Readonly<Record<string, string | undefined>>,
-  ) {
+  constructor(adapters: ProductSourceConnectionAdapters) {
+    this.#adapters = adapters;
     const tmdb = new PrivateSourceConnection(
       {
         id: "tmdb",
-        capability: tmdbSourceConnectionCapability,
-        bootstrapSecret: environment.DIGITAL_TMDB_ACCESS_TOKEN,
-        verify: verifyTmdbAccessToken,
+        capability: adapters.tmdb.connectionCapability,
+        bootstrapSecret: adapters.environment.DIGITAL_TMDB_ACCESS_TOKEN,
+        verify: async (accessToken) =>
+          await adapters.tmdb.verifyAccessToken(accessToken),
       },
-      productDataDirectory,
+      adapters.privateState,
     );
     const omdb = new PrivateSourceConnection(
       {
         id: "omdb",
-        capability: omdbSourceConnectionCapability,
-        bootstrapSecret: environment.DIGITAL_OMDB_API_KEY,
-        verify: verifyOmdbApiKey,
+        capability: adapters.omdb.connectionCapability,
+        bootstrapSecret: adapters.environment.DIGITAL_OMDB_API_KEY,
+        verify: async (apiKey) => await adapters.omdb.verifyApiKey(apiKey),
       },
-      productDataDirectory,
+      adapters.privateState,
     );
+    this.tmdbPrivate = tmdb;
+    this.omdbPrivate = omdb;
     this.tmdb = new TmdbSourceConnection(tmdb);
     this.omdb = new OmdbSourceConnection(omdb);
-    this.fanbox = new ProductFanboxSourceConnections(productDataDirectory);
-    this.bangumi = new ProductBangumiSourceConnection({
-      productDataDirectory,
-      environment,
+    this.fanbox = new ProductFanboxSourceConnections({
+      privateState: adapters.privateState,
+      adapter: adapters.fanbox,
     });
+    this.bangumi = adapters.bangumi.connection;
     this.all = [tmdb, omdb];
-    this.byCollectorCapability = new Map([
-      ["tmdb.official-film-collection", tmdb],
-      ["omdb.film-enrichment-collection", omdb],
-    ]);
   }
 
   inspect(): readonly SourceConnectionInspection[] {
@@ -964,7 +808,7 @@ export class ProductSourceConnections implements SourceConnectionExecutionConfig
     if (
       sameCapabilityCoordinate(
         input.collector,
-        bangumiOfficialCollectionCapability,
+        this.#adapters.bangumi.collectorCapability,
       )
     ) {
       return this.bangumi.bindCollector(input);
@@ -972,14 +816,22 @@ export class ProductSourceConnections implements SourceConnectionExecutionConfig
     if (
       sameCapabilityCoordinate(
         input.collector,
-        fanboxOfficialCollectionCapability,
+        this.#adapters.fanbox.collectorCapability,
       )
     ) {
       return this.fanbox.bindCollector(input);
     }
-    const connection = this.byCollectorCapability.get(
-      input.collector.capabilityId,
-    );
+    const connection = sameCapabilityCoordinate(
+      input.collector,
+      this.#adapters.tmdb.collectorCapability,
+    )
+      ? this.tmdbPrivate
+      : sameCapabilityCoordinate(
+            input.collector,
+            this.#adapters.omdb.collectorCapability,
+          )
+        ? this.omdbPrivate
+        : undefined;
     if (connection === undefined) return { configurationReferences: [] };
     // 一旦本次执行拥有某个引用，就绝不以更新配置替换它。之后发生替换时应显式失败，
     // 而不是静默借用当前秘密。
@@ -1006,35 +858,35 @@ export class ProductSourceConnections implements SourceConnectionExecutionConfig
     );
   }
 
-  bangumiCollector(): BangumiCollector {
-    return new BangumiCollector({
+  bangumiCollector(): SourceCollector {
+    return this.#adapters.bangumi.createCollector({
       authorization: this.bangumi.authorization(),
     });
   }
 
-  tmdbCollector(): TmdbCollector {
-    return new TmdbCollector({
+  tmdbCollector(): SourceCollector {
+    return this.#adapters.tmdb.createCollector({
       accessTokenForExecution: (context) =>
         this.tmdb.accessTokenForExecution(context),
     });
   }
 
-  omdbCollector(): OmdbCollector {
-    return new OmdbCollector({
+  omdbCollector(): SourceCollector {
+    return this.#adapters.omdb.createCollector({
       apiKeyForExecution: (context) => this.omdb.apiKeyForExecution(context),
     });
   }
 
-  fanboxCollector(): FanboxCollector {
+  fanboxCollector(): SourceCollector {
     return this.fanbox.collector();
   }
 
   get capabilityDeclarations(): readonly CapabilityCoordinate[] {
     return [
-      tmdbSourceConnectionCapability,
-      omdbSourceConnectionCapability,
+      this.#adapters.tmdb.connectionCapability,
+      this.#adapters.omdb.connectionCapability,
       this.bangumi.capability,
-      fanboxSourceConnectionCapability,
+      this.#adapters.fanbox.connectionCapability,
     ];
   }
 }
@@ -1051,39 +903,4 @@ function sameCapabilityCoordinate(
     candidate.implementationVersion === expected.implementationVersion &&
     candidate.kind === expected.kind
   );
-}
-
-async function verifyTmdbAccessToken(accessToken: string): Promise<void> {
-  const response = await fetch("https://api.themoviedb.org/3/authentication", {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: "application/json",
-    },
-  });
-  if (!response.ok) throw new Error("TMDB 来源连接验证失败");
-}
-
-async function verifyOmdbApiKey(apiKey: string): Promise<void> {
-  const endpoint = new URL("https://www.omdbapi.com/");
-  endpoint.searchParams.set("apikey", apiKey);
-  endpoint.searchParams.set("i", "tt3896198");
-  const response = await fetch(endpoint);
-  if (!response.ok) throw new Error("OMDb 来源连接验证失败");
-  // OMDb 会在成功 HTTP 响应中报告密钥被拒绝。只有其显式成功载荷才可视为可用连接；
-  // 远端诊断可能包含请求上下文，因此应保持私有。
-  let payload: unknown;
-  try {
-    payload = JSON.parse(
-      new TextDecoder().decode(await response.arrayBuffer()),
-    ) as unknown;
-  } catch {
-    throw new Error("OMDb 来源连接验证失败");
-  }
-  if (
-    typeof payload !== "object" ||
-    payload === null ||
-    (payload as Record<string, unknown>).Response !== "True"
-  ) {
-    throw new Error("OMDb 来源连接验证失败");
-  }
 }

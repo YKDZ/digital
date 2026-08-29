@@ -2,18 +2,43 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import {
-  composeAssetRefresh,
-  composeAutomationHost,
-} from "@digital/composition";
+import { runProduct } from "@digital/composition";
 import { describe, expect, it } from "vitest";
 
 import {
   runCli,
-  type CliComposition,
+  type CliProductApplication,
   type CliRuntime,
 } from "../../src/main.ts";
 import { prepareCliProductData } from "../prepare-catalogue.ts";
+
+function legacyCliApplication(input: unknown): CliProductApplication {
+  const legacy = input as {
+    readonly openAssetRefresh: () => unknown;
+    readonly openAutomationHost: () => unknown;
+    readonly createOfflineBackup?: (backupDirectory: string) => Promise<void>;
+  };
+  let workflow: unknown;
+  let automation: unknown;
+  return {
+    get workflow() {
+      return (workflow ??= legacy.openAssetRefresh()) as never;
+    },
+    get automation() {
+      return (automation ??= legacy.openAutomationHost()) as never;
+    },
+    async startAutomation() {
+      await (
+        (automation ??= legacy.openAutomationHost()) as {
+          readonly start?: () => Promise<void>;
+        }
+      ).start?.();
+    },
+    async createOfflineBackup(backupDirectory) {
+      await legacy.createOfflineBackup?.(backupDirectory);
+    },
+  };
+}
 
 let commandName = "demo-cli";
 commandName = "cli";
@@ -103,33 +128,23 @@ describe("CLI command control", () => {
     expect(output.stderr()).toContain("error: Name must not be empty");
   });
 
-  it("closes an invocation-owned workflow even when the command fails", async () => {
+  it("returns a command failure while the executable root retains lifecycle ownership", async () => {
     const productData = await mkdtemp(
       path.join(tmpdir(), "digital-disposable-cli-close-"),
     );
     await prepareCliProductData(productData);
     const output = testRuntime(["inspect", "missing"]);
-    let closes = 0;
-    const composition = {
-      assetRefresh() {
-        const workflow = composeAssetRefresh(productData, {});
-        const close = workflow.close.bind(workflow);
-        return Object.assign(workflow, {
-          close() {
-            closes += 1;
-            void close();
-          },
-        });
-      },
-      automationHost: composeAutomationHost,
-    };
+    const product = runProduct(
+      { productDataDirectory: productData, environment: {} },
+      { start: (application) => application },
+    );
     try {
-      await expect(runCli(output.runtime, composition)).resolves.toBe(1);
-      expect(closes).toBe(1);
+      await expect(runCli(output.runtime, product.result)).resolves.toBe(1);
       expect(
         output.stderr().match(/error: 未找到刷新记录 missing/gu),
       ).toHaveLength(1);
     } finally {
+      await product.close();
       await rm(productData, { recursive: true, force: true });
     }
   });
@@ -138,8 +153,8 @@ describe("CLI command control", () => {
     const output = testRuntime(["apply-preview", "preview-1", "--json"]);
     const calls: string[] = [];
     let closes = 0;
-    const composition = {
-      assetRefresh() {
+    const application = {
+      openAssetRefresh() {
         return {
           async applyChangeImpactPreview(previewId: string) {
             calls.push(previewId);
@@ -153,27 +168,29 @@ describe("CLI command control", () => {
           },
         };
       },
-      automationHost() {
+      openAutomationHost() {
         throw new Error("not used");
       },
-    } as unknown as CliComposition;
+    } as unknown as CliProductApplication;
 
-    await expect(runCli(output.runtime, composition)).resolves.toBe(0);
+    await expect(
+      runCli(output.runtime, legacyCliApplication(application)),
+    ).resolves.toBe(0);
     expect(calls).toEqual(["preview-1"]);
     expect(JSON.parse(output.stdout())).toMatchObject({
       format: "temporary-change-impact-preview/v1",
       preview: { id: "preview-1", status: "applied" },
     });
     expect(output.stderr()).toBe("");
-    expect(closes).toBe(1);
+    expect(closes).toBe(0);
   });
 
   it("rejects one saved change-impact preview and renders its safe JSON inspection", async () => {
     const output = testRuntime(["reject-preview", "preview-2", "--json"]);
     const calls: string[] = [];
     let closes = 0;
-    const composition = {
-      assetRefresh() {
+    const application = {
+      openAssetRefresh() {
         return {
           async rejectChangeImpactPreview(previewId: string) {
             calls.push(previewId);
@@ -184,26 +201,28 @@ describe("CLI command control", () => {
           },
         };
       },
-      automationHost() {
+      openAutomationHost() {
         throw new Error("not used");
       },
-    } as unknown as CliComposition;
+    } as unknown as CliProductApplication;
 
-    await expect(runCli(output.runtime, composition)).resolves.toBe(0);
+    await expect(
+      runCli(output.runtime, legacyCliApplication(application)),
+    ).resolves.toBe(0);
     expect(calls).toEqual(["preview-2"]);
     expect(JSON.parse(output.stdout())).toMatchObject({
       format: "temporary-change-impact-preview/v1",
       preview: { id: "preview-2", status: "rejected" },
     });
     expect(output.stderr()).toBe("");
-    expect(closes).toBe(1);
+    expect(closes).toBe(0);
   });
 
-  it("reports a missing change-impact preview once and still closes the workflow", async () => {
+  it("reports a missing change-impact preview without taking root ownership", async () => {
     const output = testRuntime(["apply-preview", "missing", "--json"]);
     let closes = 0;
-    const composition = {
-      assetRefresh() {
+    const application = {
+      openAssetRefresh() {
         return {
           async applyChangeImpactPreview() {
             throw new Error("未找到变更影响预演");
@@ -213,23 +232,25 @@ describe("CLI command control", () => {
           },
         };
       },
-      automationHost() {
+      openAutomationHost() {
         throw new Error("not used");
       },
-    } as unknown as CliComposition;
+    } as unknown as CliProductApplication;
 
-    await expect(runCli(output.runtime, composition)).resolves.toBe(1);
+    await expect(
+      runCli(output.runtime, legacyCliApplication(application)),
+    ).resolves.toBe(1);
     expect(output.stdout()).toBe("");
     expect(output.stderr().match(/error: 未找到变更影响预演/gu)).toHaveLength(
       1,
     );
-    expect(closes).toBe(1);
+    expect(closes).toBe(0);
   });
 
   it("reports a stale applied preview explicitly after rendering its inspection", async () => {
     const output = testRuntime(["apply-preview", "stale-preview", "--json"]);
-    const composition = {
-      assetRefresh() {
+    const application = {
+      openAssetRefresh() {
         return {
           async applyChangeImpactPreview() {
             return { status: "stale" };
@@ -240,12 +261,14 @@ describe("CLI command control", () => {
           close() {},
         };
       },
-      automationHost() {
+      openAutomationHost() {
         throw new Error("not used");
       },
-    } as unknown as CliComposition;
+    } as unknown as CliProductApplication;
 
-    await expect(runCli(output.runtime, composition)).resolves.toBe(1);
+    await expect(
+      runCli(output.runtime, legacyCliApplication(application)),
+    ).resolves.toBe(1);
     expect(JSON.parse(output.stdout())).toMatchObject({
       preview: { id: "stale-preview", status: "stale" },
     });
@@ -254,11 +277,11 @@ describe("CLI command control", () => {
     );
   });
 
-  it("reports a missing preview from rejection once and closes the workflow", async () => {
+  it("reports a missing preview from rejection without taking root ownership", async () => {
     const output = testRuntime(["reject-preview", "missing", "--json"]);
     let closes = 0;
-    const composition = {
-      assetRefresh() {
+    const application = {
+      openAssetRefresh() {
         return {
           async rejectChangeImpactPreview() {
             throw new Error("未找到变更影响预演");
@@ -268,23 +291,25 @@ describe("CLI command control", () => {
           },
         };
       },
-      automationHost() {
+      openAutomationHost() {
         throw new Error("not used");
       },
-    } as unknown as CliComposition;
+    } as unknown as CliProductApplication;
 
-    await expect(runCli(output.runtime, composition)).resolves.toBe(1);
+    await expect(
+      runCli(output.runtime, legacyCliApplication(application)),
+    ).resolves.toBe(1);
     expect(output.stdout()).toBe("");
     expect(output.stderr().match(/error: 未找到变更影响预演/gu)).toHaveLength(
       1,
     );
-    expect(closes).toBe(1);
+    expect(closes).toBe(0);
   });
 
   it("reports a stale rejected preview explicitly after rendering its inspection", async () => {
     const output = testRuntime(["reject-preview", "stale-preview", "--json"]);
-    const composition = {
-      assetRefresh() {
+    const application = {
+      openAssetRefresh() {
         return {
           async rejectChangeImpactPreview(previewId: string) {
             return { id: previewId, status: "stale" };
@@ -292,12 +317,14 @@ describe("CLI command control", () => {
           close() {},
         };
       },
-      automationHost() {
+      openAutomationHost() {
         throw new Error("not used");
       },
-    } as unknown as CliComposition;
+    } as unknown as CliProductApplication;
 
-    await expect(runCli(output.runtime, composition)).resolves.toBe(1);
+    await expect(
+      runCli(output.runtime, legacyCliApplication(application)),
+    ).resolves.toBe(1);
     expect(JSON.parse(output.stdout())).toMatchObject({
       preview: { id: "stale-preview", status: "stale" },
     });
@@ -308,8 +335,8 @@ describe("CLI command control", () => {
 
   it("returns nonzero after rendering an inspectable partially succeeded metadata refresh", async () => {
     const output = testRuntime(["refresh-metadata", "asset", "--json"]);
-    const composition = {
-      assetRefresh() {
+    const application = {
+      openAssetRefresh() {
         return {
           async refreshMetadata() {
             return {
@@ -344,12 +371,14 @@ describe("CLI command control", () => {
           close() {},
         };
       },
-      automationHost() {
+      openAutomationHost() {
         throw new Error("not used");
       },
-    } as unknown as CliComposition;
+    } as unknown as CliProductApplication;
 
-    await expect(runCli(output.runtime, composition)).resolves.toBe(1);
+    await expect(
+      runCli(output.runtime, legacyCliApplication(application)),
+    ).resolves.toBe(1);
     expect(JSON.parse(output.stdout())).toMatchObject({
       execution: {
         id: "partial",
@@ -442,8 +471,8 @@ describe("CLI command control", () => {
       locations: [],
       artifactAssociations: [],
     };
-    const composition = {
-      assetRefresh() {
+    const application = {
+      openAssetRefresh() {
         return {
           async refreshMetadata() {
             return {
@@ -488,12 +517,14 @@ describe("CLI command control", () => {
           close() {},
         };
       },
-      automationHost() {
+      openAutomationHost() {
         throw new Error("not used");
       },
-    } as unknown as CliComposition;
+    } as unknown as CliProductApplication;
 
-    await expect(runCli(output.runtime, composition)).resolves.toBe(0);
+    await expect(
+      runCli(output.runtime, legacyCliApplication(application)),
+    ).resolves.toBe(0);
     expect(output.stdout()).toContain("tmdb：tmdb:9509");
     expect(output.stdout()).toContain("omdb：omdb:tt0328107");
     expect(output.stdout()).toContain(

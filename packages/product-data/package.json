@@ -22,6 +22,9 @@
     "build": "tsc -p tsconfig.build.json --pretty false",
     "test": "vitest run --reporter=verbose"
   },
+  "dependencies": {
+    "@digital/application": "workspace:*"
+  },
   "devDependencies": {
     "@digital/typescript-config": "workspace:*",
     "@types/node": "catalog:",

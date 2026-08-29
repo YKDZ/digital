@@ -12,12 +12,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { assetRefreshSelectionVersion } from "@digital/application";
+import { ProductBangumiSourceConnection } from "@digital/bangumi";
+import { ProductSourceConnectionPrivateState } from "@digital/product-data";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
-import {
-  ProductBangumiSourceConnection,
-  composeAssetRefresh,
-} from "../src/index.ts";
+import { composeAssetRefresh } from "../src/runtime.ts";
 import {
   disposePreparedCatalogueTemplate,
   prepareCatalogueAt,
@@ -39,6 +38,51 @@ afterAll(async () => {
 });
 
 describe("product-managed Bangumi OAuth source connection", () => {
+  it("does not bind TMDB or OMDb secrets when only collector ids match", async () => {
+    const root = await mkdtemp(
+      path.join(tmpdir(), "digital-source-coordinate-"),
+    );
+    temporaryRoots.push(root);
+    const productDataDirectory = path.join(root, "product-data");
+    await prepareCatalogueAt(productDataDirectory);
+    const workflow = composeAssetRefresh(productDataDirectory, {
+      DIGITAL_TMDB_ACCESS_TOKEN: "tmdb-coordinate-secret",
+    });
+    try {
+      const collectors = [
+        {
+          collector: workflow.sourceConnections.tmdbCollector(),
+          sourceIdentity: "tmdb",
+          sourceAddress: "tmdb:9509",
+          mismatch: { capabilityVersion: "unexpected-version" },
+        },
+        {
+          collector: workflow.sourceConnections.omdbCollector(),
+          sourceIdentity: "omdb",
+          sourceAddress: "omdb:tt0328107",
+          mismatch: { contractVersion: "unexpected-contract" },
+        },
+      ] as const;
+      for (const input of collectors) {
+        const bound = await workflow.sourceConnections.bindCollector({
+          collector: { ...input.collector.capability, ...input.mismatch },
+          evidence: {
+            kind: "source-association",
+            explanation: `错误坐标的 ${input.sourceIdentity} collector`,
+            sourceIdentity: input.sourceIdentity,
+            sourceAddress: input.sourceAddress,
+            producer: input.collector.capability,
+          },
+          configurationReferences: [],
+        });
+
+        expect(bound.configurationReferences).toEqual([]);
+      }
+    } finally {
+      await workflow.close();
+    }
+  });
+
   it("starts Digital's authorization-code flow and atomically stores only a safe connection projection", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "digital-bangumi-oauth-"));
     temporaryRoots.push(root);
@@ -284,7 +328,9 @@ describe("product-managed Bangumi OAuth source connection", () => {
       }),
     );
     const connection = new ProductBangumiSourceConnection({
-      productDataDirectory: path.join(root, "product-data"),
+      privateState: ProductSourceConnectionPrivateState.forRoot(
+        path.join(root, "product-data"),
+      ),
       environment: {
         DIGITAL_BANGUMI_CLIENT_ID: "digital-test-client",
         DIGITAL_BANGUMI_CLIENT_SECRET: "digital-test-secret",
@@ -392,7 +438,8 @@ describe("product-managed Bangumi OAuth source connection", () => {
       }),
     );
     const startedByFirstProcess = new ProductBangumiSourceConnection({
-      productDataDirectory,
+      privateState:
+        ProductSourceConnectionPrivateState.forRoot(productDataDirectory),
       environment,
       nextState: () => "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
     }).beginAuthorization();
@@ -405,12 +452,14 @@ describe("product-managed Bangumi OAuth source connection", () => {
       )!,
     );
     const resumedBySecondProcess = new ProductBangumiSourceConnection({
-      productDataDirectory,
+      privateState:
+        ProductSourceConnectionPrivateState.forRoot(productDataDirectory),
       environment,
       request,
     });
     const concurrentProcess = new ProductBangumiSourceConnection({
-      productDataDirectory,
+      privateState:
+        ProductSourceConnectionPrivateState.forRoot(productDataDirectory),
       environment,
       request,
     });
@@ -612,7 +661,8 @@ describe("product-managed Bangumi OAuth source connection", () => {
     await writeFile(privateRecord, corruptPrivateValue, { mode: 0o600 });
     await chmod(privateRecord, 0o600);
     const connection = new ProductBangumiSourceConnection({
-      productDataDirectory,
+      privateState:
+        ProductSourceConnectionPrivateState.forRoot(productDataDirectory),
       environment: {
         DIGITAL_BANGUMI_CLIENT_ID: "digital-test-client",
         DIGITAL_BANGUMI_CLIENT_SECRET: "digital-test-secret",
@@ -720,7 +770,9 @@ describe("product-managed Bangumi OAuth source connection", () => {
       | "transport-failure" = "exchange";
     let refreshRequests = 0;
     const connection = new ProductBangumiSourceConnection({
-      productDataDirectory: path.join(root, "product-data"),
+      privateState: ProductSourceConnectionPrivateState.forRoot(
+        path.join(root, "product-data"),
+      ),
       environment: {
         DIGITAL_BANGUMI_CLIENT_ID: "digital-test-client",
         DIGITAL_BANGUMI_CLIENT_SECRET: "digital-test-secret",

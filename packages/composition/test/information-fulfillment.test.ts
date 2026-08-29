@@ -16,7 +16,7 @@ import {
   composeAssetRefreshRuntime,
   composeOwnedAssetRefresh,
   type ComposedAssetRefresh,
-} from "../src/index.ts";
+} from "../src/runtime.ts";
 import {
   disposePreparedCatalogueTemplate,
   prepareCatalogueAt,
@@ -160,7 +160,8 @@ describe("information fulfillment composition", () => {
     };
     const runtime = composeAssetRefreshRuntime(productData, {
       configuration: {},
-      automationInformationRequirement: coverRequirement,
+      automationInformationRequirementForAcceptedSubject: () =>
+        coverRequirement,
     });
 
     try {
@@ -251,7 +252,7 @@ describe("information fulfillment composition", () => {
         requested.filter(
           (address) => address === "https://img.dlsite.jp/primary.jpg",
         ),
-      ).toHaveLength(2);
+      ).toHaveLength(1);
     } finally {
       await runtime.close();
       await runtime.close();
@@ -1193,7 +1194,8 @@ describe("information fulfillment composition", () => {
       productData,
       {},
       {
-        automationInformationRequirement: coverRequirement,
+        automationInformationRequirementForAcceptedSubject: () =>
+          coverRequirement,
       },
     );
 
@@ -1282,7 +1284,7 @@ describe("information fulfillment composition", () => {
         requested.filter(
           (address) => address === "https://img.dlsite.jp/primary.jpg",
         ),
-      ).toHaveLength(2);
+      ).toHaveLength(1);
       expect(await workflow.listInspections()).toHaveLength(executionCount + 1);
     } finally {
       await workflow.close();

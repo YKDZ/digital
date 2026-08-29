@@ -43,11 +43,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false"
   },
   "dependencies": {
-    "@digital/application": "workspace:*",
-    "@digital/composition": "workspace:*",
-    "commander": "catalog:"
+    "@digital/cli-delivery": "workspace:*",
+    "@digital/composition": "workspace:*"
   },
   "devDependencies": {
+    "@digital/application": "workspace:*",
     "@digital/test-support": "workspace:*",
     "@digital/typescript-config": "workspace:*",
     "@types/node": "catalog:",

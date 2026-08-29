@@ -7,21 +7,20 @@ import {
   AssetRefreshWorkflow,
   ExecutionHost,
 } from "@digital/application";
+import { runProduct } from "@digital/composition";
 import {
   dlsiteAssetViewInformationRequirement,
   generalAssetViewInformationRequirement,
 } from "@digital/presentation";
-import { describe, expect, it, vi } from "vitest";
-
-import { executionOutcomeLabel } from "#/lib/catalogue";
-import { createApi } from "#/server/api";
 import {
+  createApi,
+  createWebDelivery,
+  executionOutcomeLabel,
   catalogueSnapshot,
   createObservedRoot,
   deliveryAssetView,
   deliveryExecution,
   projectCatalogueAssets,
-  shutdownCatalogue,
   startAssetMetadataRefresh,
   startAssetRescrape,
   startAssetRescrapeForSubject,
@@ -29,9 +28,32 @@ import {
   startCatalogueAutomation,
   startRefreshWith,
   updateAutomation,
-} from "#/server/catalogue";
+} from "@digital/web-delivery";
+import { describe, expect, it, vi } from "vitest";
 
 import { prepareWebProductData } from "./prepare-catalogue";
+
+let closeBoundWebProduct: (() => Promise<void>) | undefined;
+
+function bindWebDelivery() {
+  const product = runProduct(
+    {
+      productDataDirectory: process.env.DIGITAL_PRODUCT_DATA,
+      environment: process.env,
+    },
+    { start: createWebDelivery },
+  );
+  closeBoundWebProduct = async () => await product.close();
+  return product.result;
+}
+
+async function shutdownBoundWebProduct(): Promise<void> {
+  try {
+    await closeBoundWebProduct?.();
+  } finally {
+    closeBoundWebProduct = undefined;
+  }
+}
 
 describe("asset delivery view", () => {
   it("exposes Bangumi authorization, browser callback, and revoke through one safe HTTP surface", async () => {
@@ -123,6 +145,7 @@ describe("asset delivery view", () => {
     const previous = process.env.DIGITAL_PRODUCT_DATA;
     process.env.DIGITAL_PRODUCT_DATA = "/product";
     try {
+      bindWebDelivery();
       const view = deliveryAssetView({
         id: "book",
         refreshTarget: { subjectId: "book" },
@@ -153,7 +176,10 @@ describe("asset delivery view", () => {
 
   it("leaves provider partition and grouping in Presentation", async () => {
     const deliverySource = await readFile(
-      new URL("../server/catalogue.ts", import.meta.url),
+      new URL(
+        "../../../packages/web-delivery/src/web-delivery.ts",
+        import.meta.url,
+      ),
       "utf8",
     );
 
@@ -165,7 +191,10 @@ describe("asset delivery view", () => {
 
   it("keeps test-only Drizzle preparation out of the Web runtime", async () => {
     const catalogueSource = await readFile(
-      new URL("../server/catalogue.ts", import.meta.url),
+      new URL(
+        "../../../packages/web-delivery/src/web-delivery.ts",
+        import.meta.url,
+      ),
       "utf8",
     );
 
@@ -200,6 +229,7 @@ describe("asset delivery view", () => {
     try {
       await prepareWebProductData(productData);
       process.env.DIGITAL_PRODUCT_DATA = productData;
+      bindWebDelivery();
 
       await expect(
         catalogueSnapshot({
@@ -223,7 +253,7 @@ describe("asset delivery view", () => {
       workflowHistory.mockRestore();
       currentAttention.mockRestore();
       legacyHistory.mockRestore();
-      await shutdownCatalogue();
+      await shutdownBoundWebProduct();
       if (previous === undefined) delete process.env.DIGITAL_PRODUCT_DATA;
       else process.env.DIGITAL_PRODUCT_DATA = previous;
       await rm(root, { recursive: true, force: true });
@@ -260,6 +290,7 @@ describe("asset delivery view", () => {
     try {
       await prepareWebProductData(productData);
       process.env.DIGITAL_PRODUCT_DATA = productData;
+      bindWebDelivery();
       const response = await createApi().request(
         "/catalogue?surface=workflow-history&cursor=history-cursor&limit=2",
       );
@@ -308,33 +339,11 @@ describe("asset delivery view", () => {
       currentAttention.mockRestore();
       automation.mockRestore();
       fulfillment.mockRestore();
-      await shutdownCatalogue();
+      await shutdownBoundWebProduct();
       if (previous === undefined) delete process.env.DIGITAL_PRODUCT_DATA;
       else process.env.DIGITAL_PRODUCT_DATA = previous;
       await rm(root, { recursive: true, force: true });
     }
-  });
-
-  it("publishes DLsite renderer contracts for formal boundary enforcement", async () => {
-    const [rendererPackage, rendererContracts] = await Promise.all([
-      readDeliveryFixture("../../../packages/presentation/package.json"),
-      readDeliveryFixture(
-        "../../../packages/presentation/src/renderer-contracts.ts",
-      ),
-    ] as const);
-
-    expect(
-      (
-        JSON.parse(rendererPackage) as {
-          readonly exports?: Record<string, unknown>;
-        }
-      ).exports?.["./renderer-contracts"],
-    ).toEqual({
-      default: "./src/renderer-contracts.ts",
-      types: "./src/renderer-contracts.ts",
-    });
-    expect(rendererContracts).toContain("readonly");
-    expect(rendererContracts).not.toMatch(/\bimport\b/u);
   });
 
   it("delivers accepted Bangumi episodes as one finite series card", () => {
@@ -618,6 +627,7 @@ describe("asset delivery view", () => {
     await writeFile(path.join(observed, "track.wav"), "observed bytes");
     await prepareWebProductData(productData);
     process.env.DIGITAL_PRODUCT_DATA = productData;
+    bindWebDelivery();
     process.env.DIGITAL_WEB_OBSERVED_ROOTS = observed;
     vi.stubGlobal("fetch", async (input: string | URL | Request) => {
       const address =
@@ -761,7 +771,7 @@ describe("asset delivery view", () => {
       scanFilesystem.mockRestore();
       fulfillInformation.mockRestore();
       vi.unstubAllGlobals();
-      await shutdownCatalogue();
+      await shutdownBoundWebProduct();
       if (previousProductData === undefined)
         delete process.env.DIGITAL_PRODUCT_DATA;
       else process.env.DIGITAL_PRODUCT_DATA = previousProductData;
@@ -1143,15 +1153,17 @@ describe("asset delivery view", () => {
     process.env.DIGITAL_PRODUCT_DATA = directory;
     await mkdir(databasePath);
     try {
+      bindWebDelivery();
       await expect(startCatalogueAutomation()).rejects.toThrow();
-      await expect(shutdownCatalogue()).rejects.toThrow();
+      await expect(shutdownBoundWebProduct()).rejects.toThrow();
       await rm(databasePath, { recursive: true, force: true });
       await prepareWebProductData(directory);
+      bindWebDelivery();
       await expect(catalogueSnapshot()).resolves.toMatchObject({
         configured: true,
         assets: [],
       });
-      await shutdownCatalogue();
+      await shutdownBoundWebProduct();
     } finally {
       if (previous === undefined) delete process.env.DIGITAL_PRODUCT_DATA;
       else process.env.DIGITAL_PRODUCT_DATA = previous;
@@ -1167,17 +1179,17 @@ describe("asset delivery view", () => {
     process.env.DIGITAL_PRODUCT_DATA = directory;
     try {
       await prepareWebProductData(directory);
+      bindWebDelivery();
       await startCatalogueAutomation();
-      const closing = shutdownCatalogue();
-      await expect(catalogueSnapshot()).rejects.toThrow(
-        "内容目录正在关闭，请稍后重试",
-      );
-      await Promise.all([closing, shutdownCatalogue()]);
+      const closing = shutdownBoundWebProduct();
+      await Promise.all([closing, shutdownBoundWebProduct()]);
+      bindWebDelivery();
+      await startCatalogueAutomation();
       await expect(catalogueSnapshot()).resolves.toMatchObject({
         configured: true,
         assets: [],
       });
-      await shutdownCatalogue();
+      await shutdownBoundWebProduct();
     } finally {
       if (previous === undefined) delete process.env.DIGITAL_PRODUCT_DATA;
       else process.env.DIGITAL_PRODUCT_DATA = previous;
@@ -1189,6 +1201,7 @@ describe("asset delivery view", () => {
     const previous = process.env.DIGITAL_PRODUCT_DATA;
     process.env.DIGITAL_PRODUCT_DATA = "/workspaces/digital/.scratch/product";
     try {
+      bindWebDelivery();
       const digest =
         "e3a991a37c8da26db9860238c628f7d34d6cb57a4da0c6ceea04989ea8a6c584";
       const view = deliveryAssetView({
@@ -1214,6 +1227,7 @@ describe("asset delivery view", () => {
     const previous = process.env.DIGITAL_PRODUCT_DATA;
     process.env.DIGITAL_PRODUCT_DATA = "/workspaces/digital/.scratch/product";
     try {
+      bindWebDelivery();
       const digest =
         "fddd9347aa1930afbac3b248465f027c7e387dba0d140f55c4c2a64d2a8c19c7";
       const view = deliveryAssetView({
@@ -1248,6 +1262,7 @@ describe("asset delivery view", () => {
     const previous = process.env.DIGITAL_PRODUCT_DATA;
     process.env.DIGITAL_PRODUCT_DATA = "/workspaces/digital/.scratch/product";
     try {
+      bindWebDelivery();
       const digest =
         "ad04989ea8a6c584fddd9347aa1930afbac3b248465f027c7e387dba0d140f55";
       const address = `/workspaces/digital/.scratch/product/managed-artifacts/ad/${digest}`;
@@ -1356,8 +1371,45 @@ describe("asset delivery view", () => {
       else process.env.DIGITAL_PRODUCT_DATA = previous;
     }
   });
-});
 
-async function readDeliveryFixture(relativePath: string): Promise<string> {
-  return await readFile(new URL(relativePath, import.meta.url), "utf8");
-}
+  it("delivers managed bytes only through injected product operations", async () => {
+    const digest =
+      "e3a991a37c8da26db9860238c628f7d34d6cb57a4da0c6ceea04989ea8a6c584";
+    const managedArtifactReference = vi.fn((address: string) =>
+      address === "/private/product/managed-artifacts/e3/" + digest
+        ? { digest }
+        : undefined,
+    );
+    const readManagedArtifact = vi.fn(
+      async () => new Uint8Array([0xff, 0xd8, 0xff]),
+    );
+    const delivery = createWebDelivery({
+      configured: true,
+      setAutomationInformationRequirementForAcceptedSubject: vi.fn(),
+      managedArtifactReference,
+      readManagedArtifact,
+    } as never);
+
+    expect(
+      deliveryAssetView({
+        id: "asset-1",
+        refreshTarget: { subjectId: "asset-1" },
+        cardComponent: "generic",
+        detailComponent: "generic",
+        title: "注入产物",
+        cover: `/private/product/managed-artifacts/e3/${digest}`,
+        classifications: [],
+        available: true,
+        relationships: [],
+      }).cover,
+    ).toBe(`/api/artifacts/${digest}`);
+
+    const served = await delivery.api.request(`/artifacts/${digest}`);
+    expect(served.status).toBe(200);
+    expect(readManagedArtifact).toHaveBeenCalledWith(digest);
+
+    const rejected = await delivery.api.request("/artifacts/%2Fetc%2Fpasswd");
+    expect(rejected.status).toBe(404);
+    expect(readManagedArtifact).toHaveBeenCalledTimes(1);
+  });
+});

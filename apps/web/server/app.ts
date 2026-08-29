@@ -1,51 +1,57 @@
+import { runProduct, type ProductConfiguration } from "@digital/composition";
+import { createWebDelivery, type WebDelivery } from "@digital/web-delivery";
 import vike from "@vikejs/hono";
 import { Hono } from "hono";
 
-import { api as defaultApi } from "#/server/api";
-import {
-  catalogueReady,
-  catalogueReadinessFailure,
-  shutdownCatalogue,
-  startCatalogueAutomation,
-} from "#/server/catalogue";
 import { processLifecycle } from "#/server/process-lifecycle";
 
-const lifecycleRegistration = processLifecycle.register({
-  async shutdown(reason) {
-    await shutdownCatalogue({ terminal: reason === "terminal" });
-  },
-});
-await lifecycleRegistration.ready;
+export type WebServerOptions = {
+  readonly api?: Hono;
+  readonly startCatalogueAutomation?: () => Promise<void>;
+  readonly catalogueReady?: () => boolean;
+  readonly catalogueReadinessFailure?: () => string | undefined;
+  readonly attachVike?: boolean;
+  readonly createDelivery?: typeof createWebDelivery;
+  /** 仅由可执行组合根持有；Web delivery 本身不能关闭产品资源。 */
+  readonly closeProduct?: () => Promise<void>;
+};
 
-const hot = (
-  import.meta as ImportMeta & {
-    readonly hot?: {
-      dispose(callback: (data: Record<string, unknown>) => void): void;
-    };
-  }
-).hot;
-if (hot) {
-  hot.dispose((data) => {
-    data.catalogueShutdown = lifecycleRegistration.dispose();
+/** Web 可执行入口同时选择组合和独立交付，再注入同一产品应用。 */
+export function createWebServer(
+  configuration: ProductConfiguration,
+  options: WebServerOptions = {},
+) {
+  const product = runProduct(configuration, {
+    start(application) {
+      return (options.createDelivery ?? createWebDelivery)(application);
+    },
+  });
+  return createApp(product.result, {
+    ...options,
+    async closeProduct() {
+      await product.close();
+    },
   });
 }
 
 export function createApp(
-  options: {
-    readonly api?: Hono;
-    readonly startCatalogueAutomation?: () => Promise<void>;
-    readonly catalogueReady?: () => boolean;
-    readonly catalogueReadinessFailure?: () => string | undefined;
-    readonly attachVike?: boolean;
-  } = {},
+  delivery: WebDelivery,
+  options: WebServerOptions = {},
 ) {
+  const lifecycleRegistration = processLifecycle.register({
+    async shutdown() {
+      await options.closeProduct?.();
+    },
+  });
+  void lifecycleRegistration.ready;
   const app = new Hono();
 
   // host 由进程持有且幂等，因此开发和测试中重复创建 Vike app 不会产生重复定时器。
-  const start = options.startCatalogueAutomation ?? startCatalogueAutomation;
-  const ready = options.catalogueReady ?? catalogueReady;
+  const start =
+    options.startCatalogueAutomation ?? delivery.startCatalogueAutomation;
+  const ready = options.catalogueReady ?? delivery.catalogueReady;
   const readinessFailure =
-    options.catalogueReadinessFailure ?? catalogueReadinessFailure;
+    options.catalogueReadinessFailure ?? delivery.catalogueReadinessFailure;
   const startup = start();
   void startup.catch((error: unknown) => {
     console.error("自动刷新未启动", error);
@@ -94,7 +100,7 @@ export function createApp(
     return await next();
   });
 
-  app.route("/api", options.api ?? defaultApi);
+  app.route("/api", options.api ?? delivery.api);
 
   if (options.attachVike !== false) vike(app);
 

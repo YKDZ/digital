@@ -1,18 +1,10 @@
-import { readFile } from "node:fs/promises";
-import path from "node:path";
-
 import type {
   CurrentAttentionPageRequest,
   CurrentCataloguePageRequest,
   ExecutionHost,
+  SourceConnectionInspection,
   WorkflowHistoryPageRequest,
 } from "@digital/application";
-import {
-  composeAssetRefreshRuntime,
-  type BangumiAuthorizationStart,
-  type ComposedAssetRefresh,
-  type SourceConnectionInspection,
-} from "@digital/composition";
 import {
   type AssetViewFacts,
   type AssetViewModel,
@@ -23,7 +15,14 @@ import {
   projectAssetView,
   projectCatalogue,
 } from "@digital/presentation";
+import type {
+  ProductApplication,
+  ProductAssetRefresh,
+  ProductWorkflowOperations,
+} from "@digital/product-application";
+import type { Hono } from "hono";
 
+import { createApi } from "./api.ts";
 import type {
   AttentionViewModel,
   AutomationViewModel,
@@ -31,46 +30,93 @@ import type {
   CatalogueSnapshot,
   ExecutionViewModel,
   ObservedRootViewModel,
-} from "#/lib/catalogue";
-import { processLifecycle } from "#/server/process-lifecycle";
+} from "./catalogue.ts";
 
-const productDataEnvironment = "DIGITAL_PRODUCT_DATA";
-const managedArtifactSegment = "managed-artifacts";
+export type BangumiAuthorizationStart = ReturnType<
+  ProductAssetRefresh["sourceConnections"]["bangumi"]["beginAuthorization"]
+>;
 
-let runtime: ReturnType<typeof composeAssetRefreshRuntime> | undefined;
-let automationStart: Promise<void> | undefined;
-let shutdown: Promise<void> | undefined;
-let terminalShutdown = false;
-let startupFailure: string | undefined;
+/** Web delivery 的完整进程接口；可执行根只需把已组合的产品应用交给它。 */
+export type WebDelivery = {
+  readonly api: Hono;
+  readonly startCatalogueAutomation: () => Promise<void>;
+  readonly catalogueReady: () => boolean;
+  readonly catalogueReadinessFailure: () => string | undefined;
+};
 
-function assertCatalogueMayStart(): void {
-  processLifecycle.assertMayStart();
-  if (terminalShutdown) throw new Error("进程正在关闭，不能启动内容目录");
-  if (shutdown !== undefined) throw new Error("内容目录正在关闭，请稍后重试");
+/**
+ * 将已组合的产品操作绑定到 Web delivery。这里不选择适配器，也不拥有组合资源。
+ */
+export function createWebDelivery(
+  application: ProductApplication,
+): WebDelivery {
+  application.setAutomationInformationRequirementForAcceptedSubject(
+    informationRequirementForAutomatedAcceptedSubject,
+  );
+  productApplication = application;
+  const catalogueAutomation = createCatalogueAutomation(application);
+  activeCatalogueAutomation = catalogueAutomation;
+  return {
+    api: createApi(),
+    startCatalogueAutomation: catalogueAutomation.start,
+    catalogueReady: catalogueAutomation.ready,
+    catalogueReadinessFailure: catalogueAutomation.failure,
+  };
 }
 
-function configuredProductDataDirectory(): string {
-  const directory = process.env[productDataEnvironment]?.trim();
-  if (!directory) {
-    throw new Error("尚未配置内容目录");
-  }
-  return directory;
-}
+let productApplication: ProductApplication | undefined;
+let activeCatalogueAutomation: CatalogueAutomation | undefined;
 
-function composedRuntime() {
-  assertCatalogueMayStart();
-  runtime ??= composeAssetRefreshRuntime(configuredProductDataDirectory(), {
-    automationInformationRequirementForAcceptedSubject:
-      informationRequirementForAutomatedAcceptedSubject,
-    onError(error) {
-      console.error("自动刷新检查未完成", error);
+type CatalogueAutomation = {
+  readonly start: () => Promise<void>;
+  readonly ready: () => boolean;
+  readonly failure: () => string | undefined;
+};
+
+function createCatalogueAutomation(
+  application: ProductApplication,
+): CatalogueAutomation {
+  let automationStart: Promise<void> | undefined;
+  let startupFailure: string | undefined;
+  return {
+    async start(): Promise<void> {
+      if (!application.configured) return;
+      automationStart ??= application
+        .startAutomation({
+          onError(error) {
+            console.error("自动刷新检查未完成", error);
+          },
+        })
+        .catch((error: unknown) => {
+          startupFailure = describeStartupFailure(error);
+          automationStart = undefined;
+          throw error;
+        });
+      await automationStart;
     },
-  });
-  return runtime;
+    ready(): boolean {
+      return (
+        automationStart !== undefined &&
+        application.automation.recoveryReady === true
+      );
+    },
+    failure(): string | undefined {
+      if (startupFailure !== undefined) return startupFailure;
+      if (!application.configured)
+        return "尚未配置产品数据目录；设置 DIGITAL_PRODUCT_DATA 后运行 digital-db-migrate prepare-only";
+      return undefined;
+    },
+  };
+}
+
+function configuredProductApplication(): ProductApplication {
+  if (productApplication === undefined)
+    throw new Error("Web 交付尚未注入产品应用");
+  return productApplication;
 }
 
 function application() {
-  return composedRuntime().workflow;
+  return configuredProductApplication().workflow;
 }
 
 /**
@@ -95,60 +141,32 @@ export function revokeBangumiAuthorization(
   return application().sourceConnections.bangumi.revoke(expectedVersion);
 }
 
-function automation() {
-  return composedRuntime().automationHost;
-}
-
 function executions() {
-  return composedRuntime().executionHost;
+  return configuredProductApplication().execution;
 }
 
 /** 启动且仅启动一个进程内 host；导出它以便 delivery 测试等待。 */
 export async function startCatalogueAutomation(): Promise<void> {
-  assertCatalogueMayStart();
-  if (!process.env[productDataEnvironment]?.trim()) return;
-  automationStart ??= automation()
-    .start()
-    .catch((error: unknown) => {
-      startupFailure = describeStartupFailure(error);
-      automationStart = undefined;
-      throw error;
-    });
-  await automationStart;
+  await configuredCatalogueAutomation().start();
 }
 
 /** delivery 安全的运行状态；它不会自行打开 catalogue。 */
 export function catalogueReady(): boolean {
-  return (
-    automationStart !== undefined &&
-    runtime?.automationHost.recoveryReady === true
-  );
+  return configuredCatalogueAutomation().ready();
 }
 
 /** 启动准入失败的脱敏 delivery 投影。 */
 export function catalogueReadinessFailure(): string | undefined {
-  if (startupFailure !== undefined) return startupFailure;
-  if (!process.env[productDataEnvironment]?.trim())
-    return "尚未配置产品数据目录；设置 DIGITAL_PRODUCT_DATA 后运行 digital-db-migrate prepare-only";
-  return undefined;
+  return (
+    activeCatalogueAutomation?.failure() ??
+    "尚未配置产品数据目录；设置 DIGITAL_PRODUCT_DATA 后运行 digital-db-migrate prepare-only"
+  );
 }
 
-/** 释放各进程持有的 composition，不越过所有权边界。 */
-export async function shutdownCatalogue(options?: {
-  readonly terminal?: boolean;
-}): Promise<void> {
-  if (options?.terminal === true) terminalShutdown = true;
-  if (shutdown !== undefined) return await shutdown;
-  const ownedRuntime = runtime;
-  shutdown = (async () => {
-    await ownedRuntime?.close();
-  })().finally(() => {
-    if (runtime === ownedRuntime) runtime = undefined;
-    automationStart = undefined;
-    startupFailure = undefined;
-    if (!terminalShutdown) shutdown = undefined;
-  });
-  await shutdown;
+function configuredCatalogueAutomation(): CatalogueAutomation {
+  if (activeCatalogueAutomation === undefined)
+    throw new Error("Web 交付尚未注入产品应用");
+  return activeCatalogueAutomation;
 }
 
 function describeStartupFailure(error: unknown): string {
@@ -158,16 +176,9 @@ function describeStartupFailure(error: unknown): string {
   return error.message.replaceAll(/\/[^\s]+/gu, "[路径已隐藏]");
 }
 
-function managedArtifactRoot(): string {
-  return path.join(configuredProductDataDirectory(), managedArtifactSegment);
-}
-
 function managedArtifactDigest(address: string): string | undefined {
-  const resolved = path.resolve(address);
-  const root = managedArtifactRoot();
-  if (!resolved.startsWith(`${root}${path.sep}`)) return undefined;
-  const digest = path.basename(resolved);
-  return /^[a-f0-9]{64}$/u.test(digest) ? digest : undefined;
+  return configuredProductApplication().managedArtifactReference(address)
+    ?.digest;
 }
 
 function isPrivateFilesystemAddress(address: string): boolean {
@@ -175,8 +186,7 @@ function isPrivateFilesystemAddress(address: string): boolean {
     return false;
   }
   if (address.startsWith("file:")) return true;
-  if (path.win32.isAbsolute(address)) return true;
-  return path.isAbsolute(address);
+  return /^(?:[a-zA-Z]:[\\/]|\/)/u.test(address);
 }
 
 export function deliveryAssetView(view: AssetViewModel): AssetViewModel {
@@ -222,13 +232,6 @@ function deliveryCover(cover: string | undefined): string | undefined {
   return undefined;
 }
 
-function managedArtifactPath(digest: string): string {
-  if (!/^[a-f0-9]{64}$/u.test(digest)) {
-    throw new Error("未找到文件");
-  }
-  return path.join(managedArtifactRoot(), digest.slice(0, 2), digest);
-}
-
 function mediaTypeForBytes(bytes: Uint8Array): string {
   if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff)
     return "image/jpeg";
@@ -263,12 +266,14 @@ function mediaTypeForBytes(bytes: Uint8Array): string {
 export async function managedArtifactResponse(
   digest: string,
 ): Promise<{ readonly bytes: Uint8Array; readonly mediaType: string }> {
-  const bytes = await readFile(managedArtifactPath(digest));
+  if (!/^[a-f0-9]{64}$/u.test(digest)) throw new Error("未找到文件");
+  const bytes =
+    await configuredProductApplication().readManagedArtifact(digest);
   return { bytes, mediaType: mediaTypeForBytes(bytes) };
 }
 
 type AcceptedPresentationSubject = NonNullable<
-  NonNullable<Awaited<ReturnType<ComposedAssetRefresh["inspect"]>>>["accepted"]
+  NonNullable<Awaited<ReturnType<ProductAssetRefresh["inspect"]>>>["accepted"]
 >;
 
 /** 从已接受的 Application 投影到 Presentation facts 的 delivery 中立桥接。 */
@@ -304,7 +309,7 @@ export function informationRequirementForAutomatedAcceptedSubject(
  * 也不会要求 Application 提供所有已交付 View 可选输入的全局并集。
  */
 async function informationRequirementForSubject(
-  subject: Pick<ComposedAssetRefresh, "inspectCurrentCatalogueSubject">,
+  subject: Pick<ProductAssetRefresh, "inspectCurrentCatalogueSubject">,
   subjectId: string,
   fallbackSourceAssociation?: AssetViewFacts["sourceAssociation"],
 ) {
@@ -349,7 +354,7 @@ export function projectCatalogueAssets(
 }
 
 function folderName(directory: string): string {
-  return path.basename(directory) || "已选择的文件夹";
+  return directory.split(/[\\/]/u).filter(Boolean).at(-1) || "已选择的文件夹";
 }
 
 function toAutomationView(intent: {
@@ -374,7 +379,7 @@ function toAutomationView(intent: {
 }
 
 async function activeObservedRootViews(
-  subject: ComposedAssetRefresh,
+  subject: ProductWorkflowOperations,
 ): Promise<readonly ObservedRootViewModel[]> {
   return (await subject.observedRootRegistrations.list())
     .filter((registration) => registration.status === "active")
@@ -382,7 +387,7 @@ async function activeObservedRootViews(
 }
 
 export function deliveryExecution(
-  inspection: Awaited<ReturnType<ComposedAssetRefresh["inspect"]>>,
+  inspection: Awaited<ReturnType<ProductWorkflowOperations["inspect"]>>,
 ): ExecutionViewModel | undefined {
   if (!inspection) return undefined;
   return {
@@ -475,7 +480,7 @@ export type CatalogueSnapshotRequest = {
   readonly currentAttention?: CurrentAttentionPageRequest;
 };
 
-export type CatalogueSurfaceRequest =
+type CatalogueSurfaceRequest =
   | {
       readonly surface: "current-catalogue";
       readonly page?: CurrentCataloguePageRequest;
@@ -510,7 +515,7 @@ function emptyCatalogueSnapshot(configured: boolean): CatalogueSnapshot {
 export async function catalogueSurface(
   input: CatalogueSurfaceRequest,
 ): Promise<CatalogueSurfaceResponse> {
-  const configured = Boolean(process.env[productDataEnvironment]?.trim());
+  const configured = productApplication?.configured === true;
   if (!configured) {
     if (input.surface === "current-catalogue")
       return { surface: input.surface, configured, assets: [], pagination: {} };
@@ -582,7 +587,7 @@ export async function catalogueSurface(
 export async function catalogueSnapshot(
   input: CatalogueSnapshotRequest = {},
 ): Promise<CatalogueSnapshot> {
-  if (!process.env[productDataEnvironment]?.trim()) {
+  if (productApplication?.configured !== true) {
     return emptyCatalogueSnapshot(false);
   }
   const subject = application();
@@ -659,7 +664,7 @@ export async function createObservedRoot(input: {
 }
 
 export async function startRefreshWith(
-  subject: ComposedAssetRefresh,
+  subject: ProductWorkflowOperations,
   input: Parameters<typeof startRefresh>[0],
   host: Pick<ExecutionHost, "invoke">,
 ): Promise<{ readonly id: string }> {
@@ -722,7 +727,7 @@ export async function startRefreshWith(
 
 export async function startAssetRescrapeForSubject(
   subject: Pick<
-    ComposedAssetRefresh,
+    ProductWorkflowOperations,
     | "inspectCurrentCatalogueSubject"
     | "inspectRefreshTarget"
     | "rescrapeObservedScope"

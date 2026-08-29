@@ -1,7 +1,6 @@
 <script setup lang="ts">
+import type { CatalogueAssetViewModel } from "@digital/web-delivery";
 import { computed } from "vue";
-
-import type { CatalogueAssetViewModel } from "#/lib/catalogue";
 
 import BangumiAssetCard from "./BangumiAssetCard.vue";
 import BookAssetCard from "./BookAssetCard.vue";
