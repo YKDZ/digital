@@ -43,6 +43,7 @@ type ExecutionRow = {
   readonly source_record_ids_json: string;
   readonly source_refresh_run_ids_json?: string;
   readonly proposal_id: string | null;
+  readonly planned_asset_id: string | null;
   readonly accepted_asset_id: string | null;
   readonly reason: string | null;
   readonly reuse_plan_json: string | null;
@@ -246,6 +247,7 @@ function drizzleExecutionValues(execution: WorkflowExecution) {
     sourceRecordIdsJson: row.source_record_ids_json,
     sourceRefreshRunIdsJson: row.source_refresh_run_ids_json,
     proposalId: row.proposal_id,
+    plannedAssetId: row.planned_asset_id,
     acceptedAssetId: row.accepted_asset_id,
     reason: row.reason,
     reusePlanJson: row.reuse_plan_json,
@@ -270,6 +272,7 @@ function drizzleExecutionValues(execution: WorkflowExecution) {
 }
 
 function executionColumnRow(execution: WorkflowExecution) {
+  assertPlannedAssetIdentities(execution);
   return {
     id: execution.id,
     selection_directory: execution.selection.directory ?? null,
@@ -294,6 +297,7 @@ function executionColumnRow(execution: WorkflowExecution) {
       execution.sourceRefreshRunIds ?? [],
     ),
     proposal_id: execution.proposalId ?? null,
+    planned_asset_id: execution.plannedAssetId ?? null,
     accepted_asset_id: execution.acceptedAssetId ?? null,
     reason: execution.reason ?? null,
     reuse_plan_json:
@@ -372,6 +376,7 @@ function executionRowFromDrizzle(
     source_record_ids_json: row.sourceRecordIdsJson,
     source_refresh_run_ids_json: row.sourceRefreshRunIdsJson,
     proposal_id: row.proposalId,
+    planned_asset_id: row.plannedAssetId,
     accepted_asset_id: row.acceptedAssetId,
     reason: row.reason,
     reuse_plan_json: row.reusePlanJson,
@@ -404,7 +409,26 @@ function executionAuditJson(execution: WorkflowExecution): string {
 }
 
 function executionFromRow(row: ExecutionRow): WorkflowExecution {
-  return executionFromAudit(row.audit_json, decodeExecutionColumns(row));
+  const execution = executionFromAudit(
+    row.audit_json,
+    decodeExecutionColumns(row),
+  );
+  assertPlannedAssetIdentities(execution);
+  return execution;
+}
+
+function assertPlannedAssetIdentities(execution: WorkflowExecution): void {
+  const plannedAssetIds = [
+    execution.plannedAssetId,
+    ...(execution.workItems?.map((item) => item.plannedAssetId) ?? []),
+  ];
+  if (
+    plannedAssetIds.some(
+      (plannedAssetId) =>
+        plannedAssetId !== undefined && plannedAssetId.trim().length === 0,
+    )
+  )
+    throw new Error("Workflow Execution planned Asset identity is invalid");
 }
 
 function workflowInputFromJson(
@@ -535,6 +559,9 @@ function decodeExecutionColumns(row: ExecutionRow): DecodedExecutionColumns {
             ) as string[],
           }),
       ...(row.proposal_id === null ? {} : { proposalId: row.proposal_id }),
+      ...(row.planned_asset_id === null
+        ? {}
+        : { plannedAssetId: row.planned_asset_id }),
       ...(row.accepted_asset_id === null
         ? {}
         : { acceptedAssetId: row.accepted_asset_id }),

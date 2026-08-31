@@ -33,6 +33,12 @@ const trustedRecognitionRules = [
     ruleVersion: "1",
   },
   {
+    capabilityId: "epub.local-publication-recognizer",
+    capabilityVersion: "1",
+    ruleId: "epub.valid-single-publication-revision",
+    ruleVersion: "1",
+  },
+  {
     capabilityId: "tmdb.strict-film-recognizer",
     capabilityVersion: "1",
     ruleId: "unique-exact-title-year-official-record",
@@ -56,7 +62,7 @@ export function curatedInitialRecognitionPolicy(): RecognitionPolicy & {
   readonly trustedRuleCoordinates: readonly string[];
 } {
   return {
-    version: "curated-initial-sources/3",
+    version: "curated-initial-sources/4",
     trustedRuleCoordinates: trustedRecognitionRules.map(
       (rule) =>
         `${rule.capabilityId}@${rule.capabilityVersion}/${rule.ruleId}@${rule.ruleVersion}`,

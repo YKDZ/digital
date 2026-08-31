@@ -65,6 +65,35 @@ describe("DLsite exact directory convention", () => {
 });
 
 describe("DLsite collection and interpretation", () => {
+  it("retries a bounded transient official request inside the source capability", async () => {
+    const requested: string[] = [];
+    let firstJsonRequest = true;
+    const collector = new DlsiteCollector(
+      async (address) => {
+        requested.push(address);
+        if (address.includes("ajax") && firstJsonRequest) {
+          firstJsonRequest = false;
+          throw new TypeError("temporary transport failure");
+        }
+        return response(
+          address.includes("ajax")
+            ? JSON.stringify({ RJ01668691: { site_id: "maniax" } })
+            : "<html></html>",
+          address.includes("ajax") ? "application/json" : "text/html",
+        );
+      },
+      async () => {},
+    );
+
+    const result = await collector.collect(evidence);
+
+    expect(result.failures).toEqual([]);
+    expect(result.records).toHaveLength(2);
+    expect(
+      requested.filter((address) => address.includes("ajax")),
+    ).toHaveLength(2);
+  });
+
   it("uses the official catalogue section declared by product JSON for the product page", async () => {
     const requested: string[] = [];
     const collector = new DlsiteCollector(async (address) => {
@@ -130,17 +159,26 @@ describe("DLsite collection and interpretation", () => {
   });
 
   it("returns completed endpoint records alongside required endpoint failure diagnostics", async () => {
-    const collector = new DlsiteCollector(async (address) => ({
-      ok: !address.includes("ajax"),
-      status: 503,
-      headers: { get: () => "text/html" },
-      arrayBuffer: async () => new TextEncoder().encode("official page").buffer,
-    }));
+    let ajaxAttempts = 0;
+    const collector = new DlsiteCollector(
+      async (address) => {
+        if (address.includes("ajax")) ajaxAttempts += 1;
+        return {
+          ok: !address.includes("ajax"),
+          status: 503,
+          headers: { get: () => "text/html" },
+          arrayBuffer: async () =>
+            new TextEncoder().encode("official page").buffer,
+        };
+      },
+      async () => {},
+    );
     const result = await collector.collect(evidence);
 
     expect(result.records).toHaveLength(1);
     expect(result.failures).toHaveLength(1);
     expect(result.failures[0]?.reason).toContain("HTTP 503");
+    expect(ajaxAttempts).toBe(3);
   });
 
   it("retains a successful product response when its requested identity is no longer exposed", async () => {
@@ -327,7 +365,7 @@ describe("DLsite collection and interpretation", () => {
     });
     const proposal = new DlsiteExactRecognizer().recognize({
       evidence: [evidence],
-      interpretation: batch,
+      basis: { kind: "source-interpretation", interpretation: batch },
     });
 
     expect(batch.sourceAddress).toBe(evidence.sourceAddress);
@@ -671,7 +709,7 @@ describe("DLsite collection and interpretation", () => {
           },
         },
       ],
-      interpretation,
+      basis: { kind: "source-interpretation", interpretation },
     });
     expect(proposal.ruleResults[0]).toMatchObject({ outcome: "satisfied" });
     expect(proposal.ruleResults[0]?.explanation).toContain("用户指定");
@@ -889,5 +927,28 @@ describe("DLsite collection and interpretation", () => {
         mediaType: "image/jpeg",
       }),
     ).toBe(false);
+  });
+
+  it("retries a transient official cover request before materializing bytes", async () => {
+    let attempts = 0;
+    const acquirer = new DlsiteArtifactAcquirer(
+      async () => {
+        attempts += 1;
+        if (attempts === 1) throw new TypeError("temporary transport failure");
+        return response("image", "image/jpeg");
+      },
+      async () => {},
+    );
+
+    const acquired = await acquirer.acquire({
+      id: "candidate",
+      sourceRecordId: "record",
+      role: "asset.primary-cover",
+      acquisitionReference: "https://img.dlsite.jp/image.jpg",
+      mediaType: "image/jpeg",
+    });
+
+    expect(attempts).toBe(2);
+    expect(acquired.bytes.byteLength).toBeGreaterThan(0);
   });
 });

@@ -1,5 +1,12 @@
 import { spawn } from "node:child_process";
-import { lstat, mkdtemp, rm } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -80,6 +87,164 @@ describe("production catalogue preparation", () => {
     }
   });
 
+  it("migrates an existing source recognition into the unified basis and recognition head", async () => {
+    const productDataDirectory = await temporaryProductData();
+    await mkdir(path.join(productDataDirectory, "managed-artifacts"), {
+      recursive: true,
+    });
+    const databasePath = path.join(productDataDirectory, "catalogue.sqlite");
+    const database = new DatabaseSync(databasePath);
+    try {
+      database.exec(`
+        CREATE TABLE __digital_catalogue_migrations (
+          id TEXT PRIMARY KEY NOT NULL,
+          checksum TEXT NOT NULL,
+          applied_at TEXT NOT NULL
+        );
+        CREATE TABLE __digital_catalogue_migration_failures (
+          id TEXT PRIMARY KEY NOT NULL,
+          message TEXT NOT NULL,
+          occurred_at TEXT NOT NULL
+        );
+      `);
+      for (const artifact of productionMigrationArtifacts.slice(0, -1)) {
+        const sql = await readFile(
+          new URL(
+            `../migrations/${artifact.id}/migration.sql`,
+            import.meta.url,
+          ),
+          "utf8",
+        );
+        database.exec(sql);
+        database
+          .prepare(
+            "INSERT INTO __digital_catalogue_migrations (id, checksum, applied_at) VALUES (?, ?, ?)",
+          )
+          .run(artifact.id, artifact.checksum, "2026-08-30T00:00:00.000Z");
+      }
+      const interpretation = {
+        id: "source-interpretation",
+        producer: {
+          capabilityId: "test.interpreter",
+          capabilityVersion: "1",
+          contractVersion: "1",
+        },
+        sourceRecordIds: [],
+        sourceIdentity: "test-source",
+        sourceAddress: "test:work",
+        metadata: [],
+        sourceArtifacts: [],
+      };
+      database
+        .prepare(
+          "INSERT INTO recognition_proposals (id, execution_id, interpretation_json, rule_results_json) VALUES (?, ?, ?, ?)",
+        )
+        .run("proposal", "execution", JSON.stringify(interpretation), "[]");
+      database
+        .prepare("INSERT INTO entities (id, kind) VALUES (?, ?)")
+        .run("asset", "digital-asset");
+      database
+        .prepare(
+          "INSERT INTO source_associations (id, subject_id, source_identity, native_address, proposal_id) VALUES (?, ?, ?, ?, ?)",
+        )
+        .run("association", "asset", "test-source", "test:work", "proposal");
+      database
+        .prepare(
+          "INSERT INTO recognition_decisions (id, proposal_id, asset_id, accepted_rule_results_json) VALUES (?, ?, ?, ?)",
+        )
+        .run("decision", "proposal", "asset", "[]");
+      database
+        .prepare(
+          "INSERT INTO source_association_heads (subject_id, association_id, recognition_decision_id) VALUES (?, ?, ?)",
+        )
+        .run("asset", "association", "decision");
+      database
+        .prepare(
+          "INSERT INTO current_source_associations (subject_id, association_id) VALUES (?, ?)",
+        )
+        .run("asset", "association");
+    } finally {
+      database.close();
+    }
+
+    try {
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).resolves.toEqual({ applied: 1 });
+      const reopened = SqliteCatalogue.forProductData(productDataDirectory);
+      await expect(reopened.listCurrentCatalogue()).resolves.toMatchObject([
+        {
+          entity: { id: "asset" },
+          proposal: { basis: { kind: "source-interpretation" } },
+          recognitionSourceAssociation: { id: "association" },
+        },
+      ]);
+      reopened.close();
+    } finally {
+      await rm(productDataDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("cleans only unreferenced proof sidecars while the offline writer lock is held", async () => {
+    const productDataDirectory = await temporaryProductData();
+    try {
+      await prepareProductionCatalogue({ productDataDirectory });
+      const referenced = "a".repeat(64);
+      const orphan = "b".repeat(64);
+      const database = new DatabaseSync(
+        path.join(productDataDirectory, "catalogue.sqlite"),
+      );
+      database.exec(`
+        INSERT INTO blobs (digest, media_type, byte_length)
+          VALUES ('${"c".repeat(64)}', 'application/octet-stream', 0);
+        INSERT INTO artifact_content_proofs (
+          blob_digest, scheme, byte_length, frame_size, frame_count,
+          manifest_digest
+        ) VALUES (
+          '${"c".repeat(64)}', 'artifact-frame-manifest/1', 0, 1048576, 0,
+          '${referenced}'
+        );
+      `);
+      database.close();
+      const referencedPath = path.join(
+        productDataDirectory,
+        "artifact-proofs",
+        "sha256",
+        referenced.slice(0, 2),
+        `${referenced}.fproof`,
+      );
+      const orphanPath = path.join(
+        productDataDirectory,
+        "artifact-proofs",
+        "sha256",
+        orphan.slice(0, 2),
+        `${orphan}.fproof`,
+      );
+      const stagingPath = path.join(
+        productDataDirectory,
+        "artifact-proofs",
+        ".staging",
+        "crashed.part",
+      );
+      await mkdir(path.dirname(referencedPath), { recursive: true });
+      await mkdir(path.dirname(orphanPath), { recursive: true });
+      await mkdir(path.dirname(stagingPath), { recursive: true });
+      await writeFile(referencedPath, "referenced");
+      await writeFile(orphanPath, "orphan");
+      await writeFile(stagingPath, "partial");
+
+      await prepareProductionCatalogue({ productDataDirectory });
+
+      await expect(lstat(referencedPath)).resolves.toBeDefined();
+      await expect(lstat(orphanPath)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(lstat(stagingPath)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      await rm(productDataDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("adopts a populated exact Drizzle baseline without replaying its DDL", async () => {
     const productDataDirectory = await temporaryProductData();
     try {
@@ -91,6 +256,10 @@ describe("production catalogue preparation", () => {
         .prepare("INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)")
         .run("adopted-row", "2026-08-20T00:00:00.000Z");
       database.close();
+
+      await expect(
+        inspectProductionCatalogueReadiness({ productDataDirectory }),
+      ).resolves.toMatchObject({ state: "catalogue-not-prepared" });
 
       await expect(
         prepareProductionCatalogue({ productDataDirectory }),

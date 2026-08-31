@@ -179,7 +179,13 @@ function schemaContractFromDrizzle(): SqliteSchemaSignature {
           ? [indexSignature(config.name, 1, primaryKeyColumns)]
           : []),
       ];
-      return [config.name, { columns, indexes }] as const;
+      const checks = config.checks.map(
+        (check) =>
+          `${config.name}|${normalizedGeneratedExpression(
+            dialect.sqlToQuery(check.value).sql,
+          )}`,
+      );
+      return [config.name, { columns, indexes, checks }] as const;
     })
     .toSorted(([left], [right]) => left.localeCompare(right));
   return {
@@ -189,10 +195,10 @@ function schemaContractFromDrizzle(): SqliteSchemaSignature {
     indexes: tableContracts
       .flatMap(([, contract]) => contract.indexes)
       .toSorted(),
-    // 已审阅 schema 两者都未声明。把这些坐标保留在指纹中，使注入的触发器或 CHECK
-    // 约束失败闭合。
     triggers: [],
-    checks: [],
+    checks: tableContracts
+      .flatMap(([, contract]) => contract.checks)
+      .toSorted(),
   };
 }
 

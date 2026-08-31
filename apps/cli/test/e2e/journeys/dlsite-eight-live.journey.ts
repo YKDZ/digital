@@ -5,26 +5,33 @@ import path from "node:path";
 import { captureRawFilesystemSnapshot } from "@digital/test-support";
 
 import {
+  assertFixedCorpusContentBaselineSubset,
+  captureFixedCorpusSnapshots,
+  fixedCorpusContentDigestsFromSnapshots,
+  type FixedCorpusContentDigest,
+  type FixedCorpusRoot,
+} from "../fixed-corpus.ts";
+import {
   registeredObservedRootId,
   type CliJourney,
   type CliJourneyResult,
 } from "../journey.ts";
 
 type AudioOracle = {
+  readonly logicalRoot: string;
   readonly directory: string;
   readonly sourceNativeAddress: string;
   readonly title: string;
   readonly releaseDate: string;
+  readonly language: string;
+  readonly priceJpy: string;
   readonly circle: string;
-  readonly voiceActors: readonly string[];
-  readonly reviewedLanguage?: {
-    readonly property: string;
-    readonly value: string;
-    readonly officialCoverage: string;
-    readonly officialField: string;
-    readonly editionWorkno: string;
-    readonly editionType: string;
-    readonly editionLabel: string;
+  readonly circleSourceKey: string;
+  readonly credits: {
+    readonly voice: readonly string[];
+    readonly scenario: readonly string[];
+    readonly illustration: readonly string[];
+    readonly author: readonly string[];
   };
   readonly reviewedSeries?: {
     readonly entityKind: string;
@@ -40,6 +47,11 @@ type AudioOracle = {
   };
 };
 
+type DlsiteCorpusState = {
+  readonly roots: readonly FixedCorpusRoot[];
+  readonly deepBefore?: ReadonlyMap<string, FixedCorpusContentDigest>;
+};
+
 let works: readonly AudioOracle[] = [];
 const baselines = new Map<
   string,
@@ -50,6 +62,19 @@ const baselines = new Map<
     readonly changedAtNanoseconds: string;
   }[]
 >();
+const stateByWorkDirectory = new Map<string, DlsiteCorpusState>();
+
+function stateKey(context: Parameters<CliJourney["setup"]>[0]): string {
+  return `${context.mode}:${context.workDir}`;
+}
+
+function currentState(
+  context: Parameters<CliJourney["setup"]>[0],
+): DlsiteCorpusState {
+  const state = stateByWorkDirectory.get(stateKey(context));
+  if (state === undefined) throw new Error("DLsite journey setup did not run");
+  return state;
+}
 
 function corpusRoot(context: Parameters<CliJourney["setup"]>[0]): string {
   return path.resolve(
@@ -77,26 +102,31 @@ const journey: CliJourney = {
     const corpus = corpusRoot(context);
     const oracle = JSON.parse(
       await readFile(
-        path.join(corpus, "references/reviewed-oracle.seed.json"),
+        path.join(corpus, "references/reviewed-oracle.json"),
         "utf8",
       ),
     ) as {
-      readonly status: string;
-      readonly reviewedPressureCases: {
-        readonly reviewedAt: string;
-        readonly reviewMethod: string;
-        readonly retainedCatalogue: string;
+      readonly reviews: {
+        readonly dlsite: {
+          readonly status: string;
+          readonly reviewedAt: string;
+          readonly reviewMethod: string;
+        };
       };
       readonly audioWorks: readonly AudioOracle[];
     };
-    assert.equal(oracle.status, "seed-needs-official-source-review");
-    assert.equal(oracle.reviewedPressureCases.reviewedAt, "2026-07-30");
+    assert.equal(
+      oracle.reviews.dlsite.status,
+      "reviewed-current-official-source",
+    );
+    assert.equal(oracle.reviews.dlsite.reviewedAt, "2026-08-29");
     assert.match(
-      oracle.reviewedPressureCases.reviewMethod,
-      /official DLsite JSON and HTML Source Records/u,
+      oracle.reviews.dlsite.reviewMethod,
+      /Independently fetched and compared each current official DLsite product JSON and HTML page/u,
     );
     works = oracle.audioWorks;
     assert.equal(works.length, 8, "reviewed audio selection drifted");
+    const roots: FixedCorpusRoot[] = [];
     for (const work of works) {
       const root = path.join(
         corpus,
@@ -105,7 +135,19 @@ const journey: CliJourney = {
       );
       assert.equal((await lstat(root)).isDirectory(), true);
       baselines.set(root, await regularFileSignature(root));
+      roots.push({ logicalRoot: work.logicalRoot, directory: root });
     }
+    const deepIntegrity = process.env.DIGITAL_DEEP_CORPUS_INTEGRITY === "1";
+    const before = await captureFixedCorpusSnapshots(roots, deepIntegrity);
+    const deepBefore = deepIntegrity
+      ? fixedCorpusContentDigestsFromSnapshots(roots, before)
+      : undefined;
+    if (deepBefore !== undefined)
+      await assertFixedCorpusContentBaselineSubset(context, deepBefore);
+    stateByWorkDirectory.set(stateKey(context), {
+      roots,
+      ...(deepBefore === undefined ? {} : { deepBefore }),
+    });
   },
   commands(context) {
     const corpus = corpusRoot(context);
@@ -172,7 +214,12 @@ const journey: CliJourney = {
           readonly coverage: { readonly id: string };
         }[];
         readonly accepted?: {
-          readonly sourceAssociation: { readonly nativeAddress: string };
+          readonly sourceAssociations: readonly {
+            readonly nativeAddress: string;
+          }[];
+          readonly recognitionSourceAssociation?: {
+            readonly nativeAddress: string;
+          };
           readonly artifacts: readonly { readonly id: string }[];
           readonly artifactAssociations: readonly {
             readonly artifactId: string;
@@ -245,75 +292,128 @@ const journey: CliJourney = {
           inspection.sourceRecords.map((record) => record.coverage.id),
           ["dlsite.product-json", "dlsite.product-html"],
         );
+        assert.ok(
+          inspection.accepted?.recognitionSourceAssociation,
+          `accepted DLsite work ${work.sourceNativeAddress} is missing its recognition source`,
+        );
         assert.match(
-          inspection.accepted?.sourceAssociation.nativeAddress ?? "",
+          inspection.accepted.recognitionSourceAssociation.nativeAddress,
           new RegExp(`${work.sourceNativeAddress}\\.html$`, "u"),
         );
         sawRj ||= work.sourceNativeAddress.startsWith("RJ");
         sawVj ||= work.sourceNativeAddress.startsWith("VJ");
         const metadata = inspection.accepted?.metadata ?? [];
-        assert.equal(
-          metadata.some(
-            (item) =>
-              item.property === "asset.title" && item.value === work.title,
-          ),
-          true,
+        const jsonRecordIds = new Set(
+          inspection.sourceRecords
+            .filter((record) => record.coverage.id === "dlsite.product-json")
+            .map((record) => record.id),
         );
+        const htmlRecordIds = new Set(
+          inspection.sourceRecords
+            .filter((record) => record.coverage.id === "dlsite.product-html")
+            .map((record) => record.id),
+        );
+        assert.equal(jsonRecordIds.size, 1);
+        assert.equal(htmlRecordIds.size, 1);
+        for (const expected of [
+          { property: "asset.title", value: work.title },
+          { property: "asset.declared-language", value: work.language },
+          { property: "dlsite.product.price-jpy", value: work.priceJpy },
+        ]) {
+          assert.equal(
+            metadata.some(
+              (item) =>
+                item.property === expected.property &&
+                item.value === expected.value &&
+                item.sourceRecordIds.length === 1 &&
+                item.sourceRecordIds.every((id) => jsonRecordIds.has(id)),
+            ),
+            true,
+            `missing reviewed ${expected.property} for ${work.sourceNativeAddress}`,
+          );
+        }
         assert.equal(
           metadata.some(
             (item) =>
               item.property === "asset.release-date" &&
-              item.value.startsWith(work.releaseDate),
+              item.value.startsWith(work.releaseDate) &&
+              item.sourceRecordIds.length === 1 &&
+              item.sourceRecordIds.every((id) => jsonRecordIds.has(id)),
           ),
           true,
+          `missing reviewed release date for ${work.sourceNativeAddress}`,
         );
         const entities = inspection.accepted?.entities ?? [];
         const circle = entities.find(
           (entity) =>
             entity.kind === "entity" &&
             entity.identityNamespace === "dlsite.circle" &&
+            entity.sourceKey === work.circleSourceKey &&
             entity.label === work.circle,
         );
         assert.notEqual(circle, undefined);
+        assert.equal(
+          circle?.sourceRecordIds.length === 1 &&
+            circle.sourceRecordIds.every((id) => htmlRecordIds.has(id)),
+          true,
+          `circle did not cite reviewed HTML for ${work.sourceNativeAddress}`,
+        );
         const priorCircle = sharedCircleIds.get(work.circle);
         if (priorCircle === undefined)
           sharedCircleIds.set(work.circle, circle!.id);
         else assert.equal(circle!.id, priorCircle);
-        for (const credit of work.voiceActors.filter(
-          (value) => value.toUpperCase() !== "N/A",
-        )) {
-          const persona = entities.find(
-            (entity) =>
-              entity.kind === "persona" &&
-              entity.identityNamespace === "dlsite.credit.voice.voice" &&
-              entity.label === credit,
+        for (const [field, expectedCredits] of Object.entries(work.credits)) {
+          const namespace = `dlsite.credit.${field}.${field}`;
+          const actualCredits = entities
+            .filter((entity) => entity.identityNamespace === namespace)
+            .map((entity) => entity.label)
+            .toSorted();
+          assert.deepEqual(
+            actualCredits,
+            [...expectedCredits].toSorted(),
+            `reviewed ${field} credits drifted for ${work.sourceNativeAddress}`,
           );
-          assert.notEqual(persona, undefined);
-          const mention = inspection.accepted?.entityMentions?.find(
-            (candidate) =>
-              candidate.field === "voice" &&
-              candidate.role === "voice" &&
-              candidate.label === credit,
-          );
-          assert.notEqual(mention, undefined);
-          assert.equal(
-            inspection.accepted?.entityResolutionDecisions?.some(
-              (decision) =>
-                decision.mentionId === mention!.id &&
-                decision.entityId === persona!.id,
-            ),
-            true,
-          );
-          assert.equal(
-            inspection.accepted?.relationships?.some(
-              (relationship) =>
-                relationship.role === "voice" &&
-                relationship.participantId === persona!.id,
-            ),
-            true,
-          );
+          for (const credit of expectedCredits) {
+            const persona = entities.find(
+              (entity) =>
+                entity.kind === "persona" &&
+                entity.identityNamespace === namespace &&
+                entity.sourceKey === credit &&
+                entity.label === credit &&
+                entity.sourceRecordIds.length === 1 &&
+                entity.sourceRecordIds.every((id) => htmlRecordIds.has(id)),
+            );
+            assert.notEqual(persona, undefined);
+            const mention = inspection.accepted?.entityMentions?.find(
+              (candidate) =>
+                candidate.field === field &&
+                candidate.role === field &&
+                candidate.label === credit &&
+                candidate.sourceRecordIds.length === 1 &&
+                candidate.sourceRecordIds.every((id) => htmlRecordIds.has(id)),
+            );
+            assert.notEqual(mention, undefined);
+            assert.equal(
+              inspection.accepted?.entityResolutionDecisions?.some(
+                (decision) =>
+                  decision.mentionId === mention!.id &&
+                  decision.entityId === persona!.id,
+              ),
+              true,
+            );
+            assert.equal(
+              inspection.accepted?.relationships?.some(
+                (relationship) =>
+                  relationship.role === field &&
+                  relationship.participantId === persona!.id,
+              ),
+              true,
+            );
+          }
         }
-        sawMultipleCredits ||= work.voiceActors.length > 1;
+        sawMultipleCredits ||= Object.values(work.credits).some(
+          (credits) => credits.length > 1,
+        );
         assert.equal(
           entities.some((entity) => entity.label.toUpperCase() === "N/A"),
           false,
@@ -370,34 +470,7 @@ const journey: CliJourney = {
           entities.every((entity) => entity.sourceRecordIds.length > 0),
           true,
         );
-        for (const language of metadata.filter(
-          (item) => item.property === "asset.declared-language",
-        )) {
-          assert.equal(language.value.trim().length > 0, true);
-          sawLanguageEvidence = true;
-        }
-        if (work.reviewedLanguage !== undefined) {
-          const officialRecordIds = new Set(
-            inspection.sourceRecords
-              .filter(
-                (record) =>
-                  record.coverage.id ===
-                  work.reviewedLanguage?.officialCoverage,
-              )
-              .map((record) => record.id),
-          );
-          assert.equal(officialRecordIds.size, 1);
-          assert.ok(
-            metadata.some(
-              (item) =>
-                item.property === work.reviewedLanguage?.property &&
-                item.value === work.reviewedLanguage.value &&
-                item.sourceRecordIds.length === 1 &&
-                item.sourceRecordIds.every((id) => officialRecordIds.has(id)),
-            ),
-            `missing reviewed language projection for ${work.sourceNativeAddress}`,
-          );
-        }
+        sawLanguageEvidence = true;
         const seriesRelationships =
           inspection.accepted?.relationships?.filter(
             (relationship) => relationship.role === "dlsite.series.member",
@@ -505,6 +578,15 @@ const journey: CliJourney = {
           exitCode: result.exitCode,
         });
       }
+    }
+    const state = currentState(context);
+    if (state.deepBefore !== undefined) {
+      const after = await captureFixedCorpusSnapshots(state.roots, true);
+      assert.deepEqual(
+        fixedCorpusContentDigestsFromSnapshots(state.roots, after),
+        state.deepBefore,
+        "DLsite live journey must not alter approved source bytes",
+      );
     }
     if (failures.length > 0)
       throw new Error(

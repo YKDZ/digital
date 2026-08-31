@@ -90,6 +90,12 @@ export type SourceArtifactCandidate = {
   readonly role: ArtifactRole;
   readonly acquisitionReference: string;
   readonly mediaType: string;
+  /** 候选选择证据只描述尚未获取的来源材料，绝不是数字资产元数据或已观察 Blob。 */
+  readonly selectionEvidence?: {
+    readonly suggestedFilename?: string;
+    readonly declaredByteLength?: number;
+    readonly sourceOrdinal?: number;
+  };
   /** 公开该候选的解释器坐标。 */
   readonly producer?: CapabilityCoordinate;
 };
@@ -200,9 +206,22 @@ export type RecognitionProposalDraft = {
   readonly ruleResults: readonly RecognitionRuleResult[];
 };
 
+export type RecognitionBasis =
+  | {
+      readonly kind: "source-interpretation";
+      readonly interpretation: SourceInterpretationBatch;
+    }
+  | {
+      readonly kind: "observed-evidence";
+      /** 产生所选观察事实的精确能力坐标。 */
+      readonly producer: CapabilityCoordinate;
+      readonly evidence: readonly RecognitionEvidence[];
+      readonly artifactRevisions: readonly ObservedArtifactRevisionCandidate[];
+    };
+
 export type RecognitionProposal = {
   readonly id: string;
-  readonly interpretation: SourceInterpretationBatch;
+  readonly basis: RecognitionBasis;
   readonly ruleResults: readonly RecognitionRuleResult[];
   /** 本地物化计划与外部来源解释分离。 */
   readonly observedArtifactParts?: readonly ObservedArtifactPartCandidate[];
@@ -339,7 +358,10 @@ export type ArtifactAssociationRetraction = {
 export type AcceptedRecognition = {
   readonly proposal: RecognitionProposal;
   readonly entity: DigitalAsset;
-  readonly sourceAssociation: SourceAssociation;
+  /** 真实且当前的全部来源关联；本地识别的正常初始值为空数组。 */
+  readonly sourceAssociations: readonly SourceAssociation[];
+  /** 只有来源解释依据才建立这条准入来源关联。 */
+  readonly recognitionSourceAssociation?: SourceAssociation;
   readonly recognitionDecision: RecognitionDecision;
   readonly artifacts: readonly Artifact[];
   readonly locations: readonly Location[];
@@ -356,29 +378,154 @@ export type AcceptedRecognition = {
 export function validateRecognitionProposal(
   proposal: RecognitionProposal,
 ): RecognitionProposal {
-  if (proposal.interpretation.sourceRecordIds.length === 0) {
-    throw new Error("Recognition Proposal requires Source Record references");
-  }
   if (proposal.ruleResults.length === 0) {
     throw new Error("Recognition Proposal requires Recognition Rule Results");
   }
-  validateSourceInterpretationBatch(proposal.interpretation);
-  const interpretationEvidence = new Set(
-    (proposal.interpretation.recognitionEvidenceReferences ?? []).map(
-      recognitionEvidenceReferenceKey,
-    ),
-  );
-  for (const result of proposal.ruleResults) {
-    for (const reference of result.evidenceReferences ?? []) {
-      if (
-        !interpretationEvidence.has(recognitionEvidenceReferenceKey(reference))
-      )
-        throw new Error(
-          "Recognition Rule Result references evidence outside its interpretation",
-        );
+  if (proposal.basis.kind === "source-interpretation") {
+    assertExactKeys(
+      proposal.basis,
+      ["kind", "interpretation"],
+      "Recognition source basis",
+    );
+    const interpretation = proposal.basis.interpretation;
+    if (interpretation.sourceRecordIds.length === 0) {
+      throw new Error("Recognition Proposal requires Source Record references");
     }
+    validateSourceInterpretationBatch(interpretation);
+    const interpretationEvidence = new Set(
+      (interpretation.recognitionEvidenceReferences ?? []).map(
+        recognitionEvidenceReferenceKey,
+      ),
+    );
+    for (const result of proposal.ruleResults) {
+      for (const reference of result.evidenceReferences ?? []) {
+        if (
+          !interpretationEvidence.has(
+            recognitionEvidenceReferenceKey(reference),
+          )
+        )
+          throw new Error(
+            "Recognition Rule Result references evidence outside its interpretation",
+          );
+      }
+    }
+    return proposal;
   }
+  assertExactKeys(
+    proposal.basis,
+    ["kind", "producer", "evidence", "artifactRevisions"],
+    "Recognition observed basis",
+  );
+  validateObservedRecognitionBasis(proposal.basis, proposal.ruleResults);
   return proposal;
+}
+
+/** 来源能力与本地观察能力的分支只在领域查询函数中暴露。 */
+export function recognitionSourceInterpretation(
+  proposal: RecognitionProposal,
+): SourceInterpretationBatch | undefined {
+  return proposal.basis.kind === "source-interpretation"
+    ? proposal.basis.interpretation
+    : undefined;
+}
+
+export function recognitionObservedEvidence(
+  proposal: RecognitionProposal,
+):
+  | Extract<RecognitionBasis, { readonly kind: "observed-evidence" }>
+  | undefined {
+  return proposal.basis.kind === "observed-evidence"
+    ? proposal.basis
+    : undefined;
+}
+
+function validateObservedRecognitionBasis(
+  basis: Extract<RecognitionBasis, { readonly kind: "observed-evidence" }>,
+  ruleResults: readonly RecognitionRuleResult[],
+): void {
+  if (
+    basis.producer.capabilityId.length === 0 ||
+    basis.producer.capabilityVersion.length === 0 ||
+    basis.producer.contractVersion.length === 0 ||
+    basis.evidence.length === 0 ||
+    basis.artifactRevisions.length === 0
+  ) {
+    throw new Error(
+      "Observed recognition basis requires selected evidence and revisions",
+    );
+  }
+  const producer = canonicalJson(basis.producer);
+  const revisions = new Map<string, ObservedArtifactRevisionCandidate>();
+  for (const revision of basis.artifactRevisions) {
+    if (
+      revision.observedArtifactReference.length === 0 ||
+      canonicalJson(revision.producer) !== producer ||
+      revision.blob.digest.length === 0 ||
+      revision.blob.mediaType.length === 0 ||
+      !Number.isSafeInteger(revision.blob.byteLength) ||
+      revision.blob.byteLength < 0 ||
+      revisions.has(revision.observedArtifactReference)
+    ) {
+      throw new Error(
+        "Observed recognition revision is invalid or cross-capability",
+      );
+    }
+    revisions.set(revision.observedArtifactReference, revision);
+  }
+  const selected = new Set<string>();
+  for (const evidence of basis.evidence) {
+    const inspection = evidence.inspection;
+    const revision =
+      inspection === undefined
+        ? undefined
+        : revisions.get(inspection.observedArtifactReference);
+    const key = canonicalJson(evidence);
+    if (
+      canonicalJson(evidence.producer) !== producer ||
+      inspection === undefined ||
+      revision === undefined ||
+      canonicalJson(inspection.revision) !== canonicalJson(revision.blob) ||
+      selected.has(key)
+    ) {
+      throw new Error(
+        "Observed recognition evidence is invalid or cross-input",
+      );
+    }
+    selected.add(key);
+  }
+  const referenced = new Set<string>();
+  for (const result of ruleResults) {
+    if (result.evidence.length === 0)
+      throw new Error(
+        "Observed Recognition Rule Result requires selected evidence",
+      );
+    for (const evidence of result.evidence) {
+      const key = canonicalJson(evidence);
+      if (!selected.has(key))
+        throw new Error(
+          "Recognition Rule Result references evidence outside its observed input",
+        );
+      referenced.add(key);
+    }
+    if ((result.evidenceReferences ?? []).length > 0)
+      throw new Error("Observed recognition cannot reference Source Records");
+  }
+  if (referenced.size !== selected.size)
+    throw new Error(
+      "Observed recognition basis contains unreferenced evidence",
+    );
+}
+
+function assertExactKeys(
+  value: object,
+  keys: readonly string[],
+  label: string,
+): void {
+  if (
+    canonicalJson(Object.keys(value).toSorted()) !==
+    canonicalJson([...keys].toSorted())
+  )
+    throw new Error(`${label} mixes incompatible fields`);
 }
 
 /**
@@ -428,6 +575,7 @@ export function validateSourceInterpretationBatch(
   }
   const candidates = new Set<string>();
   for (const candidate of batch.sourceArtifacts) {
+    const selectionEvidence = candidate.selectionEvidence;
     if (
       candidate.id.length === 0 ||
       candidate.role.length === 0 ||
@@ -438,6 +586,27 @@ export function validateSourceInterpretationBatch(
     ) {
       throw new Error(
         "Source Artifact Candidate is invalid or lacks provenance",
+      );
+    }
+    if (
+      selectionEvidence !== undefined &&
+      (Object.keys(selectionEvidence).some(
+        (key) =>
+          key !== "suggestedFilename" &&
+          key !== "declaredByteLength" &&
+          key !== "sourceOrdinal",
+      ) ||
+        (selectionEvidence.suggestedFilename !== undefined &&
+          selectionEvidence.suggestedFilename.trim().length === 0) ||
+        (selectionEvidence.declaredByteLength !== undefined &&
+          (!Number.isSafeInteger(selectionEvidence.declaredByteLength) ||
+            selectionEvidence.declaredByteLength < 0)) ||
+        (selectionEvidence.sourceOrdinal !== undefined &&
+          (!Number.isSafeInteger(selectionEvidence.sourceOrdinal) ||
+            selectionEvidence.sourceOrdinal < 0)))
+    ) {
+      throw new Error(
+        "Source Artifact Candidate selection evidence is invalid",
       );
     }
     candidates.add(candidate.id);
@@ -578,26 +747,45 @@ export function validateAcceptedRecognition(
   accepted: AcceptedRecognition,
 ): AcceptedRecognition {
   validateRecognitionFactShape(accepted);
-  if (accepted.sourceAssociation.proposalId !== accepted.proposal.id) {
-    throw new Error(
-      "Source Association must reference the accepted Recognition Proposal",
-    );
-  }
-  if (
-    accepted.sourceAssociation.sourceIdentity !==
-    accepted.proposal.interpretation.sourceIdentity
-  ) {
-    throw new Error(
-      "Source Association must match the Recognition Proposal source identity",
-    );
-  }
-  if (
-    accepted.sourceAssociation.nativeAddress !==
-    accepted.proposal.interpretation.sourceAddress
-  ) {
-    throw new Error(
-      "Source Association must match the Recognition Proposal source address",
-    );
+  const interpretation = recognitionSourceInterpretation(accepted.proposal);
+  const recognitionAssociation = accepted.recognitionSourceAssociation;
+  if (interpretation === undefined) {
+    if (
+      recognitionAssociation !== undefined ||
+      accepted.sourceAssociations.some(
+        (association) => association.proposalId === accepted.proposal.id,
+      )
+    )
+      throw new Error(
+        "Observed recognition cannot manufacture a Source Association",
+      );
+  } else {
+    if (recognitionAssociation === undefined)
+      throw new Error("Source recognition requires its Source Association");
+    if (recognitionAssociation.proposalId !== accepted.proposal.id) {
+      throw new Error(
+        "Source Association must reference the accepted Recognition Proposal",
+      );
+    }
+    if (
+      recognitionAssociation.sourceIdentity !== interpretation.sourceIdentity
+    ) {
+      throw new Error(
+        "Source Association must match the Recognition Proposal source identity",
+      );
+    }
+    if (recognitionAssociation.nativeAddress !== interpretation.sourceAddress) {
+      throw new Error(
+        "Source Association must match the Recognition Proposal source address",
+      );
+    }
+    if (
+      !accepted.sourceAssociations.some(
+        (association) =>
+          canonicalJson(association) === canonicalJson(recognitionAssociation),
+      )
+    )
+      throw new Error("Recognition Source Association must be current");
   }
   if (accepted.recognitionDecision.proposalId !== accepted.proposal.id) {
     throw new Error(
@@ -631,8 +819,8 @@ export function validateReevaluatedRecognition(input: {
     );
   }
   if (
-    canonicalJson(input.current.sourceAssociation) !==
-    canonicalJson(input.accepted.sourceAssociation)
+    canonicalOptionalJson(input.current.recognitionSourceAssociation) !==
+    canonicalOptionalJson(input.accepted.recognitionSourceAssociation)
   ) {
     throw new Error(
       "Identity-preserving refresh must retain the immutable Source Association",
@@ -646,11 +834,20 @@ export function validateReevaluatedRecognition(input: {
       "Identity-preserving refresh must retain the immutable Recognition Decision",
     );
   }
+  const nextInterpretation = recognitionSourceInterpretation(
+    input.accepted.proposal,
+  );
+  const currentRecognitionAssociation =
+    input.current.recognitionSourceAssociation;
   if (
-    input.accepted.proposal.interpretation.sourceIdentity !==
-      input.current.sourceAssociation.sourceIdentity ||
-    input.accepted.proposal.interpretation.sourceAddress !==
-      input.current.sourceAssociation.nativeAddress
+    (nextInterpretation === undefined) !==
+      (currentRecognitionAssociation === undefined) ||
+    (nextInterpretation !== undefined &&
+      currentRecognitionAssociation !== undefined &&
+      (nextInterpretation.sourceIdentity !==
+        currentRecognitionAssociation.sourceIdentity ||
+        nextInterpretation.sourceAddress !==
+          currentRecognitionAssociation.nativeAddress))
   ) {
     throw new Error(
       "Identity-preserving refresh must retain the current Source Association address",
@@ -661,9 +858,8 @@ export function validateReevaluatedRecognition(input: {
 
 function validateRecognitionFactShape(accepted: AcceptedRecognition): void {
   validateRecognitionProposal(accepted.proposal);
-  const interpretationSources = new Set(
-    accepted.proposal.interpretation.sourceRecordIds,
-  );
+  const interpretation = recognitionSourceInterpretation(accepted.proposal);
+  const interpretationSources = new Set(interpretation?.sourceRecordIds ?? []);
   const hasKnownProvenance = (sourceRecordIds: readonly string[]): boolean =>
     sourceRecordIds.length > 0 &&
     sourceRecordIds.every((sourceRecordId) =>
@@ -672,8 +868,12 @@ function validateRecognitionFactShape(accepted: AcceptedRecognition): void {
   if (accepted.entity.kind !== "digital-asset") {
     throw new Error("Accepted recognition requires a Digital Asset entity");
   }
-  if (accepted.sourceAssociation.subjectId !== accepted.entity.id) {
-    throw new Error("Source Association must belong to the accepted asset");
+  if (
+    accepted.sourceAssociations.some(
+      (association) => association.subjectId !== accepted.entity.id,
+    )
+  ) {
+    throw new Error("Source Associations must belong to the accepted asset");
   }
   if (accepted.recognitionDecision.assetId !== accepted.entity.id) {
     throw new Error("Recognition Decision must accept the same asset");
@@ -824,6 +1024,10 @@ function canonicalJson(value: unknown): string {
   throw new Error("Domain fact is not JSON");
 }
 
+function canonicalOptionalJson(value: unknown): string {
+  return value === undefined ? "undefined" : canonicalJson(value);
+}
+
 /** 验证终止一个来源持有关联所需的来源信息。 */
 export function validateArtifactAssociationRetraction(input: {
   readonly retraction: ArtifactAssociationRetraction;
@@ -846,7 +1050,9 @@ export function validateArtifactAssociationRetraction(input: {
     predecessorSources.length === 0 ||
     input.retraction.sourceRecordIds.length === 0 ||
     !input.retraction.sourceRecordIds.every((id) =>
-      input.proposal.interpretation.sourceRecordIds.includes(id),
+      (
+        recognitionSourceInterpretation(input.proposal)?.sourceRecordIds ?? []
+      ).includes(id),
     )
   ) {
     throw new Error(

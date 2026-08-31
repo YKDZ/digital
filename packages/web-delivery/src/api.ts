@@ -6,7 +6,12 @@ import {
   catalogueSurface,
   catalogueSnapshot,
   completeBangumiAuthorizationCallback,
+  artifactDownloadResponse,
+  artifactDeliveryErrorResponse,
+  confirmedObservedArtifactDownloadResponse,
   managedArtifactResponse,
+  playbackMediaResponse,
+  playbackPlanResponse,
   revokeBangumiAuthorization,
   startRefresh,
   updateAutomation,
@@ -77,6 +82,49 @@ export function createApi(
         });
       } catch (error) {
         return c.json({ error: errorMessage(error) }, 404);
+      }
+    })
+    .get("/observed-file-downloads/:selectionId", async (c) => {
+      try {
+        return await confirmedObservedArtifactDownloadResponse(
+          c.req.param("selectionId"),
+          c.req.raw,
+        );
+      } catch (error) {
+        return artifactDeliveryErrorResponse(error);
+      }
+    })
+    .get("/artifact-downloads/:revisionId", async (c) => {
+      try {
+        return await artifactDownloadResponse(
+          c.req.param("revisionId"),
+          c.req.raw,
+        );
+      } catch (error) {
+        return artifactDeliveryErrorResponse(error);
+      }
+    })
+    .post("/playback-plans/:revisionId", async (c) => {
+      try {
+        return c.json(
+          await playbackPlanResponse(
+            c.req.param("revisionId"),
+            await c.req.json(),
+          ),
+        );
+      } catch (error) {
+        return artifactDeliveryErrorResponse(error);
+      }
+    })
+    .get("/playback-media/:revisionId/:blobDigest", async (c) => {
+      try {
+        return await playbackMediaResponse(
+          c.req.param("revisionId"),
+          c.req.param("blobDigest"),
+          c.req.raw,
+        );
+      } catch (error) {
+        return artifactDeliveryErrorResponse(error);
       }
     })
     .post("/refresh", async (c) => {

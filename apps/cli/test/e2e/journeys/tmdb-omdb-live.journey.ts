@@ -5,6 +5,7 @@ import type { AssetRefreshInspection } from "@digital/application";
 import type { RawFilesystemSnapshot } from "@digital/test-support";
 
 import {
+  assertFixedCorpusContentBaselineSubset,
   captureFixedCorpusSnapshots,
   fixedCorpusContentDigestsFromSnapshots,
   type FixedCorpusContentDigest,
@@ -142,7 +143,7 @@ function currentSourceAssociations(accepted: AcceptedProjection): readonly {
   readonly sourceIdentity: string;
   readonly nativeAddress: string;
 }[] {
-  return (accepted.sourceAssociations ?? [accepted.sourceAssociation])
+  return accepted.sourceAssociations
     .map((association) => ({
       sourceIdentity: association.sourceIdentity,
       nativeAddress: association.nativeAddress,
@@ -191,11 +192,15 @@ function assertEffectiveTmdbTitle(
     title?.selectedAssertion.sourceRecordIds,
   );
   assert.equal(title?.sourceSlot, title?.selectedAssertion.sourceSlot);
+  const currentExecutionSourceIdentities = sourceIdentityByRecord(value);
   assert.ok(
-    title?.sourceRecordIds.every(
-      (id) => sourceIdentityByRecord(value).get(id) === "tmdb",
-    ),
-    "the effective title must cite TMDB source records only",
+    title?.sourceRecordIds.every((id) => {
+      const sourceIdentity = currentExecutionSourceIdentities.get(id);
+      // 未变化的刷新可以继续引用更早的来源记录；公开执行检查只携带本次记录，
+      // 因而只有当前可见的记录 ID 能在这里再次核对身份。
+      return sourceIdentity === undefined || sourceIdentity === "tmdb";
+    }),
+    "the effective title must not cite a visible non-TMDB source record",
   );
   assert.deepEqual(title?.reasoning, {
     kind: "source-preference",
@@ -241,7 +246,11 @@ export function assertSourceEnrichedFilm(
   const accepted = acceptedProjection(value, projection);
   assert.equal(value.execution.outcome, "accepted");
   assert.equal(accepted.entity.kind, "digital-asset");
-  assert.deepEqual(accepted.sourceAssociation, {
+  assert.ok(
+    accepted.recognitionSourceAssociation,
+    "accepted TMDB film must retain its recognition source",
+  );
+  assert.deepEqual(accepted.recognitionSourceAssociation, {
     sourceIdentity: "tmdb",
     nativeAddress: expectedTmdbAddress,
   });
@@ -296,7 +305,14 @@ function assertMetadataRefresh(
   const accepted = acceptedProjection(value, "legacy");
   assert.equal(value.execution.outcome, "accepted");
   assert.equal(value.execution.selection.intent, "metadata-refresh");
-  assert.equal(accepted.sourceAssociation.nativeAddress, expectedTmdbAddress);
+  assert.ok(
+    accepted.recognitionSourceAssociation,
+    "refreshed TMDB film must retain its recognition source",
+  );
+  assert.equal(
+    accepted.recognitionSourceAssociation.nativeAddress,
+    expectedTmdbAddress,
+  );
   assert.deepEqual(currentSourceAssociations(accepted), [
     { sourceIdentity: "omdb", nativeAddress: expectedOmdbAddress },
     { sourceIdentity: "tmdb", nativeAddress: expectedTmdbAddress },
@@ -320,14 +336,28 @@ function assertMetadataRefresh(
     ),
     "each refresh source record must be new rather than reused history",
   );
+  const sourceRefreshRuns = value.sourceRefreshRuns ?? [];
   assert.equal(
-    value.execution.dispositions.filter(
-      (disposition) =>
-        disposition.key.startsWith("source-refresh:") &&
-        disposition.status === "completed",
-    ).length,
+    sourceRefreshRuns.length,
     2,
-    "metadata refresh must complete one independent scope for each current source",
+    "metadata refresh must retain one independent domain run for each current source",
+  );
+  assert.ok(
+    sourceRefreshRuns.every(
+      (run) => run.phase === "terminal" && run.outcome === "succeeded",
+    ),
+    "each current source refresh run must succeed independently",
+  );
+  assert.deepEqual(
+    new Set(value.execution.sourceRefreshRunIds ?? []),
+    new Set(sourceRefreshRuns.map((run) => run.id)),
+    "workflow execution must reference every authoritative source refresh run",
+  );
+  assert.ok(
+    value.execution.dispositions.every(
+      (disposition) => !disposition.key.startsWith("source-refresh:"),
+    ),
+    "workflow dispositions must not duplicate Source Refresh Run authority",
   );
 }
 
@@ -377,6 +407,8 @@ const journey: CliJourney = {
     const deepBefore = deepIntegrity
       ? fixedCorpusContentDigestsFromSnapshots(roots, before)
       : undefined;
+    if (deepBefore !== undefined)
+      await assertFixedCorpusContentBaselineSubset(context, deepBefore);
     stateByWorkDirectory.set(stateKey(context), {
       roots,
       before,

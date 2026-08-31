@@ -5,8 +5,8 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 
 /**
- * 仅供测试使用的设置边界。Web 运行时代码不得导入 Drizzle 或使用该辅助方法；
- * 未准备的产品数据目录刻意以关闭方式失败。
+ * 仅供测试使用的设置边界。先建立已审阅物理模式，再经正式迁移入口写入生产账本；
+ * Web 运行时代码不得导入或使用该辅助方法，未准备目录仍刻意以关闭方式失败。
  */
 export async function prepareWebProductData(
   productDataDirectory: string,
@@ -20,6 +20,14 @@ export async function prepareWebProductData(
         ...process.env,
         DIGITAL_DISPOSABLE_PRODUCT_DATA_ROOT: productDataDirectory,
       },
+    },
+  );
+  await execFileAsync(
+    "pnpm",
+    ["--filter", "@digital/db-migrations", "prepare-only"],
+    {
+      cwd: path.resolve(import.meta.dirname, "../../.."),
+      env: { ...process.env, DIGITAL_PRODUCT_DATA: productDataDirectory },
     },
   );
 }

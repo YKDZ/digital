@@ -41,7 +41,7 @@ const associationInterpreterCapability = declareCapability({
 });
 const collectorCapability = declareCapability({
   identity: "omdb.film-enrichment-collection",
-  implementationVersion: "1",
+  implementationVersion: "2",
   kind: "source-collector",
   contractVersion: "1",
   interpretationContractVersions: ["1"],
@@ -64,7 +64,7 @@ const interpreterCapability = declareCapability({
 });
 const artifactCapability = declareCapability({
   identity: "omdb.source-artifact-acquirer",
-  implementationVersion: "1",
+  implementationVersion: "2",
   kind: "source-artifact-acquirer",
   contractVersion: "1",
   interpretationContractVersions: ["1"],
@@ -76,6 +76,41 @@ type FetchLike = (input: string) => Promise<{
   readonly headers: { get(name: string): string | null };
   arrayBuffer(): Promise<ArrayBuffer>;
 }>;
+type WaitLike = (milliseconds: number) => Promise<void>;
+
+const retryDelaysMilliseconds = [250, 1_000] as const;
+
+async function wait(milliseconds: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+}
+
+function retryableStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+/** 只为幂等官方 GET 重试传输错误、限流与服务端错误。 */
+async function requestOfficialSource(
+  request: FetchLike,
+  delay: WaitLike,
+  input: string,
+): Promise<Awaited<ReturnType<FetchLike>>> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const response = await request(input);
+      if (
+        response.ok ||
+        !retryableStatus(response.status) ||
+        attempt === retryDelaysMilliseconds.length
+      )
+        return response;
+    } catch (error) {
+      if (attempt === retryDelaysMilliseconds.length) throw error;
+    }
+    await delay(retryDelaysMilliseconds[attempt]!);
+  }
+}
 
 /** 验证一份 OMDb API 密钥；响应正文与请求细节不会越过该能力。 */
 export async function verifyOmdbApiKey(
@@ -107,7 +142,7 @@ export async function verifyOmdbApiKey(
 /** 由应用层提供、与提供方无关的主体快照，绝不是影片实体。 */
 export type SourceEnrichmentInput = {
   readonly subjectId: string;
-  readonly recognitionSourceAssociation: SourceAssociation;
+  readonly recognitionSourceAssociation?: SourceAssociation;
   readonly recognitionDecisionId: string;
   readonly sourceAssociations: readonly SourceAssociation[];
   readonly metadata: readonly MetadataAssertion[];
@@ -142,6 +177,7 @@ export class OmdbSourceAssociationCandidateInterpreter {
   readonly capability = candidateInterpreterCapability;
 
   interpret(input: SourceEnrichmentInput): RecognitionEvidence | undefined {
+    if (input.recognitionSourceAssociation === undefined) return undefined;
     const identityMetadata = recognitionSourceMetadata(input);
     const imdbId = imdbIdentifier(identityMetadata);
     if (
@@ -183,7 +219,10 @@ export class OmdbSourceAssociationInterpreter {
     readonly interpretation: SourceInterpretationBatch;
   }):
     | { readonly status: "accepted"; readonly explanation: string }
-    | { readonly status: "contradicted"; readonly explanation: string } {
+    | { readonly status: "contradicted"; readonly explanation: string }
+    | undefined {
+    if (input.subject.recognitionSourceAssociation === undefined)
+      return undefined;
     const expected = recognitionSourceMetadata(input.subject);
     const accepted =
       input.interpretation.sourceIdentity === "omdb" &&
@@ -239,12 +278,13 @@ function requestsOmdbContribution(
 function recognitionSourceMetadata(
   input: SourceEnrichmentInput,
 ): readonly MetadataAssertion[] {
+  const recognitionSourceAssociation = input.recognitionSourceAssociation;
+  if (recognitionSourceAssociation === undefined) return [];
   const supportingRecords = new Set(
     input.metadataSourceRecords
       .filter(
         (record) =>
-          record.sourceIdentity ===
-          input.recognitionSourceAssociation.sourceIdentity,
+          record.sourceIdentity === recognitionSourceAssociation.sourceIdentity,
       )
       .map((record) => record.id),
   );
@@ -265,6 +305,7 @@ export class OmdbCollector implements SourceCollector {
       ) => string | undefined)
     | undefined;
   private readonly request: FetchLike;
+  private readonly delay: WaitLike;
 
   constructor(
     options: {
@@ -273,11 +314,13 @@ export class OmdbCollector implements SourceCollector {
         context: SourceCollectionExecutionContext | undefined,
       ) => string | undefined;
       readonly request?: FetchLike;
+      readonly delay?: WaitLike;
     } = {},
   ) {
     this.apiKey = options.apiKey;
     this.apiKeyForExecution = options.apiKeyForExecution;
     this.request = options.request ?? fetch;
+    this.delay = options.delay ?? wait;
   }
 
   canCollect(evidence: RecognitionEvidence): boolean {
@@ -304,6 +347,7 @@ export class OmdbCollector implements SourceCollector {
           ? this.apiKey
           : this.apiKeyForExecution(context),
       request: this.request,
+      delay: this.delay,
       imdbId,
     });
   }
@@ -362,9 +406,11 @@ export class OmdbSourceInterpreter implements SourceInterpreter {
 export class OmdbArtifactAcquirer implements SourceArtifactAcquirer {
   readonly capability = artifactCapability;
   private readonly request: FetchLike;
+  private readonly delay: WaitLike;
 
-  constructor(request: FetchLike = fetch) {
+  constructor(request: FetchLike = fetch, delay: WaitLike = wait) {
     this.request = request;
+    this.delay = delay;
   }
 
   canAcquire(candidate: SourceArtifactCandidate): boolean {
@@ -382,7 +428,11 @@ export class OmdbArtifactAcquirer implements SourceArtifactAcquirer {
       throw new Error("OMDb 海报候选不是受支持的官方 HTTPS 图片地址");
     let response: Awaited<ReturnType<FetchLike>>;
     try {
-      response = await this.request(candidate.acquisitionReference);
+      response = await requestOfficialSource(
+        this.request,
+        this.delay,
+        candidate.acquisitionReference,
+      );
     } catch (error) {
       throw new Error(`OMDb 海报请求失败：${message(error)}`, { cause: error });
     }
@@ -437,6 +487,7 @@ function omdbIdentifierFromEvidence(
 async function collectOmdbRecord(input: {
   readonly apiKey: string | undefined;
   readonly request: FetchLike;
+  readonly delay: WaitLike;
   readonly imdbId: string;
 }): Promise<SourceCollectionResult> {
   if (input.apiKey === undefined || input.apiKey.length === 0) {
@@ -458,7 +509,11 @@ async function collectOmdbRecord(input: {
     endpoint.searchParams.set("i", input.imdbId);
     endpoint.searchParams.set("plot", "full");
     endpoint.searchParams.set("r", "json");
-    response = await input.request(endpoint.href);
+    response = await requestOfficialSource(
+      input.request,
+      input.delay,
+      endpoint.href,
+    );
     if (!response.ok)
       return {
         records: [],

@@ -6,6 +6,7 @@ import {
   type FilesystemPackageSnapshot,
   type InformationFulfillmentCapability,
   type Recognizer,
+  type RecognitionCandidateContext,
   type SourceArtifactAcquirer,
   type SourceCollectionResult,
   type SourceCollectionFailure,
@@ -37,7 +38,7 @@ const directoryCapability = declareCapability({
 });
 const collectorCapability = declareCapability({
   identity: "dlsite.official-collection",
-  implementationVersion: "1",
+  implementationVersion: "2",
   kind: "source-collector",
   contractVersion: "1",
   interpretationContractVersions: ["1"],
@@ -58,7 +59,7 @@ const recognizerCapability = declareCapability({
 });
 const acquirerCapability = declareCapability({
   identity: "dlsite.source-artifact-acquirer",
-  implementationVersion: "1",
+  implementationVersion: "2",
   kind: "source-artifact-acquirer",
   contractVersion: "1",
   interpretationContractVersions: ["1"],
@@ -129,13 +130,53 @@ type FetchLike = (input: string) => Promise<{
   readonly headers: { get(name: string): string | null };
   arrayBuffer(): Promise<ArrayBuffer>;
 }>;
+type WaitLike = (milliseconds: number) => Promise<void>;
+
+const retryDelaysMilliseconds = [250, 1_000] as const;
+
+async function wait(milliseconds: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+}
+
+function retryableStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+/**
+ * 官方读取都是幂等 GET。能力仅重试传输错误、限流和服务端错误；确定性的
+ * 客户端拒绝直接返回给调用者，最后一次瞬态失败也保持原始诊断。
+ */
+async function requestOfficialSource(
+  request: FetchLike,
+  delay: WaitLike,
+  address: string,
+): Promise<Awaited<ReturnType<FetchLike>>> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const response = await request(address);
+      if (
+        response.ok ||
+        !retryableStatus(response.status) ||
+        attempt === retryDelaysMilliseconds.length
+      )
+        return response;
+    } catch (error) {
+      if (attempt === retryDelaysMilliseconds.length) throw error;
+    }
+    await delay(retryDelaysMilliseconds[attempt]!);
+  }
+}
 
 export class DlsiteCollector implements SourceCollector {
   readonly capability = collectorCapability;
   private readonly request: FetchLike;
+  private readonly delay: WaitLike;
 
-  constructor(request: FetchLike = fetch) {
+  constructor(request: FetchLike = fetch, delay: WaitLike = wait) {
     this.request = request;
+    this.delay = delay;
   }
 
   canCollect(evidence: RecognitionEvidence): boolean {
@@ -236,7 +277,11 @@ export class DlsiteCollector implements SourceCollector {
   }): Promise<SourceRecord> {
     let response: Awaited<ReturnType<FetchLike>>;
     try {
-      response = await this.request(input.requestedAddress);
+      response = await requestOfficialSource(
+        this.request,
+        this.delay,
+        input.requestedAddress,
+      );
     } catch (error) {
       throw new Error(
         `DLsite official source request failed: ${errorMessage(error)}`,
@@ -594,17 +639,20 @@ export class DlsiteSourceInterpreter implements SourceInterpreter {
 export class DlsiteExactRecognizer implements Recognizer {
   readonly capability = recognizerCapability;
 
-  canRecognize(input: SourceInterpretationBatch): boolean {
+  canRecognize(input: RecognitionCandidateContext): boolean {
+    if (input.basis.kind !== "source-interpretation") return false;
+    const interpretation = input.basis.interpretation;
     return (
-      input.sourceIdentity === "dlsite" &&
-      input.producer.capabilityId === interpreterCapability.capabilityId
+      interpretation.sourceIdentity === "dlsite" &&
+      interpretation.producer.capabilityId ===
+        interpreterCapability.capabilityId
     );
   }
 
-  recognize(input: {
-    readonly evidence: readonly RecognitionEvidence[];
-    readonly interpretation: SourceInterpretationBatch;
-  }): RecognitionProposalDraft {
+  recognize(input: RecognitionCandidateContext): RecognitionProposalDraft {
+    if (input.basis.kind !== "source-interpretation")
+      throw new Error("DLsite recognizer requires source interpretation");
+    const interpretation = input.basis.interpretation;
     const directed = input.evidence.some((evidence) => {
       if (
         evidence.kind !== "directed-source-address" ||
@@ -615,7 +663,7 @@ export class DlsiteExactRecognizer implements Recognizer {
       try {
         return (
           canonicalDirectedProductAddress(evidence.sourceAddress) ===
-          input.interpretation.sourceAddress
+          interpretation.sourceAddress
         );
       } catch {
         return false;
@@ -627,7 +675,7 @@ export class DlsiteExactRecognizer implements Recognizer {
         evidence.producer.capabilityId === directoryCapability.capabilityId &&
         evidence.sourceAddress !== undefined &&
         productIdFromAddress(evidence.sourceAddress) ===
-          productIdFromAddress(input.interpretation.sourceAddress),
+          productIdFromAddress(interpretation.sourceAddress),
     );
     const satisfied = directed || directory;
     return {
@@ -649,9 +697,11 @@ export class DlsiteExactRecognizer implements Recognizer {
 export class DlsiteArtifactAcquirer implements SourceArtifactAcquirer {
   readonly capability = acquirerCapability;
   private readonly request: FetchLike;
+  private readonly delay: WaitLike;
 
-  constructor(request: FetchLike = fetch) {
+  constructor(request: FetchLike = fetch, delay: WaitLike = wait) {
     this.request = request;
+    this.delay = delay;
   }
 
   canAcquire(candidate: SourceArtifactCandidate): boolean {
@@ -669,7 +719,11 @@ export class DlsiteArtifactAcquirer implements SourceArtifactAcquirer {
     }
     let response: Awaited<ReturnType<FetchLike>>;
     try {
-      response = await this.request(candidate.acquisitionReference);
+      response = await requestOfficialSource(
+        this.request,
+        this.delay,
+        candidate.acquisitionReference,
+      );
     } catch (error) {
       throw new Error(`DLsite cover request failed: ${errorMessage(error)}`, {
         cause: error,

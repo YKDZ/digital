@@ -117,10 +117,13 @@ export class InMemoryObservedByteSource {
   private closed = false;
   private readOnce = false;
   private readonly bytes: Uint8Array;
+  private offset = 0;
   private readonly onClose:
     | ((source: InMemoryObservedByteSource) => void | Promise<void>)
     | undefined;
   readonly logicalLocation: string;
+  readonly byteLength: number;
+  readonly modifiedAt = "2026-08-03T00:00:00.000Z";
 
   constructor(
     logicalLocation: string,
@@ -129,6 +132,7 @@ export class InMemoryObservedByteSource {
   ) {
     this.logicalLocation = logicalLocation;
     this.bytes = bytes;
+    this.byteLength = bytes.byteLength;
     this.onClose = onClose;
   }
 
@@ -141,6 +145,27 @@ export class InMemoryObservedByteSource {
     } finally {
       await this.close();
     }
+  }
+
+  async readChunk(
+    offset: number,
+    maximumBytes: number,
+  ): Promise<{
+    readonly bytes: Uint8Array;
+    readonly done: boolean;
+  }> {
+    if (
+      !Number.isSafeInteger(offset) ||
+      offset < 0 ||
+      !Number.isSafeInteger(maximumBytes) ||
+      maximumBytes <= 0
+    )
+      throw new Error("读取块上限必须为正安全整数");
+    if (this.closed)
+      throw new Error("in-memory observed byte source is closed");
+    const bytes = this.bytes.slice(offset, offset + maximumBytes);
+    this.offset = offset + bytes.byteLength;
+    return { bytes, done: this.offset === this.bytes.byteLength };
   }
 
   async close(): Promise<void> {

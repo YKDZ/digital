@@ -184,20 +184,24 @@ describe("Asset Refresh CLI", () => {
       secondFile,
       JSON.stringify([{ name: "FANBOXSESSID", value: secondSecret }]),
     );
-    vi.stubGlobal("fetch", async () => ({
-      ok: true,
-      status: 200,
-      headers: { get: () => "application/json" },
-      arrayBuffer: async () =>
-        new TextEncoder().encode(JSON.stringify({ body: { userId: "123456" } }))
-          .buffer,
-    }));
+    const authenticationRequests: string[] = [];
+    vi.stubGlobal("fetch", async (input: string | URL) => {
+      authenticationRequests.push(new URL(input).pathname);
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        arrayBuffer: async () =>
+          new TextEncoder().encode(JSON.stringify({ body: 0 })).buffer,
+      };
+    });
 
     const imported = runtime(
       ["fanbox-connection-import", "customudon", firstFile],
       { cwd: "/workspace", env: { DIGITAL_PRODUCT_DATA: data } },
     );
     await expect(runCli(imported.runtime)).resolves.toBe(0);
+    expect(authenticationRequests).toEqual(["/user.countUnreadMessages"]);
     const first = JSON.parse(imported.stdout()) as { readonly version: number };
     expect(first.version).toBe(1);
 
@@ -212,6 +216,10 @@ describe("Asset Refresh CLI", () => {
       { cwd: "/workspace", env: { DIGITAL_PRODUCT_DATA: data } },
     );
     await expect(runCli(replaced.runtime)).resolves.toBe(0);
+    expect(authenticationRequests).toEqual([
+      "/user.countUnreadMessages",
+      "/user.countUnreadMessages",
+    ]);
     const second = JSON.parse(replaced.stdout()) as {
       readonly version: number;
     };
@@ -355,8 +363,9 @@ describe("Asset Refresh CLI", () => {
     await writeFile(path.join(source, "ordinary.txt"), "source");
     const alias = path.join(aliasParent, "observed-alias");
     await symlink(source, alias, "dir");
+    const canonicalProductData = path.join(source, "product-data");
+    await prepareCliProductData(canonicalProductData);
     const productData = path.join(alias, "product-data");
-    await prepareCliProductData(productData);
     const snapshotOptions = {
       ignoreDirectoryModifiedAt: ["product-data"],
     } as const;

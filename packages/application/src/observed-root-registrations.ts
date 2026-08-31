@@ -3,6 +3,7 @@ import path from "node:path";
 
 import type { CapabilityCoordinate } from "@digital/domain";
 
+import type { ExecutionHost } from "./execution-host.ts";
 import type {
   FilesystemObjectIdentityContract,
   FilesystemPackageSnapshot,
@@ -101,6 +102,17 @@ export abstract class BoundObservedScope {
  */
 export abstract class ObservedByteSource {
   abstract readonly logicalLocation: string;
+  abstract readonly byteLength: number;
+  abstract readonly modifiedAt: string;
+
+  /** 从已打开的同一描述符按绝对偏移读取一个受调用方上限约束的块。 */
+  abstract readChunk(
+    offset: number,
+    maximumBytes: number,
+  ): Promise<{
+    readonly bytes: Uint8Array;
+    readonly done: boolean;
+  }>;
 
   /** 读取已经打开的来源，并关闭其底层能力。 */
   abstract read(): Promise<Uint8Array>;
@@ -114,8 +126,15 @@ export abstract class ObservedByteSource {
  * 绝不能改写已经失败操作的公开结果。
  */
 export type ObservedRootCleanupFailure = {
-  readonly operation: "observed-root-execution" | "open-active-byte-source";
-  readonly cleanup: "close-bound-scope" | "close-byte-source";
+  readonly operation:
+    | "observed-root-execution"
+    | "open-active-byte-source"
+    | "artifact-byte-access";
+  readonly cleanup:
+    | "close-bound-scope"
+    | "close-byte-source"
+    | "media-source"
+    | "proof-manifest";
   readonly rootId: string;
   readonly relativeScope: string;
   readonly error: unknown;
@@ -223,6 +242,7 @@ type ObservedRootRegistrationPorts = {
   readonly cleanupFailureReporter: ObservedRootCleanupFailureReporter;
   /** 主清理审计失败时使用的独立外层接收端。 */
   readonly cleanupFailureFallback: ObservedRootCleanupFailureFallback;
+  readonly operationSupervisor?: Pick<ExecutionHost, "invalidateObservedRoot">;
 };
 
 export class ObservedRootRegistrations {
@@ -324,7 +344,12 @@ export class ObservedRootRegistrations {
         input.id,
       ),
     };
-    return await this.replace(input.expectedVersion, replacement);
+    const updated = await this.replace(input.expectedVersion, replacement);
+    this.ports.operationSupervisor?.invalidateObservedRoot({
+      registrationId: updated.id,
+      keepVersion: updated.configVersion,
+    });
+    return updated;
   }
 
   async deactivate(input: {
@@ -349,6 +374,9 @@ export class ObservedRootRegistrations {
     ) {
       throw new ObservedRootConfigurationConflict();
     }
+    this.ports.operationSupervisor?.invalidateObservedRoot({
+      registrationId: replacement.id,
+    });
     return replacement;
   }
 
@@ -372,7 +400,12 @@ export class ObservedRootRegistrations {
       status: "active",
       configVersion: current.configVersion + 1,
     };
-    return await this.replace(input.expectedVersion, replacement);
+    const reconnected = await this.replace(input.expectedVersion, replacement);
+    this.ports.operationSupervisor?.invalidateObservedRoot({
+      registrationId: reconnected.id,
+      keepVersion: reconnected.configVersion,
+    });
+    return reconnected;
   }
 
   async resolveActiveScope(input: {

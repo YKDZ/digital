@@ -6,6 +6,7 @@ import {
   type DirectoryInterpreter,
   type FilesystemPackageSnapshot,
   type Recognizer,
+  type RecognitionCandidateContext,
   type SourceArtifactAcquirer,
   type SourceCollectionResult,
   type SourceCollector,
@@ -39,7 +40,7 @@ const directoryCapability = declareCapability({
 });
 const collectorCapability = declareCapability({
   identity: "tmdb.official-film-collection",
-  implementationVersion: "2",
+  implementationVersion: "3",
   kind: "source-collector",
   contractVersion: "2",
   interpretationContractVersions: ["2"],
@@ -72,7 +73,7 @@ const recognizerCapability = declareCapability({
 });
 const acquirerCapability = declareCapability({
   identity: "tmdb.source-artifact-acquirer",
-  implementationVersion: "1",
+  implementationVersion: "2",
   kind: "source-artifact-acquirer",
   contractVersion: "1",
   interpretationContractVersions: ["1"],
@@ -100,6 +101,42 @@ type FetchLike = (
   readonly headers: { get(name: string): string | null };
   arrayBuffer(): Promise<ArrayBuffer>;
 }>;
+type WaitLike = (milliseconds: number) => Promise<void>;
+
+const retryDelaysMilliseconds = [250, 1_000] as const;
+
+async function wait(milliseconds: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+}
+
+function retryableStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+/** 只为幂等官方 GET 重试传输错误、限流与服务端错误。 */
+async function requestOfficialSource(
+  request: FetchLike,
+  delay: WaitLike,
+  input: string,
+  init?: Parameters<FetchLike>[1],
+): Promise<Awaited<ReturnType<FetchLike>>> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const response = await request(input, init);
+      if (
+        response.ok ||
+        !retryableStatus(response.status) ||
+        attempt === retryDelaysMilliseconds.length
+      )
+        return response;
+    } catch (error) {
+      if (attempt === retryDelaysMilliseconds.length) throw error;
+    }
+    await delay(retryDelaysMilliseconds[attempt]!);
+  }
+}
 
 type SearchAddress = { readonly title: string; readonly year: string };
 
@@ -159,6 +196,7 @@ export class TmdbCollector implements SourceCollector {
       ) => string | undefined)
     | undefined;
   private readonly request: FetchLike;
+  private readonly delay: WaitLike;
 
   constructor(
     options: {
@@ -167,11 +205,13 @@ export class TmdbCollector implements SourceCollector {
         context: SourceCollectionExecutionContext | undefined,
       ) => string | undefined;
       readonly request?: FetchLike;
+      readonly delay?: WaitLike;
     } = {},
   ) {
     this.accessToken = options.accessToken;
     this.accessTokenForExecution = options.accessTokenForExecution;
     this.request = options.request ?? fetch;
+    this.delay = options.delay ?? wait;
   }
 
   canCollect(evidence: RecognitionEvidence): boolean {
@@ -557,12 +597,17 @@ export class TmdbCollector implements SourceCollector {
   ): Promise<SourceRecord> {
     let response: Awaited<ReturnType<FetchLike>>;
     try {
-      response = await this.request(requestedAddress, {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          Accept: "application/json",
+      response = await requestOfficialSource(
+        this.request,
+        this.delay,
+        requestedAddress,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: "application/json",
+          },
         },
-      });
+      );
     } catch {
       // 请求错误并非安全诊断通道：实现可能暴露 `Authorization` 标头。
       // 保留的执行只需要稳定且可修复的失败分类。
@@ -829,16 +874,19 @@ export class TmdbSourceInterpreter implements SourceInterpreter {
 /** 识别绝不把提供方顺序当作信任依据；该规则精确且有版本。 */
 export class TmdbStrictFilmRecognizer implements Recognizer {
   readonly capability = recognizerCapability;
-  canRecognize(input: SourceInterpretationBatch): boolean {
+  canRecognize(input: RecognitionCandidateContext): boolean {
+    if (input.basis.kind !== "source-interpretation") return false;
+    const interpretation = input.basis.interpretation;
     return (
-      input.sourceIdentity === "tmdb" &&
-      input.producer.capabilityId === interpreterCapability.capabilityId
+      interpretation.sourceIdentity === "tmdb" &&
+      interpretation.producer.capabilityId ===
+        interpreterCapability.capabilityId
     );
   }
-  recognize(input: {
-    readonly evidence: readonly RecognitionEvidence[];
-    readonly interpretation: SourceInterpretationBatch;
-  }): RecognitionProposalDraft {
+  recognize(input: RecognitionCandidateContext): RecognitionProposalDraft {
+    if (input.basis.kind !== "source-interpretation")
+      throw new Error("TMDB recognizer requires source interpretation");
+    const interpretation = input.basis.interpretation;
     const strictEvidence = input.evidence.some(
       (evidence) =>
         evidence.sourceIdentity === "tmdb" &&
@@ -850,7 +898,7 @@ export class TmdbStrictFilmRecognizer implements Recognizer {
         evidence.kind === "directed-source-address" &&
         evidence.sourceIdentity === "tmdb" &&
         canonicalDirectedMovieAddress(evidence.sourceAddress ?? "") ===
-          input.interpretation.sourceAddress,
+          interpretation.sourceAddress,
     );
     const satisfied = strictEvidence || directedEvidence;
     return {
@@ -865,11 +913,11 @@ export class TmdbStrictFilmRecognizer implements Recognizer {
             ? "用户指定的精确 TMDB 来源地址与官方记录一致"
             : "严格目录标题和年份唯一匹配 TMDB 官方记录",
           evidence: input.evidence,
-          ...(input.interpretation.recognitionEvidenceReferences === undefined
+          ...(interpretation.recognitionEvidenceReferences === undefined
             ? {}
             : {
                 evidenceReferences:
-                  input.interpretation.recognitionEvidenceReferences,
+                  interpretation.recognitionEvidenceReferences,
               }),
         },
       ],
@@ -880,8 +928,10 @@ export class TmdbStrictFilmRecognizer implements Recognizer {
 export class TmdbArtifactAcquirer implements SourceArtifactAcquirer {
   readonly capability = acquirerCapability;
   private readonly request: FetchLike;
-  constructor(request: FetchLike = fetch) {
+  private readonly delay: WaitLike;
+  constructor(request: FetchLike = fetch, delay: WaitLike = wait) {
     this.request = request;
+    this.delay = delay;
   }
   canAcquire(candidate: SourceArtifactCandidate): boolean {
     return canonicalImageAddress(candidate.acquisitionReference) !== undefined;
@@ -893,7 +943,11 @@ export class TmdbArtifactAcquirer implements SourceArtifactAcquirer {
       throw new Error("TMDB 图片候选不是官方 HTTPS 图片地址");
     let response: Awaited<ReturnType<FetchLike>>;
     try {
-      response = await this.request(candidate.acquisitionReference);
+      response = await requestOfficialSource(
+        this.request,
+        this.delay,
+        candidate.acquisitionReference,
+      );
     } catch (error) {
       throw new Error(`TMDB 图片请求失败：${message(error)}`, { cause: error });
     }

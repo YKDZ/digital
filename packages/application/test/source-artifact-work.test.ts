@@ -59,18 +59,21 @@ describe("checkpointed source-artifact work", () => {
     };
     const proposal = {
       id: "proposal",
-      interpretation: {
-        id: "interpretation",
-        producer: {
-          capabilityId: "interpreter",
-          capabilityVersion: "1",
-          contractVersion: "1",
+      basis: {
+        kind: "source-interpretation" as const,
+        interpretation: {
+          id: "interpretation",
+          producer: {
+            capabilityId: "interpreter",
+            capabilityVersion: "1",
+            contractVersion: "1",
+          },
+          sourceRecordIds: ["record"],
+          sourceIdentity: "source",
+          sourceAddress: "opaque:work",
+          metadata: [],
+          sourceArtifacts: [candidate],
         },
-        sourceRecordIds: ["record"],
-        sourceIdentity: "source",
-        sourceAddress: "opaque:work",
-        metadata: [],
-        sourceArtifacts: [candidate],
       },
       ruleResults: [],
     };
@@ -146,18 +149,21 @@ describe("checkpointed source-artifact work", () => {
     };
     const proposal = {
       id: "proposal",
-      interpretation: {
-        id: "interpretation",
-        producer: {
-          capabilityId: "interpreter",
-          capabilityVersion: "1",
-          contractVersion: "1",
+      basis: {
+        kind: "source-interpretation" as const,
+        interpretation: {
+          id: "interpretation",
+          producer: {
+            capabilityId: "interpreter",
+            capabilityVersion: "1",
+            contractVersion: "1",
+          },
+          sourceRecordIds: ["record"],
+          sourceIdentity: "source",
+          sourceAddress: "opaque:work",
+          metadata: [],
+          sourceArtifacts: [candidate],
         },
-        sourceRecordIds: ["record"],
-        sourceIdentity: "source",
-        sourceAddress: "opaque:work",
-        metadata: [],
-        sourceArtifacts: [candidate],
       },
       ruleResults: [],
     };

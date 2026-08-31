@@ -691,7 +691,10 @@ function accepted(
 ): AcceptedRecognition {
   const proposal = {
     id: "initial-proposal",
-    interpretation: sourceInterpretation,
+    basis: {
+      kind: "source-interpretation" as const,
+      interpretation: sourceInterpretation,
+    },
     ruleResults: [
       {
         capabilityId: "recognizer",
@@ -707,13 +710,22 @@ function accepted(
   return {
     proposal,
     entity: { id: "asset-1", kind: "digital-asset" },
-    sourceAssociation: {
+    recognitionSourceAssociation: {
       id: "association-1",
       subjectId: "asset-1",
       sourceIdentity: "source",
       nativeAddress: "opaque:asset-1",
       proposalId: proposal.id,
     },
+    sourceAssociations: [
+      {
+        id: "association-1",
+        subjectId: "asset-1",
+        sourceIdentity: "source",
+        nativeAddress: "opaque:asset-1",
+        proposalId: proposal.id,
+      },
+    ],
     recognitionDecision: {
       id: "decision-1",
       proposalId: proposal.id,
@@ -725,7 +737,7 @@ function accepted(
     blobs: [],
     artifactRevisions: [],
     artifactAssociations: [],
-    metadata: proposal.interpretation.metadata,
+    metadata: proposal.basis.interpretation.metadata,
   };
 }
 

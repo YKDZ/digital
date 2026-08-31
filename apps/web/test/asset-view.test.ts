@@ -64,15 +64,17 @@ describe("formal asset view", () => {
         { property: "fanbox.post.entitlement", value: "available" },
         { property: "fanbox.post.like-count", value: "1030" },
         { property: "fanbox.post.comment-count", value: "89" },
+      ],
+      sourceArtifactCandidates: [
         {
-          property: "fanbox.attachment.name",
-          sourceSlot: "fanbox.post.attachment:one:name",
-          value: "bonus.mp4",
-        },
-        {
-          property: "fanbox.attachment.byte-length",
-          sourceSlot: "fanbox.post.attachment:one:byte-length",
-          value: "42",
+          sourceRecordId: "detail",
+          role: "fanbox.attachment.file",
+          mediaType: "video/mp4",
+          selectionEvidence: {
+            suggestedFilename: "bonus.mp4",
+            declaredByteLength: 42,
+            sourceOrdinal: 0,
+          },
         },
       ],
       entities: [{ id: "creator", label: "Custom_Udon" }],

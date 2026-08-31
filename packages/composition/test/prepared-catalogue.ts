@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -7,10 +8,11 @@ import { prepareDisposableCatalogue } from "@digital/sqlite/testing";
 
 let templateRoot: string | undefined;
 let templatePreparation: Promise<string> | undefined;
+const repositoryRoot = path.resolve(import.meta.dirname, "../../..");
 
 /**
- * 从一份由 Drizzle 显式推送的一次性模式创建逐测试产品数据根。模板是操作系统临时测试产物，
- * 绝不是运行时资产；每个调用方都会得到隔离的 SQLite 数据库文件。
+ * 从一份经正式迁移准备的一次性模板创建逐测试产品数据根。模板是操作系统临时测试产物，
+ * 绝不是运行时资产；每个调用方都会得到隔离的 SQLite 数据库与托管产物目录。
  */
 export async function preparedCatalogueRoot(): Promise<string> {
   const template = await preparedTemplateRoot();
@@ -34,6 +36,7 @@ async function copyPreparedCatalogueTo(
     path.join(template, "catalogue.sqlite"),
     path.join(root, "catalogue.sqlite"),
   );
+  await mkdir(path.join(root, "managed-artifacts"), { recursive: true });
 }
 
 /** 所属测试套件结束时释放文件本地模板。 */
@@ -56,6 +59,7 @@ async function createPreparedTemplate(): Promise<string> {
   );
   try {
     const target = await prepareDisposableCatalogue({ root });
+    await prepareWithFormalMigration(root);
     // 已关闭且已设置检查点的模板可作为单个 SQLite 文件复制；
     // 随后各测试实例独立打开自己的 WAL 伴随文件。
     const database = new DatabaseSync(target.databasePath);
@@ -70,4 +74,23 @@ async function createPreparedTemplate(): Promise<string> {
     await rm(root, { recursive: true, force: true });
     throw error;
   }
+}
+
+export async function prepareWithFormalMigration(
+  productDataDirectory: string,
+): Promise<void> {
+  const exitCode = await new Promise<number>((resolve, reject) => {
+    const child = spawn(
+      "pnpm",
+      ["--filter", "@digital/db-migrations", "prepare-only"],
+      {
+        cwd: repositoryRoot,
+        env: { ...process.env, DIGITAL_PRODUCT_DATA: productDataDirectory },
+        stdio: "pipe",
+      },
+    );
+    child.once("error", reject);
+    child.once("close", (code) => resolve(code ?? 1));
+  });
+  if (exitCode !== 0) throw new Error("formal test catalogue migration failed");
 }

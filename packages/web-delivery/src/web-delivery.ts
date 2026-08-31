@@ -1,9 +1,9 @@
-import type {
-  CurrentAttentionPageRequest,
-  CurrentCataloguePageRequest,
+import {
+  type CurrentAttentionPageRequest,
+  type CurrentCataloguePageRequest,
   ExecutionHost,
-  SourceConnectionInspection,
-  WorkflowHistoryPageRequest,
+  type SourceConnectionInspection,
+  type WorkflowHistoryPageRequest,
 } from "@digital/application";
 import {
   type AssetViewFacts,
@@ -19,6 +19,13 @@ import type {
   ProductApplication,
   ProductAssetRefresh,
   ProductWorkflowOperations,
+} from "@digital/product-application";
+import {
+  ArtifactByteAccessError,
+  ObservedRevisionConfirmationError,
+  type ByteReadCancellation,
+  type ConsumerPlaybackCapabilities,
+  type PlaybackPreferences,
 } from "@digital/product-application";
 import type { Hono } from "hono";
 
@@ -272,6 +279,511 @@ export async function managedArtifactResponse(
   return { bytes, mediaType: mediaTypeForBytes(bytes) };
 }
 
+const artifactDownloadChunkBytes = 64 * 1024;
+
+function artifactRevisionSelection(value: string) {
+  if (
+    value.length === 0 ||
+    value.length > 256 ||
+    value.includes("/") ||
+    value.includes("\\") ||
+    value === "." ||
+    value === ".."
+  )
+    throw new Error("产物修订版身份无效");
+  return { artifactRevisionId: value };
+}
+
+function playbackRevisionSelection(value: string) {
+  if (!/^artifact-revision_[A-Za-z0-9][A-Za-z0-9._~-]{0,220}$/u.test(value))
+    throw new Error("产物修订版身份无效");
+  return artifactRevisionSelection(value);
+}
+
+function attachmentDisposition(filename: string): string {
+  const fallback =
+    filename
+      .replaceAll(/[^\u0020-\u007e]|["\\/]/gu, "_")
+      .trim()
+      .slice(0, 150) || "artifact";
+  const extended = encodeURIComponent(filename).replaceAll(
+    /['()*]/gu,
+    (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${extended}`;
+}
+
+function requestCancellation(signal: AbortSignal): ByteReadCancellation {
+  return {
+    get cancelled() {
+      return signal.aborted;
+    },
+    onCancel(listener) {
+      signal.addEventListener("abort", listener, { once: true });
+      if (signal.aborted) listener();
+      return () => signal.removeEventListener("abort", listener);
+    },
+  };
+}
+
+/** 把 Product Application 的有界租约映射为附件 body；这里从不接收或解析服务器路径。 */
+export async function artifactDownloadResponse(
+  revisionId: string,
+  request: Request,
+): Promise<Response> {
+  const selection = artifactRevisionSelection(revisionId);
+  const descriptor =
+    await configuredProductApplication().prepareArtifactDownload(selection);
+  return await artifactByteResponse(selection, descriptor, request, true);
+}
+
+async function artifactByteResponse(
+  selection: { readonly artifactRevisionId: string },
+  descriptor: Awaited<
+    ReturnType<ProductApplication["prepareArtifactDownload"]>
+  >,
+  request: Request,
+  attachment: boolean,
+): Promise<Response> {
+  const headers = new Headers({
+    "accept-ranges": "bytes",
+    "content-length": String(descriptor.byteLength),
+    "content-type": descriptor.mediaType,
+    etag: `"sha256:${descriptor.blobDigest}"`,
+  });
+  if (attachment)
+    headers.set(
+      "content-disposition",
+      attachmentDisposition(descriptor.suggestedFilename),
+    );
+  const etag = headers.get("etag")!;
+  const ifMatch = request.headers.get("if-match");
+  if (ifMatch !== null) {
+    const tags = parseEntityTagList(ifMatch);
+    if (tags === undefined) return jsonRequestError("条件请求格式无效", 400);
+    if (
+      tags !== "*" &&
+      !tags.some((tag) => !tag.weak && entityTagText(tag) === etag)
+    ) {
+      headers.delete("content-length");
+      return new Response(null, { status: 412, headers });
+    }
+  }
+  const ifNoneMatch = request.headers.get("if-none-match");
+  if (ifNoneMatch !== null) {
+    const tags = parseEntityTagList(ifNoneMatch);
+    if (tags === undefined) return jsonRequestError("条件请求格式无效", 400);
+    if (tags === "*" || tags.some((tag) => entityTagText(tag) === etag))
+      return new Response(null, { status: 304, headers });
+  }
+  let interval =
+    descriptor.byteLength === 0
+      ? undefined
+      : { startInclusive: 0, endInclusive: descriptor.byteLength - 1 };
+  let status = 200;
+  const range = request.headers.get("range");
+  const ifRange = request.headers.get("if-range");
+  if (
+    range !== null &&
+    (ifRange === null || (!ifRange.startsWith("W/") && ifRange === etag))
+  ) {
+    const parsed = parseSingleByteRange(range, descriptor.byteLength);
+    if (parsed.status === "malformed")
+      return jsonRequestError("字节范围格式无效", 400);
+    if (parsed.status === "unsatisfied") {
+      headers.set("content-range", `bytes */${descriptor.byteLength}`);
+      headers.delete("content-length");
+      return new Response(null, { status: 416, headers });
+    }
+    if (parsed.status === "partial") {
+      interval = parsed.interval;
+      status = 206;
+      headers.set(
+        "content-range",
+        `bytes ${interval.startInclusive}-${interval.endInclusive}/${descriptor.byteLength}`,
+      );
+      headers.set(
+        "content-length",
+        String(interval.endInclusive - interval.startInclusive + 1),
+      );
+    }
+  }
+  if (interval === undefined) return new Response(null, { status, headers });
+  const lease = await configuredProductApplication().openArtifactBytes({
+    selection,
+    expectedBlobDigest: descriptor.blobDigest,
+    interval,
+  });
+  const cancellation = requestCancellation(request.signal);
+  let settled = false;
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (settled) return;
+      try {
+        const next = await lease.read({
+          maximumBytes: artifactDownloadChunkBytes,
+          cancellation,
+        });
+        if (next.bytes.byteLength > 0) controller.enqueue(next.bytes);
+        if (next.done) {
+          settled = true;
+          await lease.close("completed");
+          controller.close();
+        }
+      } catch (error) {
+        settled = true;
+        try {
+          await lease.close(
+            cancellation.cancelled ? "client-cancelled" : "failed",
+          );
+        } catch {
+          // body 的主读取错误保持可见，资源清理失败不能把它改写为另一响应。
+        }
+        controller.error(error);
+      }
+    },
+    async cancel() {
+      if (settled) return;
+      settled = true;
+      await lease.close("client-cancelled");
+    },
+  });
+  return new Response(body, { status, headers });
+}
+
+export async function playbackPlanResponse(
+  revisionId: string,
+  value: unknown,
+): Promise<
+  | { readonly status: "incompatible"; readonly reason: string }
+  | {
+      readonly status: "ready";
+      readonly revisionId: string;
+      readonly blobDigest: string;
+      readonly rendition: {
+        readonly kind: "direct";
+        readonly mediaType: string;
+        readonly codecs: readonly string[];
+        readonly byteLength: number;
+      };
+      readonly mediaUrl: string;
+    }
+> {
+  const selection = playbackRevisionSelection(revisionId);
+  const input = playbackPlanInput(value);
+  const result = await configuredProductApplication().planPlayback(
+    selection,
+    input.consumer,
+    input.preferences,
+  );
+  if (result.status === "incompatible") return result;
+  return {
+    ...result,
+    mediaUrl: `/api/playback-media/${encodeURIComponent(result.revisionId)}/${result.blobDigest}`,
+  };
+}
+
+export async function playbackMediaResponse(
+  revisionId: string,
+  blobDigest: string,
+  request: Request,
+): Promise<Response> {
+  if (!/^[a-f0-9]{64}$/u.test(blobDigest))
+    throw new ArtifactByteAccessError("artifact-integrity-failed");
+  const selection = playbackRevisionSelection(revisionId);
+  const descriptor =
+    await configuredProductApplication().prepareArtifactDownload(selection);
+  if (descriptor.blobDigest !== blobDigest)
+    throw new ArtifactByteAccessError("artifact-integrity-failed");
+  return await artifactByteResponse(selection, descriptor, request, false);
+}
+
+function playbackPlanInput(value: unknown): {
+  readonly consumer: ConsumerPlaybackCapabilities;
+  readonly preferences: PlaybackPreferences;
+} {
+  const object = strictObject(value, ["consumer", "preferences"]);
+  const consumerObject = strictObject(object.consumer, [
+    "contractVersion",
+    "supportsByteRanges",
+    "media",
+  ]);
+  if (
+    consumerObject.contractVersion !== "consumer-playback/1" ||
+    typeof consumerObject.supportsByteRanges !== "boolean" ||
+    !Array.isArray(consumerObject.media) ||
+    consumerObject.media.length > 128
+  )
+    throw new Error("消费者播放能力无效");
+  const media = consumerObject.media.map((candidate) => {
+    const entry = strictObject(candidate, ["mediaType", "codecs"], ["codecs"]);
+    if (
+      typeof entry.mediaType !== "string" ||
+      !/^[\w!#$&^.+-]+\/[\w!#$&^.+-]+$/u.test(entry.mediaType.trim()) ||
+      (entry.codecs !== undefined &&
+        (!Array.isArray(entry.codecs) ||
+          entry.codecs.length > 32 ||
+          !entry.codecs.every(
+            (codec) =>
+              typeof codec === "string" &&
+              codec.trim().length > 0 &&
+              codec.length <= 127,
+          )))
+    )
+      throw new Error("消费者播放能力无效");
+    return {
+      mediaType: entry.mediaType,
+      ...(entry.codecs === undefined
+        ? {}
+        : { codecs: entry.codecs as string[] }),
+    };
+  });
+  const preferencesObject = strictObject(
+    object.preferences,
+    ["audioTrackId", "subtitleTrackId", "quality"],
+    ["audioTrackId", "subtitleTrackId", "quality"],
+  );
+  const optionalText = (candidate: unknown) =>
+    candidate === undefined ||
+    (typeof candidate === "string" &&
+      candidate.trim().length > 0 &&
+      candidate.length <= 256);
+  if (
+    !optionalText(preferencesObject.audioTrackId) ||
+    !optionalText(preferencesObject.subtitleTrackId) ||
+    (preferencesObject.quality !== undefined &&
+      preferencesObject.quality !== "source")
+  )
+    throw new Error("播放偏好无效");
+  return {
+    consumer: {
+      contractVersion: "consumer-playback/1",
+      supportsByteRanges: consumerObject.supportsByteRanges,
+      media,
+    },
+    preferences: {
+      ...(preferencesObject.audioTrackId === undefined
+        ? {}
+        : { audioTrackId: preferencesObject.audioTrackId as string }),
+      ...(preferencesObject.subtitleTrackId === undefined
+        ? {}
+        : { subtitleTrackId: preferencesObject.subtitleTrackId as string }),
+      ...(preferencesObject.quality === undefined
+        ? {}
+        : { quality: "source" as const }),
+    },
+  };
+}
+
+function strictObject(
+  value: unknown,
+  keys: readonly string[],
+  optional: readonly string[] = [],
+): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    throw new Error("播放计划输入无效");
+  const object = value as Record<string, unknown>;
+  if (
+    Object.keys(object).some((key) => !keys.includes(key)) ||
+    keys.some((key) => !optional.includes(key) && !(key in object))
+  )
+    throw new Error("播放计划输入无效");
+  return object;
+}
+
+export async function confirmedObservedArtifactDownloadResponse(
+  observedFileSelectionId: string,
+  request: Request,
+): Promise<Response> {
+  if (
+    !/^observed-file-selection_1_[a-f0-9]{64}$/u.test(observedFileSelectionId)
+  )
+    return jsonRequestError("观察文件选择已失效", 400);
+  const confirmed =
+    await configuredProductApplication().confirmObservedFileRevision({
+      observedFileSelectionId,
+    });
+  return await artifactDownloadResponse(confirmed.artifactRevisionId, request);
+}
+
+export function artifactDeliveryErrorResponse(error: unknown): Response {
+  if (
+    error instanceof SyntaxError ||
+    (error instanceof Error &&
+      ["播放计划输入无效", "消费者播放能力无效", "播放偏好无效"].includes(
+        error.message,
+      ))
+  )
+    return Response.json({ error: "播放计划输入无效" }, { status: 400 });
+  if (error instanceof Error && error.message === "产物修订版身份无效")
+    return Response.json({ error: error.message }, { status: 400 });
+  if (error instanceof ArtifactByteAccessError) {
+    const status =
+      error.code === "artifact-revision-not-found"
+        ? 404
+        : error.code === "application-shutting-down"
+          ? 503
+          : 409;
+    return Response.json({ error: error.code }, { status });
+  }
+  if (error instanceof ObservedRevisionConfirmationError) {
+    return Response.json(
+      { error: error.code },
+      { status: error.code === "confirmation-commit-failed" ? 503 : 409 },
+    );
+  }
+  return Response.json(
+    { error: "artifact-bytes-unavailable" },
+    { status: 409 },
+  );
+}
+
+type ParsedEntityTag = {
+  readonly weak: boolean;
+  readonly opaque: string;
+};
+
+function parseEntityTagList(
+  value: string,
+): readonly ParsedEntityTag[] | "*" | undefined {
+  let index = skipOws(value, 0);
+  if (value[index] === "*")
+    return skipOws(value, index + 1) === value.length ? "*" : undefined;
+  const tags: ParsedEntityTag[] = [];
+  while (index < value.length) {
+    let weak = false;
+    if (value.startsWith("W/", index)) {
+      weak = true;
+      index += 2;
+    }
+    if (value[index] !== '"') return undefined;
+    index += 1;
+    const start = index;
+    while (index < value.length && value[index] !== '"') {
+      const code = value.charCodeAt(index);
+      if (
+        !(
+          code === 0x21 ||
+          (code >= 0x23 && code <= 0x7e) ||
+          (code >= 0x80 && code <= 0xff)
+        )
+      )
+        return undefined;
+      index += 1;
+    }
+    if (value[index] !== '"') return undefined;
+    tags.push({ weak, opaque: value.slice(start, index) });
+    index = skipOws(value, index + 1);
+    if (index === value.length) return tags;
+    if (value[index] !== ",") return undefined;
+    index = skipOws(value, index + 1);
+    if (index === value.length) return undefined;
+  }
+  return tags.length === 0 ? undefined : tags;
+}
+
+function entityTagText(tag: ParsedEntityTag): string {
+  return `"${tag.opaque}"`;
+}
+
+function skipOws(value: string, start: number): number {
+  let index = start;
+  while (value[index] === " " || value[index] === "\t") index += 1;
+  return index;
+}
+
+function trimOws(value: string): string {
+  return value.replace(/^[ \t]+|[ \t]+$/gu, "");
+}
+
+type ParsedRange =
+  | { readonly status: "ignored" }
+  | { readonly status: "malformed" }
+  | { readonly status: "unsatisfied" }
+  | {
+      readonly status: "partial";
+      readonly interval: {
+        readonly startInclusive: number;
+        readonly endInclusive: number;
+      };
+    };
+
+function parseSingleByteRange(value: string, length: number): ParsedRange {
+  const match = /^([!#$%&'*+.^_`|~0-9A-Za-z-]+)=(.*)$/u.exec(value);
+  if (match === null) return { status: "malformed" };
+  if (match[1]!.toLowerCase() !== "bytes") return { status: "ignored" };
+  const members = match[2]!.split(",").map(trimOws);
+  if (members.length !== 1) {
+    return members.every(validByteRangeMember)
+      ? { status: "unsatisfied" }
+      : { status: "malformed" };
+  }
+  const member = members[0]!;
+  if (!validByteRangeSyntax(member)) return { status: "malformed" };
+  if (length === 0) return { status: "unsatisfied" };
+  const [first, last] = member.split("-") as [string, string];
+  if (first.length === 0) {
+    const suffix = boundedDecimal(last);
+    if (suffix === undefined) return { status: "malformed" };
+    if (suffix === 0) return { status: "unsatisfied" };
+    return {
+      status: "partial",
+      interval: {
+        startInclusive: Math.max(0, length - suffix),
+        endInclusive: length - 1,
+      },
+    };
+  }
+  const start = boundedDecimal(first);
+  if (start === undefined) return { status: "malformed" };
+  if (start >= length) return { status: "unsatisfied" };
+  if (last.length === 0)
+    return {
+      status: "partial",
+      interval: { startInclusive: start, endInclusive: length - 1 },
+    };
+  const requestedEnd = boundedDecimal(last);
+  if (requestedEnd === undefined || requestedEnd < start)
+    return { status: "malformed" };
+  return {
+    status: "partial",
+    interval: {
+      startInclusive: start,
+      endInclusive: Math.min(requestedEnd, length - 1),
+    },
+  };
+}
+
+function validByteRangeMember(value: string): boolean {
+  if (!validByteRangeSyntax(value)) return false;
+  const [first, last] = value.split("-") as [string, string];
+  if (first.length === 0) return boundedDecimal(last) !== undefined;
+  const start = boundedDecimal(first);
+  if (start === undefined) return false;
+  if (last.length === 0) return true;
+  const end = boundedDecimal(last);
+  return end !== undefined && end >= start;
+}
+
+function validByteRangeSyntax(value: string): boolean {
+  return /^(?:[0-9]+-[0-9]*|-[0-9]+)$/u.test(value);
+}
+
+function boundedDecimal(value: string): number | undefined {
+  try {
+    const parsed = BigInt(value);
+    return parsed <= BigInt(Number.MAX_SAFE_INTEGER)
+      ? Number(parsed)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function jsonRequestError(message: string, status: 400): Response {
+  return Response.json({ error: message }, { status });
+}
+
 type AcceptedPresentationSubject = NonNullable<
   NonNullable<Awaited<ReturnType<ProductAssetRefresh["inspect"]>>>["accepted"]
 >;
@@ -282,9 +794,10 @@ function assetViewFactsForAccepted(
 ): AssetViewFacts {
   return {
     id: accepted.entity.id,
-    sourceAssociation: accepted.sourceAssociation,
+    sourceAssociation: accepted.recognitionSourceAssociation,
     sourceAssociations: accepted.sourceAssociations,
     metadata: accepted.effectiveMetadata,
+    sourceArtifactCandidates: accepted.sourceArtifactCandidates,
     entities: accepted.entities,
     relationships: accepted.relationships,
     artifactAssociations: accepted.artifactAssociations,
@@ -431,7 +944,8 @@ export function deliveryExecution(
             reason: item.reason,
             recognition: item.recognition,
             acceptedAssetId: item.accepted?.entity.id,
-            acceptedSource: item.accepted?.sourceAssociation.nativeAddress,
+            acceptedSource:
+              item.accepted?.recognitionSourceAssociation?.nativeAddress,
           })),
         }),
     recognition: inspection.recognition,
@@ -737,20 +1251,23 @@ export async function startAssetRescrapeForSubject(
 ): Promise<{ readonly id: string }> {
   const target = await subject.inspectRefreshTarget(subjectId);
   if (target === undefined) throw new Error("未找到可重新刮削的当前内容");
+  const recognitionSourceAssociation = target.recognitionSourceAssociation;
+  if (recognitionSourceAssociation === undefined)
+    throw new Error("当前内容没有可重新刮削的识别来源");
   return await startAssetRescrape(
     subject,
     {
       assetId: target.subjectId,
       observedRootId: target.filesystemScope.observedRootId,
       relativeScope: target.filesystemScope.relativeScope,
-      sourceIdentity: target.sourceAssociation.sourceIdentity,
-      sourceAddress: target.sourceAssociation.nativeAddress,
+      sourceIdentity: recognitionSourceAssociation.sourceIdentity,
+      sourceAddress: recognitionSourceAssociation.nativeAddress,
     },
     host,
     await informationRequirementForSubject(
       subject,
       subjectId,
-      target.sourceAssociation,
+      recognitionSourceAssociation,
     ),
   );
 }

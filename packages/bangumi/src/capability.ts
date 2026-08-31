@@ -6,6 +6,7 @@ import {
   type DirectoryInterpreter,
   type FilesystemPackageSnapshot,
   type Recognizer,
+  type RecognitionCandidateContext,
   type SourceCollectionExecutionContext,
   type SourceArtifactAcquirer,
   type SourceCollectionResult,
@@ -103,7 +104,7 @@ export class BangumiEpisodicDirectoryInterpreter implements DirectoryInterpreter
     const year = root[2]!;
     const workItems = snapshot.files.flatMap((file) => {
       const entry =
-        /^Season ([1-9]\d*)\/(.+?) - S(\d{2})E(\d{2})(?: - 第 (\d+) 集)?(\.[^/]+)$/u.exec(
+        /^Season ([1-9]\d*)\/(.+?) - S(\d{2})E(\d{2})(?: - 第 (\d+) 集)?(\.(?:mkv|mp4))$/iu.exec(
           file.relativePath,
         );
       if (entry === null) return [];
@@ -907,6 +908,16 @@ export class BangumiSourceInterpreter implements SourceInterpreter {
         role: "bangumi.subject.ordinary-episode",
         sourceSlot: `bangumi.subject.ordinary-episode:${seasonSubject.id}:${episode.id}`,
         sourceRecordIds: [subjectRecord.id, episodeRecord.id],
+        qualifiers: [
+          {
+            key: "bangumi.episode.season-position",
+            value: String(episode.ep),
+          },
+          {
+            key: "bangumi.episode.continuous-position",
+            value: String(episode.sort),
+          },
+        ],
       },
       ...officialSeasonRelationships(chain, records, works),
     ];
@@ -965,16 +976,16 @@ export class BangumiSourceInterpreter implements SourceInterpreter {
 
 export class BangumiEpisodicRecognizer implements Recognizer {
   readonly capability = recognizerCapability;
-  canRecognize(input: SourceInterpretationBatch): boolean {
+  canRecognize(input: RecognitionCandidateContext): boolean {
+    if (input.basis.kind !== "source-interpretation") return false;
+    const interpretation = input.basis.interpretation;
     return (
-      input.sourceIdentity === "bangumi" &&
-      input.producer.capabilityId === interpreterCapability.capabilityId
+      interpretation.sourceIdentity === "bangumi" &&
+      interpretation.producer.capabilityId ===
+        interpreterCapability.capabilityId
     );
   }
-  recognize(input: {
-    readonly evidence: readonly RecognitionEvidence[];
-    readonly interpretation: SourceInterpretationBatch;
-  }): RecognitionProposalDraft {
+  recognize(input: RecognitionCandidateContext): RecognitionProposalDraft {
     const convention = input.evidence.some(isEpisodeEvidence);
     return {
       id: `recognition-proposal_${randomUUID()}`,

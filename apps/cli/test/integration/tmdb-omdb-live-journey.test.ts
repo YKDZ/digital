@@ -99,7 +99,7 @@ describe("TMDB and OMDb live journey contract", () => {
   it("uses the public legacy and itemized inspection projections without treating them as interchangeable", () => {
     const accepted = {
       entity: { id: "asset-1", kind: "digital-asset" },
-      sourceAssociation: {
+      recognitionSourceAssociation: {
         sourceIdentity: "tmdb",
         nativeAddress: "https://www.themoviedb.org/movie/209764",
       },

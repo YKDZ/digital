@@ -12,6 +12,7 @@ import {
   readFile,
   stat,
   type FileHandle,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
@@ -27,6 +28,8 @@ import {
   ObservedByteSource,
   type ObservedFilesystemCapability,
   type CoverAcquisitionCheckpoint,
+  type ArtifactContentProofMetadata,
+  type OperationCancellation,
 } from "@digital/application";
 
 import { filesystemObservationTestHooksFor } from "./testing-hooks.ts";
@@ -108,13 +111,23 @@ class NodeBoundDirectory {
 class NodeBoundFile {
   readonly handle: FileHandle;
   readonly details: Awaited<ReturnType<FileHandle["stat"]>>;
+  readonly entryDirectory: FileHandle;
+  readonly entryName: string;
 
   constructor(
     handle: FileHandle,
     details: Awaited<ReturnType<FileHandle["stat"]>>,
+    entryDirectory: FileHandle,
+    entryName: string,
   ) {
     this.handle = handle;
     this.details = details;
+    this.entryDirectory = entryDirectory;
+    this.entryName = entryName;
+  }
+
+  async close(): Promise<void> {
+    await closeHandles([this.handle, this.entryDirectory]);
   }
 }
 
@@ -217,7 +230,7 @@ class NodeBoundObservedScope extends BoundObservedScope {
         )
         .then((resolved) => {
           if (resolved.kind !== "directory") {
-            if (resolved.kind === "file") void resolved.file.handle.close();
+            if (resolved.kind === "file") void resolved.file.close();
             throw new BoundPathFailure("expected-directory");
           }
           return resolved.directory;
@@ -282,6 +295,9 @@ class NodeBoundObservedScope extends BoundObservedScope {
     return new NodeObservedByteSource(
       resolved.file.handle,
       path.resolve(this.logicalLocation, relativePath),
+      resolved.file.details,
+      resolved.file.entryDirectory,
+      resolved.file.entryName,
     );
   }
 
@@ -350,7 +366,7 @@ class NodeBoundObservedScope extends BoundObservedScope {
         );
         if (result.kind === "file") {
           if (!final && result.consumedRemainder !== true) {
-            await result.file.handle.close();
+            await result.file.close();
             throw new BoundPathFailure("expected-directory");
           }
           if (current.owned) await current.close();
@@ -431,8 +447,7 @@ class NodeBoundObservedScope extends BoundObservedScope {
         new Set([...input.linkTrail, virtualLink]),
       );
       if (linkedDirectory.kind !== "directory") {
-        if (linkedDirectory.kind === "file")
-          await linkedDirectory.file.handle.close();
+        if (linkedDirectory.kind === "file") await linkedDirectory.file.close();
         throw new BoundPathFailure("expected-directory");
       }
       try {
@@ -448,7 +463,7 @@ class NodeBoundObservedScope extends BoundObservedScope {
       new Set([...input.linkTrail, virtualLink]),
     );
     if (resolved.kind === "file" && !allowsFileLinks(this.root.symlinkMode)) {
-      await resolved.file.handle.close();
+      await resolved.file.close();
       throw new BoundPathFailure("symbolic-link-not-followed");
     }
     if (
@@ -517,19 +532,98 @@ class NodeObservedByteSource extends ObservedByteSource {
   private closed = false;
   private consumed = false;
   private readonly handle: FileHandle;
+  private readonly entryDirectory: FileHandle;
+  private readonly entryName: string;
+  readonly byteLength: number;
+  readonly modifiedAt: string;
+  private readonly initialIdentity: string;
+  private sequentialOffset = 0;
   readonly logicalLocation: string;
 
-  constructor(handle: FileHandle, logicalLocation: string) {
+  constructor(
+    handle: FileHandle,
+    logicalLocation: string,
+    details: Awaited<ReturnType<FileHandle["stat"]>>,
+    entryDirectory: FileHandle,
+    entryName: string,
+  ) {
     super();
     this.handle = handle;
     this.logicalLocation = logicalLocation;
+    this.entryDirectory = entryDirectory;
+    this.entryName = entryName;
+    this.byteLength = Number(details.size);
+    this.modifiedAt = details.mtime.toISOString();
+    this.initialIdentity = observedFileIdentity(details);
+  }
+
+  async readChunk(
+    offset: number,
+    maximumBytes: number,
+  ): Promise<{
+    readonly bytes: Uint8Array;
+    readonly done: boolean;
+  }> {
+    if (
+      !Number.isSafeInteger(offset) ||
+      offset < 0 ||
+      !Number.isSafeInteger(maximumBytes) ||
+      maximumBytes <= 0
+    )
+      throw new Error("读取块上限必须为正安全整数");
+    if (this.closed) throw new Error("observed byte source is closed");
+    return await readStableDescriptorChunk({
+      handle: this.handle,
+      offset,
+      maximumBytes,
+      byteLength: this.byteLength,
+      assertStable: async () => await this.assertStable(),
+      changedMessage: "observed byte source changed while reading",
+    });
+  }
+
+  private async assertStable(): Promise<void> {
+    let current: Awaited<ReturnType<FileHandle["stat"]>>;
+    let currentEntry: Awaited<ReturnType<typeof stat>>;
+    try {
+      [current, currentEntry] = await Promise.all([
+        this.handle.stat(),
+        stat(path.join(descriptorPath(this.entryDirectory), this.entryName)),
+      ]);
+    } catch {
+      await this.close();
+      throw new Error("observed byte source changed while reading");
+    }
+    if (
+      Number(current.size) !== this.byteLength ||
+      observedFileIdentity(current) !== this.initialIdentity ||
+      observedFileIdentity(currentEntry) !== this.initialIdentity
+    ) {
+      await this.close();
+      throw new Error("observed byte source changed while reading");
+    }
   }
 
   async read(): Promise<Uint8Array> {
     if (this.consumed) throw new Error("observed byte source was already read");
     this.consumed = true;
     try {
-      return new Uint8Array(await this.handle.readFile());
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      while (true) {
+        const next = await this.readChunk(this.sequentialOffset, 64 * 1024);
+        chunks.push(next.bytes);
+        size += next.bytes.byteLength;
+        this.sequentialOffset += next.bytes.byteLength;
+        if (next.done) break;
+      }
+      const bytes = new Uint8Array(size);
+      let offset = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return bytes;
     } finally {
       await this.close();
     }
@@ -538,8 +632,18 @@ class NodeObservedByteSource extends ObservedByteSource {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    await this.handle.close();
+    await closeHandles([this.handle, this.entryDirectory]);
   }
+}
+
+function observedFileIdentity(details: {
+  readonly dev: number | bigint;
+  readonly ino: number | bigint;
+  readonly size: number | bigint;
+  readonly mtimeMs: number | bigint;
+  readonly ctimeMs: number | bigint;
+}): string {
+  return `${details.dev}:${details.ino}:${details.size}:${details.mtimeMs}:${details.ctimeMs}`;
 }
 
 function descriptorPath(handle: FileHandle): string {
@@ -605,17 +709,20 @@ async function openVerifiedFile(
   name: string,
   initiallyObserved: Awaited<ReturnType<typeof lstat>>,
 ): Promise<NodeBoundFile> {
-  const handle = await open(
-    entryPath(parent, name),
-    fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
-  );
+  const entryDirectory = await openBoundDirectory(parent.descriptorPath, true);
+  let handle: FileHandle | undefined;
   try {
+    handle = await open(
+      path.join(descriptorPath(entryDirectory), name),
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+    );
     const details = await handle.stat();
     if (!details.isFile() || !sameNodeObject(initiallyObserved, details))
       throw new BoundPathFailure("entry-identity-changed");
-    return new NodeBoundFile(handle, details);
+    return new NodeBoundFile(handle, details, entryDirectory, name);
   } catch (error) {
-    await handle.close();
+    await handle?.close();
+    await entryDirectory.close();
     throw error;
   }
 }
@@ -921,7 +1028,7 @@ export class ReadOnlyFilesystemObserver implements ObservedFilesystemCapability 
           ),
         );
       } finally {
-        await resolved.file.handle.close();
+        await resolved.file.close();
       }
     } catch (error) {
       this.excludeUnavailable(input, input.relativePath, error);
@@ -954,7 +1061,7 @@ export class ReadOnlyFilesystemObserver implements ObservedFilesystemCapability 
         initiallyObserved: input.details,
       });
       if (resolved.kind !== "directory") {
-        if (resolved.kind === "file") await resolved.file.handle.close();
+        if (resolved.kind === "file") await resolved.file.close();
         input.excluded.push({
           relativePath: input.relativePath,
           kind: "special",
@@ -1002,7 +1109,7 @@ export class ReadOnlyFilesystemObserver implements ObservedFilesystemCapability 
             ),
           );
         } finally {
-          await resolved.file.handle.close();
+          await resolved.file.close();
         }
         return;
       }
@@ -1357,6 +1464,30 @@ export class ContentAddressedManagedArtifactStore implements ManagedArtifactStor
     );
   }
 
+  async openByteSource(digest: string): Promise<{
+    readonly byteLength: number;
+    readChunk(
+      offset: number,
+      maximumBytes: number,
+    ): Promise<{
+      readonly bytes: Uint8Array;
+      readonly done: boolean;
+    }>;
+    close(): Promise<void>;
+  }> {
+    if (!/^[a-f0-9]{64}$/u.test(digest)) throw new Error("未找到托管产物");
+    const location = path.join(this.root, digest.slice(0, 2), digest);
+    const handle = await open(location, fsConstants.O_RDONLY);
+    try {
+      const details = await handle.stat();
+      if (!details.isFile()) throw new Error("未找到托管产物");
+      return new NodeManagedArtifactByteSource(handle, details);
+    } catch (error) {
+      await handle.close();
+      throw error;
+    }
+  }
+
   async store(content: {
     readonly bytes: Uint8Array;
     readonly mediaType: string;
@@ -1481,4 +1612,457 @@ export class ContentAddressedManagedArtifactStore implements ManagedArtifactStor
       return false;
     }
   }
+}
+
+class NodeManagedArtifactByteSource {
+  readonly byteLength: number;
+  private readonly handle: FileHandle;
+  private readonly identity: string;
+  private closed = false;
+
+  constructor(
+    handle: FileHandle,
+    details: Awaited<ReturnType<FileHandle["stat"]>>,
+  ) {
+    this.handle = handle;
+    this.byteLength = Number(details.size);
+    this.identity = observedFileIdentity(details);
+  }
+
+  async readChunk(offset: number, maximumBytes: number) {
+    if (
+      !Number.isSafeInteger(offset) ||
+      offset < 0 ||
+      !Number.isSafeInteger(maximumBytes) ||
+      maximumBytes <= 0
+    )
+      throw new Error("读取块上限必须为正安全整数");
+    if (this.closed) throw new Error("managed byte source is closed");
+    return await readStableDescriptorChunk({
+      handle: this.handle,
+      offset,
+      maximumBytes,
+      byteLength: this.byteLength,
+      assertStable: async () => await this.assertStable(),
+      changedMessage: "managed artifact changed while reading",
+    });
+  }
+
+  private async assertStable() {
+    const details = await this.handle.stat();
+    if (observedFileIdentity(details) !== this.identity)
+      throw new Error("managed artifact changed while reading");
+  }
+
+  async close() {
+    if (this.closed) return;
+    this.closed = true;
+    await this.handle.close();
+  }
+}
+
+async function readStableDescriptorChunk(input: {
+  readonly handle: FileHandle;
+  readonly offset: number;
+  readonly maximumBytes: number;
+  readonly byteLength: number;
+  readonly assertStable: () => Promise<void>;
+  readonly changedMessage: string;
+}): Promise<{ readonly bytes: Uint8Array; readonly done: boolean }> {
+  await input.assertStable();
+  const remaining = input.byteLength - input.offset;
+  if (remaining <= 0) return { bytes: new Uint8Array(), done: true };
+  const bytes = new Uint8Array(Math.min(input.maximumBytes, remaining));
+  const result = await input.handle.read(
+    bytes,
+    0,
+    bytes.byteLength,
+    input.offset,
+  );
+  if (result.bytesRead <= 0) throw new Error(input.changedMessage);
+  await input.assertStable();
+  return {
+    bytes: bytes.slice(0, result.bytesRead),
+    done: input.offset + result.bytesRead === input.byteLength,
+  };
+}
+
+export const artifactProofFrameSize = 1_048_576 as const;
+const artifactProofHeaderSize = 64;
+const artifactProofManifestBufferSize = 64 * 1024;
+const frameDomain = Buffer.from("digital-artifact-frame-v1\0", "utf8");
+const manifestDomain = Buffer.from("digital-artifact-manifest-v1\0", "utf8");
+
+export type ArtifactProofByteSource = {
+  readonly byteLength: number;
+  readChunk(
+    offset: number,
+    maximumBytes: number,
+  ): Promise<{ readonly bytes: Uint8Array; readonly done: boolean }>;
+};
+
+export type VerifiedArtifactFrameManifest = {
+  expectedFrameDigest(ordinal: number): Promise<Uint8Array>;
+  close(): Promise<void>;
+};
+
+/** product-data 内固定格式的、不可原地修改的分帧证明 sidecar。 */
+export class ArtifactFrameProofStore {
+  private readonly root: string;
+
+  constructor(productDataDirectory: string) {
+    this.root = path.join(productDataDirectory, "artifact-proofs");
+  }
+
+  async build(
+    source: ArtifactProofByteSource,
+    cancellation: OperationCancellation = neverCancelled,
+    expected?: { readonly blobDigest: string; readonly byteLength: number },
+  ): Promise<ArtifactContentProofMetadata> {
+    assertProofOperation(cancellation);
+    if (!Number.isSafeInteger(source.byteLength) || source.byteLength < 0)
+      throw new Error("artifact proof byte length is invalid");
+    const stagingDirectory = path.join(this.root, ".staging");
+    await proofIo(cancellation, () =>
+      mkdir(stagingDirectory, { recursive: true }),
+    );
+    const staging = path.join(stagingDirectory, randomUUID());
+    const handle = await proofIo(cancellation, () => open(staging, "wx+"));
+    let published = false;
+    try {
+      await writeAll(
+        handle,
+        new Uint8Array(artifactProofHeaderSize),
+        0,
+        cancellation,
+      );
+      const blobHash = createHash("sha256");
+      let offset = 0;
+      let ordinal = 0;
+      while (offset < source.byteLength) {
+        const frameLength = Math.min(
+          artifactProofFrameSize,
+          source.byteLength - offset,
+        );
+        const frame = await readExactProofBytes(
+          source,
+          offset,
+          frameLength,
+          cancellation,
+        );
+        blobHash.update(frame);
+        const digest = frameDigest(ordinal, offset, frame);
+        await writeAll(
+          handle,
+          digest,
+          artifactProofHeaderSize + ordinal * 32,
+          cancellation,
+        );
+        offset += frameLength;
+        ordinal += 1;
+      }
+      const eof = await proofIo(cancellation, () =>
+        source.readChunk(source.byteLength, 1),
+      );
+      if (eof.bytes.byteLength !== 0 || !eof.done)
+        throw new Error("artifact bytes changed while building proof");
+      const blobDigest = blobHash.digest("hex");
+      if (
+        expected !== undefined &&
+        (expected.blobDigest !== blobDigest ||
+          expected.byteLength !== source.byteLength)
+      )
+        throw new Error("artifact bytes do not match their Blob");
+      const header = proofHeader(source.byteLength, ordinal, blobDigest);
+      await writeAll(handle, header, 0, cancellation);
+      const manifestDigest = await digestManifestHandle(handle, cancellation);
+      const metadata: ArtifactContentProofMetadata = {
+        blobDigest,
+        scheme: "artifact-frame-manifest/1",
+        byteLength: source.byteLength,
+        frameSize: artifactProofFrameSize,
+        frameCount: ordinal,
+        manifestDigest,
+      };
+      await verifyManifestHandle(handle, metadata, cancellation);
+      await proofIo(cancellation, () => handle.sync());
+      const finalDirectory = path.join(
+        this.root,
+        "sha256",
+        manifestDigest.slice(0, 2),
+      );
+      const finalPath = path.join(finalDirectory, `${manifestDigest}.fproof`);
+      await proofIo(cancellation, () =>
+        mkdir(finalDirectory, { recursive: true }),
+      );
+      await handle.close();
+      try {
+        await proofIo(cancellation, () => rename(staging, finalPath));
+      } catch (error) {
+        if (!isAlreadyExists(error)) throw error;
+        const existing = await this.open(metadata, cancellation);
+        await existing.close();
+        await unlink(staging).catch(() => undefined);
+      }
+      const directoryHandle = await proofIo(cancellation, () =>
+        open(finalDirectory, fsConstants.O_RDONLY),
+      );
+      try {
+        await proofIo(cancellation, () => directoryHandle.sync());
+      } finally {
+        await directoryHandle.close();
+      }
+      published = true;
+      return metadata;
+    } finally {
+      await handle.close().catch(() => undefined);
+      if (!published) await unlink(staging).catch(() => undefined);
+    }
+  }
+
+  /** describe 热路径只检查存在性、精确长度与固定 header 坐标。 */
+  async inspect(
+    metadata: ArtifactContentProofMetadata,
+    cancellation: OperationCancellation = neverCancelled,
+  ): Promise<void> {
+    const manifestPath = this.pathFor(metadata.manifestDigest);
+    const handle = await proofIo(cancellation, () =>
+      open(manifestPath, fsConstants.O_RDONLY),
+    );
+    try {
+      await inspectManifestHandle(handle, metadata, cancellation);
+    } finally {
+      await handle.close();
+    }
+  }
+
+  async open(
+    metadata: ArtifactContentProofMetadata,
+    cancellation: OperationCancellation = neverCancelled,
+  ): Promise<VerifiedArtifactFrameManifest> {
+    const manifestPath = this.pathFor(metadata.manifestDigest);
+    const handle = await proofIo(cancellation, () =>
+      open(manifestPath, fsConstants.O_RDONLY),
+    );
+    try {
+      await verifyManifestHandle(handle, metadata, cancellation);
+      let closed = false;
+      return {
+        async expectedFrameDigest(
+          ordinal,
+          operationCancellation = cancellation,
+        ) {
+          if (closed) throw new Error("artifact proof is closed");
+          if (
+            !Number.isSafeInteger(ordinal) ||
+            ordinal < 0 ||
+            ordinal >= metadata.frameCount
+          )
+            throw new Error("artifact proof frame ordinal is invalid");
+          const bytes = new Uint8Array(32);
+          const result = await proofIo(operationCancellation, () =>
+            handle.read(
+              bytes,
+              0,
+              bytes.byteLength,
+              artifactProofHeaderSize + ordinal * 32,
+            ),
+          );
+          if (result.bytesRead !== 32)
+            throw new Error("artifact proof is truncated");
+          return bytes;
+        },
+        async close() {
+          if (closed) return;
+          closed = true;
+          await handle.close();
+        },
+      };
+    } catch (error) {
+      await handle.close().catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private pathFor(manifestDigest: string): string {
+    if (!/^[a-f0-9]{64}$/u.test(manifestDigest))
+      throw new Error("artifact proof digest is invalid");
+    return path.join(
+      this.root,
+      "sha256",
+      manifestDigest.slice(0, 2),
+      `${manifestDigest}.fproof`,
+    );
+  }
+}
+
+async function readExactProofBytes(
+  source: ArtifactProofByteSource,
+  offset: number,
+  length: number,
+  cancellation: OperationCancellation,
+): Promise<Uint8Array> {
+  const bytes = new Uint8Array(length);
+  let filled = 0;
+  while (filled < length) {
+    const next = await proofIo(cancellation, () =>
+      source.readChunk(offset + filled, length - filled),
+    );
+    if (next.bytes.byteLength === 0)
+      throw new Error("artifact bytes changed while reading");
+    bytes.set(next.bytes, filled);
+    filled += next.bytes.byteLength;
+  }
+  return bytes;
+}
+
+function frameDigest(
+  ordinal: number,
+  offset: number,
+  bytes: Uint8Array,
+): Uint8Array {
+  const coordinate = Buffer.alloc(20);
+  coordinate.writeBigUInt64BE(BigInt(ordinal), 0);
+  coordinate.writeBigUInt64BE(BigInt(offset), 8);
+  coordinate.writeUInt32BE(bytes.byteLength, 16);
+  return createHash("sha256")
+    .update(frameDomain)
+    .update(coordinate)
+    .update(bytes)
+    .digest();
+}
+
+function proofHeader(
+  byteLength: number,
+  frameCount: number,
+  blobDigest: string,
+): Uint8Array {
+  const header = Buffer.alloc(artifactProofHeaderSize);
+  header.write("DGFPRF01", 0, "ascii");
+  header.writeUInt16BE(1, 8);
+  header.writeUInt16BE(1, 10);
+  header.writeUInt32BE(artifactProofFrameSize, 12);
+  header.writeBigUInt64BE(BigInt(byteLength), 16);
+  header.writeBigUInt64BE(BigInt(frameCount), 24);
+  Buffer.from(blobDigest, "hex").copy(header, 32);
+  return header;
+}
+
+async function writeAll(
+  handle: FileHandle,
+  bytes: Uint8Array,
+  position: number,
+  cancellation: OperationCancellation,
+): Promise<void> {
+  let written = 0;
+  while (written < bytes.byteLength) {
+    const result = await proofIo(cancellation, () =>
+      handle.write(
+        bytes,
+        written,
+        bytes.byteLength - written,
+        position + written,
+      ),
+    );
+    if (result.bytesWritten === 0)
+      throw new Error("artifact proof write stalled");
+    written += result.bytesWritten;
+  }
+}
+
+async function digestManifestHandle(
+  handle: FileHandle,
+  cancellation: OperationCancellation,
+): Promise<string> {
+  const digest = createHash("sha256").update(manifestDomain);
+  const details = await proofIo(cancellation, () => handle.stat());
+  let offset = 0;
+  while (offset < details.size) {
+    const bytes = new Uint8Array(
+      Math.min(artifactProofManifestBufferSize, Number(details.size) - offset),
+    );
+    const result = await proofIo(cancellation, () =>
+      handle.read(bytes, 0, bytes.byteLength, offset),
+    );
+    if (result.bytesRead === 0) throw new Error("artifact proof read stalled");
+    digest.update(bytes.subarray(0, result.bytesRead));
+    offset += result.bytesRead;
+  }
+  return digest.digest("hex");
+}
+
+async function verifyManifestHandle(
+  handle: FileHandle,
+  metadata: ArtifactContentProofMetadata,
+  cancellation: OperationCancellation,
+): Promise<void> {
+  await inspectManifestHandle(handle, metadata, cancellation);
+  if (
+    (await digestManifestHandle(handle, cancellation)) !==
+    metadata.manifestDigest
+  )
+    throw new Error("artifact proof integrity check failed");
+}
+
+async function inspectManifestHandle(
+  handle: FileHandle,
+  metadata: ArtifactContentProofMetadata,
+  cancellation: OperationCancellation,
+): Promise<void> {
+  const expectedCount = Math.ceil(metadata.byteLength / artifactProofFrameSize);
+  const details = await proofIo(cancellation, () => handle.stat());
+  if (
+    metadata.scheme !== "artifact-frame-manifest/1" ||
+    metadata.frameSize !== artifactProofFrameSize ||
+    metadata.frameCount !== expectedCount ||
+    details.size !== artifactProofHeaderSize + metadata.frameCount * 32
+  )
+    throw new Error("artifact proof coordinates are invalid");
+  const header = new Uint8Array(artifactProofHeaderSize);
+  const result = await proofIo(cancellation, () =>
+    handle.read(header, 0, header.byteLength, 0),
+  );
+  if (
+    result.bytesRead !== header.byteLength ||
+    !Buffer.from(header).equals(
+      Buffer.from(
+        proofHeader(
+          metadata.byteLength,
+          metadata.frameCount,
+          metadata.blobDigest,
+        ),
+      ),
+    )
+  )
+    throw new Error("artifact proof integrity check failed");
+}
+
+const neverCancelled: OperationCancellation = {
+  cancelled: false,
+  reason: undefined,
+  onCancel: () => () => undefined,
+};
+
+function assertProofOperation(cancellation: OperationCancellation): void {
+  if (cancellation.cancelled)
+    throw new Error("artifact proof operation cancelled");
+}
+
+async function proofIo<Result>(
+  cancellation: OperationCancellation,
+  io: () => Promise<Result>,
+): Promise<Result> {
+  assertProofOperation(cancellation);
+  const result = await io();
+  assertProofOperation(cancellation);
+  return result;
+}
+
+function isAlreadyExists(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "EEXIST"
+  );
 }

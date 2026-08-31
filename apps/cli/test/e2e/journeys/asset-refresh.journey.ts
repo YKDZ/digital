@@ -265,7 +265,12 @@ const journey: CliJourney = {
       }[];
       readonly accepted?: {
         readonly entity: { readonly kind: string };
-        readonly sourceAssociation: { readonly nativeAddress: string };
+        readonly sourceAssociations: readonly {
+          readonly nativeAddress: string;
+        }[];
+        readonly recognitionSourceAssociation?: {
+          readonly nativeAddress: string;
+        };
         readonly artifacts: readonly { readonly id: string }[];
         readonly locations: readonly { readonly kind: string }[];
         readonly blobs: readonly {
@@ -312,8 +317,12 @@ const journey: CliJourney = {
       1,
     );
     assert.equal(accepted.accepted?.entity.kind, "digital-asset");
+    assert.ok(
+      accepted.accepted?.recognitionSourceAssociation,
+      "accepted asset is missing its recognition source",
+    );
     assert.match(
-      accepted.accepted?.sourceAssociation.nativeAddress ?? "",
+      accepted.accepted.recognitionSourceAssociation.nativeAddress,
       new RegExp(oracle.selection.identity, "u"),
     );
     assert.match(
@@ -423,7 +432,12 @@ const journey: CliJourney = {
       }[];
       readonly accepted?: {
         readonly entity: { readonly id: string };
-        readonly sourceAssociation: { readonly nativeAddress: string };
+        readonly sourceAssociations: readonly {
+          readonly nativeAddress: string;
+        }[];
+        readonly recognitionSourceAssociation?: {
+          readonly nativeAddress: string;
+        };
         readonly metadata: readonly {
           readonly property: string;
           readonly value: string;
@@ -469,8 +483,12 @@ const journey: CliJourney = {
       metadataRefresh.execution.selection.intent,
       "metadata-refresh",
     );
+    assert.ok(
+      metadataRefresh.accepted?.recognitionSourceAssociation,
+      "metadata refresh is missing its recognition source",
+    );
     assert.match(
-      metadataRefresh.accepted?.sourceAssociation.nativeAddress ?? "",
+      metadataRefresh.accepted.recognitionSourceAssociation.nativeAddress,
       /RJ01668691/u,
     );
     assert.deepEqual(
@@ -554,8 +572,12 @@ const journey: CliJourney = {
 
     const projected = JSON.parse(results[6]?.stdout ?? "") as JourneyInspection;
     assert.equal(results[6]?.exitCode, 0, results[6]?.stderr);
+    assert.ok(
+      projected.accepted?.recognitionSourceAssociation,
+      "applied identity projection is missing its recognition source",
+    );
     assert.match(
-      projected.accepted?.sourceAssociation.nativeAddress ?? "",
+      projected.accepted.recognitionSourceAssociation.nativeAddress,
       /RJ01497788/u,
     );
     assert.ok(
@@ -605,8 +627,12 @@ const journey: CliJourney = {
       results[7]?.stdout ?? "",
     ) as JourneyInspection;
     assert.equal(results[7]?.exitCode, 0, results[7]?.stderr);
+    assert.ok(
+      replacementRefresh.accepted?.recognitionSourceAssociation,
+      "replacement metadata refresh is missing its recognition source",
+    );
     assert.match(
-      replacementRefresh.accepted?.sourceAssociation.nativeAddress ?? "",
+      replacementRefresh.accepted.recognitionSourceAssociation.nativeAddress,
       /RJ01497788/u,
     );
     const replacementRefreshIds = new Set(
@@ -648,8 +674,12 @@ const journey: CliJourney = {
       results[11]?.stdout ?? "",
     ) as JourneyInspection;
     assert.equal(results[11]?.exitCode, 0, results[11]?.stderr);
+    assert.ok(
+      afterReject.accepted?.recognitionSourceAssociation,
+      "rejected identity replacement lost its recognition source",
+    );
     assert.match(
-      afterReject.accepted?.sourceAssociation.nativeAddress ?? "",
+      afterReject.accepted.recognitionSourceAssociation.nativeAddress,
       /RJ01497788/u,
     );
     assert.deepEqual(

@@ -33,6 +33,12 @@ function registrationsFor(
         readonly reportCleanupReportingFailure?: (
           value: unknown,
         ) => void | Promise<void>;
+        readonly operationSupervisor?: {
+          invalidateObservedRoot(input: {
+            readonly registrationId: string;
+            readonly keepVersion?: number;
+          }): void;
+        };
       } = {},
 ): ObservedRootRegistrations {
   const roots = new Map([["registered-root", registeredRoot()]]);
@@ -78,10 +84,33 @@ function registrationsFor(
     cleanupFailureFallback: {
       reportCleanupReportingFailure,
     },
+    ...(options.operationSupervisor === undefined
+      ? {}
+      : { operationSupervisor: options.operationSupervisor }),
   });
 }
 
 describe("Observed Root Registrations", () => {
+  it("在成功撤销返回前失效该登记的活动短操作", async () => {
+    const invalidated: unknown[] = [];
+    const registrations = registrationsFor(
+      new InMemoryObservedFilesystemCapability(),
+      {
+        operationSupervisor: {
+          invalidateObservedRoot(input) {
+            invalidated.push(input);
+          },
+        },
+      },
+    );
+
+    await registrations.deactivate({
+      id: "registered-root",
+      expectedVersion: 1,
+    });
+
+    expect(invalidated).toEqual([{ registrationId: "registered-root" }]);
+  });
   it("observes the exact current registered scope through its bound capability", async () => {
     const filesystem = new InMemoryObservedFilesystemCapability();
     const registrations = registrationsFor(filesystem);

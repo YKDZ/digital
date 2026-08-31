@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, unlink } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
@@ -120,13 +120,13 @@ async function prepareProductionCatalogueWithWriter(
         .prepare("SELECT 1 FROM __digital_catalogue_migrations LIMIT 1")
         .get() !== undefined;
     if (!hasLedgerRows && schemaCanAdoptBaseline(database)) {
-      const baseline = productionMigrationArtifacts[0]!;
-      database
-        .prepare(
-          "INSERT INTO __digital_catalogue_migrations (id, checksum, applied_at) VALUES (?, ?, ?)",
-        )
-        .run(baseline.id, baseline.checksum, new Date().toISOString());
+      const insert = database.prepare(
+        "INSERT INTO __digital_catalogue_migrations (id, checksum, applied_at) VALUES (?, ?, ?)",
+      );
+      for (const artifact of productionMigrationArtifacts)
+        insert.run(artifact.id, artifact.checksum, new Date().toISOString());
       database.exec("COMMIT");
+      await cleanupUnreferencedArtifactProofs(productDataDirectory, database);
       return { applied: 0 };
     }
     for (const artifact of productionMigrationArtifacts) {
@@ -190,9 +190,51 @@ async function prepareProductionCatalogueWithWriter(
       productDataDirectory,
     });
     if (readiness.state !== "ready") throw new Error(readiness.message);
+    await cleanupUnreferencedArtifactProofs(productDataDirectory, database);
     return { applied };
   } finally {
     database.close();
+  }
+}
+
+/** 只在离线 prepare 持有 product-data writer lock 时清理 proof 派生索引。 */
+async function cleanupUnreferencedArtifactProofs(
+  productDataDirectory: string,
+  database: DatabaseSync,
+): Promise<void> {
+  const proofRoot = path.join(productDataDirectory, "artifact-proofs");
+  const staging = path.join(proofRoot, ".staging");
+  for (const entry of await readdir(staging, { withFileTypes: true }).catch(
+    () => [],
+  )) {
+    const target = path.join(staging, entry.name);
+    if (entry.isDirectory()) await rm(target, { recursive: true, force: true });
+    else await unlink(target).catch(() => undefined);
+  }
+
+  const referenced = new Set(
+    (
+      database
+        .prepare(
+          "SELECT manifest_digest AS manifestDigest FROM artifact_content_proofs",
+        )
+        .all() as Array<{ readonly manifestDigest: string }>
+    ).map((row) => row.manifestDigest),
+  );
+  const finalRoot = path.join(proofRoot, "sha256");
+  for (const prefix of await readdir(finalRoot, { withFileTypes: true }).catch(
+    () => [],
+  )) {
+    if (!prefix.isDirectory() || !/^[a-f0-9]{2}$/u.test(prefix.name)) continue;
+    const prefixDirectory = path.join(finalRoot, prefix.name);
+    for (const sidecar of await readdir(prefixDirectory, {
+      withFileTypes: true,
+    }).catch(() => [])) {
+      const match = /^([a-f0-9]{64})\.fproof$/u.exec(sidecar.name);
+      if (!sidecar.isFile() || match === null || referenced.has(match[1]!))
+        continue;
+      await unlink(path.join(prefixDirectory, sidecar.name));
+    }
   }
 }
 

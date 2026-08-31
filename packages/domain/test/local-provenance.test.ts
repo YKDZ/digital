@@ -2,25 +2,30 @@ import { describe, expect, it } from "vitest";
 
 import {
   validateAcceptedRecognition,
+  validateRecognitionProposal,
   validateReevaluatedRecognition,
   type AcceptedRecognition,
+  type RecognitionProposal,
 } from "../src/index.ts";
 
 function accepted(): AcceptedRecognition {
   const proposal = {
     id: "proposal",
-    interpretation: {
-      id: "interpretation",
-      producer: {
-        capabilityId: "source",
-        capabilityVersion: "1",
-        contractVersion: "1",
+    basis: {
+      kind: "source-interpretation" as const,
+      interpretation: {
+        id: "interpretation",
+        producer: {
+          capabilityId: "source",
+          capabilityVersion: "1",
+          contractVersion: "1",
+        },
+        sourceRecordIds: ["official-record"],
+        sourceIdentity: "official",
+        sourceAddress: "https://example.test/book",
+        metadata: [],
+        sourceArtifacts: [],
       },
-      sourceRecordIds: ["official-record"],
-      sourceIdentity: "official",
-      sourceAddress: "https://example.test/book",
-      metadata: [],
-      sourceArtifacts: [],
     },
     ruleResults: [
       {
@@ -37,7 +42,16 @@ function accepted(): AcceptedRecognition {
   return {
     proposal,
     entity: { id: "asset", kind: "digital-asset" },
-    sourceAssociation: {
+    sourceAssociations: [
+      {
+        id: "association",
+        subjectId: "asset",
+        sourceIdentity: "official",
+        nativeAddress: "https://example.test/book",
+        proposalId: "proposal",
+      },
+    ],
+    recognitionSourceAssociation: {
       id: "association",
       subjectId: "asset",
       sourceIdentity: "official",
@@ -99,10 +113,14 @@ describe("local format provenance", () => {
       "Source Association proposal",
       (value: AcceptedRecognition): AcceptedRecognition => ({
         ...value,
-        sourceAssociation: {
-          ...value.sourceAssociation,
+        recognitionSourceAssociation: {
+          ...value.recognitionSourceAssociation!,
           proposalId: "different-proposal",
         },
+        sourceAssociations: value.sourceAssociations.map((association) => ({
+          ...association,
+          proposalId: "different-proposal",
+        })),
       }),
       "Source Association must reference the accepted Recognition Proposal",
     ],
@@ -121,10 +139,14 @@ describe("local format provenance", () => {
       "Source Association identity",
       (value: AcceptedRecognition): AcceptedRecognition => ({
         ...value,
-        sourceAssociation: {
-          ...value.sourceAssociation,
+        recognitionSourceAssociation: {
+          ...value.recognitionSourceAssociation!,
           sourceIdentity: "different-source",
         },
+        sourceAssociations: value.sourceAssociations.map((association) => ({
+          ...association,
+          sourceIdentity: "different-source",
+        })),
       }),
       "Source Association must match the Recognition Proposal source identity",
     ],
@@ -132,10 +154,14 @@ describe("local format provenance", () => {
       "Source Association address",
       (value: AcceptedRecognition): AcceptedRecognition => ({
         ...value,
-        sourceAssociation: {
-          ...value.sourceAssociation,
+        recognitionSourceAssociation: {
+          ...value.recognitionSourceAssociation!,
           nativeAddress: "https://example.test/different-book",
         },
+        sourceAssociations: value.sourceAssociations.map((association) => ({
+          ...association,
+          nativeAddress: "https://example.test/different-book",
+        })),
       }),
       "Source Association must match the Recognition Proposal source address",
     ],
@@ -169,9 +195,12 @@ describe("local format provenance", () => {
       proposal: {
         ...current.proposal,
         id: "refresh-proposal",
-        interpretation: {
-          ...current.proposal.interpretation,
-          id: "refresh-interpretation",
+        basis: {
+          ...current.proposal.basis,
+          interpretation: {
+            ...current.proposal.basis.interpretation,
+            id: "refresh-interpretation",
+          },
         },
       },
     };
@@ -186,10 +215,14 @@ describe("local format provenance", () => {
       "Source Association",
       (value: AcceptedRecognition): AcceptedRecognition => ({
         ...value,
-        sourceAssociation: {
-          ...value.sourceAssociation,
+        recognitionSourceAssociation: {
+          ...value.recognitionSourceAssociation!,
           proposalId: "refresh-proposal",
         },
+        sourceAssociations: value.sourceAssociations.map((association) => ({
+          ...association,
+          proposalId: "refresh-proposal",
+        })),
       }),
       "immutable Source Association",
     ],
@@ -211,9 +244,12 @@ describe("local format provenance", () => {
       proposal: {
         ...current.proposal,
         id: "refresh-proposal",
-        interpretation: {
-          ...current.proposal.interpretation,
-          id: "refresh-interpretation",
+        basis: {
+          ...current.proposal.basis,
+          interpretation: {
+            ...current.proposal.basis.interpretation,
+            id: "refresh-interpretation",
+          },
         },
       },
     });
@@ -289,5 +325,123 @@ describe("local format provenance", () => {
     expect(() => validateAcceptedRecognition(invalid)).toThrow(
       "Observed Artifact Part association",
     );
+  });
+});
+
+describe("识别依据", () => {
+  const inspector = {
+    capabilityId: "epub-inspector",
+    capabilityVersion: "1",
+    contractVersion: "epub/3",
+  };
+  const revision = {
+    observedArtifactReference: "book.epub",
+    blob: {
+      digest: "epub-digest",
+      mediaType: "application/epub+zip",
+      byteLength: 1,
+    },
+    producer: inspector,
+  };
+  const evidence = {
+    kind: "format.valid-publication",
+    explanation: "一个有效且边界完整的出版物修订版",
+    producer: inspector,
+    inspection: {
+      identifiers: [],
+      observedArtifactReference: "book.epub",
+      revision: revision.blob,
+      metadata: [],
+      parts: [],
+    },
+  };
+  const ruleResult = {
+    capabilityId: "local-recognizer",
+    capabilityVersion: "1",
+    ruleId: "valid-single-revision",
+    ruleVersion: "1",
+    outcome: "satisfied" as const,
+    explanation: "精确观察证据建立一个本地资产边界",
+    evidence: [evidence],
+  };
+
+  function observedProposal(): RecognitionProposal {
+    return {
+      id: "local-proposal",
+      basis: {
+        kind: "observed-evidence",
+        producer: inspector,
+        evidence: [evidence],
+        artifactRevisions: [revision],
+      },
+      ruleResults: [ruleResult],
+    } as unknown as RecognitionProposal;
+  }
+
+  it("验证来源解释与观察证据两种互斥识别依据", () => {
+    const legacy = accepted().proposal;
+    if (legacy.basis.kind !== "source-interpretation")
+      throw new Error("测试来源提案缺少来源解释依据");
+    const source = {
+      id: legacy.id,
+      basis: {
+        kind: "source-interpretation",
+        interpretation: {
+          ...legacy.basis.interpretation,
+          recognitionEvidenceReferences: [
+            { kind: "source-record", sourceRecordId: "official-record" },
+          ],
+        },
+      },
+      ruleResults: legacy.ruleResults.map((result) => ({
+        ...result,
+        evidenceReferences: [
+          { kind: "source-record" as const, sourceRecordId: "official-record" },
+        ],
+      })),
+    } as unknown as RecognitionProposal;
+
+    expect(validateRecognitionProposal(source)).toBe(source);
+    const observed = observedProposal();
+    expect(validateRecognitionProposal(observed)).toBe(observed);
+  });
+
+  it.each([
+    [
+      "空观察证据",
+      (proposal: RecognitionProposal) => ({
+        ...proposal,
+        basis: { ...proposal.basis, evidence: [] },
+      }),
+    ],
+    [
+      "跨输入观察证据",
+      (proposal: RecognitionProposal) => ({
+        ...proposal,
+        ruleResults: proposal.ruleResults.map((result) => ({
+          ...result,
+          evidence: [{ ...evidence, explanation: "不是所选输入" }],
+        })),
+      }),
+    ],
+    [
+      "伪来源解释旁路",
+      (proposal: RecognitionProposal) => ({
+        ...proposal,
+        basis: {
+          ...proposal.basis,
+          interpretation:
+            accepted().proposal.basis.kind === "source-interpretation"
+              ? accepted().proposal.basis.interpretation
+              : undefined,
+        },
+      }),
+    ],
+  ])("拒绝%s", (_, mutate) => {
+    expect(() =>
+      validateRecognitionProposal(
+        mutate(observedProposal()) as unknown as RecognitionProposal,
+      ),
+    ).toThrow();
   });
 });

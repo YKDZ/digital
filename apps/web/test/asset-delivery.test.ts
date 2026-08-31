@@ -1,10 +1,22 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import {
   AssetRefreshAutomation,
   AssetRefreshWorkflow,
+  ArtifactByteAccessError,
   ExecutionHost,
 } from "@digital/application";
 import { runProduct } from "@digital/composition";
@@ -524,7 +536,7 @@ describe("asset delivery view", () => {
             observedRootId: "registered-media",
             relativeScope: ".",
           },
-          sourceAssociation: {
+          recognitionSourceAssociation: {
             sourceIdentity: "dlsite",
             nativeAddress:
               "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html",
@@ -795,7 +807,7 @@ describe("asset delivery view", () => {
             observedRootId: "series-root",
             relativeScope: ".",
           },
-          sourceAssociation: {
+          recognitionSourceAssociation: {
             sourceIdentity: "bangumi",
             nativeAddress: "https://bgm.tv/ep/2",
           },
@@ -854,7 +866,7 @@ describe("asset delivery view", () => {
             observedRootId: "series-root",
             relativeScope: ".",
           },
-          sourceAssociation: {
+          recognitionSourceAssociation: {
             sourceIdentity: "bangumi",
             nativeAddress: "https://bgm.tv/ep/2",
           },
@@ -1025,7 +1037,13 @@ describe("asset delivery view", () => {
           recognition: { explanation: "exact", status: "accepted" },
           accepted: {
             entity: { id: "asset-1", kind: "digital-asset" },
-            sourceAssociation: {
+            sourceAssociations: [
+              {
+                sourceIdentity: "source",
+                nativeAddress: "opaque:episode-1",
+              },
+            ],
+            recognitionSourceAssociation: {
               sourceIdentity: "source",
               nativeAddress: "opaque:episode-1",
             },
@@ -1412,4 +1430,738 @@ describe("asset delivery view", () => {
     expect(rejected.status).toBe(404);
     expect(readManagedArtifact).toHaveBeenCalledTimes(1);
   });
+
+  it("以安全附件流下载一个精确产物修订版", async () => {
+    const close = vi.fn(async () => undefined);
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({
+        bytes: new TextEncoder().encode("abc"),
+        done: false,
+      })
+      .mockResolvedValueOnce({
+        bytes: new TextEncoder().encode("def"),
+        done: true,
+      });
+    const prepareArtifactDownload = vi.fn(async () => ({
+      revisionId: "artifact-revision_123",
+      blobDigest: "a".repeat(64),
+      byteLength: 6,
+      mediaType: "application/pdf",
+      suggestedFilename: "报告'(*).pdf",
+    }));
+    const openArtifactBytes = vi.fn(async () => ({
+      revisionId: "artifact-revision_123",
+      blobDigest: "a".repeat(64),
+      byteLength: 6,
+      mediaType: "application/pdf",
+      interval: { startInclusive: 0, endInclusive: 5 },
+      read,
+      close,
+    }));
+    const delivery = createWebDelivery({
+      configured: true,
+      setAutomationInformationRequirementForAcceptedSubject: vi.fn(),
+      prepareArtifactDownload,
+      openArtifactBytes,
+    } as never);
+
+    const response = await delivery.api.request(
+      "/artifact-downloads/artifact-revision_123",
+    );
+
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(response.headers.get("content-disposition")).toContain(
+      "attachment;",
+    );
+    expect(response.headers.get("content-disposition")).not.toContain("/");
+    expect(response.headers.get("content-disposition")).toContain(
+      "filename*=UTF-8''%E6%8A%A5%E5%91%8A%27%28%2A%29.pdf",
+    );
+    expect(response.headers.get("content-type")).toBe("application/pdf");
+    expect(response.headers.get("content-length")).toBe("6");
+    expect(response.headers.get("etag")).toBe(`"sha256:${"a".repeat(64)}"`);
+    await expect(response.text()).resolves.toBe("abcdef");
+    expect(prepareArtifactDownload).toHaveBeenCalledWith({
+      artifactRevisionId: "artifact-revision_123",
+    });
+    expect(openArtifactBytes).toHaveBeenCalledWith({
+      selection: { artifactRevisionId: "artifact-revision_123" },
+      expectedBlobDigest: "a".repeat(64),
+      interval: { startInclusive: 0, endInclusive: 5 },
+    });
+    expect(close).toHaveBeenCalledWith("completed");
+  });
+
+  it("以 revision 与 digest 绑定的可重建地址计划和 Range 播放", async () => {
+    const digest = "b".repeat(64);
+    let revoked = false;
+    const planPlayback = vi.fn(async () => ({
+      status: "ready" as const,
+      revisionId: "artifact-revision_playback",
+      blobDigest: digest,
+      rendition: {
+        kind: "direct" as const,
+        mediaType: "audio/mpeg",
+        codecs: ["mp3"],
+        byteLength: 6,
+      },
+    }));
+    const prepareArtifactDownload = vi.fn(async () => {
+      if (revoked)
+        throw new ArtifactByteAccessError("artifact-location-revoked");
+      return {
+        revisionId: "artifact-revision_playback",
+        blobDigest: digest,
+        byteLength: 6,
+        mediaType: "audio/mpeg",
+        suggestedFilename: "track.mp3",
+      };
+    });
+    const close = vi.fn(async () => undefined);
+    const openArtifactBytes = vi.fn(async (input) => ({
+      revisionId: "artifact-revision_playback",
+      blobDigest: digest,
+      byteLength: 6,
+      mediaType: "audio/mpeg",
+      interval: input.interval,
+      async read() {
+        return { bytes: new TextEncoder().encode("bcd"), done: true };
+      },
+      close,
+    }));
+    const delivery = createWebDelivery({
+      configured: true,
+      setAutomationInformationRequirementForAcceptedSubject: vi.fn(),
+      planPlayback,
+      prepareArtifactDownload,
+      openArtifactBytes,
+    } as never);
+    const body = {
+      consumer: {
+        contractVersion: "consumer-playback/1",
+        supportsByteRanges: true,
+        media: [{ mediaType: "audio/mpeg", codecs: ["mp3"] }],
+      },
+      preferences: {},
+    };
+    const plan = await delivery.api.request(
+      "/playback-plans/artifact-revision_playback",
+      { method: "POST", body: JSON.stringify(body) },
+    );
+    expect(plan.status, await plan.clone().text()).toBe(200);
+    const planned = await plan.json();
+    expect(planned.mediaUrl).toBe(
+      `/api/playback-media/artifact-revision_playback/${digest}`,
+    );
+    const rebuilt = await delivery.api.request(
+      "/playback-plans/artifact-revision_playback",
+      { method: "POST", body: JSON.stringify(body) },
+    );
+    expect((await rebuilt.json()).mediaUrl).toBe(planned.mediaUrl);
+
+    const media = await delivery.api.request(planned.mediaUrl.slice(4), {
+      headers: { range: "bytes=1-3" },
+    });
+    expect(media.status).toBe(206);
+    expect(media.headers.get("content-range")).toBe("bytes 1-3/6");
+    expect(media.headers.get("content-disposition")).toBeNull();
+    expect(media.headers.get("etag")).toBe(`"sha256:${digest}"`);
+    await expect(media.text()).resolves.toBe("bcd");
+    expect(openArtifactBytes).toHaveBeenCalledWith({
+      selection: { artifactRevisionId: "artifact-revision_playback" },
+      expectedBlobDigest: digest,
+      interval: { startInclusive: 1, endInclusive: 3 },
+    });
+
+    const tampered = await delivery.api.request(
+      `/playback-media/artifact-revision_playback/${"c".repeat(64)}`,
+    );
+    expect(tampered.status).toBe(409);
+    expect(openArtifactBytes).toHaveBeenCalledTimes(1);
+    revoked = true;
+    const afterRevoke = await delivery.api.request(planned.mediaUrl.slice(4));
+    expect(afterRevoke.status).toBe(409);
+    expect(openArtifactBytes).toHaveBeenCalledTimes(1);
+    const arbitrary = await delivery.api.request(
+      "/playback-plans/artifact-revision_playback",
+      {
+        method: "POST",
+        body: JSON.stringify({ ...body, path: "/private/track.mp3" }),
+      },
+    );
+    expect(arbitrary.status).toBe(400);
+    const latest = await delivery.api.request("/playback-plans/latest", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    expect(latest.status).toBe(400);
+    expect(planPlayback).toHaveBeenCalledTimes(2);
+  });
+
+  it("在打开 body 租约前解释强 ETag 条件与单一字节范围", async () => {
+    const digest = "b".repeat(64);
+    const close = vi.fn(async () => undefined);
+    const openArtifactBytes = vi.fn(async (input) => {
+      const source = new TextEncoder()
+        .encode("abcdef")
+        .slice(input.interval.startInclusive, input.interval.endInclusive + 1);
+      return {
+        revisionId: "revision-range",
+        blobDigest: digest,
+        byteLength: 6,
+        mediaType: "text/plain",
+        interval: input.interval,
+        async read() {
+          return { bytes: source, done: true };
+        },
+        close,
+      };
+    });
+    const delivery = createWebDelivery({
+      configured: true,
+      setAutomationInformationRequirementForAcceptedSubject: vi.fn(),
+      async prepareArtifactDownload() {
+        return {
+          revisionId: "revision-range",
+          blobDigest: digest,
+          byteLength: 6,
+          mediaType: "text/plain",
+          suggestedFilename: "sample.txt",
+        };
+      },
+      openArtifactBytes,
+    } as never);
+
+    const partial = await delivery.api.request(
+      "/artifact-downloads/revision-range",
+      { headers: { range: "bytes=2-4" } },
+    );
+    expect(partial.status).toBe(206);
+    expect(partial.headers.get("content-range")).toBe("bytes 2-4/6");
+    expect(partial.headers.get("content-length")).toBe("3");
+    await expect(partial.text()).resolves.toBe("cde");
+
+    const opaqueComma = await delivery.api.request(
+      "/artifact-downloads/revision-range",
+      { headers: { "if-match": '"other,tag"' } },
+    );
+    expect(opaqueComma.status).toBe(412);
+    expect(opaqueComma.headers.get("content-length")).toBeNull();
+    expect(openArtifactBytes).toHaveBeenCalledTimes(1);
+
+    const unchanged = await delivery.api.request(
+      "/artifact-downloads/revision-range",
+      { headers: { "if-none-match": `W/"sha256:${digest}"` } },
+    );
+    expect(unchanged.status).toBe(304);
+    expect(openArtifactBytes).toHaveBeenCalledTimes(1);
+
+    const malformed = await delivery.api.request(
+      "/artifact-downloads/revision-range",
+      { headers: { range: "bytes=1x-2" } },
+    );
+    expect(malformed.status).toBe(400);
+    expect(openArtifactBytes).toHaveBeenCalledTimes(1);
+
+    const multipleWithOws = await delivery.api.request(
+      "/artifact-downloads/revision-range",
+      { headers: { range: "bytes=0-1, \t4-5" } },
+    );
+    expect(multipleWithOws.status).toBe(416);
+    expect(multipleWithOws.headers.get("content-range")).toBe("bytes */6");
+    expect(multipleWithOws.headers.get("content-length")).toBeNull();
+    expect(openArtifactBytes).toHaveBeenCalledTimes(1);
+
+    const illegalWhitespace = await delivery.api.request(
+      "/artifact-downloads/revision-range",
+      { headers: { range: "bytes=0 - 1" } },
+    );
+    expect(illegalWhitespace.status).toBe(400);
+
+    const unicodeWhitespace = await delivery.api.request(
+      "/artifact-downloads/revision-range",
+      { headers: { range: "bytes=0-1,\u00a04-5" } },
+    );
+    expect(unicodeWhitespace.status).toBe(400);
+
+    const overflow = await delivery.api.request(
+      "/artifact-downloads/revision-range",
+      { headers: { range: "bytes=9007199254740992-" } },
+    );
+    expect(overflow.status).toBe(400);
+
+    const unknownUnit = await delivery.api.request(
+      "/artifact-downloads/revision-range",
+      { headers: { range: "examples=anything,goes" } },
+    );
+    expect(unknownUnit.status).toBe(200);
+    await expect(unknownUnit.text()).resolves.toBe("abcdef");
+  });
+
+  it("客户端取消附件 body 时立即关闭 Product 字节租约", async () => {
+    const close = vi.fn(async () => undefined);
+    const delivery = createWebDelivery({
+      configured: true,
+      setAutomationInformationRequirementForAcceptedSubject: vi.fn(),
+      async prepareArtifactDownload() {
+        return {
+          revisionId: "revision-cancelled",
+          blobDigest: "c".repeat(64),
+          byteLength: 2,
+          mediaType: "application/octet-stream",
+          suggestedFilename: "cancel.bin",
+        };
+      },
+      async openArtifactBytes() {
+        return {
+          revisionId: "revision-cancelled",
+          blobDigest: "c".repeat(64),
+          byteLength: 2,
+          mediaType: "application/octet-stream",
+          interval: { startInclusive: 0, endInclusive: 1 },
+          async read() {
+            return { bytes: new Uint8Array([1]), done: false };
+          },
+          close,
+        };
+      },
+    } as never);
+    const response = await delivery.api.request(
+      "/artifact-downloads/revision-cancelled",
+    );
+
+    await response.body?.cancel();
+
+    expect(close).toHaveBeenCalledWith("client-cancelled");
+  });
+
+  it("从真实组合根为 generic MP3 Blob 一致投影计划、附件和 Range 媒体类型", async () => {
+    const root = await mkdtemp(
+      path.join(tmpdir(), "digital-disposable-artifact-download-"),
+    );
+    const productData = path.join(root, "product-data");
+    const previous = process.env.DIGITAL_PRODUCT_DATA;
+    const bytes = new Uint8Array(418);
+    bytes.set([0xff, 0xfb, 0x90, 0x64]);
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    const revisionId = "artifact-revision_managed-download";
+    try {
+      await prepareWebProductData(productData);
+      const directory = path.join(
+        productData,
+        "managed-artifacts",
+        digest.slice(0, 2),
+      );
+      const address = path.join(directory, digest);
+      await mkdir(directory, { recursive: true });
+      await writeFile(address, bytes);
+      const database = new DatabaseSync(
+        path.join(productData, "catalogue.sqlite"),
+      );
+      database.exec(`
+        INSERT INTO artifacts (id) VALUES ('artifact-managed-download');
+        INSERT INTO blobs (digest, media_type, byte_length)
+          VALUES ('${digest}', 'application/octet-stream', ${bytes.byteLength});
+        INSERT INTO artifact_revisions (id, artifact_id, blob_digest)
+          VALUES ('${revisionId}', 'artifact-managed-download', '${digest}');
+        INSERT INTO locations (id, artifact_id, address, kind)
+          VALUES ('location-managed-download', 'artifact-managed-download', '${address.replaceAll("'", "''")}', 'managed');
+      `);
+      database.close();
+      process.env.DIGITAL_PRODUCT_DATA = productData;
+      const delivery = bindWebDelivery();
+
+      const response = await delivery.api.request(
+        `/artifact-downloads/${revisionId}`,
+      );
+
+      expect(response.status, await response.clone().text()).toBe(200);
+      expect(response.headers.get("content-length")).toBe(
+        String(bytes.byteLength),
+      );
+      expect(response.headers.get("content-type")).toBe("audio/mpeg");
+      await expect(response.bytes()).resolves.toEqual(bytes);
+
+      const planResponse = await delivery.api.request(
+        `/playback-plans/${revisionId}`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            consumer: {
+              contractVersion: "consumer-playback/1",
+              supportsByteRanges: true,
+              media: [{ mediaType: "audio/mpeg", codecs: ["mp3"] }],
+            },
+            preferences: {},
+          }),
+        },
+      );
+      expect(planResponse.status).toBe(200);
+      const plan = (await planResponse.json()) as {
+        readonly status: string;
+        readonly revisionId: string;
+        readonly blobDigest: string;
+        readonly rendition: { readonly mediaType: string };
+        readonly mediaUrl: string;
+      };
+      expect(plan).toMatchObject({
+        status: "ready",
+        revisionId,
+        blobDigest: digest,
+        rendition: { mediaType: "audio/mpeg" },
+      });
+      const playbackRange = await delivery.api.request(plan.mediaUrl.slice(4), {
+        headers: { range: "bytes=1-3" },
+      });
+      expect(playbackRange.status).toBe(206);
+      expect(playbackRange.headers.get("content-type")).toBe("audio/mpeg");
+      expect(playbackRange.headers.get("content-range")).toBe(
+        `bytes 1-3/${String(bytes.byteLength)}`,
+      );
+      expect(playbackRange.headers.get("etag")).toBe(`"sha256:${digest}"`);
+      expect(playbackRange.headers.get("content-disposition")).toBeNull();
+      await expect(playbackRange.bytes()).resolves.toEqual(bytes.slice(1, 4));
+
+      const suffix = await delivery.api.request(
+        `/artifact-downloads/${revisionId}`,
+        { headers: { range: "bytes=-6" } },
+      );
+      expect(suffix.status).toBe(206);
+      await expect(suffix.bytes()).resolves.toEqual(bytes.slice(-6));
+
+      const proofDatabase = new DatabaseSync(
+        path.join(productData, "catalogue.sqlite"),
+        { readOnly: true },
+      );
+      const proofRow = proofDatabase
+        .prepare(
+          "SELECT manifest_digest AS manifestDigest FROM artifact_content_proofs WHERE blob_digest = ?",
+        )
+        .get(digest) as { readonly manifestDigest: string };
+      proofDatabase.close();
+      const proofPath = path.join(
+        productData,
+        "artifact-proofs",
+        "sha256",
+        proofRow.manifestDigest.slice(0, 2),
+        `${proofRow.manifestDigest}.fproof`,
+      );
+      await writeFile(proofPath, new Uint8Array([0]));
+      const rebuilt = await delivery.api.request(
+        `/artifact-downloads/${revisionId}`,
+        { headers: { range: "bytes=0-2" } },
+      );
+      expect(rebuilt.status).toBe(206);
+      await expect(rebuilt.bytes()).resolves.toEqual(bytes.slice(0, 3));
+
+      await writeFile(address, bytes.slice(0, bytes.byteLength - 1));
+      const truncatedConditional = await delivery.api.request(
+        `/artifact-downloads/${revisionId}`,
+        { headers: { "if-none-match": `"sha256:${digest}"` } },
+      );
+      expect(truncatedConditional.status).toBe(409);
+      await writeFile(address, bytes);
+
+      const corrupted = bytes.slice();
+      corrupted[0] = corrupted[0]! ^ 1;
+      await writeFile(address, corrupted);
+      const corruptedRange = await delivery.api.request(
+        `/artifact-downloads/${revisionId}`,
+        { headers: { range: "bytes=0-2" } },
+      );
+      expect(corruptedRange.status).toBe(409);
+      await expect(corruptedRange.json()).resolves.toEqual({
+        error: "artifact-integrity-failed",
+      });
+
+      const managedReplacement = path.join(directory, "replacement");
+      await writeFile(managedReplacement, bytes);
+      await rename(managedReplacement, address);
+      const restoredRange = await delivery.api.request(
+        `/artifact-downloads/${revisionId}`,
+        { headers: { range: "bytes=1-3" } },
+      );
+      expect(restoredRange.status).toBe(206);
+      await expect(restoredRange.bytes()).resolves.toEqual(bytes.slice(1, 4));
+      const unknown = await delivery.api.request(
+        "/artifact-downloads/artifact-revision_unknown",
+      );
+      expect(unknown.status).toBe(404);
+      const pathInput = await delivery.api.request(
+        "/artifact-downloads/%2Fetc%2Fpasswd",
+      );
+      expect(pathInput.status).toBe(400);
+    } finally {
+      await shutdownBoundWebProduct();
+      if (previous === undefined) delete process.env.DIGITAL_PRODUCT_DATA;
+      else process.env.DIGITAL_PRODUCT_DATA = previous;
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it("首次选择只渐进确认一个观察文件并立即通过精确 revision 下载", async () => {
+    const root = await mkdtemp(
+      path.join(tmpdir(), "digital-disposable-observed-download-"),
+    );
+    const productData = path.join(root, "product-data");
+    const observedRoot = path.join(root, "observed");
+    const observedFile = path.join(observedRoot, "作品.txt");
+    const bytes = new TextEncoder().encode("只确认这个文件");
+    let closeProduct: (() => Promise<void>) | undefined;
+    try {
+      await mkdir(observedRoot, { recursive: true });
+      await writeFile(observedFile, bytes);
+      const details = await stat(observedFile);
+      const observationBaseline = createHash("sha256")
+        .update(
+          JSON.stringify({
+            artifactId: "artifact-observed-download",
+            locationId: "location-observed-download",
+            modifiedAt: details.mtime.toISOString(),
+            observedAt: "2026-08-29T00:00:00.000Z",
+            revisionHeads: [],
+            size: bytes.byteLength,
+            snapshotId: "snapshot-observed-download",
+          }),
+        )
+        .digest("hex");
+      await prepareWebProductData(productData);
+      const database = new DatabaseSync(
+        path.join(productData, "catalogue.sqlite"),
+      );
+      const snapshot = JSON.stringify({
+        version: "observed-root-snapshot/1",
+        id: "snapshot-observed-download",
+        root: observedRoot,
+        complete: true,
+        files: [
+          {
+            relativePath: "作品.txt",
+            size: bytes.byteLength,
+            modifiedAt: details.mtime.toISOString(),
+          },
+        ],
+        directories: [],
+        excluded: [],
+        observedAt: "2026-08-29T00:00:00.000Z",
+      }).replaceAll("'", "''");
+      database.exec(`
+        INSERT INTO artifacts (id) VALUES ('artifact-observed-download');
+        INSERT INTO locations (id, artifact_id, address, kind)
+          VALUES ('location-observed-download', 'artifact-observed-download', '${observedFile.replaceAll("'", "''")}', 'observed');
+        INSERT INTO current_file_observations (
+          location_id, snapshot_id, observed_at, size, modified_at,
+          conditional_baseline
+        ) VALUES (
+          'location-observed-download', 'snapshot-observed-download',
+          '2026-08-29T00:00:00.000Z', ${bytes.byteLength},
+          '${details.mtime.toISOString()}', '${observationBaseline}'
+        );
+        INSERT INTO workflow_executions (
+          id, snapshot_json, status, stage, source_record_ids_json,
+          selection_intent, compatibility_json, dispositions_json,
+          information_requirement_json, source_enrichments_json,
+          source_refresh_run_ids_json
+        ) VALUES (
+          'execution-observed-download', '${snapshot}', 'completed', 'completed', '[]',
+          'scan-now', '{}', '[]', '{}', '[]', '[]'
+        );
+      `);
+      database.close();
+      const product = runProduct(
+        { productDataDirectory: productData, environment: {} },
+        {
+          start(application) {
+            return {
+              application: application as never,
+              api: createWebDelivery(application).api,
+            };
+          },
+        },
+      );
+      closeProduct = async () => await product.close();
+      const application = product.result.application as {
+        readonly workflow: {
+          readonly observedRootRegistrations: {
+            create(input: {
+              readonly displayName: string;
+              readonly containerPath: string;
+              readonly readOnly: true;
+              readonly symlinkMode: "do-not-follow";
+              readonly allowedTargetRootIds: readonly string[];
+            }): Promise<{
+              readonly id: string;
+              readonly configVersion: number;
+            }>;
+            deactivate(input: {
+              readonly id: string;
+              readonly expectedVersion: number;
+            }): Promise<unknown>;
+          };
+        };
+        observedFileSelectionForLocation(
+          locationId: string,
+        ): Promise<string | undefined>;
+        prepareArtifactDownload(input: {
+          readonly artifactRevisionId: string;
+        }): Promise<{
+          readonly blobDigest: string;
+          readonly byteLength: number;
+        }>;
+        openArtifactBytes(input: {
+          readonly selection: { readonly artifactRevisionId: string };
+          readonly expectedBlobDigest: string;
+          readonly interval: {
+            readonly startInclusive: number;
+            readonly endInclusive: number;
+          };
+        }): Promise<{
+          read(input: {
+            readonly maximumBytes: number;
+            readonly cancellation: {
+              readonly cancelled: boolean;
+              onCancel(listener: () => void): () => void;
+            };
+          }): Promise<{ readonly bytes: Uint8Array; readonly done: boolean }>;
+          close(
+            reason: "completed" | "client-cancelled" | "failed" | "shutdown",
+          ): Promise<void>;
+        }>;
+      };
+      const registration =
+        await application.workflow.observedRootRegistrations.create({
+          displayName: "观察文件",
+          containerPath: observedRoot,
+          readOnly: true,
+          symlinkMode: "do-not-follow",
+          allowedTargetRootIds: [],
+        });
+      const selectionId = await application.observedFileSelectionForLocation(
+        "location-observed-download",
+      );
+      expect(selectionId).toMatch(/^observed-file-selection_1_[a-f0-9]{64}$/u);
+
+      const response = await product.result.api.request(
+        `/observed-file-downloads/${selectionId}`,
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.bytes()).resolves.toEqual(bytes);
+      const retried = await product.result.api.request(
+        `/observed-file-downloads/${selectionId}`,
+      );
+      expect(retried.status).toBe(200);
+      await expect(retried.bytes()).resolves.toEqual(bytes);
+
+      await writeFile(observedFile, new TextEncoder().encode("内容已经改变"));
+      const changed = await product.result.api.request(
+        `/observed-file-downloads/${selectionId}`,
+      );
+      expect(changed.status).toBe(409);
+      await expect(changed.json()).resolves.toEqual({
+        error: "artifact-bytes-changed",
+      });
+
+      await writeFile(observedFile, bytes);
+      await utimes(observedFile, details.atime, details.mtime);
+      const blobDigest = createHash("sha256").update(bytes).digest("hex");
+      const artifactRevisionId = `artifact-revision_${createHash("sha256")
+        .update(`artifact-observed-download\u0000${blobDigest}`)
+        .digest("hex")}`;
+      const descriptor = await application.prepareArtifactDownload({
+        artifactRevisionId,
+      });
+
+      const changedSameLength = bytes.slice();
+      changedSameLength[0] = changedSameLength[0]! ^ 1;
+      const changedReplacement = path.join(observedRoot, "changed.txt");
+      await writeFile(changedReplacement, changedSameLength);
+      await utimes(changedReplacement, details.atime, details.mtime);
+      await rename(changedReplacement, observedFile);
+      const swappedRange = await product.result.api.request(
+        `/artifact-downloads/${artifactRevisionId}`,
+        { headers: { range: "bytes=0-2" } },
+      );
+      expect(swappedRange.status).toBe(409);
+
+      const restoredReplacement = path.join(observedRoot, "restored.txt");
+      await writeFile(restoredReplacement, bytes);
+      await utimes(restoredReplacement, details.atime, details.mtime);
+      await rename(restoredReplacement, observedFile);
+      const restoredRange = await product.result.api.request(
+        `/artifact-downloads/${artifactRevisionId}`,
+        { headers: { range: "bytes=1-3" } },
+      );
+      expect(restoredRange.status).toBe(206);
+      await expect(restoredRange.bytes()).resolves.toEqual(bytes.slice(1, 4));
+
+      await writeFile(observedFile, changedSameLength);
+      await utimes(observedFile, details.atime, details.mtime);
+      const rewrittenRange = await product.result.api.request(
+        `/artifact-downloads/${artifactRevisionId}`,
+        { headers: { range: "bytes=0-2" } },
+      );
+      expect(rewrittenRange.status).toBe(409);
+      await writeFile(observedFile, bytes);
+      await utimes(observedFile, details.atime, details.mtime);
+
+      const lease = await application.openArtifactBytes({
+        selection: { artifactRevisionId },
+        expectedBlobDigest: descriptor.blobDigest,
+        interval: {
+          startInclusive: 0,
+          endInclusive: descriptor.byteLength - 1,
+        },
+      });
+      await lease.read({
+        maximumBytes: 1,
+        cancellation: { cancelled: false, onCancel: () => () => undefined },
+      });
+
+      const replacement = path.join(observedRoot, "replacement.txt");
+      await writeFile(replacement, bytes);
+      await utimes(replacement, details.atime, details.mtime);
+      await rename(replacement, observedFile);
+      await expect(
+        lease.read({
+          maximumBytes: Number.MAX_SAFE_INTEGER,
+          cancellation: { cancelled: false, onCancel: () => () => undefined },
+        }),
+      ).rejects.toMatchObject({ code: "artifact-bytes-changed" });
+      await lease.close("failed");
+
+      const revokeLease = await application.openArtifactBytes({
+        selection: { artifactRevisionId },
+        expectedBlobDigest: descriptor.blobDigest,
+        interval: {
+          startInclusive: 0,
+          endInclusive: descriptor.byteLength - 1,
+        },
+      });
+
+      await application.workflow.observedRootRegistrations.deactivate({
+        id: registration.id,
+        expectedVersion: registration.configVersion,
+      });
+      await expect(
+        revokeLease.read({
+          maximumBytes: 1,
+          cancellation: { cancelled: false, onCancel: () => () => undefined },
+        }),
+      ).rejects.toMatchObject({ code: "artifact-location-revoked" });
+      await revokeLease.close("failed");
+      await revokeLease.close("failed");
+      const revoked = await product.result.api.request(
+        `/observed-file-downloads/${selectionId}`,
+      );
+      expect(revoked.status).toBe(409);
+      await expect(revoked.json()).resolves.toEqual({
+        error: "artifact-location-revoked",
+      });
+    } finally {
+      await closeProduct?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 15_000);
 });

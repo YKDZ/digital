@@ -229,6 +229,16 @@ export type AssetViewFacts = {
     readonly subjectId?: string;
     readonly sourceSlot?: string;
   })[];
+  readonly sourceArtifactCandidates?: readonly {
+    readonly sourceRecordId: string;
+    readonly role: string;
+    readonly mediaType: string;
+    readonly selectionEvidence?: {
+      readonly suggestedFilename?: string;
+      readonly declaredByteLength?: number;
+      readonly sourceOrdinal?: number;
+    };
+  }[];
   readonly entities?: readonly {
     readonly id: string;
     readonly label: string;
@@ -355,28 +365,23 @@ function firstRelationshipLabel(
 }
 
 function fanboxAttachments(
-  metadata: AssetViewFacts["metadata"],
+  candidates: AssetViewFacts["sourceArtifactCandidates"],
 ): readonly { readonly name?: string; readonly byteLength?: string }[] {
-  const byKey = new Map<string, { name?: string; byteLength?: string }>();
-  const keyFor = (item: AssetViewFacts["metadata"][number]) =>
-    /^fanbox\.post\.attachment:([^:]+):/u.exec(item.sourceSlot ?? "")?.[1] ??
-    `${item.property}:${byKey.size}`;
-  for (const item of metadata) {
-    if (
-      item.property !== "fanbox.attachment.name" &&
-      item.property !== "fanbox.attachment.byte-length"
+  return (candidates ?? [])
+    .filter((candidate) => candidate.role.startsWith("fanbox.attachment."))
+    .toSorted(
+      (left, right) =>
+        (left.selectionEvidence?.sourceOrdinal ?? Number.MAX_SAFE_INTEGER) -
+        (right.selectionEvidence?.sourceOrdinal ?? Number.MAX_SAFE_INTEGER),
     )
-      continue;
-    const key = keyFor(item);
-    const current = byKey.get(key) ?? {};
-    byKey.set(
-      key,
-      item.property === "fanbox.attachment.name"
-        ? { ...current, name: item.value }
-        : { ...current, byteLength: item.value },
-    );
-  }
-  return [...byKey.values()];
+    .map(({ selectionEvidence }) => ({
+      ...(selectionEvidence?.suggestedFilename === undefined
+        ? {}
+        : { name: selectionEvidence.suggestedFilename }),
+      ...(selectionEvidence?.declaredByteLength === undefined
+        ? {}
+        : { byteLength: String(selectionEvidence.declaredByteLength) }),
+    }));
 }
 
 function dlsiteCredits(
@@ -551,7 +556,7 @@ export function projectAssetView(input: AssetViewFacts): AssetViewModel {
             ...(fanboxCommentCount === undefined
               ? {}
               : { commentCount: fanboxCommentCount }),
-            attachments: fanboxAttachments(input.metadata),
+            attachments: fanboxAttachments(input.sourceArtifactCandidates),
           },
         }),
     ...(component !== "dlsite"

@@ -112,7 +112,7 @@ describe("FANBOX official collection", () => {
         const body = address.includes("post.listCreator")
           ? {
               body: {
-                items: [
+                posts: [
                   {
                     id: "9135862",
                     creatorId: "customudon",
@@ -124,23 +124,25 @@ describe("FANBOX official collection", () => {
             }
           : {
               body: {
-                id: "9135862",
-                creatorId: "customudon",
-                publishedDatetime: "2025-01-01T00:11:17+09:00",
-                title: "年始の挨拶(おまけ動画付き)",
-                type: "article",
-                coverImageUrl:
-                  "https://downloads.fanbox.cc/images/post/cover.jpg",
-                body: {
-                  blocks: [
-                    { type: "p", text: "新年" },
-                    { type: "file", fileId: "bonus" },
-                  ],
-                  fileMap: {
-                    bonus: {
-                      id: "bonus",
-                      name: "bonus.mp4",
-                      url: "https://downloads.fanbox.cc/files/post/bonus.mp4",
+                post: {
+                  id: "9135862",
+                  creatorId: "customudon",
+                  publishedDatetime: "2025-01-01T00:11:17+09:00",
+                  title: "年始の挨拶(おまけ動画付き)",
+                  type: "article",
+                  coverImageUrl:
+                    "https://downloads.fanbox.cc/images/post/cover.jpg",
+                  body: {
+                    blocks: [
+                      { type: "p", text: "新年" },
+                      { type: "file", fileId: "bonus" },
+                    ],
+                    fileMap: {
+                      bonus: {
+                        id: "bonus",
+                        name: "bonus.mp4",
+                        url: "https://downloads.fanbox.cc/files/post/bonus.mp4",
+                      },
                     },
                   },
                 },
@@ -169,13 +171,15 @@ describe("FANBOX official collection", () => {
     expect(result.records).toHaveLength(2);
     expect(JSON.parse(result.records[1].body)).toMatchObject({
       body: {
-        body: {
-          blocks: expect.arrayContaining([
-            expect.objectContaining({ type: "p", text: "新年" }),
-            expect.objectContaining({ type: "file", fileId: "bonus" }),
-          ]),
-          fileMap: {
-            bonus: expect.objectContaining({ name: "bonus.mp4" }),
+        post: {
+          body: {
+            blocks: expect.arrayContaining([
+              expect.objectContaining({ type: "p", text: "新年" }),
+              expect.objectContaining({ type: "file", fileId: "bonus" }),
+            ]),
+            fileMap: {
+              bonus: expect.objectContaining({ name: "bonus.mp4" }),
+            },
           },
         },
       },
@@ -214,7 +218,7 @@ describe("FANBOX official collection", () => {
                 address.includes("post.listCreator")
                   ? {
                       body: {
-                        items: [
+                        posts: [
                           {
                             id: "9135862",
                             creatorId: "customudon",
@@ -226,12 +230,14 @@ describe("FANBOX official collection", () => {
                     }
                   : {
                       body: {
-                        id: "9135862",
-                        creatorId: "customudon",
-                        title: "年始の挨拶",
-                        publishedDatetime: "2025-01-01T00:11:17+09:00",
-                        type: "text",
-                        body: { text: "完整正文" },
+                        post: {
+                          id: "9135862",
+                          creatorId: "customudon",
+                          title: "年始の挨拶",
+                          publishedDatetime: "2025-01-01T00:11:17+09:00",
+                          type: "text",
+                          body: { text: "完整正文" },
+                        },
                       },
                     },
               ),
@@ -321,31 +327,37 @@ describe("FANBOX official collection", () => {
     }
   });
 
-  it("does not retain an HTTP-success FANBOX error envelope as a complete source record", async () => {
-    const privateSession = "fanbox-semantic-error-session";
-    const collector = new FanboxCollector({
-      creatorId: "customudon",
-      cookieHeader: `FANBOXSESSID=${privateSession}`,
-      request: async () => ({
-        ok: true,
-        status: 200,
-        headers: { get: () => "application/json" },
-        arrayBuffer: async () =>
-          new TextEncoder().encode(
-            JSON.stringify({ error: "not authorized", body: null }),
-          ).buffer,
-      }),
-    });
-    const evidence = new FanboxDateDirectoryInterpreter("customudon").interpret(
-      snapshot("/library/25.01.01 post"),
-    )[0];
+  it.each([{ error: null }, { errors: false }])(
+    "does not retain an HTTP-success FANBOX envelope declaring an error %#",
+    async (declaredError) => {
+      const privateSession = "fanbox-semantic-error-session";
+      const collector = new FanboxCollector({
+        creatorId: "customudon",
+        cookieHeader: `FANBOXSESSID=${privateSession}`,
+        request: async () => ({
+          ok: true,
+          status: 200,
+          headers: { get: () => "application/json" },
+          arrayBuffer: async () =>
+            new TextEncoder().encode(
+              JSON.stringify({ body: { posts: [] }, ...declaredError }),
+            ).buffer,
+        }),
+      });
+      const evidence = new FanboxDateDirectoryInterpreter(
+        "customudon",
+      ).interpret(snapshot("/library/25.01.01 post"))[0];
 
-    const result = await collector.collect(evidence);
+      const result = await collector.collect(evidence);
 
-    expect(result.records).toEqual([]);
-    expect(result.failures).toHaveLength(1);
-    expect(JSON.stringify(result)).not.toContain(privateSession);
-  });
+      expect(result.records).toEqual([]);
+      expect(result.failures).toHaveLength(1);
+      expect(result.failures[0]?.reason).toContain(
+        "response was not a successful envelope",
+      );
+      expect(JSON.stringify(result)).not.toContain(privateSession);
+    },
+  );
 
   it("rejects an HTTP-success non-JSON response before it can form source evidence", async () => {
     const collector = new FanboxCollector({
@@ -388,7 +400,7 @@ describe("FANBOX official collection", () => {
               }
             : {
                 body: {
-                  items: [
+                  posts: [
                     {
                       id: "9135862",
                       creatorId: "customudon",
@@ -433,7 +445,7 @@ describe("FANBOX official collection", () => {
               }
             : {
                 body: {
-                  items: [
+                  posts: [
                     {
                       id: "9135862",
                       creatorId: "customudon",
@@ -471,7 +483,7 @@ describe("FANBOX official collection", () => {
               }
             : {
                 body: {
-                  items: [
+                  posts: [
                     {
                       id: "9135862",
                       creatorId: "customudon",
@@ -559,7 +571,7 @@ describe("FANBOX official collection", () => {
               }
             : {
                 body: {
-                  items: [
+                  posts: [
                     {
                       id: "9135862",
                       creatorId: "customudon",
@@ -600,7 +612,7 @@ describe("FANBOX official collection", () => {
               }
             : {
                 body: {
-                  items: [
+                  posts: [
                     {
                       id: "9135862",
                       creatorId: "customudon",
@@ -645,7 +657,7 @@ describe("FANBOX official collection", () => {
               }
             : {
                 body: {
-                  items: [
+                  posts: [
                     {
                       id: "9135862",
                       creatorId: "customudon",
@@ -684,7 +696,7 @@ describe("FANBOX official collection", () => {
               }
             : {
                 body: {
-                  items: [
+                  posts: [
                     {
                       id: "9135862",
                       creatorId: "customudon",
@@ -711,38 +723,37 @@ describe("FANBOX official collection", () => {
     );
   });
 
-  it("does not claim complete creator-summary coverage when the selected page exposes a next URL", async () => {
+  it("marks a selected post from an exactly 300-post creator summary as incomplete", async () => {
+    const requested: string[] = [];
+    const posts = Array.from({ length: 300 }, (_, index) => ({
+      id: index === 299 ? "9135862" : `boundary-${index}`,
+      creatorId: "customudon",
+      title: index === 299 ? "边界帖子" : `其他帖子 ${index}`,
+      publishedDatetime:
+        index === 299
+          ? "2025-01-01T00:11:17+09:00"
+          : "2024-12-31T00:11:17+09:00",
+    }));
     const collector = new FanboxCollector({
       creatorId: "customudon",
-      cookieHeader: "FANBOXSESSID=paged-summary-session",
-      request: async (address) =>
-        jsonResponse(
+      cookieHeader: "FANBOXSESSID=boundary-summary-session",
+      request: async (address) => {
+        requested.push(address);
+        return jsonResponse(
           address.includes("post.info")
             ? {
                 body: {
                   id: "9135862",
                   creatorId: "customudon",
-                  title: "分页帖子",
+                  title: "边界帖子",
                   publishedDatetime: "2025-01-01T00:11:17+09:00",
                   type: "article",
                   body: { blocks: [{ type: "p", text: "正文" }] },
                 },
               }
-            : {
-                body: {
-                  items: [
-                    {
-                      id: "9135862",
-                      creatorId: "customudon",
-                      title: "分页帖子",
-                      publishedDatetime: "2025-01-01T00:11:17+09:00",
-                    },
-                  ],
-                  nextUrl:
-                    "https://api.fanbox.cc/post.listCreator?creatorId=customudon&maxPublishedDatetime=2024-12-31T00%3A00%3A00%2B09%3A00",
-                },
-              },
-        ),
+            : { body: { posts } },
+        );
+      },
     });
     const known = {
       kind: "source-association" as const,
@@ -759,151 +770,26 @@ describe("FANBOX official collection", () => {
       id: "fanbox.creator-post-summaries",
       completeness: "incomplete",
     });
+    expect(requested[0]).toBe(
+      "https://api.fanbox.cc/post.listCreator?creatorId=customudon&limit=300",
+    );
+    expect(requested).toHaveLength(2);
   });
 
-  it("follows the official next URL until a known post is found on a later bounded summary page", async () => {
+  it("fails explicitly when an exactly 300-post creator summary omits the known post", async () => {
     const requested: string[] = [];
+    const posts = Array.from({ length: 300 }, (_, index) => ({
+      id: `boundary-${index}`,
+      creatorId: "customudon",
+      title: `其他帖子 ${index}`,
+      publishedDatetime: "2024-12-31T00:11:17+09:00",
+    }));
     const collector = new FanboxCollector({
       creatorId: "customudon",
-      cookieHeader: "FANBOXSESSID=later-page-session",
+      cookieHeader: "FANBOXSESSID=truncated-summary-session",
       request: async (address) => {
         requested.push(address);
-        if (address.includes("post.info"))
-          return jsonResponse({
-            body: {
-              id: "9135862",
-              creatorId: "customudon",
-              title: "第二页帖子",
-              publishedDatetime: "2025-01-01T00:11:17+09:00",
-              type: "article",
-              body: { blocks: [{ type: "p", text: "正文" }] },
-            },
-          });
-        if (address.includes("page=2"))
-          return jsonResponse({
-            body: {
-              items: [
-                {
-                  id: "9135862",
-                  creatorId: "customudon",
-                  title: "第二页帖子",
-                  publishedDatetime: "2025-01-01T00:11:17+09:00",
-                },
-              ],
-            },
-          });
-        return jsonResponse({
-          body: {
-            items: [
-              {
-                id: "9135861",
-                creatorId: "customudon",
-                title: "首页其他帖子",
-                publishedDatetime: "2025-01-02T00:11:17+09:00",
-              },
-            ],
-            nextUrl:
-              "https://api.fanbox.cc/post.listCreator?creatorId=customudon&page=2",
-          },
-        });
-      },
-    });
-    const known = {
-      kind: "source-association" as const,
-      sourceIdentity: "fanbox",
-      sourceAddress: "https://www.fanbox.cc/@customudon/posts/9135862",
-      explanation: "known",
-      producer: knownSourceAssociationEvidenceCapability,
-    };
-
-    const result = await collector.collect(known);
-
-    expect(result.failures).toEqual([]);
-    expect(result.records).toHaveLength(2);
-    expect(result.records[0]?.acquisition.requestedAddress).toContain("page=2");
-    expect(requested).toHaveLength(3);
-  });
-
-  it("continues bounded creator-summary pagination to resolve a directory publication date on a later page", async () => {
-    const requested: string[] = [];
-    const collector = new FanboxCollector({
-      creatorId: "customudon",
-      cookieHeader: "FANBOXSESSID=later-date-page-session",
-      request: async (address) => {
-        requested.push(address);
-        if (address.includes("post.info"))
-          return jsonResponse({
-            body: {
-              id: "9135862",
-              creatorId: "customudon",
-              title: "第二页日期帖子",
-              publishedDatetime: "2025-01-01T00:11:17+09:00",
-              type: "text",
-              body: { text: "正文" },
-            },
-          });
-        if (address.includes("page=2"))
-          return jsonResponse({
-            body: {
-              items: [
-                {
-                  id: "9135862",
-                  creatorId: "customudon",
-                  title: "第二页日期帖子",
-                  publishedDatetime: "2025-01-01T00:11:17+09:00",
-                },
-              ],
-            },
-          });
-        return jsonResponse({
-          body: {
-            items: [
-              {
-                id: "9135861",
-                creatorId: "customudon",
-                title: "首页其他帖子",
-                publishedDatetime: "2025-01-02T00:11:17+09:00",
-              },
-            ],
-            nextUrl:
-              "https://api.fanbox.cc/post.listCreator?creatorId=customudon&page=2",
-          },
-        });
-      },
-    });
-    const evidence = new FanboxDateDirectoryInterpreter("customudon").interpret(
-      snapshot("/library/25.01.01 post"),
-    )[0];
-
-    const result = await collector.collect(evidence);
-
-    expect(result.failures).toEqual([]);
-    expect(result.records).toHaveLength(2);
-    expect(result.records[0]?.acquisition.requestedAddress).toContain("page=2");
-    expect(requested).toHaveLength(3);
-  });
-
-  it("fails without source records when creator-summary pagination loops before the requested post is found", async () => {
-    const requested: string[] = [];
-    const collector = new FanboxCollector({
-      creatorId: "customudon",
-      cookieHeader: "FANBOXSESSID=summary-loop-session",
-      request: async (address) => {
-        requested.push(address);
-        return jsonResponse({
-          body: {
-            items: [
-              {
-                id: "9135861",
-                creatorId: "customudon",
-                title: "其他帖子",
-                publishedDatetime: "2025-01-02T00:11:17+09:00",
-              },
-            ],
-            nextUrl:
-              "https://api.fanbox.cc/post.listCreator?creatorId=customudon&limit=300",
-          },
-        });
+        return jsonResponse({ body: { posts } });
       },
     });
     const known = {
@@ -918,7 +804,7 @@ describe("FANBOX official collection", () => {
 
     expect(result.records).toEqual([]);
     expect(result.failures).toHaveLength(1);
-    expect(result.failures[0]?.reason).toContain("repeated a next URL");
+    expect(result.failures[0]?.reason).toContain("truncated creator summaries");
     expect(requested).toHaveLength(1);
   });
 
@@ -931,7 +817,7 @@ describe("FANBOX official collection", () => {
         requested.push(address);
         return jsonResponse({
           body: {
-            items: [
+            posts: [
               {
                 id: "9135862",
                 creatorId: "anothercreator",
@@ -970,7 +856,7 @@ describe("FANBOX official collection", () => {
               ? detail
               : {
                   body: {
-                    items: [
+                    posts: [
                       {
                         id: "9135862",
                         creatorId: "customudon",
@@ -1035,7 +921,7 @@ describe("FANBOX official collection", () => {
               ? detail
               : {
                   body: {
-                    items: [
+                    posts: [
                       {
                         id: "9135862",
                         creatorId: "customudon",
@@ -1073,7 +959,7 @@ describe("FANBOX official collection", () => {
               }
             : {
                 body: {
-                  items: [
+                  posts: [
                     {
                       id: "9135862",
                       creatorId: "customudon",
@@ -1120,7 +1006,7 @@ describe("FANBOX official collection", () => {
               }
             : {
                 body: {
-                  items: [
+                  posts: [
                     {
                       id: "9135862",
                       creatorId: "customudon",
@@ -1167,7 +1053,7 @@ describe("FANBOX official collection", () => {
               }
             : {
                 body: {
-                  items: [
+                  posts: [
                     {
                       id: "9135862",
                       creatorId: "customudon",
@@ -1366,6 +1252,34 @@ describe("FANBOX official collection", () => {
     }
   });
 
+  it("rejects present but invalid official attachment names and byte lengths", async () => {
+    const invalidFields = [
+      { name: "" },
+      { name: 42 },
+      { size: -1 },
+      { size: 1.5 },
+      { size: Number.MAX_SAFE_INTEGER + 1 },
+      { size: "42" },
+    ] as const;
+
+    for (const invalidField of invalidFields) {
+      const result = await collectorForDetail({
+        type: "file",
+        body: {
+          files: [
+            {
+              id: "file-1",
+              url: "https://downloads.fanbox.cc/files/post/file-1.zip",
+              ...invalidField,
+            },
+          ],
+        },
+      }).collect(knownFanboxPostEvidence());
+
+      expectSummaryOnlyDetailFailure(result);
+    }
+  });
+
   it("requires a video detail to identify a supported source-native video", async () => {
     const valid = await collectorForDetail({
       type: "video",
@@ -1407,7 +1321,7 @@ describe("FANBOX official collection", () => {
               }
             : {
                 body: {
-                  items: [
+                  posts: [
                     {
                       id: "9135862",
                       creatorId: "customudon",
@@ -1448,7 +1362,7 @@ describe("FANBOX official collection", () => {
           new TextEncoder().encode(
             JSON.stringify({
               body: {
-                items: [
+                posts: [
                   {
                     id: "9135862",
                     publishedDatetime: "2025-01-01T00:11:17+09:00",
@@ -1506,17 +1420,20 @@ describe("FANBOX official collection", () => {
                 address.includes("post.info")
                   ? {
                       body: {
-                        id: "7576910",
-                        creatorId: "customudon",
-                        title: "Movie | ひみつ",
-                        publishedDatetime: "2024-03-07T22:55:32+09:00",
-                        type: "file",
-                        isRestricted: true,
+                        post: {
+                          id: "7576910",
+                          creatorId: "customudon",
+                          title: "Movie | ひみつ",
+                          publishedDatetime: "2024-03-07T22:55:32+09:00",
+                          type: "article",
+                          isRestricted: true,
+                          body: null,
+                        },
                       },
                     }
                   : {
                       body: {
-                        items: [
+                        posts: [
                           {
                             id: "7576910",
                             creatorId: "customudon",
@@ -1537,6 +1454,10 @@ describe("FANBOX official collection", () => {
     )[0];
 
     const result = await collector.collect(evidence);
+    const batch = new FanboxSourceInterpreter().interpret({
+      evidence: [evidence],
+      sourceRecords: result.records,
+    });
 
     expect(requests).toBe(2);
     expect(result.failures).toEqual([]);
@@ -1545,15 +1466,22 @@ describe("FANBOX official collection", () => {
       "fanbox.post-detail",
     ]);
     expect(result.records[1]?.coverage.completeness).toBe("incomplete");
+    expect(batch.sourceArtifacts).toEqual([]);
+    expect(
+      batch.metadata.find((item) => item.property === "fanbox.post.entitlement")
+        ?.value,
+    ).toBe("restricted");
   });
 
   it("retains the uniquely addressed summary when public detail transport is unavailable", async () => {
     let requests = 0;
+    const cookies: (string | undefined)[] = [];
     const collector = new FanboxCollector({
       creatorId: "customudon",
       cookieHeader: "FANBOXSESSID=private",
-      request: async (address) => {
+      request: async (address, init) => {
         requests += 1;
+        cookies.push(init.headers.Cookie);
         if (address.includes("post.info"))
           return {
             ok: false,
@@ -1569,7 +1497,7 @@ describe("FANBOX official collection", () => {
             new TextEncoder().encode(
               JSON.stringify({
                 body: {
-                  items: [
+                  posts: [
                     {
                       id: "9135862",
                       creatorId: "customudon",
@@ -1590,7 +1518,12 @@ describe("FANBOX official collection", () => {
 
     const result = await collector.collect(evidence);
 
-    expect(requests).toBe(2);
+    expect(requests).toBe(3);
+    expect(cookies).toEqual([
+      "FANBOXSESSID=private",
+      "FANBOXSESSID=private",
+      undefined,
+    ]);
     expect(result.records).toHaveLength(1);
     expect(result.records[0]?.coverage.id).toBe(
       "fanbox.creator-post-summaries",
@@ -1598,11 +1531,7 @@ describe("FANBOX official collection", () => {
     expect(result.failures[0]).toMatchObject({
       reason: expect.stringContaining("HTTP 403"),
       affects: {
-        metadataProperties: [
-          "fanbox.post.form",
-          "asset.body",
-          "fanbox.attachment.*",
-        ],
+        metadataProperties: ["fanbox.post.form", "asset.body"],
         artifactRoles: ["fanbox.attachment.*"],
       },
     });
@@ -1632,7 +1561,7 @@ describe("FANBOX official collection", () => {
                 new TextEncoder().encode(
                   JSON.stringify({
                     body: {
-                      items: [
+                      posts: [
                         {
                           id: "9135862",
                           creatorId: "customudon",
@@ -1659,6 +1588,113 @@ describe("FANBOX official collection", () => {
     expect(JSON.stringify(result)).not.toContain("challenge-platform");
   });
 
+  it("uses one public detail response after authenticated transport rejection without sending its Cookie", async () => {
+    const secret = "public-retry-private-session";
+    const detailCookies: (string | undefined)[] = [];
+    const collector = new FanboxCollector({
+      creatorId: "customudon",
+      cookieHeader: `FANBOXSESSID=${secret}`,
+      request: async (address, init) => {
+        if (address.includes("post.listCreator"))
+          return jsonResponse({
+            body: {
+              posts: [
+                {
+                  id: "9135862",
+                  creatorId: "customudon",
+                  title: "公开详情",
+                  publishedDatetime: "2025-01-01T00:11:17+09:00",
+                },
+              ],
+            },
+          });
+        detailCookies.push(init.headers.Cookie);
+        if (detailCookies.length === 1)
+          return {
+            ok: false,
+            status: 403,
+            headers: { get: () => "application/json" },
+            arrayBuffer: async () => new ArrayBuffer(0),
+          };
+        return jsonResponse({
+          body: {
+            post: {
+              id: "9135862",
+              creatorId: "customudon",
+              title: "公开详情",
+              publishedDatetime: "2025-01-01T00:11:17+09:00",
+              type: "text",
+              body: { text: "公开完整正文" },
+            },
+          },
+        });
+      },
+    });
+
+    const result = await collector.collect(knownFanboxPostEvidence());
+
+    expect(detailCookies).toEqual([`FANBOXSESSID=${secret}`, undefined]);
+    expect(result.failures).toEqual([]);
+    expect(result.records[1]).toMatchObject({
+      acquisition: { authorized: false },
+      coverage: { id: "fanbox.post-detail", completeness: "complete" },
+    });
+    expect(JSON.stringify(result)).not.toContain(secret);
+  });
+
+  it("retains a public restricted detail and the sanitized authenticated coverage failure", async () => {
+    const secret = "restricted-retry-private-session";
+    const detailCookies: (string | undefined)[] = [];
+    const collector = new FanboxCollector({
+      creatorId: "customudon",
+      cookieHeader: `FANBOXSESSID=${secret}`,
+      request: async (address, init) => {
+        if (address.includes("post.listCreator"))
+          return jsonResponse({
+            body: {
+              posts: [
+                {
+                  id: "9135862",
+                  creatorId: "customudon",
+                  title: "受限详情",
+                  publishedDatetime: "2025-01-01T00:11:17+09:00",
+                },
+              ],
+            },
+          });
+        detailCookies.push(init.headers.Cookie);
+        if (detailCookies.length === 1)
+          throw new Error(`HTTP 403 rejected FANBOXSESSID=${secret}`);
+        return jsonResponse({
+          body: {
+            post: {
+              id: "9135862",
+              creatorId: "customudon",
+              title: "受限详情",
+              publishedDatetime: "2025-01-01T00:11:17+09:00",
+              type: "file",
+              isRestricted: true,
+            },
+          },
+        });
+      },
+    });
+
+    const result = await collector.collect(knownFanboxPostEvidence());
+
+    expect(detailCookies).toEqual([`FANBOXSESSID=${secret}`, undefined]);
+    expect(result.records[1]).toMatchObject({
+      acquisition: { authorized: false },
+      coverage: { id: "fanbox.post-detail", completeness: "incomplete" },
+    });
+    expect(result.failures).toEqual([
+      expect.objectContaining({
+        coverage: expect.objectContaining({ coverageId: "fanbox.post-detail" }),
+      }),
+    ]);
+    expect(JSON.stringify(result)).not.toContain(secret);
+  });
+
   it("reacquires a known FANBOX association without reinterpreting its directory", async () => {
     const collector = new FanboxCollector({
       creatorId: "customudon",
@@ -1667,7 +1703,7 @@ describe("FANBOX official collection", () => {
         const payload = address.includes("post.listCreator")
           ? {
               body: {
-                items: [
+                posts: [
                   {
                     id: "9135862",
                     creatorId: "customudon",
@@ -1680,12 +1716,14 @@ describe("FANBOX official collection", () => {
             }
           : {
               body: {
-                id: "9135862",
-                creatorId: "customudon",
-                title: "年始の挨拶",
-                publishedDatetime: "2025-01-01T00:11:17+09:00",
-                type: "text",
-                body: { text: "完整正文" },
+                post: {
+                  id: "9135862",
+                  creatorId: "customudon",
+                  title: "年始の挨拶",
+                  publishedDatetime: "2025-01-01T00:11:17+09:00",
+                  type: "text",
+                  body: { text: "完整正文" },
+                },
               },
             };
         return {
@@ -1717,7 +1755,301 @@ describe("FANBOX official collection", () => {
 });
 
 describe("FANBOX interpretation", () => {
-  it("fails closed for manually retained FANBOX records whose selected title is only whitespace", () => {
+  it("projects every supported article block while attachments remain source artifact candidate selection evidence", async () => {
+    const file = {
+      id: "file-1",
+      name: "bonus.zip",
+      extension: "zip",
+      size: 42,
+      url: "https://downloads.fanbox.cc/files/post/bonus.zip",
+    };
+    const image = {
+      id: "image-1",
+      name: "illustration.jpg",
+      extension: "jpg",
+      size: 84,
+      originalUrl: "https://downloads.fanbox.cc/images/post/illustration.jpg",
+    };
+    const embed = {
+      id: "embed-1",
+      serviceProvider: "youtube",
+      contentId: "video-1",
+    };
+    const urlEmbed = {
+      id: "url-embed-1",
+      type: "default",
+      url: "https://example.com/official-reference",
+    };
+    const evidence = knownFanboxPostEvidence();
+    const collected = await collectorForDetail({
+      type: "article",
+      body: {
+        blocks: [
+          { type: "header", text: "見出し" },
+          { type: "p", text: "本文" },
+          { type: "p", text: "" },
+          { type: "embed", embedId: embed.id },
+          { type: "file", fileId: file.id },
+          { type: "image", imageId: image.id },
+          { type: "url_embed", urlEmbedId: urlEmbed.id },
+        ],
+        fileMap: { [file.id]: file },
+        imageMap: { [image.id]: image },
+        embedMap: { [embed.id]: embed },
+        urlEmbedMap: { [urlEmbed.id]: urlEmbed },
+      },
+    }).collect(evidence);
+
+    expect(collected.failures).toEqual([]);
+    const batch = new FanboxSourceInterpreter().interpret({
+      evidence: [evidence],
+      sourceRecords: collected.records,
+    });
+    const reinterpreted = new FanboxSourceInterpreter().interpret({
+      evidence: [evidence],
+      sourceRecords: collected.records,
+    });
+
+    expect(
+      batch.metadata
+        .filter((item) => item.property === "fanbox.post.body-block")
+        .map((item) => ({
+          value: JSON.parse(item.value),
+          qualifiers: item.qualifiers,
+        })),
+    ).toEqual([
+      {
+        value: { type: "header", text: "見出し" },
+        qualifiers: [
+          { key: "fanbox.post.block-type", value: "header" },
+          { key: "fanbox.post.block-ordinal", value: "0" },
+        ],
+      },
+      {
+        value: { type: "p", text: "本文" },
+        qualifiers: [
+          { key: "fanbox.post.block-type", value: "p" },
+          { key: "fanbox.post.block-ordinal", value: "1" },
+        ],
+      },
+      {
+        value: { type: "p", text: "" },
+        qualifiers: [
+          { key: "fanbox.post.block-type", value: "p" },
+          { key: "fanbox.post.block-ordinal", value: "2" },
+        ],
+      },
+      {
+        value: {
+          type: "embed",
+          embed: {
+            id: "embed-1",
+            serviceProvider: "youtube",
+            contentId: "video-1",
+          },
+        },
+        qualifiers: [
+          { key: "fanbox.post.block-type", value: "embed" },
+          { key: "fanbox.post.block-ordinal", value: "3" },
+        ],
+      },
+      {
+        value: { type: "file", fileId: "file-1" },
+        qualifiers: [
+          { key: "fanbox.post.block-type", value: "file" },
+          { key: "fanbox.post.block-ordinal", value: "4" },
+        ],
+      },
+      {
+        value: { type: "image", imageId: "image-1" },
+        qualifiers: [
+          { key: "fanbox.post.block-type", value: "image" },
+          { key: "fanbox.post.block-ordinal", value: "5" },
+        ],
+      },
+      {
+        value: {
+          type: "url_embed",
+          urlEmbed: {
+            id: "url-embed-1",
+            type: "default",
+            url: "https://example.com/official-reference",
+          },
+        },
+        qualifiers: [
+          { key: "fanbox.post.block-type", value: "url_embed" },
+          { key: "fanbox.post.block-ordinal", value: "6" },
+        ],
+      },
+    ]);
+    expect(
+      batch.metadata.find((item) => item.property === "asset.body")?.value,
+    ).toBe("本文");
+    expect(
+      batch.metadata.some((item) =>
+        item.property.startsWith("fanbox.attachment."),
+      ),
+    ).toBe(false);
+    expect(batch.sourceArtifacts).toEqual([
+      expect.objectContaining({
+        role: "fanbox.attachment.file",
+        selectionEvidence: {
+          suggestedFilename: "bonus.zip",
+          declaredByteLength: 42,
+          sourceOrdinal: 0,
+        },
+      }),
+      expect.objectContaining({
+        role: "fanbox.attachment.image",
+        selectionEvidence: {
+          suggestedFilename: "illustration.jpg",
+          declaredByteLength: 84,
+          sourceOrdinal: 1,
+        },
+      }),
+    ]);
+    expect(reinterpreted.sourceArtifacts.map((item) => item.id)).toEqual(
+      batch.sourceArtifacts.map((item) => item.id),
+    );
+  });
+
+  it("changes durable attachment ordinals when the official attachment array is reordered", async () => {
+    const attachment = (id: "a" | "z") => ({
+      id,
+      name: `${id}.zip`,
+      size: id === "z" ? 90 : 10,
+      url: `https://downloads.fanbox.cc/files/post/${id}.zip`,
+    });
+    const projectedOrdinals = async (ids: readonly ("a" | "z")[]) => {
+      const evidence = knownFanboxPostEvidence();
+      const collected = await collectorForDetail({
+        type: "file",
+        body: { files: ids.map(attachment) },
+      }).collect(evidence);
+      const batch = new FanboxSourceInterpreter().interpret({
+        evidence: [evidence],
+        sourceRecords: collected.records,
+      });
+      return batch.sourceArtifacts.map((item) => [
+        item.selectionEvidence?.suggestedFilename,
+        item.selectionEvidence?.sourceOrdinal,
+      ]);
+    };
+
+    await expect(projectedOrdinals(["z", "a"])).resolves.toEqual([
+      ["z.zip", 0],
+      ["a.zip", 1],
+    ]);
+    await expect(projectedOrdinals(["a", "z"])).resolves.toEqual([
+      ["a.zip", 0],
+      ["z.zip", 1],
+    ]);
+  });
+
+  it("deduplicates download attachments by first occurrence with contiguous ordinals", async () => {
+    const attachment = (id: "a" | "b") => ({
+      id,
+      name: `${id}.zip`,
+      size: id === "a" ? 10 : 20,
+      url: `https://downloads.fanbox.cc/files/post/${id}.zip`,
+    });
+    const evidence = knownFanboxPostEvidence();
+    const project = async (
+      detail: Parameters<typeof collectorForDetail>[0],
+    ) => {
+      const collected = await collectorForDetail(detail).collect(evidence);
+      const batch = new FanboxSourceInterpreter().interpret({
+        evidence: [evidence],
+        sourceRecords: collected.records,
+      });
+      return {
+        ordinals: batch.sourceArtifacts.map((item) => [
+          item.selectionEvidence?.suggestedFilename,
+          item.selectionEvidence?.sourceOrdinal,
+        ]),
+        blocks: batch.metadata
+          .filter((item) => item.property === "fanbox.post.body-block")
+          .map((item) => JSON.parse(item.value)),
+      };
+    };
+
+    await expect(
+      project({
+        type: "article",
+        body: {
+          blocks: [
+            { type: "file", fileId: "a" },
+            { type: "file", fileId: "a" },
+            { type: "file", fileId: "b" },
+          ],
+          fileMap: { a: attachment("a"), b: attachment("b") },
+        },
+      }),
+    ).resolves.toEqual({
+      ordinals: [
+        ["a.zip", 0],
+        ["b.zip", 1],
+      ],
+      blocks: [
+        { type: "file", fileId: "a" },
+        { type: "file", fileId: "a" },
+        { type: "file", fileId: "b" },
+      ],
+    });
+    await expect(
+      project({
+        type: "file",
+        body: { files: [attachment("a"), attachment("a"), attachment("b")] },
+      }),
+    ).resolves.toMatchObject({
+      ordinals: [
+        ["a.zip", 0],
+        ["b.zip", 1],
+      ],
+    });
+  });
+
+  it("does not reinterpret a retained unknown article block as complete body or attachment facts", () => {
+    const nativeAddress = "https://www.fanbox.cc/@customudon/posts/9135862";
+    const evidence = new FanboxDateDirectoryInterpreter("customudon").interpret(
+      snapshot("/library/25.01.01 post"),
+    );
+    const sourceRecords = [
+      sourceRecord("summary", nativeAddress, "fanbox.creator-post-summaries", {
+        body: {
+          posts: [
+            {
+              id: "9135862",
+              creatorId: "customudon",
+              title: "未知块",
+              publishedDatetime: "2025-01-01T00:11:17+09:00",
+            },
+          ],
+        },
+      }),
+      sourceRecord("detail", nativeAddress, "fanbox.post-detail", {
+        body: {
+          id: "9135862",
+          creatorId: "customudon",
+          title: "未知块",
+          publishedDatetime: "2025-01-01T00:11:17+09:00",
+          type: "article",
+          body: {
+            blocks: [
+              { type: "p", text: "有效兄弟" },
+              { type: "future-material", url: "https://example.com/future" },
+            ],
+          },
+        },
+      }),
+    ];
+
+    expect(() =>
+      new FanboxSourceInterpreter().interpret({ evidence, sourceRecords }),
+    ).toThrow("FANBOX article block type was unsupported");
+  });
+
+  it("fails closed for malformed business members in a manually retained summary array", () => {
     const interpreter = new FanboxSourceInterpreter();
     const nativeAddress = "https://www.fanbox.cc/@customudon/posts/9135862";
     const evidence = new FanboxDateDirectoryInterpreter("customudon").interpret(
@@ -1731,9 +2063,10 @@ describe("FANBOX interpretation", () => {
           "fanbox.creator-post-summaries",
           {
             body: {
-              items: [
+              posts: [
                 {
                   id: "9135862",
+                  creatorId: "customudon",
                   title: " \t　\n ",
                   publishedDatetime: "2025-01-01T00:11:17+09:00",
                 },
@@ -1749,9 +2082,10 @@ describe("FANBOX interpretation", () => {
           "fanbox.creator-post-summaries",
           {
             body: {
-              items: [
+              posts: [
                 {
                   id: "9135862",
+                  creatorId: "customudon",
                   title: " \t　\n ",
                   publishedDatetime: "2025-01-01T00:11:17+09:00",
                 },
@@ -1777,9 +2111,10 @@ describe("FANBOX interpretation", () => {
           "fanbox.creator-post-summaries",
           {
             body: {
-              items: [
+              posts: [
                 {
                   id: "9135862",
+                  creatorId: "customudon",
                   title: "有效摘要标题",
                   publishedDatetime: "2025-01-01T00:11:17+09:00",
                 },
@@ -1805,17 +2140,41 @@ describe("FANBOX interpretation", () => {
         "Missing FANBOX",
       );
     }
+    const wrongCreator = [
+      sourceRecord("summary", nativeAddress, "fanbox.creator-post-summaries", {
+        body: {
+          posts: [
+            {
+              id: "9135862",
+              creatorId: "customudon",
+              title: "有效摘要标题",
+              publishedDatetime: "2025-01-01T00:11:17+09:00",
+            },
+            {
+              id: "other",
+              creatorId: "another-creator",
+              title: "另一个成员",
+              publishedDatetime: "2025-01-02T00:11:17+09:00",
+            },
+          ],
+        },
+      }),
+    ];
+    expect(() =>
+      interpreter.interpret({ evidence, sourceRecords: wrongCreator }),
+    ).toThrow("summary post creator differs from its scope");
   });
 
-  it("accepts a uniquely addressed summary while preserving protected detail as unavailable", () => {
+  it("retains a uniquely addressed summary as evidence without adopting detail-owned coordinates", () => {
     const interpreter = new FanboxSourceInterpreter();
     const nativeAddress = "https://www.fanbox.cc/@customudon/posts/7576910";
     const records = [
       sourceRecord("summary", nativeAddress, "fanbox.creator-post-summaries", {
         body: {
-          items: [
+          posts: [
             {
               id: "7576910",
+              creatorId: "customudon",
               title: "Movie | ひみつ",
               publishedDatetime: "2024-03-07T22:55:32+09:00",
               feeRequired: 100,
@@ -1838,41 +2197,13 @@ describe("FANBOX interpretation", () => {
     const batch = interpreter.interpret({ evidence, sourceRecords: records });
     const proposal = new FanboxExactRecognizer().recognize({
       evidence,
-      interpretation: batch,
+      basis: { kind: "source-interpretation", interpretation: batch },
     });
 
     expect(batch.sourceRecordIds).toEqual(["summary"]);
-    expect(batch.metadata).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          property: "asset.title",
-          value: "Movie | ひみつ",
-          sourceRecordIds: ["summary"],
-        }),
-        expect.objectContaining({
-          property: "asset.publication-datetime",
-          value: "2024-03-07T22:55:32+09:00",
-        }),
-        expect.objectContaining({
-          property: "fanbox.post.entitlement",
-          value: "restricted",
-        }),
-      ]),
-    );
-    expect(
-      batch.metadata.some((item) => item.property === "fanbox.post.form"),
-    ).toBe(false);
-    expect(batch.metadata.some((item) => item.property === "asset.body")).toBe(
-      false,
-    );
-    expect(batch.sourceArtifacts).toEqual([
-      expect.objectContaining({
-        role: "asset.primary-cover",
-        acquisitionReference:
-          "https://pixiv.pximg.net/fanbox/public/images/post/7576910/cover.jpeg",
-      }),
-    ]);
-    expect(proposal.ruleResults[0]?.outcome).toBe("satisfied");
+    expect(batch.metadata).toEqual([]);
+    expect(batch.sourceArtifacts).toEqual([]);
+    expect(proposal.ruleResults[0]?.outcome).toBe("contradicted");
   });
 
   it("projects a post and creator through open metadata and relationship contracts without inventing attachment artifacts", () => {
@@ -1880,7 +2211,16 @@ describe("FANBOX interpretation", () => {
     const nativeAddress = "https://www.fanbox.cc/@customudon/posts/9135862";
     const records = [
       sourceRecord("summary", nativeAddress, "fanbox.creator-post-summaries", {
-        body: { items: [] },
+        body: {
+          posts: [
+            {
+              id: "9135862",
+              creatorId: "customudon",
+              publishedDatetime: "2025-01-01T00:11:17+09:00",
+              title: "年始の挨拶(おまけ動画付き)",
+            },
+          ],
+        },
       }),
       sourceRecord("detail", nativeAddress, "fanbox.post-detail", {
         body: {
@@ -1901,10 +2241,7 @@ describe("FANBOX interpretation", () => {
               { type: "p", text: "第一段" },
               { type: "p", text: "第二段" },
               { type: "file", fileId: "one" },
-              {
-                type: "future-material",
-                url: "https://downloads.fanbox.cc/files/post/future.bin",
-              },
+              { type: "image", imageId: "preview" },
             ],
             fileMap: {
               one: {
@@ -1913,6 +2250,16 @@ describe("FANBOX interpretation", () => {
                 extension: "mp4",
                 size: 42,
                 url: "https://downloads.fanbox.cc/files/post/bonus.mp4",
+              },
+            },
+            imageMap: {
+              preview: {
+                id: "preview",
+                name: "preview.jpg",
+                extension: "jpg",
+                size: 84,
+                originalUrl:
+                  "https://downloads.fanbox.cc/images/post/preview.jpg",
               },
             },
           },
@@ -1929,7 +2276,7 @@ describe("FANBOX interpretation", () => {
     });
     const proposal = new FanboxExactRecognizer().recognize({
       evidence,
-      interpretation: batch,
+      basis: { kind: "source-interpretation", interpretation: batch },
     });
 
     expect(batch.metadata).toEqual(
@@ -1978,17 +2325,18 @@ describe("FANBOX interpretation", () => {
           property: "asset.body",
           value: "第一段\n\n第二段",
         }),
-        expect.objectContaining({
-          property: "fanbox.attachment.name",
-          value: "bonus.mp4",
-        }),
       ]),
     );
     expect(batch.sourceArtifacts.map((item) => item.role)).toEqual([
       "asset.primary-cover",
       "fanbox.attachment.file",
-      "fanbox.attachment.future-material",
+      "fanbox.attachment.image",
     ]);
+    expect(batch.sourceArtifacts[1]?.selectionEvidence).toEqual({
+      suggestedFilename: "bonus.mp4",
+      declaredByteLength: 42,
+      sourceOrdinal: 0,
+    });
     expect(proposal.ruleResults[0]?.outcome).toBe("satisfied");
     expect(batch.sourceArtifacts).toEqual(
       expect.arrayContaining([
@@ -1998,7 +2346,7 @@ describe("FANBOX interpretation", () => {
             "https://downloads.fanbox.cc/files/post/bonus.mp4",
         }),
         expect.objectContaining({
-          role: "fanbox.attachment.future-material",
+          role: "fanbox.attachment.image",
         }),
       ]),
     );
@@ -2010,9 +2358,10 @@ describe("FANBOX interpretation", () => {
     const records = [
       sourceRecord("summary", nativeAddress, "fanbox.creator-post-summaries", {
         body: {
-          items: [
+          posts: [
             {
               id: "1739441",
+              creatorId: "customudon",
               title: "今年も一年ありがとうございました。",
               publishedDatetime: "2020-12-29T19:08:45+09:00",
               isRestricted: false,
@@ -2029,7 +2378,7 @@ describe("FANBOX interpretation", () => {
           creatorId: "customudon",
           publishedDatetime: "2020-12-29T19:08:45+09:00",
           title: "今年も一年ありがとうございました。",
-          type: "article",
+          type: "text",
           isRestricted: false,
           body: { text: "今年もありがとうございました。" },
         },
@@ -2057,9 +2406,10 @@ describe("FANBOX interpretation", () => {
     const records = [
       sourceRecord("summary", nativeAddress, "fanbox.creator-post-summaries", {
         body: {
-          items: [
+          posts: [
             {
               id: "9135862",
+              creatorId: "customudon",
               title: "年始の挨拶",
               publishedDatetime: "2025-01-01T00:11:17+09:00",
               isRestricted: false,
@@ -2106,15 +2456,16 @@ describe("FANBOX interpretation", () => {
     ]);
   });
 
-  it("does not claim a public entitlement was verified when only its summary was retained", () => {
+  it("does not project detail-owned business coordinates when only a public summary was retained", () => {
     const interpreter = new FanboxSourceInterpreter();
     const nativeAddress = "https://www.fanbox.cc/@customudon/posts/9135862";
     const records = [
       sourceRecord("summary", nativeAddress, "fanbox.creator-post-summaries", {
         body: {
-          items: [
+          posts: [
             {
               id: "9135862",
+              creatorId: "customudon",
               title: "年始の挨拶",
               publishedDatetime: "2025-01-01T00:11:17+09:00",
               isRestricted: false,
@@ -2129,12 +2480,7 @@ describe("FANBOX interpretation", () => {
 
     const batch = interpreter.interpret({ evidence, sourceRecords: records });
 
-    expect(batch.metadata).toContainEqual(
-      expect.objectContaining({
-        property: "fanbox.post.entitlement",
-        value: "unverified",
-      }),
-    );
+    expect(batch.metadata).toEqual([]);
   });
 
   it("does not preserve a creator-list excerpt as ordinary descriptive content", () => {
@@ -2143,9 +2489,10 @@ describe("FANBOX interpretation", () => {
     const records = [
       sourceRecord("summary", nativeAddress, "fanbox.creator-post-summaries", {
         body: {
-          items: [
+          posts: [
             {
               id: "1739441",
+              creatorId: "customudon",
               title: "今年も一年ありがとうございました。",
               publishedDatetime: "2020-12-29T19:08:45+09:00",
               isRestricted: false,
@@ -2225,6 +2572,18 @@ function sourceRecord(
   coverage: string,
   body: unknown,
 ) {
+  const retainedBody =
+    coverage === "fanbox.post-detail" &&
+    body !== null &&
+    typeof body === "object" &&
+    !Array.isArray(body) &&
+    "body" in body &&
+    body.body !== null &&
+    typeof body.body === "object" &&
+    !Array.isArray(body.body) &&
+    !("post" in body.body)
+      ? { body: { post: body.body } }
+      : body;
   return {
     id,
     sourceIdentity: "fanbox",
@@ -2242,17 +2601,29 @@ function sourceRecord(
       authority: "official" as const,
     },
     digest: id.repeat(64).slice(0, 64),
-    body: JSON.stringify(body),
+    body: JSON.stringify(retainedBody),
   };
 }
 
 function jsonResponse(body: unknown) {
+  const responseBody =
+    body !== null &&
+    typeof body === "object" &&
+    !Array.isArray(body) &&
+    "body" in body &&
+    body.body !== null &&
+    typeof body.body === "object" &&
+    !Array.isArray(body.body) &&
+    "id" in body.body &&
+    !("post" in body.body)
+      ? { body: { post: body.body } }
+      : body;
   return {
     ok: true,
     status: 200,
     headers: { get: () => "application/json" },
     arrayBuffer: async () =>
-      new TextEncoder().encode(JSON.stringify(body)).buffer,
+      new TextEncoder().encode(JSON.stringify(responseBody)).buffer,
   };
 }
 
@@ -2271,17 +2642,19 @@ function collectorForDetail(input: {
         address.includes("post.info")
           ? {
               body: {
-                id: "9135862",
-                creatorId: "customudon",
-                title: "测试帖子",
-                publishedDatetime,
-                type: input.type,
-                body: input.body,
+                post: {
+                  id: "9135862",
+                  creatorId: "customudon",
+                  title: "测试帖子",
+                  publishedDatetime,
+                  type: input.type,
+                  body: input.body,
+                },
               },
             }
           : {
               body: {
-                items: [
+                posts: [
                   {
                     id: "9135862",
                     creatorId: "customudon",

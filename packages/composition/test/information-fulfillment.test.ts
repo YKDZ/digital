@@ -573,7 +573,8 @@ describe("information fulfillment composition", () => {
       const before = await verifier.findAcceptedForSubjects([subjectId]);
       const recognitionDecisionId = before[0]?.accepted.recognitionDecision.id;
       const recognitionProposalId = before[0]?.accepted.proposal.id;
-      const sourceAssociationId = before[0]?.accepted.sourceAssociation.id;
+      const sourceAssociationId =
+        before[0]?.accepted.recognitionSourceAssociation?.id;
       if (
         recognitionDecisionId === undefined ||
         recognitionProposalId === undefined ||
@@ -1097,7 +1098,9 @@ describe("information fulfillment composition", () => {
           ?.workflowExecutionId;
       expect(executionId).toEqual(expect.any(String));
       await expect(
-        waitForTerminalExecution(workflow, executionId!),
+        waitForTerminalExecution(workflow, executionId!, {
+          timeoutMilliseconds: 2_000,
+        }),
       ).resolves.toMatchObject({
         execution: { status: "failed" },
         sourceRefreshRuns: [
@@ -1362,7 +1365,8 @@ describe("information fulfillment composition", () => {
       if (subjectId === undefined)
         throw new Error("DLsite subject was not accepted");
       const persisted = await verifier.findAcceptedForSubjects([subjectId]);
-      const sourceAssociationId = persisted[0]?.accepted.sourceAssociation.id;
+      const sourceAssociationId =
+        persisted[0]?.accepted.recognitionSourceAssociation?.id;
       if (sourceAssociationId === undefined)
         throw new Error("DLsite source association was not retained");
       expect(requested).not.toContain("https://img.dlsite.jp/initial.jpg");
@@ -1638,9 +1642,11 @@ describe("information fulfillment composition", () => {
 async function waitForTerminalExecution(
   workflow: ReturnType<typeof composeAssetRefresh>,
   executionId: string,
+  options: { readonly timeoutMilliseconds?: number } = {},
 ) {
+  const deadline = Date.now() + (options.timeoutMilliseconds ?? 1_000);
   let latest: Awaited<ReturnType<typeof workflow.inspect>>;
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  while (Date.now() < deadline) {
     latest = await workflow.inspect(executionId);
     if (latest?.execution.status !== "running") return latest;
     await new Promise((resolve) => setTimeout(resolve, 10));

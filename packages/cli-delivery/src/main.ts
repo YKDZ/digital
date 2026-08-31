@@ -216,9 +216,7 @@ function renderInspection(
         ? []
         : [
             "来源：",
-            ...(
-              accepted.sourceAssociations ?? [accepted.sourceAssociation]
-            ).map(
+            ...accepted.sourceAssociations.map(
               (association) =>
                 `  ${association.sourceIdentity}：${association.nativeAddress}`,
             ),
@@ -272,11 +270,7 @@ function renderInspection(
               ? []
               : [
                   "  来源：",
-                  ...(
-                    item.accepted.sourceAssociations ?? [
-                      item.accepted.sourceAssociation,
-                    ]
-                  ).map(
+                  ...item.accepted.sourceAssociations.map(
                     (association) =>
                       `    ${association.sourceIdentity}：${association.nativeAddress}`,
                   ),
@@ -342,8 +336,8 @@ function renderChangeImpactPreview(
     [
       `变更影响预演：${preview.id}`,
       `状态：${preview.status}`,
-      `当前来源：${preview.current.sourceAssociation.nativeAddress}`,
-      `拟定来源：${preview.projected.sourceAssociation.nativeAddress}`,
+      `当前来源：${preview.current.recognitionSourceAssociation?.nativeAddress ?? "无识别来源"}`,
+      `拟定来源：${preview.projected.recognitionSourceAssociation?.nativeAddress ?? "无识别来源"}`,
       `影响：元数据 ${preview.metadataCount}，实体 ${preview.entityCount}，提及 ${preview.mentionCount}，解析 ${preview.resolutionCount}，关系 ${preview.relationshipCount}，产物 ${preview.artifactCount}`,
       "当前元数据：",
       ...preview.current.metadata.map(

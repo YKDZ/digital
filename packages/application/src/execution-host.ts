@@ -10,6 +10,29 @@ export type BackgroundExecutionControl = Pick<
   "safeCheckpoint"
 >;
 
+export type OperationCancellation = {
+  readonly cancelled: boolean;
+  readonly reason: "shutdown" | "observed-root-invalidated" | undefined;
+  onCancel(listener: () => void): () => void;
+};
+
+export type OperationLease = {
+  readonly cancellation: OperationCancellation;
+  /** 将已经持有的顶层 reservation 绑定到查询后解析出的当前观察根。 */
+  bindObservedRoot(input: {
+    readonly registrationId: string;
+    readonly registrationVersion: number;
+  }): { release(): void };
+  release(): void;
+};
+
+export class OperationLeaseInvalidated extends Error {
+  constructor() {
+    super("文件位置授权版本已经失效");
+    this.name = "OperationLeaseInvalidated";
+  }
+}
+
 class StopAtSafeCheckpoint extends Error {}
 
 export type ExecutionInvocation = (
@@ -26,6 +49,17 @@ export class ExecutionHost {
   private accepting = true;
   private readonly active = new Set<Promise<void>>();
   private closing: Promise<void> | undefined;
+  private readonly operationLeases = new Set<{
+    registrationId?: string;
+    registrationVersion?: number;
+    generation: number;
+    bindingSerial: number;
+    readonly cancel: (reason: "shutdown" | "observed-root-invalidated") => void;
+  }>();
+  private readonly observedRootGenerations = new Map<
+    string,
+    { readonly generation: number; readonly keepVersion: number | undefined }
+  >();
 
   constructor(
     options: {
@@ -124,6 +158,120 @@ export class ExecutionHost {
     return supervised;
   }
 
+  /** 短应用操作与现有宿主共用排空、关闭和取消生命周期。 */
+  lease(
+    input: {
+      readonly registrationId?: string;
+      readonly registrationVersion?: number;
+    } = {},
+  ): OperationLease {
+    if (!this.accepting) throw new Error("执行服务正在关闭，请稍后重试");
+    const observedState =
+      input.registrationId === undefined
+        ? undefined
+        : this.observedRootGenerations.get(input.registrationId);
+    if (
+      input.registrationId !== undefined &&
+      (input.registrationVersion === undefined ||
+        (observedState !== undefined &&
+          observedState.keepVersion !== input.registrationVersion))
+    )
+      throw new OperationLeaseInvalidated();
+    const active = this.reserveActive();
+    let cancelled = false;
+    let cancellationReason: OperationCancellation["reason"];
+    const listeners = new Set<() => void>();
+    const entry = {
+      ...input,
+      generation: observedState?.generation ?? 0,
+      bindingSerial: input.registrationId === undefined ? 0 : 1,
+      cancel: (reason: "shutdown" | "observed-root-invalidated") => {
+        if (cancelled) return;
+        cancelled = true;
+        cancellationReason = reason;
+        for (const listener of listeners) listener();
+      },
+    };
+    this.operationLeases.add(entry);
+    let released = false;
+    const bindObservedRoot = (coordinate: {
+      readonly registrationId: string;
+      readonly registrationVersion: number;
+    }) => {
+      if (released || cancelled) throw new OperationLeaseInvalidated();
+      if (entry.registrationId !== undefined)
+        throw new OperationLeaseInvalidated();
+      const current = this.observedRootGenerations.get(
+        coordinate.registrationId,
+      );
+      if (
+        current !== undefined &&
+        current.keepVersion !== coordinate.registrationVersion
+      )
+        throw new OperationLeaseInvalidated();
+      entry.registrationId = coordinate.registrationId;
+      entry.registrationVersion = coordinate.registrationVersion;
+      entry.generation = current?.generation ?? 0;
+      entry.bindingSerial += 1;
+      const bindingSerial = entry.bindingSerial;
+      let bindingReleased = false;
+      return {
+        release: () => {
+          if (bindingReleased) return;
+          bindingReleased = true;
+          if (entry.bindingSerial !== bindingSerial) return;
+          delete entry.registrationId;
+          delete entry.registrationVersion;
+          entry.generation = 0;
+        },
+      };
+    };
+    return {
+      cancellation: {
+        get cancelled() {
+          return cancelled;
+        },
+        get reason() {
+          return cancellationReason;
+        },
+        onCancel(listener) {
+          listeners.add(listener);
+          if (cancelled) listener();
+          return () => listeners.delete(listener);
+        },
+      },
+      bindObservedRoot,
+      release: () => {
+        if (released) return;
+        released = true;
+        this.operationLeases.delete(entry);
+        active.release();
+      },
+    };
+  }
+
+  invalidateObservedRoot(input: {
+    readonly registrationId: string;
+    readonly keepVersion?: number;
+  }): void {
+    const previous = this.observedRootGenerations.get(input.registrationId);
+    const generation = (previous?.generation ?? 0) + 1;
+    this.observedRootGenerations.set(input.registrationId, {
+      generation,
+      keepVersion: input.keepVersion,
+    });
+    for (const lease of this.operationLeases) {
+      if (lease.registrationId !== input.registrationId) continue;
+      if (lease.generation >= generation) continue;
+      if (
+        input.keepVersion !== undefined &&
+        lease.registrationVersion === input.keepVersion
+      )
+        continue;
+      lease.cancel("observed-root-invalidated");
+    }
+  }
+
   private reserveActive(): { readonly release: () => void } {
     let resolve!: () => void;
     const settlement = new Promise<void>((settled) => {
@@ -142,6 +290,7 @@ export class ExecutionHost {
 
   close(): Promise<void> {
     this.accepting = false;
+    for (const lease of this.operationLeases) lease.cancel("shutdown");
     this.closing ??= this.drainWithGraceNotification();
     return this.closing;
   }

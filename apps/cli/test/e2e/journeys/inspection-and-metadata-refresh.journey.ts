@@ -119,13 +119,19 @@ const journey: CliJourney = {
       readonly unstable?: boolean;
       readonly execution?: { readonly outcome?: string };
       readonly sourceRecords?: readonly Record<string, unknown>[];
-      readonly accepted?: { readonly sourceAssociation?: unknown };
+      readonly accepted?: {
+        readonly sourceAssociations: readonly unknown[];
+        readonly recognitionSourceAssociation?: unknown;
+      };
     };
     assert.equal(results[0]?.exitCode, 0, results[0]?.stderr);
     assert.equal(accepted.format, "temporary-asset-refresh-inspection/v1");
     assert.equal(accepted.unstable, true);
     assert.equal(accepted.execution?.outcome, "accepted");
-    assert.ok(accepted.accepted?.sourceAssociation);
+    assert.ok(
+      accepted.accepted?.recognitionSourceAssociation,
+      "accepted inspection is missing its recognition source",
+    );
     assert.ok((accepted.sourceRecords?.length ?? 0) > 0);
     assert.ok(
       accepted.sourceRecords?.every(

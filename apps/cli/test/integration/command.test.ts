@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { runProduct } from "@digital/composition";
+import { inspectProductionCatalogueReadiness } from "@digital/db-migrations";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -72,6 +73,23 @@ function testRuntime(
 }
 
 describe("CLI command control", () => {
+  it("prepares disposable product data through the reviewed production migrations", async () => {
+    const productData = await mkdtemp(
+      path.join(tmpdir(), "digital-disposable-cli-prepare-"),
+    );
+    try {
+      await prepareCliProductData(productData);
+
+      await expect(
+        inspectProductionCatalogueReadiness({
+          productDataDirectory: productData,
+        }),
+      ).resolves.toMatchObject({ state: "ready" });
+    } finally {
+      await rm(productData, { recursive: true, force: true });
+    }
+  });
+
   it("parses greet and writes business output to the injected stream", async () => {
     const output = testRuntime(["greet", "  Ada Lovelace  "]);
 
@@ -394,7 +412,7 @@ describe("CLI command control", () => {
     const output = testRuntime(["refresh-metadata", "asset"]);
     const accepted = {
       entity: { id: "asset", kind: "Entity", label: "怒火救援" },
-      sourceAssociation: {
+      recognitionSourceAssociation: {
         subjectId: "asset",
         sourceIdentity: "tmdb",
         nativeAddress: "tmdb:9509",

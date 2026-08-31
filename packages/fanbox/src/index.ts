@@ -6,6 +6,7 @@ import {
   type DirectoryInterpreter,
   type FilesystemPackageSnapshot,
   type Recognizer,
+  type RecognitionCandidateContext,
   type SourceArtifactAcquirer,
   type SourceCollectionFailure,
   type SourceCollectionExecutionContext,
@@ -73,7 +74,8 @@ const acquirerCapability = declareCapability({
   interpretationContractVersions: ["1"],
 });
 const maximumResponseBytes = 2 * 1024 * 1024;
-const maximumSummaryPages = 20;
+const maximumAuthenticationResponseBytes = 1024;
+const maximumCreatorSummaryPosts = 300;
 
 type FetchLike = (
   input: string,
@@ -111,7 +113,7 @@ export async function validatedFanboxBrowserCredential(input: {
   return cookieHeader;
 }
 
-/** 验证已存储的不透明 FANBOX Cookie 头，不向 Application 暴露其格式。 */
+/** 通过当前只读端点证明已存储的 FANBOX 会话可用，不向 Application 暴露 Cookie 格式。 */
 export async function verifyFanboxStoredCredential(input: {
   readonly creatorId: string;
   readonly cookieHeader: string;
@@ -122,7 +124,7 @@ export async function verifyFanboxStoredCredential(input: {
   const request = input.request ?? fetch;
   let response: Awaited<ReturnType<FetchLike>>;
   try {
-    response = await request("https://api.fanbox.cc/user.me", {
+    response = await request("https://api.fanbox.cc/user.countUnreadMessages", {
       headers: {
         Accept: "application/json",
         Cookie: input.cookieHeader,
@@ -139,13 +141,16 @@ export async function verifyFanboxStoredCredential(input: {
   let envelope: unknown;
   try {
     const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength === 0 || bytes.byteLength > maximumResponseBytes)
+    if (
+      bytes.byteLength === 0 ||
+      bytes.byteLength > maximumAuthenticationResponseBytes
+    )
       throw new Error("invalid response");
     envelope = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
   } catch {
     throw new Error("FANBOX 来源连接验证失败");
   }
-  if (!fanboxAuthenticatedUser(envelope))
+  if (!isFanboxAuthenticatedSessionEnvelope(envelope))
     throw new Error("FANBOX 来源连接验证失败");
 }
 
@@ -181,32 +186,19 @@ function fanboxBrowserCookieHeader(value: unknown): string {
   return pairs.join("; ");
 }
 
-function fanboxAuthenticatedUser(value: unknown): boolean {
+function isFanboxAuthenticatedSessionEnvelope(value: unknown): boolean {
   if (value === null || typeof value !== "object" || Array.isArray(value))
     return false;
   const envelope = value as Record<string, unknown>;
   if (
     !Object.hasOwn(envelope, "body") ||
-    (Object.hasOwn(envelope, "error") &&
-      envelope.error !== undefined &&
-      envelope.error !== null &&
-      envelope.error !== false &&
-      envelope.error !== "") ||
-    (Object.hasOwn(envelope, "errors") &&
-      envelope.errors !== undefined &&
-      envelope.errors !== null &&
-      envelope.errors !== false)
+    Object.hasOwn(envelope, "error") ||
+    Object.hasOwn(envelope, "errors")
   ) {
     return false;
   }
   const body = envelope.body;
-  if (body === null || typeof body !== "object" || Array.isArray(body))
-    return false;
-  const userId = (body as Record<string, unknown>).userId;
-  return (
-    (typeof userId === "string" && userId.trim().length > 0) ||
-    (typeof userId === "number" && Number.isSafeInteger(userId) && userId > 0)
-  );
+  return typeof body === "number" && Number.isSafeInteger(body) && body >= 0;
 }
 
 /**
@@ -349,7 +341,6 @@ export class FanboxCollector implements SourceCollector {
                 "asset.publication-datetime",
                 "fanbox.post.*",
                 "asset.body",
-                "fanbox.attachment.*",
               ],
               artifactRoles: ["asset.primary-cover", "fanbox.attachment.*"],
             },
@@ -393,14 +384,28 @@ export class FanboxCollector implements SourceCollector {
     );
     const detailAddress = new URL("https://api.fanbox.cc/post.info");
     detailAddress.searchParams.set("postId", postId);
+    let authenticatedDetailFailure: FanboxTransportFailure | undefined;
+    let detailAuthorized = true;
     try {
-      const capturedDetail = await this.capture(
-        detailAddress.href,
-        "fanbox.post-detail",
-        creatorId,
-        credential,
-      );
-      const detailPost = capturedDetail.envelopeBody;
+      let capturedDetail: CapturedFanboxResponse;
+      try {
+        capturedDetail = await this.capture(
+          detailAddress.href,
+          "fanbox.post-detail",
+          creatorId,
+          credential,
+        );
+      } catch (error) {
+        if (!(error instanceof FanboxTransportFailure)) throw error;
+        authenticatedDetailFailure = error;
+        detailAuthorized = false;
+        capturedDetail = await this.capture(
+          detailAddress.href,
+          "fanbox.post-detail",
+          creatorId,
+        );
+      }
+      const detailPost = fanboxDetailPost(capturedDetail.envelopeBody);
       try {
         assertPostIdentity(detailPost, postId, creatorId, "detail");
         if (detailPost.publishedDatetime !== summaryPublicationDatetime)
@@ -426,8 +431,21 @@ export class FanboxCollector implements SourceCollector {
         nativeAddress,
         "fanbox.post-detail",
         detailCompleteness(detailPost),
+        detailAuthorized,
       );
-      return { records: [summary, detail], failures: [] };
+      return {
+        records: [summary, detail],
+        failures:
+          authenticatedDetailFailure === undefined ||
+          detail.coverage.completeness === "complete"
+            ? []
+            : [
+                this.detailFailure(
+                  this.failureReason(authenticatedDetailFailure, credential),
+                  nativeAddress,
+                ),
+              ],
+      };
     } catch (error) {
       // 所选创作者摘要响应是独立且有效的来源覆盖边界。格式错误、不可用或权限受限的
       // 详情端点不能把它变成空来源响应；只会让详情事实族不可用。
@@ -451,51 +469,32 @@ export class FanboxCollector implements SourceCollector {
   }): Promise<FanboxSummarySelection> {
     const initial = new URL("https://api.fanbox.cc/post.listCreator");
     initial.searchParams.set("creatorId", input.creatorId);
-    initial.searchParams.set("limit", "300");
-    let requestedAddress = canonicalSummaryAddress(
+    initial.searchParams.set("limit", String(maximumCreatorSummaryPosts));
+    const captured = await this.capture(
       initial.href,
+      "fanbox.creator-post-summaries",
       input.creatorId,
+      input.credential,
     );
-    const requestedAddresses = new Set<string>();
-    const dateMatches: FanboxSummarySelection[] = [];
-    for (let pageCount = 0; pageCount < maximumSummaryPages; pageCount += 1) {
-      if (requestedAddresses.has(requestedAddress))
-        throw new Error("FANBOX creator summaries repeated a next URL");
-      requestedAddresses.add(requestedAddress);
-      const captured = await this.capture(
-        requestedAddress,
-        "fanbox.creator-post-summaries",
-        input.creatorId,
-        input.credential,
-      );
-      const page = fanboxSummaryPage(captured.envelopeBody, input.creatorId);
-      const completeness = summaryCompleteness(page.nextUrl);
-      if (input.postId !== undefined) {
-        const selected = summaryPostForId(page.posts, input.postId);
-        if (selected !== undefined) return { captured, selected, completeness };
-      } else {
-        const selected = summaryPostsForDate(
-          page.posts,
-          input.publicationDate!,
+    const posts = fanboxSummaryPosts(captured.envelopeBody, input.creatorId);
+    const completeness = summaryCompleteness(posts.length);
+    if (input.postId !== undefined) {
+      const selected = summaryPostForId(posts, input.postId);
+      if (selected !== undefined) return { captured, selected, completeness };
+      if (completeness === "incomplete")
+        throw new Error(
+          "known post identity is absent from truncated creator summaries",
         );
-        dateMatches.push(
-          ...selected.map((post) => ({
-            captured,
-            selected: post,
-            completeness,
-          })),
-        );
-      }
-      if (page.nextUrl === undefined) {
-        if (input.postId !== undefined)
-          throw new Error(
-            "known post identity is absent from creator summaries",
-          );
-        return uniqueSummaryDateSelection(dateMatches);
-      }
-      requestedAddress = canonicalSummaryAddress(page.nextUrl, input.creatorId);
+      throw new Error("known post identity is absent from creator summaries");
     }
-    throw new Error("FANBOX creator summaries exceeded the bounded page limit");
+    const dateMatches = summaryPostsForDate(posts, input.publicationDate!).map(
+      (selected) => ({ captured, selected, completeness }),
+    );
+    if (dateMatches.length === 0 && completeness === "incomplete")
+      throw new Error(
+        "creator publication date is absent from truncated creator summaries",
+      );
+    return uniqueSummaryDateSelection(dateMatches);
   }
 
   private credentialForExecution(
@@ -533,11 +532,7 @@ export class FanboxCollector implements SourceCollector {
         coverageId: "fanbox.post-detail",
       },
       affects: {
-        metadataProperties: [
-          "fanbox.post.form",
-          "asset.body",
-          "fanbox.attachment.*",
-        ],
+        metadataProperties: ["fanbox.post.form", "asset.body"],
         artifactRoles: ["fanbox.attachment.*"],
       },
     };
@@ -555,17 +550,19 @@ export class FanboxCollector implements SourceCollector {
     requestedAddress: string,
     coverage: string,
     creatorId: string,
-    credential: FanboxPrivateCredential,
+    credential?: FanboxPrivateCredential,
   ): Promise<CapturedFanboxResponse> {
     let response: Awaited<ReturnType<FetchLike>>;
     try {
       response = await this.request(requestedAddress, {
         headers: {
           Accept: "application/json",
-          Cookie: credential.cookieHeader,
           Origin: "https://www.fanbox.cc",
           Referer: `https://www.fanbox.cc/@${creatorId}`,
           "User-Agent": "digital-fanbox-integration/1",
+          ...(credential === undefined
+            ? {}
+            : { Cookie: credential.cookieHeader }),
         },
       });
     } catch (error) {
@@ -611,7 +608,7 @@ export class FanboxCollector implements SourceCollector {
         `FANBOX ${coverage} response was not a successful envelope`,
       );
     }
-    if (credential.containsPrivateConfiguration(body)) {
+    if (credential?.containsPrivateConfiguration(body) === true) {
       throw new Error(
         "response contained private configuration and was not retained",
       );
@@ -630,6 +627,7 @@ export class FanboxCollector implements SourceCollector {
     nativeAddress: string,
     coverage: string,
     completeness: "complete" | "incomplete",
+    authorized = true,
   ): SourceRecord {
     return {
       id: `source-record_${randomUUID()}`,
@@ -640,7 +638,7 @@ export class FanboxCollector implements SourceCollector {
       acquisition: {
         requestedAddress: captured.requestedAddress,
         method: "GET",
-        authorized: true,
+        authorized,
       },
       coverage: {
         id: coverage,
@@ -859,11 +857,6 @@ type FanboxPost = {
   };
 };
 
-type FanboxSummaryPage = {
-  readonly posts: readonly FanboxPost[];
-  readonly nextUrl: string | undefined;
-};
-
 type FanboxSummarySelection = {
   readonly captured: CapturedFanboxResponse;
   readonly selected: FanboxPost;
@@ -914,27 +907,22 @@ export class FanboxSourceInterpreter implements SourceInterpreter {
     )
       throw new Error("FANBOX source records disagree about post identity");
     const source = parsePostAddress(summary.nativeAddress);
-    assertAddressedSummaryTitle(summary.body, source.postId);
-    const detailEnvelope =
+    const summaryPosts = fanboxSummaryPosts(
+      fanboxSuccessfulEnvelope(JSON.parse(summary.body) as unknown),
+      source.creatorId,
+    );
+    const summaryPost = summaryPostForId(summaryPosts, source.postId);
+    if (summaryPost === undefined)
+      throw new Error("FANBOX summary does not contain the addressed post");
+    const detailPost =
       detail === undefined
         ? undefined
-        : (JSON.parse(detail.body) as { readonly body?: FanboxPost });
-    const detailPost = detailEnvelope?.body;
-    if (detail !== undefined && detailPost === undefined)
-      throw new Error("FANBOX detail response is empty");
-    let summaryPost: FanboxPost | undefined;
-    const matchingSummaryPost = () => {
-      summaryPost ??= postSummary(summary.body, source.postId);
-      return summaryPost;
-    };
-    const optionalMatchingSummaryPost = () => {
-      try {
-        return matchingSummaryPost();
-      } catch {
-        return undefined;
-      }
-    };
-    const post = detailPost ?? matchingSummaryPost();
+        : fanboxDetailPost(
+            fanboxSuccessfulEnvelope(JSON.parse(detail.body) as unknown),
+          );
+    if (detailPost !== undefined)
+      validateDetailPost(detailPost as Record<string, unknown>);
+    const post = detailPost ?? summaryPost;
     const postId = requiredString(post.id, "post identity");
     const creatorId = optionalString(post.creatorId) ?? source.creatorId;
     if (summary.nativeAddress !== canonicalPostAddress(creatorId, postId))
@@ -946,60 +934,62 @@ export class FanboxSourceInterpreter implements SourceInterpreter {
     );
     const factRecord = detail ?? summary;
     const form = optionalString(post.type);
-    const metadata = [
-      assertion("asset.title", "fanbox.post.title", title, factRecord.id),
-      assertion(
-        "asset.publication-datetime",
-        "fanbox.post.publication-datetime",
-        published,
-        factRecord.id,
-      ),
-      assertion(
-        "fanbox.post.entitlement",
-        "fanbox.post.entitlement",
-        detail === undefined
-          ? isRestricted(post)
-            ? "restricted"
-            : "unverified"
-          : isRestricted(post)
-            ? "restricted"
-            : "available",
-        factRecord.id,
-      ),
-    ];
-    if (form !== undefined)
+    const metadata: ReturnType<typeof assertion>[] = [];
+    if (detailPost !== undefined) {
       metadata.push(
-        assertion("fanbox.post.form", "fanbox.post.form", form, factRecord.id),
-      );
-    const likeCount = countString(post.likeCount);
-    if (likeCount !== undefined)
-      metadata.push(
+        assertion("asset.title", "fanbox.post.title", title, factRecord.id),
         assertion(
-          "fanbox.post.like-count",
-          "fanbox.post.like-count",
-          likeCount,
+          "asset.publication-datetime",
+          "fanbox.post.publication-datetime",
+          published,
+          factRecord.id,
+        ),
+        assertion(
+          "fanbox.post.entitlement",
+          "fanbox.post.entitlement",
+          isRestricted(post) ? "restricted" : "available",
           factRecord.id,
         ),
       );
-    const commentCount = countString(post.commentCount);
-    if (commentCount !== undefined)
-      metadata.push(
-        assertion(
-          "fanbox.post.comment-count",
-          "fanbox.post.comment-count",
-          commentCount,
-          factRecord.id,
-        ),
-      );
-    const body = articleBody(post.body) ?? optionalString(post.body?.text);
-    if (body !== undefined)
-      metadata.push(
-        assertion("asset.body", "fanbox.post.body", body, factRecord.id),
-      );
+      if (form !== undefined)
+        metadata.push(
+          assertion(
+            "fanbox.post.form",
+            "fanbox.post.form",
+            form,
+            factRecord.id,
+          ),
+        );
+      const likeCount = countString(post.likeCount);
+      if (likeCount !== undefined)
+        metadata.push(
+          assertion(
+            "fanbox.post.like-count",
+            "fanbox.post.like-count",
+            likeCount,
+            factRecord.id,
+          ),
+        );
+      const commentCount = countString(post.commentCount);
+      if (commentCount !== undefined)
+        metadata.push(
+          assertion(
+            "fanbox.post.comment-count",
+            "fanbox.post.comment-count",
+            commentCount,
+            factRecord.id,
+          ),
+        );
+      const body = articleBody(post.body) ?? optionalString(post.body?.text);
+      if (body !== undefined)
+        metadata.push(
+          assertion("asset.body", "fanbox.post.body", body, factRecord.id),
+        );
+      metadata.push(...articleBlockAssertions(post.body, factRecord.id));
+    }
     const detailCoverUrl =
       detailPost === undefined ? undefined : officialCoverUrl(detailPost);
-    const summaryCoverPost =
-      detailPost === undefined ? post : optionalMatchingSummaryPost();
+    const summaryCoverPost = detailPost === undefined ? undefined : summaryPost;
     const summaryCoverUrl =
       detailCoverUrl === undefined && summaryCoverPost !== undefined
         ? officialCoverUrl(summaryCoverPost)
@@ -1011,16 +1001,20 @@ export class FanboxSourceInterpreter implements SourceInterpreter {
         ? []
         : [
             {
-              id: `source-artifact-candidate_${randomUUID()}`,
+              id: stableSourceArtifactCandidateId(
+                coverRecord.id,
+                "asset.primary-cover",
+                coverUrl,
+              ),
               sourceRecordId: coverRecord.id,
               role: "asset.primary-cover",
               acquisitionReference: officialImageAddress(coverUrl),
               mediaType: imageMediaType(coverUrl),
             },
           ];
-    const attachments = attachmentCandidates(post.body, factRecord.id);
-    sourceArtifacts.push(...attachments.candidates);
-    metadata.push(...attachments.metadata);
+    sourceArtifacts.push(
+      ...attachmentCandidates(detailPost?.body, factRecord.id),
+    );
     const label = optionalString(post.user?.name) ?? creatorId;
     const entity: SourcedEntity = {
       id: stableEntityId("fanbox.creator", creatorId),
@@ -1075,18 +1069,22 @@ export class FanboxSourceInterpreter implements SourceInterpreter {
 export class FanboxExactRecognizer implements Recognizer {
   readonly capability = recognizerCapability;
 
-  canRecognize(input: SourceInterpretationBatch): boolean {
-    return input.producer.capabilityId === interpreterCapability.capabilityId;
+  canRecognize(input: RecognitionCandidateContext): boolean {
+    return (
+      input.basis.kind === "source-interpretation" &&
+      input.basis.interpretation.producer.capabilityId ===
+        interpreterCapability.capabilityId
+    );
   }
 
-  recognize(input: {
-    readonly evidence: readonly RecognitionEvidence[];
-    readonly interpretation: SourceInterpretationBatch;
-  }): RecognitionProposalDraft {
-    const published = input.interpretation.metadata.find(
+  recognize(input: RecognitionCandidateContext): RecognitionProposalDraft {
+    if (input.basis.kind !== "source-interpretation")
+      throw new Error("FANBOX recognizer requires source interpretation");
+    const interpretation = input.basis.interpretation;
+    const published = interpretation.metadata.find(
       (item) => item.property === "asset.publication-datetime",
     )?.value;
-    const source = parsePostAddress(input.interpretation.sourceAddress);
+    const source = parsePostAddress(interpretation.sourceAddress);
     const satisfied =
       published !== undefined &&
       input.evidence.some(
@@ -1175,24 +1173,144 @@ function articleBody(body: FanboxPost["body"]): string | undefined {
   return paragraphs.length === 0 ? undefined : paragraphs.join("\n\n");
 }
 
+function articleBlockAssertions(
+  body: FanboxPost["body"],
+  sourceRecordId: string,
+): ReturnType<typeof assertion>[] {
+  if (!Array.isArray(body?.blocks)) return [];
+  const embedMap = recordMap(body.embedMap);
+  const urlEmbedMap = recordMap(body.urlEmbedMap);
+  return body.blocks.map((block, ordinal) => {
+    const value = block as Record<string, unknown>;
+    const type = requiredString(value.type, "article block type");
+    let projected: Readonly<Record<string, unknown>>;
+    switch (type) {
+      case "p":
+        projected = {
+          type,
+          text: requiredArticleParagraphText(value),
+        };
+        break;
+      case "header":
+        projected = {
+          type,
+          text: requiredNonBlankString(value.text, `article ${type} block`),
+        };
+        break;
+      case "file":
+        projected = {
+          type,
+          fileId: requiredNonBlankString(
+            value.fileId,
+            "article file block identity",
+          ),
+        };
+        break;
+      case "image":
+        projected = {
+          type,
+          imageId: requiredNonBlankString(
+            value.imageId,
+            "article image block identity",
+          ),
+        };
+        break;
+      case "embed": {
+        const id = requiredNonBlankString(
+          value.embedId,
+          "article embed block identity",
+        );
+        const embed = embedMap[id]!;
+        projected = {
+          type,
+          embed: {
+            id: requiredNonBlankString(embed.id, "article embed identity"),
+            serviceProvider: requiredNonBlankString(
+              embed.serviceProvider,
+              "article embed service provider",
+            ),
+            contentId: requiredNonBlankString(
+              embed.contentId,
+              "article embed content identity",
+            ),
+          },
+        };
+        break;
+      }
+      case "url_embed": {
+        const id = requiredNonBlankString(
+          value.urlEmbedId,
+          "article URL embed block identity",
+        );
+        projected = { type, urlEmbed: projectedUrlEmbed(urlEmbedMap[id]!) };
+        break;
+      }
+      default:
+        throw new Error("FANBOX article block type was unsupported");
+    }
+    return assertion(
+      "fanbox.post.body-block",
+      `fanbox.post.body-block:${ordinal}`,
+      JSON.stringify(projected),
+      sourceRecordId,
+      [
+        { key: "fanbox.post.block-type", value: type },
+        { key: "fanbox.post.block-ordinal", value: String(ordinal) },
+      ],
+    );
+  });
+}
+
+function projectedUrlEmbed(
+  value: Record<string, unknown>,
+): Readonly<Record<string, unknown>> {
+  const id = requiredNonBlankString(value.id, "article URL embed identity");
+  const type = requiredNonBlankString(value.type, "article URL embed type");
+  switch (type) {
+    case "default":
+      return {
+        id,
+        type,
+        url: requiredNonBlankString(value.url, "article URL embed address"),
+      };
+    case "html":
+    case "html.card":
+      return {
+        id,
+        type,
+        html: requiredNonBlankString(value.html, "article URL embed HTML"),
+      };
+    case "fanbox.post":
+      return {
+        id,
+        type,
+        postInfo: {
+          id: requiredNonBlankString(
+            (value.postInfo as Record<string, unknown>).id,
+            "article URL embed post identity",
+          ),
+        },
+      };
+    default:
+      throw new Error("FANBOX article URL embed type was unsupported");
+  }
+}
+
 function attachmentCandidates(
   body: FanboxPost["body"],
   sourceRecordId: string,
-): {
-  readonly candidates: readonly SourceArtifactCandidate[];
-  readonly metadata: ReturnType<typeof assertion>[];
-} {
-  if (body === undefined) return { candidates: [], metadata: [] };
+): readonly SourceArtifactCandidate[] {
+  if (!isRecord(body)) return [];
   const candidates: SourceArtifactCandidate[] = [];
-  const metadata: ReturnType<typeof assertion>[] = [];
   const seen = new Set<string>();
   const fileMap = recordMap(body.fileMap);
   const imageMap = recordMap(body.imageMap);
   const add = (
     attachment: Record<string, unknown>,
-    role: string,
+    kind: "file" | "image",
     sourceKey: string,
   ) => {
+    const role = `fanbox.attachment.${kind}`;
     if (seen.has(`${role}\u0000${sourceKey}`)) return;
     const address = firstString(
       attachment.url,
@@ -1202,90 +1320,52 @@ function attachmentCandidates(
     if (address === undefined) return;
     const official = officialArtifactAddress(address);
     seen.add(`${role}\u0000${sourceKey}`);
+    const ordinal = candidates.length;
     const name = firstString(attachment.name, attachment.fileName);
-    if (name !== undefined) {
-      metadata.push(
-        assertion(
-          "fanbox.attachment.name",
-          `fanbox.post.attachment:${sourceKey}:name`,
-          name,
-          sourceRecordId,
-        ),
-      );
-    }
     const size =
       typeof attachment.size === "number" &&
       Number.isSafeInteger(attachment.size) &&
       attachment.size >= 0
-        ? String(attachment.size)
+        ? attachment.size
         : undefined;
-    if (size !== undefined) {
-      metadata.push(
-        assertion(
-          "fanbox.attachment.byte-length",
-          `fanbox.post.attachment:${sourceKey}:byte-length`,
-          size,
-          sourceRecordId,
-        ),
-      );
-    }
     candidates.push({
-      id: `source-artifact-candidate_${randomUUID()}`,
+      id: stableSourceArtifactCandidateId(sourceRecordId, role, sourceKey),
       sourceRecordId,
       role,
       acquisitionReference: official,
       mediaType: artifactMediaType(
         firstString(attachment.extension, attachment.name, address) ?? address,
       ),
+      selectionEvidence: {
+        ...(name === undefined ? {} : { suggestedFilename: name }),
+        ...(size === undefined ? {} : { declaredByteLength: size }),
+        sourceOrdinal: ordinal,
+      },
     });
   };
   if (Array.isArray(body.blocks)) {
     for (const block of body.blocks) {
       if (block === null || typeof block !== "object") continue;
       const value = block as Record<string, unknown>;
-      const type = optionalString(value.type) ?? "unknown";
-      const role = `fanbox.attachment.${encodeURIComponent(type)}`;
       const fileId = optionalString(value.fileId);
       const imageId = optionalString(value.imageId);
       if (fileId !== undefined) {
         const file = fileMap[fileId];
-        if (file !== undefined) add(file, "fanbox.attachment.file", fileId);
+        if (file !== undefined) add(file, "file", fileId);
         continue;
       }
       if (imageId !== undefined) {
         const image = imageMap[imageId];
-        if (image !== undefined) add(image, "fanbox.attachment.image", imageId);
-        continue;
-      }
-      if (
-        optionalString(value.url) !== undefined ||
-        optionalString(value.originalUrl) !== undefined
-      ) {
-        add(
-          value,
-          role,
-          optionalString(value.id) ?? `block:${candidates.length}`,
-        );
+        if (image !== undefined) add(image, "image", imageId);
       }
     }
+  } else {
+    for (const [index, value] of recordArray(body.files).entries())
+      add(value, "file", optionalString(value.id) ?? `file:${index}`);
+    for (const [index, value] of recordArray(body.images).entries())
+      add(value, "image", optionalString(value.id) ?? `image:${index}`);
   }
-  for (const [key, value] of Object.entries(fileMap))
-    add(value, "fanbox.attachment.file", key);
-  for (const [key, value] of Object.entries(imageMap))
-    add(value, "fanbox.attachment.image", key);
-  for (const [index, value] of recordArray(body.files).entries())
-    add(
-      value,
-      "fanbox.attachment.file",
-      optionalString(value.id) ?? `file:${index}`,
-    );
-  for (const [index, value] of recordArray(body.images).entries())
-    add(
-      value,
-      "fanbox.attachment.image",
-      optionalString(value.id) ?? `image:${index}`,
-    );
-  return { candidates, metadata };
+  return candidates;
 }
 
 function recordMap(
@@ -1334,19 +1414,20 @@ function publicationDateFromDirectory(value: string): string | undefined {
   return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
-function fanboxSummaryPage(
+function fanboxSummaryPosts(
   body: Record<string, unknown>,
   creatorId: string,
-): FanboxSummaryPage {
-  if (!Array.isArray(body.items))
-    throw new Error("FANBOX creator summaries did not contain an items array");
-  const posts = body.items.map((item, index) => {
+): readonly FanboxPost[] {
+  if (!Array.isArray(body.posts))
+    throw new Error("FANBOX creator summaries did not contain a posts array");
+  if (body.posts.length > maximumCreatorSummaryPosts)
+    throw new Error("FANBOX creator summaries exceeded the requested limit");
+  return body.posts.map((item, index) => {
     if (!isRecord(item))
       throw new Error(`FANBOX creator summary item ${index} was not an object`);
     assertPostMatchesCreator(item, creatorId, "summary");
     return item;
   });
-  return { posts, nextUrl: summaryNextUrl(body) };
 }
 
 function summaryPostForId(
@@ -1397,34 +1478,6 @@ function uniqueSummaryDateSelection(
   return [...distinct.values()][0]!;
 }
 
-function postSummary(body: string, postId: string): FanboxPost {
-  const parsed = JSON.parse(body) as unknown;
-  const matches: FanboxPost[] = [];
-  walkJson(parsed, (value) => {
-    if (value.id === postId) matches.push(value);
-  });
-  if (matches.length === 0)
-    throw new Error("FANBOX summary does not contain the addressed post");
-  const distinct = [
-    ...new Map(matches.map((match) => [JSON.stringify(match), match])).values(),
-  ];
-  if (distinct.length !== 1)
-    throw new Error("FANBOX summary contains conflicting addressed posts");
-  return distinct[0]!;
-}
-
-/**
- * 受保护详情不可用时，保留的创作者摘要记录仍可独立存在。即使后续详情记录提供了投影标题，
- * 已寻址但格式错误的摘要也不得静默保留为同一帖子的有效来源输入。
- */
-function assertAddressedSummaryTitle(body: string, postId: string): void {
-  const parsed = JSON.parse(body) as unknown;
-  walkJson(parsed, (value) => {
-    if (value.id === postId)
-      requiredNonBlankString(value.title, "summary post title");
-  });
-}
-
 function distinctPosts(posts: readonly FanboxPost[]): readonly FanboxPost[] {
   return [
     ...new Map(
@@ -1436,52 +1489,21 @@ function distinctPosts(posts: readonly FanboxPost[]): readonly FanboxPost[] {
   ];
 }
 
-function summaryNextUrl(body: Record<string, unknown>): string | undefined {
-  const nextUrl = body.nextUrl;
-  if (nextUrl === undefined || nextUrl === null) return undefined;
-  if (typeof nextUrl === "string" && nextUrl.length > 0) return nextUrl;
-  throw new Error("FANBOX summary next URL was invalid");
-}
-
-function canonicalSummaryAddress(value: string, creatorId: string): string {
-  let address: URL;
-  try {
-    address = new URL(value);
-  } catch {
-    throw new Error("FANBOX summary next URL was invalid");
-  }
-  if (
-    address.protocol !== "https:" ||
-    address.hostname !== "api.fanbox.cc" ||
-    address.pathname !== "/post.listCreator" ||
-    address.username !== "" ||
-    address.password !== "" ||
-    address.searchParams.get("creatorId") !== creatorId
-  ) {
-    throw new Error("FANBOX summary next URL was outside the creator endpoint");
-  }
-  return address.href;
-}
-
 function fanboxSuccessfulEnvelope(value: unknown): Record<string, unknown> {
   if (!isRecord(value) || !Object.hasOwn(value, "body"))
     throw new Error("FANBOX response did not contain an envelope body");
-  if (
-    (Object.hasOwn(value, "error") &&
-      value.error !== undefined &&
-      value.error !== null &&
-      value.error !== false &&
-      value.error !== "") ||
-    (Object.hasOwn(value, "errors") &&
-      value.errors !== undefined &&
-      value.errors !== null &&
-      value.errors !== false)
-  ) {
+  if (Object.hasOwn(value, "error") || Object.hasOwn(value, "errors")) {
     throw new Error("FANBOX response declared an error");
   }
   if (!isRecord(value.body))
     throw new Error("FANBOX response body was not an object");
   return value.body;
+}
+
+function fanboxDetailPost(body: Record<string, unknown>): FanboxPost {
+  if (!isRecord(body.post))
+    throw new Error("FANBOX post detail did not contain a post object");
+  return body.post;
 }
 
 function assertPostMatchesCreator(
@@ -1555,6 +1577,14 @@ function requireBodyText(body: Record<string, unknown>, form: string): void {
     throw new Error(`FANBOX ${form} detail body text was invalid`);
 }
 
+function requiredArticleParagraphText(block: Record<string, unknown>): string {
+  if (!Object.hasOwn(block, "text") || typeof block.text !== "string")
+    throw new Error("FANBOX article p block detail body text was invalid");
+  if (block.text.length > 0 && block.text.trim().length === 0)
+    throw new Error("FANBOX article p block detail body text was invalid");
+  return block.text;
+}
+
 function requireAttachmentArray(value: unknown, form: "file" | "image"): void {
   if (!Array.isArray(value))
     throw new Error(`FANBOX ${form} detail attachments were unavailable`);
@@ -1578,8 +1608,11 @@ function validateArticleBody(body: Record<string, unknown>): void {
     const type = requiredString(block.type, "article block type");
     switch (type) {
       case "p":
+        requiredArticleParagraphText(block);
+        hasContent = true;
+        break;
       case "header":
-        requireBodyText(block, `article ${type} block`);
+        requireBodyText(block, "article header block");
         hasContent = true;
         break;
       case "file": {
@@ -1757,6 +1790,17 @@ function validateAttachment(value: unknown, form: "file" | "image"): void {
   if (!isRecord(value))
     throw new Error(`FANBOX ${form} attachment was invalid`);
   requiredNonBlankString(value.id, `${form} attachment identity`);
+  for (const field of ["name", "fileName"] as const) {
+    if (Object.hasOwn(value, field))
+      requiredNonBlankString(value[field], `${form} attachment ${field}`);
+  }
+  if (
+    Object.hasOwn(value, "size") &&
+    (typeof value.size !== "number" ||
+      !Number.isSafeInteger(value.size) ||
+      value.size < 0)
+  )
+    throw new Error(`FANBOX ${form} attachment size was invalid`);
   const address = firstNonBlankString(
     value.url,
     value.originalUrl,
@@ -1767,10 +1811,8 @@ function validateAttachment(value: unknown, form: "file" | "image"): void {
   officialArtifactAddress(address);
 }
 
-function summaryCompleteness(
-  nextUrl: string | undefined,
-): "complete" | "incomplete" {
-  return nextUrl === undefined ? "complete" : "incomplete";
+function summaryCompleteness(postCount: number): "complete" | "incomplete" {
+  return postCount < maximumCreatorSummaryPosts ? "complete" : "incomplete";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1779,20 +1821,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isJsonMediaType(value: string | null): value is string {
   return value?.split(";", 1)[0]?.trim().toLowerCase() === "application/json";
-}
-
-function walkJson(
-  value: unknown,
-  visit: (value: Record<string, unknown>) => void,
-): void {
-  if (Array.isArray(value)) {
-    for (const item of value) walkJson(item, visit);
-    return;
-  }
-  if (value === null || typeof value !== "object") return;
-  const object = value as Record<string, unknown>;
-  visit(object);
-  for (const child of Object.values(object)) walkJson(child, visit);
 }
 
 function canonicalPostAddress(creatorId: string, postId: string): string {
@@ -1816,12 +1844,14 @@ function assertion(
   sourceSlot: string,
   value: string,
   sourceRecordId: string,
+  qualifiers?: readonly { readonly key: string; readonly value: string }[],
 ) {
   return {
     property,
     sourceSlot,
     value,
     sourceRecordIds: [sourceRecordId],
+    ...(qualifiers === undefined ? {} : { qualifiers }),
   };
 }
 
@@ -1942,6 +1972,16 @@ function isRestricted(post: FanboxPost): boolean {
 function stableEntityId(namespace: string, sourceKey: string): string {
   return `entity_${createHash("sha256")
     .update(`fanbox:${namespace}:${sourceKey}`)
+    .digest("hex")}`;
+}
+
+function stableSourceArtifactCandidateId(
+  sourceRecordId: string,
+  role: string,
+  sourceKey: string,
+): string {
+  return `source-artifact-candidate_${createHash("sha256")
+    .update(`${sourceRecordId}\u0000${role}\u0000${sourceKey}`)
     .digest("hex")}`;
 }
 

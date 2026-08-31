@@ -5,12 +5,27 @@ import { DatabaseSync } from "node:sqlite";
 import { matchesReviewedCatalogueSchema } from "./schema-contract.ts";
 
 export const productionCatalogueMigrationHead =
-  "20260820000000_v1_catalogue_baseline";
+  "20260830010000_recognition_basis_heads";
 export const productionCatalogueMigrationPlan = [
+  {
+    id: "20260820000000_v1_catalogue_baseline",
+    checksum:
+      "ac1142567144de5a8fdaa379d9a905624c8a7ee93e9f62106cfdf253c99060be",
+  },
+  {
+    id: "20260829000000_observed_revision_confirmations",
+    checksum:
+      "467fd203a11dbebd861955351a00afab3baab52c8fefc0eb20adf5466f294e3d",
+  },
+  {
+    id: "20260830000000_workflow_planned_asset_identity",
+    checksum:
+      "c9bb262d857134d5d14472843140ea80070b159f9d54cfb3c0b5a4d9dbb6d553",
+  },
   {
     id: productionCatalogueMigrationHead,
     checksum:
-      "ac1142567144de5a8fdaa379d9a905624c8a7ee93e9f62106cfdf253c99060be",
+      "ae98fd168398e6de560826765eb0dc71c99b919a6fff6b4d0f8e7756a50a1683",
   },
 ] as const;
 
@@ -62,14 +77,6 @@ export async function inspectProductionCatalogueReadiness(options: {
         .map((row) => (row as { readonly name: string }).name),
     );
     if (!tables.has("__digital_catalogue_migrations")) {
-      // 一次性开发与测试 Catalogue 刻意通过已审阅的 Drizzle push 路径准备。生产
-      // 进程绝不启用该例外，因为正式迁移账本在生产中是强制要求。
-      if (
-        process.env.NODE_ENV === "test" &&
-        matchesReviewedCatalogueSchema(database)
-      ) {
-        return { state: "ready" };
-      }
       return {
         state: "catalogue-not-prepared",
         message:

@@ -3,6 +3,133 @@ import { describe, expect, it, vi } from "vitest";
 import { ExecutionHost } from "../src/index.ts";
 
 describe("Execution Host", () => {
+  it("在观察根撤销和进程关闭时取消同一宿主的短操作租约", async () => {
+    const host = new ExecutionHost();
+    const lease = host.lease({
+      registrationId: "root-1",
+      registrationVersion: 1,
+    });
+    let cancellations = 0;
+    lease.cancellation.onCancel(() => {
+      cancellations += 1;
+    });
+
+    host.invalidateObservedRoot({ registrationId: "root-1" });
+
+    expect(lease.cancellation.cancelled).toBe(true);
+    expect(cancellations).toBe(1);
+    lease.release();
+    await host.close();
+  });
+  it("拒绝在配置失效之后才登记的旧观察根版本", async () => {
+    const host = new ExecutionHost();
+    host.invalidateObservedRoot({ registrationId: "root-1", keepVersion: 2 });
+
+    expect(() =>
+      host.lease({ registrationId: "root-1", registrationVersion: 1 }),
+    ).toThrow("文件位置授权版本已经失效");
+    const current = host.lease({
+      registrationId: "root-1",
+      registrationVersion: 2,
+    });
+    expect(current.cancellation.cancelled).toBe(false);
+    current.release();
+    host.invalidateObservedRoot({ registrationId: "root-1" });
+    expect(() =>
+      host.lease({ registrationId: "root-1", registrationVersion: 2 }),
+    ).toThrow("文件位置授权版本已经失效");
+    await host.close();
+  });
+  it("把同一个顶层短操作在查询后原子绑定到当前观察根代次", async () => {
+    const host = new ExecutionHost();
+    const stale = host.lease();
+    host.invalidateObservedRoot({ registrationId: "root-1", keepVersion: 2 });
+
+    expect(() =>
+      stale.bindObservedRoot({
+        registrationId: "root-1",
+        registrationVersion: 1,
+      }),
+    ).toThrow("文件位置授权版本已经失效");
+    stale.release();
+
+    const current = host.lease();
+    current.bindObservedRoot({
+      registrationId: "root-1",
+      registrationVersion: 2,
+    });
+    host.invalidateObservedRoot({ registrationId: "root-1" });
+    expect(current.cancellation).toMatchObject({
+      cancelled: true,
+      reason: "observed-root-invalidated",
+    });
+    current.release();
+    await host.close();
+  });
+  it("只在候选关闭后解绑观察根，并允许同一操作绑定下一候选", async () => {
+    const host = new ExecutionHost();
+    const operation = host.lease();
+    const first = operation.bindObservedRoot({
+      registrationId: "root-a",
+      registrationVersion: 1,
+    });
+
+    first.release();
+    host.invalidateObservedRoot({ registrationId: "root-a" });
+    const second = operation.bindObservedRoot({
+      registrationId: "root-b",
+      registrationVersion: 1,
+    });
+
+    expect(operation.cancellation.cancelled).toBe(false);
+    host.invalidateObservedRoot({ registrationId: "root-b" });
+    expect(operation.cancellation).toMatchObject({
+      cancelled: true,
+      reason: "observed-root-invalidated",
+    });
+    second.release();
+    operation.release();
+    await host.close();
+  });
+  it("同一 operation 在短候选释放前拒绝再次绑定观察根", async () => {
+    const host = new ExecutionHost();
+    const operation = host.lease();
+    const first = operation.bindObservedRoot({
+      registrationId: "root-one-binding",
+      registrationVersion: 1,
+    });
+
+    expect(() =>
+      operation.bindObservedRoot({
+        registrationId: "root-one-binding",
+        registrationVersion: 1,
+      }),
+    ).toThrow("文件位置授权版本已经失效");
+
+    first.release();
+    operation.release();
+    await host.close();
+  });
+  it("不让先发生的根失效因候选解绑而复活操作", async () => {
+    const host = new ExecutionHost();
+    const operation = host.lease();
+    const binding = operation.bindObservedRoot({
+      registrationId: "root-a",
+      registrationVersion: 1,
+    });
+
+    host.invalidateObservedRoot({ registrationId: "root-a" });
+    binding.release();
+
+    expect(() =>
+      operation.bindObservedRoot({
+        registrationId: "root-b",
+        registrationVersion: 1,
+      }),
+    ).toThrow("文件位置授权版本已经失效");
+    operation.release();
+    await host.close();
+  });
   it("rejects closed admission without starting the workflow invocation", async () => {
     const host = new ExecutionHost();
     await host.close();

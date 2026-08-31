@@ -124,6 +124,9 @@ importers:
       '@digital/application':
         specifier: workspace:*
         version: link:../../packages/application
+      '@digital/db-migrations':
+        specifier: workspace:*
+        version: link:../../packages/db-migrations
       '@digital/test-support':
         specifier: workspace:*
         version: link:../../packages/test-support
@@ -377,6 +380,9 @@ importers:
       '@digital/omdb':
         specifier: workspace:*
         version: link:../omdb
+      '@digital/playback-format':
+        specifier: workspace:*
+        version: link:../playback-format
       '@digital/product-application':
         specifier: workspace:*
         version: link:../product-application
@@ -640,6 +646,34 @@ importers:
       '@digital/domain':
         specifier: workspace:*
         version: link:../domain
+    devDependencies:
+      '@digital/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.13.3
+      oxfmt:
+        specifier: 'catalog:'
+        version: 0.58.0
+      oxlint:
+        specifier: 'catalog:'
+        version: 1.75.0(oxlint-tsgolint@7.0.2001)
+      oxlint-tsgolint:
+        specifier: 'catalog:'
+        version: 7.0.2001
+      typescript-7:
+        specifier: 'catalog:'
+        version: typescript@7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.10(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)
+
+  packages/playback-format:
+    dependencies:
+      '@digital/application':
+        specifier: workspace:*
+        version: link:../application
     devDependencies:
       '@digital/typescript-config':
         specifier: workspace:*

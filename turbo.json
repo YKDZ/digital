@@ -3,7 +3,12 @@
     "tags": {
       "application": {
         "dependencies": {
-          "allow": ["application", "domain", "test-support", "tooling"]
+          "allow": [
+            "application",
+            "domain",
+            "test-support",
+            "tooling"
+          ]
         }
       },
       "composition": {
@@ -47,16 +52,32 @@
         }
       },
       "domain": {
-        "dependencies": { "allow": ["domain", "test-support", "tooling"] }
+        "dependencies": {
+          "allow": [
+            "domain",
+            "test-support",
+            "tooling"
+          ]
+        }
       },
       "infrastructure": {
         "dependencies": {
-          "allow": ["application", "domain", "test-support", "tooling"]
+          "allow": [
+            "application",
+            "domain",
+            "test-support",
+            "tooling"
+          ]
         }
       },
       "integration": {
         "dependencies": {
-          "allow": ["application", "domain", "test-support", "tooling"]
+          "allow": [
+            "application",
+            "domain",
+            "test-support",
+            "tooling"
+          ]
         }
       },
       "presentation": {
@@ -72,7 +93,10 @@
       },
       "test-support": {
         "dependencies": {
-          "allow": ["test-support", "tooling"]
+          "allow": [
+            "test-support",
+            "tooling"
+          ]
         }
       },
       "tooling": {
@@ -90,28 +114,71 @@
     }
   },
   "tasks": {
-    "//#format:check": { "outputs": [] },
-    "//#lint": { "outputs": [] },
-    "//#format:write": { "dependsOn": ["//#lint:fix"], "cache": false },
-    "//#lint:fix": { "cache": false },
-    "//#typecheck": { "outputs": [] },
-    "format:check": { "outputs": [] },
-    "lint": { "outputs": [] },
-    "typecheck": { "dependsOn": ["^typecheck"], "outputs": [] },
-    "build": { "dependsOn": ["^build"] },
-    "test": { "dependsOn": ["build"], "outputs": [] },
+    "//#format:check": {
+      "outputs": []
+    },
+    "//#lint": {
+      "outputs": []
+    },
+    "//#format:write": {
+      "dependsOn": [
+        "//#lint:fix"
+      ],
+      "cache": false
+    },
+    "//#lint:fix": {
+      "cache": false
+    },
+    "//#typecheck": {
+      "outputs": []
+    },
+    "format:check": {
+      "outputs": []
+    },
+    "lint": {
+      "outputs": []
+    },
+    "typecheck": {
+      "dependsOn": [
+        "^typecheck"
+      ],
+      "outputs": []
+    },
+    "build": {
+      "dependsOn": [
+        "^build"
+      ]
+    },
+    "test": {
+      "dependsOn": [
+        "build"
+      ],
+      "outputs": []
+    },
     "test:e2e": {
-      "dependsOn": ["build"],
+      "dependsOn": [
+        "build"
+      ],
       "cache": false,
-      "passThroughEnv": ["DIGITAL_TMDB_ACCESS_TOKEN", "DIGITAL_OMDB_API_KEY"]
+      "passThroughEnv": [
+        "DIGITAL_TMDB_ACCESS_TOKEN",
+        "DIGITAL_OMDB_API_KEY"
+      ]
     },
     "test:e2e:tmdb-omdb-live": {
-      "dependsOn": ["build"],
+      "dependsOn": [
+        "build"
+      ],
       "cache": false,
-      "passThroughEnv": ["DIGITAL_TMDB_ACCESS_TOKEN", "DIGITAL_OMDB_API_KEY"]
+      "passThroughEnv": [
+        "DIGITAL_TMDB_ACCESS_TOKEN",
+        "DIGITAL_OMDB_API_KEY"
+      ]
     },
     "test:e2e:bangumi-live": {
-      "dependsOn": ["build"],
+      "dependsOn": [
+        "build"
+      ],
       "cache": false,
       "passThroughEnv": [
         "DIGITAL_BANGUMI_LIVE_PRODUCT_DATA",
@@ -127,7 +194,14 @@
         "PLAYWRIGHT_BROWSERS_PATH"
       ]
     },
-    "format:write": { "dependsOn": ["lint:fix"], "cache": false },
-    "lint:fix": { "cache": false }
+    "format:write": {
+      "dependsOn": [
+        "lint:fix"
+      ],
+      "cache": false
+    },
+    "lint:fix": {
+      "cache": false
+    }
   }
 }

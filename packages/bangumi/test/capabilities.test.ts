@@ -95,6 +95,36 @@ describe("Bangumi episodic directory convention", () => {
     expect(plan.workItems[0]?.evidence[0]?.explanation).toContain("v1");
   });
 
+  it("keeps media-manager sidecars outside the episode boundary and identity evidence", () => {
+    const interpreter = new BangumiEpisodicDirectoryInterpreter();
+    const media = "Season 1/葬送的芙莉莲 - S01E01 - 第 1 集.mp4";
+    const clean = interpreter.interpret(snapshot([media]));
+    const withSidecars = interpreter.interpret(
+      snapshot([
+        media,
+        "tvshow.nfo",
+        "poster.jpg",
+        "Season 1/season-poster.jpg",
+        "Season 1/葬送的芙莉莲 - S01E01 - 第 1 集-thumb.jpg",
+        "Season 1/葬送的芙莉莲 - S01E01 - 第 1 集.nfo",
+      ]),
+    );
+
+    expect(withSidecars.workItems).toHaveLength(1);
+    expect(withSidecars.workItems[0]).toEqual(clean.workItems[0]);
+    expect(withSidecars.workItems[0]?.relativePaths).toEqual([media]);
+    expect(withSidecars.workItems[0]?.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "bangumi.episodic-directory/v1",
+          sourceIdentity: "bangumi",
+          sourceAddress:
+            "bangumi:directory/%E8%91%AC%E9%80%81%E7%9A%84%E8%8A%99%E8%8E%89%E8%8E%B2/2023/1/1",
+        }),
+      ]),
+    );
+  });
+
   it("requires one exact source-name/year root and a unique sequel path", () => {
     const plan = new BangumiEpisodicDirectoryInterpreter().interpret(
       snapshot(["Season 2/葬送的芙莉莲 - S02E01 - 第 1 集.mkv"]),
@@ -152,7 +182,7 @@ describe("Bangumi episodic directory convention", () => {
     });
     const proposal = new BangumiEpisodicRecognizer().recognize({
       evidence,
-      interpretation: batch,
+      basis: { kind: "source-interpretation", interpretation: batch },
     });
     expect(batch.sourceAddress).toBe("https://bgm.tv/episode/1575936");
     expect(batch.metadata).toEqual(
@@ -199,6 +229,14 @@ describe("Bangumi episodic directory convention", () => {
           type: "bangumi.subject.related",
           subjectId: expect.any(String),
           participantId: expect.any(String),
+        }),
+        expect.objectContaining({
+          type: "asset.membership",
+          role: "bangumi.subject.ordinary-episode",
+          qualifiers: [
+            { key: "bangumi.episode.season-position", value: "1" },
+            { key: "bangumi.episode.continuous-position", value: "29" },
+          ],
         }),
       ]),
     );

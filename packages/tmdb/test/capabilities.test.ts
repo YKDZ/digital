@@ -89,13 +89,52 @@ const jsonResponse = (body: unknown) => ({
 });
 
 describe("TMDB collection and interpretation", () => {
+  it("retries a bounded transient official movie request inside the source capability", async () => {
+    let detailAttempts = 0;
+    const collector = new TmdbCollector({
+      accessToken: "private-token",
+      delay: async () => {},
+      request: async (address) => {
+        const pathname = new URL(address).pathname;
+        if (pathname.endsWith("/credits"))
+          return jsonResponse({ id: 9509, crew: [], cast: [] });
+        if (pathname.endsWith("/translations"))
+          return jsonResponse({ id: 9509, translations: [] });
+        detailAttempts += 1;
+        if (detailAttempts === 1)
+          throw new TypeError("temporary transport failure");
+        return jsonResponse({
+          id: 9509,
+          title: "怒火救援",
+          release_date: "2004-04-23",
+          genres: [],
+        });
+      },
+    });
+
+    const result = await collector.collect({
+      kind: "directed-source-address",
+      sourceIdentity: "tmdb",
+      sourceAddress: "https://www.themoviedb.org/movie/9509",
+      explanation: "directed",
+      producer: {
+        capabilityId: "application.directed-recognition",
+        capabilityVersion: "1",
+        contractVersion: "1",
+      },
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(detailAttempts).toBe(2);
+  });
+
   it("publishes the upgraded collection and interpretation coordinates without changing the recognition rule coordinate", () => {
     expect(new TmdbCollector().capability).toEqual({
       capabilityId: "tmdb.official-film-collection",
-      capabilityVersion: "2",
+      capabilityVersion: "3",
       contractVersion: "2",
       identity: "tmdb.official-film-collection",
-      implementationVersion: "2",
+      implementationVersion: "3",
       kind: "source-collector",
       interpretationContractVersions: ["2"],
     });
@@ -123,6 +162,7 @@ describe("TMDB collection and interpretation", () => {
     const requested: URL[] = [];
     const collector = new TmdbCollector({
       accessToken: "private-token",
+      delay: async () => {},
       request: async (address) => {
         const url = new URL(address);
         requested.push(url);
@@ -396,6 +436,7 @@ describe("TMDB collection and interpretation", () => {
   it("retains every successful bounded response when a sibling TMDB endpoint fails", async () => {
     const collector = new TmdbCollector({
       accessToken: "private-token",
+      delay: async () => {},
       request: async (address) => {
         const url = new URL(address);
         if (url.pathname.endsWith("/search/movie"))
@@ -568,7 +609,7 @@ describe("TMDB collection and interpretation", () => {
     });
     const proposal = new TmdbStrictFilmRecognizer().recognize({
       evidence,
-      interpretation: interpreted,
+      basis: { kind: "source-interpretation", interpretation: interpreted },
     });
 
     expect(collected.failures).toEqual([]);
@@ -716,7 +757,7 @@ describe("TMDB collection and interpretation", () => {
     });
     const proposal = new TmdbStrictFilmRecognizer().recognize({
       evidence,
-      interpretation: interpreted,
+      basis: { kind: "source-interpretation", interpretation: interpreted },
     });
 
     expect(collected.records.map((record) => record.coverage.id)).toEqual([
@@ -853,6 +894,7 @@ describe("TMDB collection and interpretation", () => {
     )[0];
     const result = await new TmdbCollector({
       accessToken: "tmdb-error-token",
+      delay: async () => {},
       request: async () => {
         throw new Error("request failed with Bearer tmdb-error-token");
       },
@@ -865,6 +907,34 @@ describe("TMDB collection and interpretation", () => {
       }),
     ]);
     expect(JSON.stringify(result)).not.toContain("tmdb-error-token");
+  });
+
+  it("retries a transient official poster request before materializing bytes", async () => {
+    let attempts = 0;
+    const acquirer = new TmdbArtifactAcquirer(
+      async () => {
+        attempts += 1;
+        if (attempts === 1) throw new TypeError("temporary transport failure");
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => "image/jpeg" },
+          arrayBuffer: async () => new Uint8Array([0xff, 0xd8, 0xff]).buffer,
+        };
+      },
+      async () => {},
+    );
+
+    const acquired = await acquirer.acquire({
+      id: "poster",
+      sourceRecordId: "record",
+      role: "asset.primary-cover",
+      mediaType: "image/jpeg",
+      acquisitionReference: "https://image.tmdb.org/t/p/original/poster.jpg",
+    });
+
+    expect(attempts).toBe(2);
+    expect(acquired.bytes.byteLength).toBe(3);
   });
 
   it("redacts an exact reflected access token before retaining a TMDB source record", async () => {

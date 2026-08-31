@@ -16,6 +16,8 @@ import {
   type MetadataPolicy,
   type MetadataPolicyConflict,
   type RecognitionEvidence,
+  type RecognitionDecision,
+  type RecognitionBasis,
   type RecognitionProposal,
   type RecognitionProposalDraft,
   type RecognitionRuleResult,
@@ -26,6 +28,7 @@ import {
   type ObservedArtifactPartCandidate,
   type SourceInterpretationBatch,
   type SourceRecord,
+  recognitionSourceInterpretation,
   validateAcceptedRecognition,
   validateMetadataPolicy,
   validateRecognitionProposal,
@@ -74,6 +77,7 @@ import {
 import {
   CheckpointedSourceArtifactWork,
   projectManagedSourceArtifacts,
+  SourceArtifactAcquisitionEffectFailure,
 } from "./source-artifact-work.ts";
 import {
   atPublicWorkflowBoundary,
@@ -92,6 +96,9 @@ export * from "./source-connection-private-state.ts";
 export * from "./source-connection.ts";
 
 export * from "./asset-refresh-selection.ts";
+export * from "./artifact-byte-access.ts";
+export * from "./playback-plan.ts";
+export * from "./application-artifact-byte-access.ts";
 export {
   deriveEffectiveMetadata,
   validateMetadataPolicy,
@@ -242,7 +249,7 @@ export type CreateSourceRefreshRunInputForExecution = {
 export type SourceEnrichmentInput = {
   readonly subjectId: string;
   /** 其断言可为来源补充提供依据的已接受身份来源。 */
-  readonly recognitionSourceAssociation: SourceAssociation;
+  readonly recognitionSourceAssociation?: SourceAssociation;
   /** 随关联一同冻结，使身份替换同时使两个坐标失效。 */
   readonly recognitionDecisionId: string;
   readonly sourceAssociations: readonly SourceAssociation[];
@@ -277,13 +284,12 @@ export type SourceAssociationInterpreter = {
     readonly interpretation: SourceInterpretationBatch;
   }):
     | { readonly status: "accepted"; readonly explanation: string }
-    | { readonly status: "contradicted"; readonly explanation: string };
+    | { readonly status: "contradicted"; readonly explanation: string }
+    | undefined;
 };
 
 /** 主识别关联以及当前适用的所有来源。 */
 export type AcceptedAssetState = AcceptedRecognition & {
-  /** 旧存储在迁移前可能只公开识别关联。 */
-  readonly sourceAssociations?: readonly SourceAssociation[];
   /**
    * 该明确主体的不透明产品策略登记。定义仍由组合层持有；持久化只保存耐久适用性。
    */
@@ -315,7 +321,11 @@ export type ObservedArtifactReuseMatch =
     };
 
 export type AssetStateProjection = {
-  readonly sourceAssociation: Pick<
+  readonly sourceAssociations: readonly Pick<
+    SourceAssociation,
+    "sourceIdentity" | "nativeAddress"
+  >[];
+  readonly recognitionSourceAssociation?: Pick<
     SourceAssociation,
     "sourceIdentity" | "nativeAddress"
   >;
@@ -350,13 +360,24 @@ export type ChangeImpactPreview = {
   readonly status: "awaiting-confirmation" | "rejected" | "applied" | "stale";
 };
 
+export type RecognitionSupersessionPlan = {
+  readonly successorDecision: RecognitionDecision;
+  readonly supersession: {
+    readonly id: string;
+    readonly predecessorDecisionId: string;
+    readonly successorDecisionId: string;
+  };
+  readonly recognitionSourceAssociation?: SourceAssociation;
+};
+
 /** 安全的交付 DTO；原始提议和条件基线保留在内部。 */
 export type ChangeImpactPreviewInspection = {
   readonly id: string;
   readonly executionId: string;
   readonly assetId: string;
   readonly status: ChangeImpactPreview["status"];
-  readonly sourceAssociation: ChangeImpactPreview["projected"]["sourceAssociation"];
+  readonly sourceAssociations: ChangeImpactPreview["projected"]["sourceAssociations"];
+  readonly recognitionSourceAssociation?: ChangeImpactPreview["projected"]["recognitionSourceAssociation"];
   readonly current: AssetStateProjection;
   readonly projected: AssetStateProjection;
   readonly metadataCount: number;
@@ -672,7 +693,8 @@ export type AssetRefreshTarget = {
     readonly observedRootId: string;
     readonly relativeScope: string;
   };
-  readonly sourceAssociation: AcceptedRecognition["sourceAssociation"];
+  readonly sourceAssociations: readonly SourceAssociation[];
+  readonly recognitionSourceAssociation?: SourceAssociation;
 };
 
 export type MetadataRefreshInput = {
@@ -737,6 +759,8 @@ export type AssetRefreshWorkItem = {
   readonly reuseCompatibility?: WorkflowCompatibility;
   readonly sourceRecordIds: readonly string[];
   readonly proposalId?: string;
+  /** 新识别在原子接受前预分配、并可跨中断恢复的主体身份。 */
+  readonly plannedAssetId?: string;
   readonly acceptedAssetId?: string;
   readonly outcome?: AssetRefreshOutcome;
   readonly reason?: string;
@@ -994,6 +1018,8 @@ export type WorkflowExecution = {
   /** 只保留领域过程引用；其阶段、审阅和结果仍属于数字资产。 */
   readonly sourceRefreshRunIds?: readonly string[];
   readonly proposalId?: string;
+  /** 新识别在原子接受前预分配、并可跨中断恢复的主体身份。 */
+  readonly plannedAssetId?: string;
   readonly acceptedAssetId?: string;
   readonly reason?: string;
   /** 仅在行为主体明确终态取消本次执行时存在。 */
@@ -1038,6 +1064,12 @@ export type UnresolvedObservation = {
   readonly totalSize: number;
   readonly representativePaths: readonly string[];
 };
+
+/** 对交付层安全的当前来源产物候选；获取引用和能力私有坐标永不公开。 */
+export type PublicSourceArtifactCandidate = Pick<
+  SourceArtifactCandidate,
+  "sourceRecordId" | "role" | "mediaType" | "selectionEvidence"
+>;
 
 function unresolvedObservation(
   snapshot: FilesystemPackageSnapshot,
@@ -1106,17 +1138,20 @@ export type AssetRefreshInspection = {
   };
   readonly accepted?: Omit<
     AcceptedRecognition,
-    "proposal" | "recognitionDecision" | "sourceAssociation"
+    | "proposal"
+    | "recognitionDecision"
+    | "sourceAssociations"
+    | "recognitionSourceAssociation"
   > & {
-    readonly sourceAssociation: {
-      readonly sourceIdentity: string;
-      readonly nativeAddress: string;
-    };
-    /** 当前关联可以有多个；`sourceAssociation` 仍表示识别来源。 */
-    readonly sourceAssociations?: readonly {
+    readonly sourceAssociations: readonly {
       readonly sourceIdentity: string;
       readonly nativeAddress: string;
     }[];
+    readonly recognitionSourceAssociation?: {
+      readonly sourceIdentity: string;
+      readonly nativeAddress: string;
+    };
+    readonly sourceArtifactCandidates?: readonly PublicSourceArtifactCandidate[];
     readonly effectiveMetadata: readonly EffectiveMetadata[];
     readonly metadataPolicyConflicts: readonly MetadataPolicyConflict[];
     readonly recognitionExplanation: string;
@@ -1296,12 +1331,26 @@ export type SourceInterpreter = {
 
 export type Recognizer = {
   readonly capability: CapabilityCoordinate;
-  canRecognize(input: SourceInterpretationBatch): boolean;
-  recognize(input: {
-    readonly evidence: readonly import("@digital/domain").RecognitionEvidence[];
-    readonly interpretation: SourceInterpretationBatch;
-  }): RecognitionProposalDraft;
+  canRecognize(input: RecognitionCandidateContext): boolean;
+  recognize(input: RecognitionCandidateContext): RecognitionProposalDraft;
 };
+
+export type RecognitionCandidateContext =
+  | {
+      readonly basis: {
+        readonly kind: "source-interpretation";
+        readonly interpretation: SourceInterpretationBatch;
+      };
+      readonly evidence: readonly RecognitionEvidence[];
+    }
+  | {
+      readonly basis: {
+        readonly kind: "observed-evidence";
+        readonly producer: CapabilityCoordinate;
+        readonly artifactRevisions: readonly import("@digital/domain").ObservedArtifactRevisionCandidate[];
+      };
+      readonly evidence: readonly RecognitionEvidence[];
+    };
 
 export type RecognitionPolicy = {
   readonly version?: string;
@@ -1505,17 +1554,10 @@ function retainInterpretationProvenance(
  * 识别器只有很小的草稿界面。工作流在调用前对绑定输入取快照并冻结，随后从这些输入
  * 重建完整提议。这可以防止受信规则把自己伪装成来源解释器或产物格式检查器。
  */
-function frozenRecognitionInput(input: {
-  readonly evidence: readonly RecognitionEvidence[];
-  readonly interpretation: SourceInterpretationBatch;
-}): {
-  readonly evidence: readonly RecognitionEvidence[];
-  readonly interpretation: SourceInterpretationBatch;
-} {
-  return freezeRecognitionInput({
-    evidence: structuredClone(input.evidence),
-    interpretation: structuredClone(input.interpretation),
-  });
+function frozenRecognitionInput(
+  input: RecognitionCandidateContext,
+): RecognitionCandidateContext {
+  return freezeRecognitionInput(structuredClone(input));
 }
 
 function freezeRecognitionInput<T>(value: T): T {
@@ -1534,10 +1576,7 @@ function freezeRecognitionInput<T>(value: T): T {
 function bindRecognitionProposalToRecognizer(
   recognizer: Pick<Recognizer, "capability">,
   draft: RecognitionProposalDraft,
-  input: {
-    readonly evidence: readonly RecognitionEvidence[];
-    readonly interpretation: SourceInterpretationBatch;
-  },
+  input: RecognitionCandidateContext,
 ): RecognitionProposal {
   const allowed = new Set(["id", "ruleResults"]);
   if (Object.keys(draft).some((key) => !allowed.has(key)))
@@ -1546,34 +1585,104 @@ function bindRecognitionProposalToRecognizer(
     throw new Error(
       "Recognizer proposal draft requires Recognition Rule Results",
     );
+  const ruleResults = draft.ruleResults.map((result) => {
+    if (
+      result.capabilityId !== recognizer.capability.capabilityId ||
+      result.capabilityVersion !== recognizer.capability.capabilityVersion
+    ) {
+      throw new Error(
+        "Recognition Rule Result producer does not match the executing recognizer",
+      );
+    }
+    const evidence = result.evidence.map((candidate) => {
+      const bound = input.evidence.find((item) => item === candidate);
+      if (bound === undefined)
+        throw new Error(
+          "Recognition Rule Result references evidence outside the recognizer input",
+        );
+      return bound;
+    });
+    return {
+      ...result,
+      evidence,
+      capabilityId: recognizer.capability.capabilityId,
+      capabilityVersion: recognizer.capability.capabilityVersion,
+    };
+  });
+  const basis: RecognitionBasis =
+    input.basis.kind === "source-interpretation"
+      ? input.basis
+      : {
+          kind: "observed-evidence",
+          producer: input.basis.producer,
+          evidence: [
+            ...new Set(ruleResults.flatMap((result) => result.evidence)),
+          ],
+          artifactRevisions: input.basis.artifactRevisions.filter((revision) =>
+            ruleResults.some((result) =>
+              result.evidence.some(
+                (evidence) =>
+                  evidence.inspection?.observedArtifactReference ===
+                  revision.observedArtifactReference,
+              ),
+            ),
+          ),
+        };
   return {
     id: draft.id,
-    interpretation: input.interpretation,
-    ruleResults: draft.ruleResults.map((result) => {
-      if (
-        result.capabilityId !== recognizer.capability.capabilityId ||
-        result.capabilityVersion !== recognizer.capability.capabilityVersion
-      ) {
-        throw new Error(
-          "Recognition Rule Result producer does not match the executing recognizer",
-        );
-      }
-      const evidence = result.evidence.map((candidate) => {
-        const bound = input.evidence.find((item) => item === candidate);
-        if (bound === undefined)
-          throw new Error(
-            "Recognition Rule Result references evidence outside the recognizer input",
-          );
-        return bound;
-      });
-      return {
-        ...result,
-        evidence,
-        capabilityId: recognizer.capability.capabilityId,
-        capabilityVersion: recognizer.capability.capabilityVersion,
-      };
-    }),
+    basis,
+    ruleResults,
   };
+}
+
+function recognitionCandidateContexts(input: {
+  readonly evidence: readonly RecognitionEvidence[];
+  readonly interpretations: readonly SourceInterpretationBatch[];
+}): readonly RecognitionCandidateContext[] {
+  const sourced: RecognitionCandidateContext[] = input.interpretations.map(
+    (interpretation) => ({
+      basis: { kind: "source-interpretation", interpretation },
+      evidence: input.evidence,
+    }),
+  );
+  const observed = new Map<
+    string,
+    {
+      producer: CapabilityCoordinate;
+      evidence: RecognitionEvidence[];
+      revisions: import("@digital/domain").ObservedArtifactRevisionCandidate[];
+    }
+  >();
+  for (const evidence of input.evidence) {
+    const inspection = evidence.inspection;
+    if (inspection === undefined) continue;
+    const key = JSON.stringify(evidence.producer);
+    const group = observed.get(key) ?? {
+      producer: evidence.producer,
+      evidence: [],
+      revisions: [],
+    };
+    group.evidence.push(evidence);
+    group.revisions.push({
+      observedArtifactReference: inspection.observedArtifactReference,
+      blob: inspection.revision,
+      producer: evidence.producer,
+    });
+    observed.set(key, group);
+  }
+  return [
+    ...sourced,
+    ...[...observed.values()].map(
+      ({ producer, evidence, revisions }): RecognitionCandidateContext => ({
+        basis: {
+          kind: "observed-evidence",
+          producer,
+          artifactRevisions: revisions,
+        },
+        evidence,
+      }),
+    ),
+  ];
 }
 
 /** 只在收到请求后，才从观察产物中提取有界部分。 */
@@ -1806,12 +1915,13 @@ type CataloguePersistenceOperations = {
   /** 覆盖当前 lineage 和投影事实头的不透明精确基线。 */
   freezeChangeImpactBaseline(input: {
     readonly assetId: string;
-    readonly sourceAssociationId: string;
+    readonly recognitionSourceAssociationId?: string;
     readonly recognitionDecisionId: string;
   }): Promise<string>;
-  applyChangeImpactPreview(
-    preview: ChangeImpactPreview,
-  ): Promise<"applied" | "stale">;
+  applyChangeImpactPreview(input: {
+    readonly preview: ChangeImpactPreview;
+    readonly plan: RecognitionSupersessionPlan;
+  }): Promise<"applied" | "stale">;
   rejectChangeImpactPreview(previewId: string): Promise<"rejected" | "stale">;
   /**
    * 在持久化重复配置及其运行时行之前，原子证明预检的注册根闭包仍然活动。
@@ -2195,9 +2305,9 @@ export type SourceEnrichmentPersistence = {
   applySourceEnrichment(input: {
     readonly expectedExecution: WorkflowExecution;
     readonly execution: WorkflowExecution;
-    /** 提交时两个坐标仍必须是该主体的识别头。 */
+    /** 提交时识别决策及可选的识别来源关联仍必须是该主体的识别头。 */
     readonly expectedRecognitionBaseline: {
-      readonly sourceAssociationId: string;
+      readonly recognitionSourceAssociationId?: string;
       readonly recognitionDecisionId: string;
     };
     readonly assetId: string;
@@ -2612,6 +2722,7 @@ function checkpointWorkItem(
       AssetRefreshWorkItem,
       | "sourceRecordIds"
       | "proposalId"
+      | "plannedAssetId"
       | "sourceArtifactAcquisitions"
       | "managedSourceArtifacts"
     >
@@ -2706,17 +2817,36 @@ function errorMessage(error: unknown): string {
 
 function completeManagedStoreDisposition(
   item: WorkItemDisposition,
-  storedArtifacts: readonly ManagedSourceArtifactCheckpoint[],
+  dispositionKey: string,
+  storedArtifact: ManagedSourceArtifactCheckpoint,
 ): WorkItemDisposition {
-  if (!item.key.startsWith("source-artifact.store:")) return item;
-  const effectReference = storedArtifacts.find(
-    (artifact) => item.key === `source-artifact.store:${artifact.role}`,
-  )?.location.address;
+  if (item.key !== dispositionKey) return item;
   return {
     ...item,
     status: "completed",
-    ...(effectReference === undefined ? {} : { effectReference }),
+    effectReference: storedArtifact.location.address,
   };
+}
+
+/** 同角色多候选只公开稳定的选择序号，不公开提供方获取坐标或内部候选标识。 */
+function sourceArtifactDispositionKey(
+  effect: "acquire" | "store",
+  candidates: readonly SourceArtifactCandidate[],
+  selectionIndex: number,
+  prefix = "source-artifact",
+): string {
+  const candidate = candidates[selectionIndex];
+  if (candidate === undefined)
+    throw new Error("Source-artifact disposition selection is unavailable");
+  const roleCandidates = candidates.filter(
+    (selected) => selected.role === candidate.role,
+  );
+  if (roleCandidates.length === 1)
+    return `${prefix}.${effect}:${candidate.role}`;
+  const roleOrdinal = candidates
+    .slice(0, selectionIndex + 1)
+    .filter((selected) => selected.role === candidate.role).length;
+  return `${prefix}.${effect}:${candidate.role}:${roleOrdinal}`;
 }
 
 function sourceRefreshSelectors(
@@ -2984,6 +3114,7 @@ function publicAccepted(
   sourceRecords: readonly Pick<SourceRecord, "id" | "sourceIdentity">[],
   metadataUsageContext: string,
   configuration: MetadataPolicyConfiguration | undefined,
+  sourceArtifactCandidates: readonly PublicSourceArtifactCandidate[] = [],
 ): AssetRefreshInspection["accepted"] | undefined {
   if (accepted === undefined) return undefined;
   const enrolledDefinitions = (accepted.metadataPolicyIds ?? []).flatMap(
@@ -3016,16 +3147,22 @@ function publicAccepted(
   });
   return {
     entity: accepted.entity,
-    sourceAssociation: {
-      sourceIdentity: accepted.sourceAssociation.sourceIdentity,
-      nativeAddress: accepted.sourceAssociation.nativeAddress,
-    },
-    sourceAssociations: (
-      accepted.sourceAssociations ?? [accepted.sourceAssociation]
-    ).map((association) => ({
+    sourceAssociations: accepted.sourceAssociations.map((association) => ({
       sourceIdentity: association.sourceIdentity,
       nativeAddress: association.nativeAddress,
     })),
+    ...(accepted.recognitionSourceAssociation === undefined
+      ? {}
+      : {
+          recognitionSourceAssociation: {
+            sourceIdentity:
+              accepted.recognitionSourceAssociation.sourceIdentity,
+            nativeAddress: accepted.recognitionSourceAssociation.nativeAddress,
+          },
+        }),
+    ...(sourceArtifactCandidates.length === 0
+      ? {}
+      : { sourceArtifactCandidates }),
     artifacts: accepted.artifacts,
     locations: accepted.locations,
     blobs: accepted.blobs,
@@ -3084,6 +3221,7 @@ function boundedPageRequest(
 function publicInspection(
   inspection: ExecutionInspection,
   configuration?: MetadataPolicyConfiguration,
+  sourceArtifactCandidates: readonly PublicSourceArtifactCandidate[] = [],
 ): AssetRefreshInspection {
   const {
     coverAcquisition: _coverAcquisition,
@@ -3108,6 +3246,7 @@ function publicInspection(
     inspection.sourceRecords,
     metadataUsageContext,
     configuration,
+    sourceArtifactCandidates,
   );
   return {
     execution: {
@@ -3215,7 +3354,13 @@ function publicChangeImpactPreview(
     executionId: preview.executionId,
     assetId: preview.assetId,
     status: preview.status,
-    sourceAssociation: preview.projected.sourceAssociation,
+    sourceAssociations: preview.projected.sourceAssociations,
+    ...(preview.projected.recognitionSourceAssociation === undefined
+      ? {}
+      : {
+          recognitionSourceAssociation:
+            preview.projected.recognitionSourceAssociation,
+        }),
     current: preview.current,
     projected: preview.projected,
     metadataCount: preview.projected.metadata.length,
@@ -3365,9 +3510,7 @@ export class AssetRefreshWorkflow {
               };
             }),
         ),
-        sourceAssociations: (
-          state.sourceAssociations ?? [state.sourceAssociation]
-        )
+        sourceAssociations: state.sourceAssociations
           .filter((association) => association.subjectId === subjectId)
           .map(({ id, sourceIdentity }) => ({
             sourceIdentity,
@@ -4021,7 +4164,13 @@ export class AssetRefreshWorkflow {
         observedRootId: scope.observedRoot.id,
         relativeScope: scope.relativeScope,
       },
-      sourceAssociation: current.accepted.sourceAssociation,
+      sourceAssociations: current.accepted.sourceAssociations,
+      ...(current.accepted.recognitionSourceAssociation === undefined
+        ? {}
+        : {
+            recognitionSourceAssociation:
+              current.accepted.recognitionSourceAssociation,
+          }),
     };
   }
 
@@ -4041,6 +4190,7 @@ export class AssetRefreshWorkflow {
       [],
       "asset.ordinary",
       this.ports.metadataPolicyConfiguration,
+      await this.publicSourceArtifactCandidates(current.accepted),
     );
   }
 
@@ -4141,11 +4291,10 @@ export class AssetRefreshWorkflow {
       }
       const currentAssociations = [
         ...new Map(
-          (
-            existing.accepted.sourceAssociations ?? [
-              existing.accepted.sourceAssociation,
-            ]
-          ).map((association) => [association.id, association]),
+          existing.accepted.sourceAssociations.map((association) => [
+            association.id,
+            association,
+          ]),
         ).values(),
       ].filter(
         (association) =>
@@ -4158,6 +4307,17 @@ export class AssetRefreshWorkflow {
           association.id === fulfillmentSourceAssociationId,
       );
       const associations = exactCurrentAssociations;
+      if (associations.length === 0) {
+        const unavailable = completeTargetDisposition(
+          execution,
+          key,
+          "failed",
+          "所选主体没有当前来源关联",
+        );
+        await this.transition(execution, unavailable);
+        execution = unavailable;
+        continue;
+      }
       const sourceScopes: string[] = [];
       const associationRuns: SourceRefreshRun[] = [];
       for (const association of associations) {
@@ -4167,8 +4327,8 @@ export class AssetRefreshWorkflow {
           execution,
           existing,
           input,
-          key,
           association,
+          key,
           sourceScope,
         );
         const currentExecution =
@@ -4391,11 +4551,14 @@ export class AssetRefreshWorkflow {
     for (const target of acceptedTargets) {
       const state: SourceEnrichmentInput = {
         subjectId: target.subjectId,
-        recognitionSourceAssociation: target.accepted.sourceAssociation,
+        ...(target.accepted.recognitionSourceAssociation === undefined
+          ? {}
+          : {
+              recognitionSourceAssociation:
+                target.accepted.recognitionSourceAssociation,
+            }),
         recognitionDecisionId: target.accepted.recognitionDecision.id,
-        sourceAssociations: target.accepted.sourceAssociations ?? [
-          target.accepted.sourceAssociation,
-        ],
+        sourceAssociations: target.accepted.sourceAssociations,
         metadata: target.accepted.metadata,
         metadataSourceRecords: target.accepted.metadataSourceRecords ?? [],
         informationRequirement: input.informationRequirement,
@@ -4650,8 +4813,14 @@ export class AssetRefreshWorkflow {
           expectedExecution: execution,
           execution: appliedExecution,
           expectedRecognitionBaseline: {
-            sourceAssociationId:
-              interpretedCheckpoint.subject.recognitionSourceAssociation.id,
+            ...(interpretedCheckpoint.subject.recognitionSourceAssociation ===
+            undefined
+              ? {}
+              : {
+                  recognitionSourceAssociationId:
+                    interpretedCheckpoint.subject.recognitionSourceAssociation
+                      .id,
+                }),
             recognitionDecisionId:
               interpretedCheckpoint.subject.recognitionDecisionId,
           },
@@ -4747,6 +4916,8 @@ export class AssetRefreshWorkflow {
       evidence: checkpoint.evidence,
       interpretation,
     });
+    if (associationInterpretation === undefined)
+      throw new Error("来源关联解释能力不适用于当前已接受身份");
     if (associationInterpretation.status !== "accepted")
       throw new Error(associationInterpretation.explanation);
     const roleCounts = new Map(
@@ -5017,8 +5188,13 @@ export class AssetRefreshWorkflow {
           expectedExecution: execution,
           execution: completed,
           expectedRecognitionBaseline: {
-            sourceAssociationId:
-              activeCheckpoint.subject.recognitionSourceAssociation.id,
+            ...(activeCheckpoint.subject.recognitionSourceAssociation ===
+            undefined
+              ? {}
+              : {
+                  recognitionSourceAssociationId:
+                    activeCheckpoint.subject.recognitionSourceAssociation.id,
+                }),
             recognitionDecisionId:
               activeCheckpoint.subject.recognitionDecisionId,
           },
@@ -5650,14 +5826,14 @@ export class AssetRefreshWorkflow {
         );
       }
       const proposals: RecognitionProposal[] = [];
+      const candidateContexts = recognitionCandidateContexts({
+        evidence,
+        interpretations: batches,
+      });
       for (const recognizer of this.ports.recognizers) {
-        for (const interpretation of batches) {
-          const recognizerInput = frozenRecognitionInput({
-            evidence,
-            interpretation,
-          });
-          if (!recognizer.canRecognize(recognizerInput.interpretation))
-            continue;
+        for (const candidateContext of candidateContexts) {
+          const recognizerInput = frozenRecognitionInput(candidateContext);
+          if (!recognizer.canRecognize(recognizerInput)) continue;
           recognitionExecution = await this.freezeCapabilityParticipation(
             recognitionExecution,
             [recognizer.capability],
@@ -5732,10 +5908,7 @@ export class AssetRefreshWorkflow {
       }
       const sameIdentity =
         current !== undefined &&
-        current.accepted.sourceAssociation.sourceIdentity ===
-          proposal.interpretation.sourceIdentity &&
-        current.accepted.sourceAssociation.nativeAddress ===
-          proposal.interpretation.sourceAddress;
+        sameRecognitionIdentity(current.accepted, proposal);
       // 复用可能只因能力或请求信息坐标推进而未命中。只有普通观察或证据基线改变时，才把
       // 原本稳定的身份转为重新求值；定向识别保留自己的无变化路径。
       const ordinaryObservationOrEvidenceChanged =
@@ -5824,70 +5997,150 @@ export class AssetRefreshWorkflow {
         resolveSourceArtifactSubject(candidate, acceptedAsset.id),
       );
       let acquisitionExecution: WorkflowExecution = recognitionExecution;
+      if (currentAccepted === undefined) {
+        const plannedExecution: WorkflowExecution = {
+          ...acquisitionExecution,
+          proposalId: proposal.id,
+          plannedAssetId: acceptedAsset.id,
+        };
+        await this.transition(acquisitionExecution, plannedExecution);
+        acquisitionExecution = plannedExecution;
+      }
       input.onProgress?.(
         selectedArtifacts.length === 0
           ? "当前信息需求不需要获取来源产物"
           : "正在获取所需来源产物",
       );
-      let acquiredExecution: WorkflowExecution | undefined;
       let storedExecution: WorkflowExecution | undefined;
-      const managedArtifacts = await this.sourceArtifactWork.complete({
-        candidates: selectedArtifacts,
-        proposal,
-        sourceRecords,
-        idempotencyKey: (candidate) =>
-          sourceArtifactIdempotencyKey(initial.id, candidate),
-        requireCheckpointStore: false,
-        beforeAcquire: async (capability) => {
-          acquisitionExecution = await this.freezeCapabilityParticipation(
-            acquisitionExecution,
-            [capability],
-          );
-        },
-        onAcquired: async (acquiredArtifacts) => {
-          acquiredExecution = {
+      const managedArtifacts: ManagedSourceArtifactCheckpoint[] = [];
+      for (const [selectionIndex, candidate] of selectedArtifacts.entries()) {
+        const acquireDispositionKey = sourceArtifactDispositionKey(
+          "acquire",
+          selectedArtifacts,
+          selectionIndex,
+        );
+        const storeDispositionKey = sourceArtifactDispositionKey(
+          "store",
+          selectedArtifacts,
+          selectionIndex,
+        );
+        const necessity =
+          informationRequirement.artifactRoles.find(
+            (requested) => requested.role === candidate.role,
+          )?.necessity ?? "required";
+        const acquired = await runSourceArtifactAcquisitionEffect({
+          necessity,
+          acquire: async () =>
+            await this.sourceArtifactWork.acquireAndStage({
+              candidate,
+              proposal,
+              sourceRecords,
+              idempotencyKey: sourceArtifactIdempotencyKey(
+                initial.id,
+                candidate,
+              ),
+              requireCheckpointStore: false,
+              beforeAcquire: async (capability) => {
+                acquisitionExecution = await this.freezeCapabilityParticipation(
+                  acquisitionExecution,
+                  [capability],
+                );
+              },
+            }),
+        });
+        if (acquired.status === "optional-failed") {
+          const skipped: WorkflowExecution = {
             ...acquisitionExecution,
-            proposalId: proposal.id,
-            stage: "source-artifacts-acquired",
-            sourceArtifactAcquisitions: acquiredArtifacts,
             dispositions: [
-              ...preview.dispositions,
-              ...acquiredArtifacts.map((acquisition) => ({
-                key: `source-artifact.acquire:${acquisition.role}`,
-                status: "completed" as const,
-                effectReference: acquisition.stagedReference,
-              })),
-              ...acquiredArtifacts.map((acquisition) => ({
-                key: `source-artifact.store:${acquisition.role}`,
-                status: "running" as const,
-              })),
+              ...acquisitionExecution.dispositions.filter(
+                (item) => item.key !== acquireDispositionKey,
+              ),
+              {
+                key: acquireDispositionKey,
+                status: "failed",
+                reason: "可选来源产物获取失败；识别仍可继续",
+              },
             ],
           };
-          await this.transition(acquisitionExecution, acquiredExecution);
-          acquisitionExecution = acquiredExecution;
-          notifyDurableCheckpoint(input, acquiredExecution);
-        },
-        onStored: async (storedArtifacts) => {
-          if (acquiredExecution === undefined)
-            throw new Error(
-              "Source-artifact acquisition checkpoint was skipped",
-            );
-          const completedStorageExecution: WorkflowExecution = {
-            ...acquiredExecution,
-            stage: "source-artifacts-stored",
-            managedSourceArtifacts: storedArtifacts,
-            dispositions: acquiredExecution.dispositions.map((item) =>
-              completeManagedStoreDisposition(item, storedArtifacts),
+          await this.transition(acquisitionExecution, skipped);
+          acquisitionExecution = skipped;
+          notifyDurableCheckpoint(input, skipped);
+          continue;
+        }
+        const acquiredExecution: WorkflowExecution = {
+          ...acquisitionExecution,
+          proposalId: proposal.id,
+          stage: "source-artifacts-acquired",
+          sourceArtifactAcquisitions: [
+            ...(acquisitionExecution.sourceArtifactAcquisitions ?? []),
+            acquired.value.checkpoint,
+          ],
+          dispositions: [
+            ...acquisitionExecution.dispositions.filter(
+              (item) =>
+                item.key !== acquireDispositionKey &&
+                item.key !== storeDispositionKey,
             ),
-          };
-          storedExecution = completedStorageExecution;
-          await this.transition(acquiredExecution, completedStorageExecution);
-          notifyDurableCheckpoint(input, completedStorageExecution);
-        },
-      });
+            {
+              key: acquireDispositionKey,
+              status: "completed",
+              effectReference: acquired.value.checkpoint.stagedReference,
+            },
+            {
+              key: storeDispositionKey,
+              status: "running",
+            },
+          ],
+        };
+        await this.transition(acquisitionExecution, acquiredExecution);
+        notifyDurableCheckpoint(input, acquiredExecution);
+        const managed = await this.sourceArtifactWork.store({
+          acquisition: acquired.value.checkpoint,
+          ...(acquired.value.staged === undefined
+            ? {}
+            : { staged: acquired.value.staged }),
+          requireCheckpointStore: false,
+        });
+        managedArtifacts.push(managed);
+        const completedStorageExecution: WorkflowExecution = {
+          ...acquiredExecution,
+          stage: "source-artifacts-stored",
+          managedSourceArtifacts: [...managedArtifacts],
+          dispositions: acquiredExecution.dispositions.map((item) =>
+            completeManagedStoreDisposition(item, storeDispositionKey, managed),
+          ),
+        };
+        await this.transition(acquiredExecution, completedStorageExecution);
+        acquisitionExecution = completedStorageExecution;
+        storedExecution = completedStorageExecution;
+        notifyDurableCheckpoint(input, completedStorageExecution);
+      }
+      if (selectedArtifacts.length === 0) {
+        const emptyStored: WorkflowExecution = {
+          ...acquisitionExecution,
+          proposalId: proposal.id,
+          stage: "source-artifacts-stored",
+          managedSourceArtifacts: [],
+        };
+        await this.transition(acquisitionExecution, emptyStored);
+        acquisitionExecution = emptyStored;
+        storedExecution = emptyStored;
+        notifyDurableCheckpoint(input, emptyStored);
+      } else if (storedExecution === undefined) {
+        const optionalOnlyStored: WorkflowExecution = {
+          ...acquisitionExecution,
+          proposalId: proposal.id,
+          stage: "source-artifacts-stored",
+          managedSourceArtifacts: [],
+        };
+        await this.transition(acquisitionExecution, optionalOnlyStored);
+        acquisitionExecution = optionalOnlyStored;
+        storedExecution = optionalOnlyStored;
+        notifyDurableCheckpoint(input, optionalOnlyStored);
+      }
       if (storedExecution === undefined)
         throw new Error("Source-artifact storage checkpoint was skipped");
-      let executionForAcceptance = storedExecution;
+      let executionForAcceptance = acquisitionExecution;
       const managedObservedParts = await this.materializeObservedArtifactParts(
         proposal,
         snapshot,
@@ -5939,14 +6192,22 @@ export class AssetRefreshWorkflow {
           current: currentAccepted,
           accepted,
         });
+        const currentRecognitionAssociation =
+          currentAccepted.recognitionSourceAssociation;
         const expectedLineageHeads =
-          await this.ports.metadataRefreshPersistence.freezeSourceLineageHeads({
-            assetId: currentAccepted.entity.id,
-            sourceAssociation: currentAccepted.sourceAssociation,
-            coverageIds: [
-              ...new Set(sourceRecords.map((record) => record.coverage.id)),
-            ],
-          });
+          currentRecognitionAssociation === undefined
+            ? []
+            : await this.ports.metadataRefreshPersistence.freezeSourceLineageHeads(
+                {
+                  assetId: currentAccepted.entity.id,
+                  sourceAssociation: currentRecognitionAssociation,
+                  coverageIds: [
+                    ...new Set(
+                      sourceRecords.map((record) => record.coverage.id),
+                    ),
+                  ],
+                },
+              );
         await this.ports.recognitionReevaluation.refreshAcceptedRecognition({
           expectedExecution: lastPersistedExecution,
           execution: acceptedExecution,
@@ -6103,7 +6364,8 @@ export class AssetRefreshWorkflow {
         try {
           registerSourceArtifactDefinitions(
             sourceArtifactDefinitions,
-            inspection.proposal.interpretation.sourceArtifacts,
+            recognitionSourceInterpretation(inspection.proposal)
+              ?.sourceArtifacts ?? [],
           );
         } catch (error) {
           sourceArtifactDefinitionConflicts.set(
@@ -6113,14 +6375,21 @@ export class AssetRefreshWorkflow {
         }
       }
       for (const managed of inspection.workItem.managedSourceArtifacts ?? []) {
-        const rawCandidate =
-          inspection.proposal?.interpretation.sourceArtifacts.find((item) =>
-            checkpointMatchesCandidateExceptSubject(managed, item),
-          );
+        const rawCandidate = (
+          inspection.proposal === undefined
+            ? []
+            : (recognitionSourceInterpretation(inspection.proposal)
+                ?.sourceArtifacts ?? [])
+        ).find((item) =>
+          checkpointMatchesCandidateExceptSubject(managed, item),
+        );
         const acceptedAssetId =
           inspection.accepted?.entity.id ??
           inferCheckpointedAcceptedAssetId(
-            inspection.proposal?.interpretation.sourceArtifacts ?? [],
+            inspection.proposal === undefined
+              ? []
+              : (recognitionSourceInterpretation(inspection.proposal)
+                  ?.sourceArtifacts ?? []),
             [
               ...(inspection.workItem.sourceArtifactAcquisitions ?? []),
               ...(inspection.workItem.managedSourceArtifacts ?? []),
@@ -6410,11 +6679,10 @@ export class AssetRefreshWorkflow {
           }
         }
         if (currentAccepted !== undefined) {
-          const sameIdentity =
-            currentAccepted.accepted.sourceAssociation.sourceIdentity ===
-              proposal.interpretation.sourceIdentity &&
-            currentAccepted.accepted.sourceAssociation.nativeAddress ===
-              proposal.interpretation.sourceAddress;
+          const sameIdentity = sameRecognitionIdentity(
+            currentAccepted.accepted,
+            proposal,
+          );
           if (!sameIdentity) {
             const change = await this.changeImpactPreview({
               execution,
@@ -6450,26 +6718,51 @@ export class AssetRefreshWorkflow {
           throw new Error(persistedDefinitionConflict);
         registerSourceArtifactDefinitions(
           sourceArtifactDefinitions,
-          proposal.interpretation.sourceArtifacts,
+          recognitionSourceInterpretation(proposal)?.sourceArtifacts ?? [],
         );
-        const currentWorkItem = execution.workItems?.find(
+        let currentWorkItem = execution.workItems?.find(
           (item) => item.key === plan.key,
         );
+        if (
+          currentWorkItem?.plannedAssetId !== undefined &&
+          currentWorkItem.plannedAssetId.trim().length === 0
+        )
+          throw new Error("工作项中的预分配识别主体身份无效");
         const acceptedAsset = currentAccepted?.accepted.entity ?? {
           id:
+            currentWorkItem?.plannedAssetId ??
             inferCheckpointedAcceptedAssetId(
               selectSourceArtifacts(proposal, requirement),
               [
                 ...(currentWorkItem?.sourceArtifactAcquisitions ?? []),
                 ...(currentWorkItem?.managedSourceArtifacts ?? []),
               ],
-            ) ?? id("entity"),
+            ) ??
+            id("entity"),
           kind: "digital-asset" as const,
         };
-        for (const rawCandidate of selectSourceArtifacts(
+        if (
+          currentAccepted === undefined &&
+          currentWorkItem?.plannedAssetId === undefined
+        ) {
+          execution = checkpointWorkItem(execution, plan.key, {
+            sourceRecordIds: recordIds,
+            proposalId: proposal.id,
+            plannedAssetId: acceptedAsset.id,
+          });
+          await this.transitionAfterWorkItem(execution, resumeClaim);
+          currentWorkItem = execution.workItems?.find(
+            (item) => item.key === plan.key,
+          );
+        }
+        const selectedSourceArtifacts = selectSourceArtifacts(
           proposal,
           requirement,
-        )) {
+        );
+        for (const [
+          selectionIndex,
+          rawCandidate,
+        ] of selectedSourceArtifacts.entries()) {
           const candidate = resolveSourceArtifactSubject(
             rawCandidate,
             acceptedAsset.id,
@@ -6505,20 +6798,50 @@ export class AssetRefreshWorkflow {
             (item) => sourceArtifactCheckpointMatchesCandidate(item, candidate),
           );
           if (acquisition === undefined) {
-            acquisition = (
-              await this.sourceArtifactWork.acquireAndStage({
-                candidate,
-                proposal,
-                sourceRecords: records,
-                idempotencyKey: sourceArtifactIdempotencyKey(
-                  `${initial.id}:${plan.key}`,
+            const acquired = await runSourceArtifactAcquisitionEffect({
+              necessity:
+                requirement.artifactRoles.find(
+                  (requested) => requested.role === candidate.role,
+                )?.necessity ?? "required",
+              acquire: async () =>
+                await this.sourceArtifactWork.acquireAndStage({
                   candidate,
-                ),
-                requireCheckpointStore: true,
-                beforeAcquire: async (capability) =>
-                  await freezeWorkItemCapability(plan.key, capability),
-              })
-            ).checkpoint;
+                  proposal,
+                  sourceRecords: records,
+                  idempotencyKey: sourceArtifactIdempotencyKey(
+                    `${initial.id}:${plan.key}`,
+                    candidate,
+                  ),
+                  requireCheckpointStore: true,
+                  beforeAcquire: async (capability) =>
+                    await freezeWorkItemCapability(plan.key, capability),
+                }),
+            });
+            if (acquired.status === "optional-failed") {
+              const dispositionKey = sourceArtifactDispositionKey(
+                "acquire",
+                selectedSourceArtifacts,
+                selectionIndex,
+                `work-item:${plan.key}:source-artifact`,
+              );
+              execution = {
+                ...execution,
+                dispositions: [
+                  ...execution.dispositions.filter(
+                    (item) => item.key !== dispositionKey,
+                  ),
+                  {
+                    key: dispositionKey,
+                    status: "failed",
+                    reason: "可选来源产物获取失败；识别仍可继续",
+                  },
+                ],
+              };
+              await this.transitionAfterWorkItem(execution, resumeClaim);
+              notifyDurableCheckpoint(input, execution, false);
+              continue;
+            }
+            acquisition = acquired.value.checkpoint;
             execution = checkpointWorkItem(execution, plan.key, {
               sourceRecordIds: recordIds,
               proposalId: proposal.id,
@@ -6606,16 +6929,20 @@ export class AssetRefreshWorkflow {
             ...(resumeClaim === undefined ? {} : { resumeClaim }),
           });
         } else {
+          const currentRecognitionAssociation =
+            currentAccepted.accepted.recognitionSourceAssociation;
           const expectedLineageHeads =
-            await this.ports.metadataRefreshPersistence.freezeSourceLineageHeads(
-              {
-                assetId: currentAccepted.accepted.entity.id,
-                sourceAssociation: currentAccepted.accepted.sourceAssociation,
-                coverageIds: [
-                  ...new Set(records.map((record) => record.coverage.id)),
-                ],
-              },
-            );
+            currentRecognitionAssociation === undefined
+              ? []
+              : await this.ports.metadataRefreshPersistence.freezeSourceLineageHeads(
+                  {
+                    assetId: currentAccepted.accepted.entity.id,
+                    sourceAssociation: currentRecognitionAssociation,
+                    coverageIds: [
+                      ...new Set(records.map((record) => record.coverage.id)),
+                    ],
+                  },
+                );
           await this.ports.recognitionReevaluation.refreshAcceptedRecognition({
             expectedExecution: lastPersistedExecution,
             execution,
@@ -6626,12 +6953,23 @@ export class AssetRefreshWorkflow {
             ...(resumeClaim === undefined ? {} : { resumeClaim }),
           });
         }
-        for (const rawCandidate of selectSourceArtifacts(proposal, requirement))
-          committedSharedArtifactServeKeys.add(
-            sourceArtifactCacheKey(
-              resolveSourceArtifactSubject(rawCandidate, acceptedAsset.id),
-            ),
+        for (const rawCandidate of selectSourceArtifacts(
+          proposal,
+          requirement,
+        )) {
+          const candidate = resolveSourceArtifactSubject(
+            rawCandidate,
+            acceptedAsset.id,
           );
+          if (
+            managedArtifacts.some((managed) =>
+              managedSourceArtifactMatchesCandidate(managed, candidate),
+            )
+          )
+            committedSharedArtifactServeKeys.add(
+              sourceArtifactCacheKey(candidate),
+            );
+        }
       } catch (error) {
         rethrowWorkflowLifecycle(error);
         execution = completeWorkItem(execution, plan.key, {
@@ -6731,28 +7069,34 @@ export class AssetRefreshWorkflow {
     ) => void | Promise<void>;
   }): Promise<readonly RecognitionProposal[]> {
     const proposals: RecognitionProposal[] = [];
-    for (const recognizer of this.ports.recognizers) {
-      for (const interpreter of this.ports.sourceInterpreters) {
-        if (
-          !interpreter.canInterpret({
-            evidence: input.evidence,
-            sourceRecords: input.sourceRecords,
-          })
-        )
-          continue;
-        await input.beforeInterpret(interpreter.capability);
-        const interpretation = retainInterpretationProvenance(
+    const interpretations: SourceInterpretationBatch[] = [];
+    for (const interpreter of this.ports.sourceInterpreters) {
+      if (
+        !interpreter.canInterpret({
+          evidence: input.evidence,
+          sourceRecords: input.sourceRecords,
+        })
+      )
+        continue;
+      await input.beforeInterpret(interpreter.capability);
+      interpretations.push(
+        retainInterpretationProvenance(
           interpreter,
           interpreter.interpret({
             evidence: input.evidence,
             sourceRecords: input.sourceRecords,
           }),
-        );
-        const recognizerInput = frozenRecognitionInput({
-          evidence: input.evidence,
-          interpretation,
-        });
-        if (!recognizer.canRecognize(recognizerInput.interpretation)) continue;
+        ),
+      );
+    }
+    const candidateContexts = recognitionCandidateContexts({
+      evidence: input.evidence,
+      interpretations,
+    });
+    for (const recognizer of this.ports.recognizers) {
+      for (const candidateContext of candidateContexts) {
+        const recognizerInput = frozenRecognitionInput(candidateContext);
+        if (!recognizer.canRecognize(recognizerInput)) continue;
         await input.beforeRecognize(recognizer.capability);
         proposals.push(
           validateRecognitionProposalForRecords(
@@ -6842,6 +7186,21 @@ export class AssetRefreshWorkflow {
         throw new Error(
           "Observed Artifact Part acquisition contradicts its candidate",
         );
+      const expectedParent = proposal.observedArtifactRevisions?.find(
+        (revision) =>
+          revision.observedArtifactReference ===
+          candidate.observedArtifactReference,
+      );
+      if (
+        expectedParent !== undefined &&
+        (expectedParent.blob.digest !== acquired.origin.digest ||
+          mediaTypeEssence(expectedParent.blob.mediaType) !==
+            mediaTypeEssence(acquired.origin.mediaType) ||
+          expectedParent.blob.byteLength !== acquired.origin.byteLength)
+      )
+        throw new Error(
+          "Observed Artifact Part acquisition contradicts its proposed parent revision",
+        );
       const stored = await this.ports.managedStore.store({
         bytes: acquired.bytes,
         mediaType: acquired.mediaType,
@@ -6867,8 +7226,15 @@ export class AssetRefreshWorkflow {
       await this.ports.changeImpactQueries.inspectChangeImpactPreviewForExecution(
         executionId,
       );
+    const sourceArtifactCandidates = await this.publicSourceArtifactCandidates(
+      inspection.accepted,
+    );
     return {
-      ...publicInspection(inspection, this.ports.metadataPolicyConfiguration),
+      ...publicInspection(
+        inspection,
+        this.ports.metadataPolicyConfiguration,
+        sourceArtifactCandidates,
+      ),
       ...(preview === undefined
         ? {}
         : { changeImpactPreview: publicChangeImpactPreview(preview) }),
@@ -7015,16 +7381,19 @@ export class AssetRefreshWorkflow {
     const page = await queries.listCurrentCataloguePage(
       boundedPageRequest(input, "Current Catalogue"),
     );
+    const items = [];
+    for (const accepted of page.items) {
+      const projected = publicAccepted(
+        accepted,
+        [],
+        "asset.ordinary",
+        this.ports.metadataPolicyConfiguration,
+        await this.publicSourceArtifactCandidates(accepted),
+      );
+      if (projected !== undefined) items.push(projected);
+    }
     return {
-      items: page.items.flatMap((accepted) => {
-        const projected = publicAccepted(
-          accepted,
-          [],
-          "asset.ordinary",
-          this.ports.metadataPolicyConfiguration,
-        );
-        return projected === undefined ? [] : [projected];
-      }),
+      items,
       ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
     };
   }
@@ -7050,15 +7419,18 @@ export class AssetRefreshWorkflow {
   > {
     const current =
       (await this.ports.currentCatalogueQueries?.listCurrentCatalogue()) ?? [];
-    return current.flatMap((accepted) => {
-      const projected = publicAccepted(
+    const result: NonNullable<AssetRefreshInspection["accepted"]>[] = [];
+    for (const accepted of current) {
+      const item = publicAccepted(
         accepted,
         [],
         "asset.ordinary",
         this.ports.metadataPolicyConfiguration,
+        await this.publicSourceArtifactCandidates(accepted),
       );
-      return projected === undefined ? [] : [projected];
-    });
+      if (item !== undefined) result.push(item);
+    }
+    return result;
   }
 
   /**
@@ -7090,7 +7462,23 @@ export class AssetRefreshWorkflow {
       await this.transition(initial, failed);
       return await this.inspectPublic(failed.id);
     }
-    return await this.refreshAcceptedAssociation(initial, existing, input);
+    const association = existing.accepted.sourceAssociations[0];
+    if (association === undefined) {
+      const failed = terminal(
+        initial,
+        "failed",
+        "所选范围没有可刷新的已关联来源",
+      );
+      await this.transition(initial, failed);
+      return await this.inspectPublic(failed.id);
+    }
+    return await this.refreshAcceptedAssociation(
+      initial,
+      existing,
+      input,
+      association,
+      undefined,
+    );
   }
 
   private async refreshAcceptedAssociation(
@@ -7111,8 +7499,8 @@ export class AssetRefreshWorkflow {
         | ((execution: WorkflowExecution) => void)
         | undefined;
     },
+    sourceAssociation: SourceAssociation,
     targetKey?: string,
-    sourceAssociation: SourceAssociation = existing.accepted.sourceAssociation,
     sourceScopeKey?: string,
   ): Promise<AssetRefreshInspection> {
     const initial = await this.freezeCapabilityParticipation(unfrozenInitial, [
@@ -8030,8 +8418,45 @@ export class AssetRefreshWorkflow {
     if (preview.blockingConditions.length > 0) {
       throw new Error("存在阻塞条件，不能应用变更影响预演");
     }
+    const successorDecision: RecognitionDecision = {
+      id: id("recognition-decision"),
+      proposalId: preview.proposal.id,
+      assetId: preview.assetId,
+      acceptedRuleResults: preview.proposal.ruleResults,
+    };
+    const projectedRecognitionSourceAssociation =
+      preview.projected.recognitionSourceAssociation;
+    const predecessorDecisionId = preview.baselines.find(
+      (baseline) => baseline.key === "recognition-decision",
+    )?.value;
+    if (predecessorDecisionId === undefined)
+      throw new Error("变更影响预演缺少识别决策基线");
+    const plan: RecognitionSupersessionPlan = {
+      successorDecision,
+      supersession: {
+        id: id("recognition-decision-supersession"),
+        predecessorDecisionId,
+        successorDecisionId: successorDecision.id,
+      },
+      ...(projectedRecognitionSourceAssociation === undefined
+        ? {}
+        : {
+            recognitionSourceAssociation: {
+              id: id("source-association"),
+              subjectId: preview.assetId,
+              sourceIdentity:
+                projectedRecognitionSourceAssociation.sourceIdentity,
+              nativeAddress:
+                projectedRecognitionSourceAssociation.nativeAddress,
+              proposalId: preview.proposal.id,
+            },
+          }),
+    };
     const result =
-      await this.ports.changeImpactCommands.applyChangeImpactPreview(preview);
+      await this.ports.changeImpactCommands.applyChangeImpactPreview({
+        preview,
+        plan,
+      });
     return {
       ...preview,
       status: result === "applied" ? "applied" : "stale",
@@ -8066,20 +8491,32 @@ export class AssetRefreshWorkflow {
     readonly preview: ChangeImpactPreview;
   }> {
     let execution = input.execution;
+    const currentRecognitionAssociation =
+      input.current.recognitionSourceAssociation;
+    const currentInterpretation = recognitionSourceInterpretation(
+      input.current.proposal,
+    );
+    const proposedInterpretation = recognitionSourceInterpretation(
+      input.proposal,
+    );
     const fullBaseline =
       await this.ports.changeImpactCommands.freezeChangeImpactBaseline({
         assetId: input.current.entity.id,
-        sourceAssociationId: input.current.sourceAssociation.id,
+        ...(currentRecognitionAssociation === undefined
+          ? {}
+          : {
+              recognitionSourceAssociationId: currentRecognitionAssociation.id,
+            }),
         recognitionDecisionId: input.current.recognitionDecision.id,
       });
     const blockingConditions: string[] = [];
     const currentSourceIdentities = new Set(
-      (
-        input.current.sourceAssociations ?? [input.current.sourceAssociation]
-      ).map((association) => association.sourceIdentity),
+      input.current.sourceAssociations.map(
+        (association) => association.sourceIdentity,
+      ),
     );
     const currentSourceRecordIds = new Set([
-      ...input.current.proposal.interpretation.sourceRecordIds,
+      ...(currentInterpretation?.sourceRecordIds ?? []),
       ...(input.current.metadataSourceRecords ?? [])
         .filter((record) => currentSourceIdentities.has(record.sourceIdentity))
         .map((record) => record.id),
@@ -8203,27 +8640,41 @@ export class AssetRefreshWorkflow {
         assetId: input.current.entity.id,
         proposal: input.proposal,
         baselines: [
-          {
-            key: "source-association",
-            value: input.current.sourceAssociation.id,
-          },
+          ...(currentRecognitionAssociation === undefined
+            ? []
+            : [
+                {
+                  key: "source-association",
+                  value: currentRecognitionAssociation.id,
+                },
+              ]),
           {
             key: "recognition-decision",
             value: input.current.recognitionDecision.id,
           },
           {
             key: "source-records",
-            value: input.current.proposal.interpretation.sourceRecordIds
+            value: (currentInterpretation?.sourceRecordIds ?? [])
               .toSorted()
               .join(","),
           },
           { key: "complete-current-projection", value: fullBaseline },
         ],
         current: {
-          sourceAssociation: {
-            sourceIdentity: input.current.sourceAssociation.sourceIdentity,
-            nativeAddress: input.current.sourceAssociation.nativeAddress,
-          },
+          sourceAssociations: input.current.sourceAssociations.map(
+            ({ sourceIdentity, nativeAddress }) => ({
+              sourceIdentity,
+              nativeAddress,
+            }),
+          ),
+          ...(currentRecognitionAssociation === undefined
+            ? {}
+            : {
+                recognitionSourceAssociation: {
+                  sourceIdentity: currentRecognitionAssociation.sourceIdentity,
+                  nativeAddress: currentRecognitionAssociation.nativeAddress,
+                },
+              }),
           metadata: input.current.metadata,
           entities: input.current.entities ?? [],
           entityMentions: input.current.entityMentions ?? [],
@@ -8240,29 +8691,42 @@ export class AssetRefreshWorkflow {
             : { primaryCoverArtifactId: currentPrimaryCoverArtifactId }),
         },
         projected: {
-          sourceAssociation: {
-            sourceIdentity: input.proposal.interpretation.sourceIdentity,
-            nativeAddress: input.proposal.interpretation.sourceAddress,
-          },
+          sourceAssociations:
+            proposedInterpretation === undefined
+              ? []
+              : [
+                  {
+                    sourceIdentity: proposedInterpretation.sourceIdentity,
+                    nativeAddress: proposedInterpretation.sourceAddress,
+                  },
+                ],
+          ...(proposedInterpretation === undefined
+            ? {}
+            : {
+                recognitionSourceAssociation: {
+                  sourceIdentity: proposedInterpretation.sourceIdentity,
+                  nativeAddress: proposedInterpretation.sourceAddress,
+                },
+              }),
           metadata: [
             ...retainedMetadata,
-            ...input.proposal.interpretation.metadata,
+            ...(proposedInterpretation?.metadata ?? []),
           ],
           entities: [
             ...retainedEntities,
-            ...(input.proposal.interpretation.entities ?? []),
+            ...(proposedInterpretation?.entities ?? []),
           ],
           entityMentions: [
             ...retainedMentions,
-            ...(input.proposal.interpretation.entityMentions ?? []),
+            ...(proposedInterpretation?.entityMentions ?? []),
           ],
           entityResolutionDecisions: [
             ...retainedResolutions,
-            ...(input.proposal.interpretation.entityResolutionDecisions ?? []),
+            ...(proposedInterpretation?.entityResolutionDecisions ?? []),
           ],
           relationships: [
             ...retainedRelationships,
-            ...(input.proposal.interpretation.relationships ?? []).map(
+            ...(proposedInterpretation?.relationships ?? []).map(
               (relationship) => ({
                 id: relationshipId(relationship, input.current.entity.id),
                 subjectId: relationship.subjectId ?? input.current.entity.id,
@@ -8663,14 +9127,14 @@ export class AssetRefreshWorkflow {
           );
         }
         const proposals: RecognitionProposal[] = [];
+        const candidateContexts = recognitionCandidateContexts({
+          evidence,
+          interpretations: batches,
+        });
         for (const recognizer of this.ports.recognizers) {
-          for (const interpretation of batches) {
-            const recognizerInput = frozenRecognitionInput({
-              evidence,
-              interpretation,
-            });
-            if (!recognizer.canRecognize(recognizerInput.interpretation))
-              continue;
+          for (const candidateContext of candidateContexts) {
+            const recognizerInput = frozenRecognitionInput(candidateContext);
+            if (!recognizer.canRecognize(recognizerInput)) continue;
             await retainResumedCapabilities([recognizer.capability]);
             proposals.push(
               validateRecognitionProposalForRecords(
@@ -8741,14 +9205,33 @@ export class AssetRefreshWorkflow {
             (resumedExecution.managedCover === undefined
               ? []
               : [resumedExecution.managedCover]);
+          if (
+            resumedExecution.plannedAssetId !== undefined &&
+            resumedExecution.plannedAssetId.trim().length === 0
+          )
+            throw new Error("恢复中的预分配识别主体身份无效");
           const acceptedAsset: DigitalAsset = {
             id:
+              resumedExecution.plannedAssetId ??
               inferCheckpointedAcceptedAssetId(rawSelected, [
                 ...legacyAcquisitions,
                 ...legacyManagedArtifacts,
-              ]) ?? id("entity"),
+              ]) ??
+              id("entity"),
             kind: "digital-asset",
           };
+          if (resumedExecution.plannedAssetId === undefined) {
+            const plannedExecution: WorkflowExecution = {
+              ...resumedExecution,
+              plannedAssetId: acceptedAsset.id,
+            };
+            await this.transition(
+              resumedExecution,
+              plannedExecution,
+              mutationClaim(),
+            );
+            resumedExecution = plannedExecution;
+          }
           const selected = rawSelected.map((candidate) =>
             resolveSourceArtifactSubject(candidate, acceptedAsset.id),
           );
@@ -8758,214 +9241,189 @@ export class AssetRefreshWorkflow {
               : "正在获取所需来源产物",
           );
           let checkpointExecution = resumedExecution;
-          let managedArtifacts: readonly ManagedSourceArtifactCheckpoint[];
-          const storedCheckpointMatches =
-            legacyManagedArtifacts.length === selected.length &&
-            legacyManagedArtifacts.every((managed) =>
-              selected.some((candidate) =>
-                managedSourceArtifactMatchesCandidate(managed, candidate),
-              ),
-            );
-          const acquiredCheckpointMatches =
-            legacyAcquisitions.length === selected.length &&
-            legacyAcquisitions.every((acquisition) =>
-              selected.some((candidate) =>
+          const managedArtifacts: ManagedSourceArtifactCheckpoint[] = [];
+          const acquisitions = legacyAcquisitions.filter((acquisition) =>
+            selected.some(
+              (candidate) =>
                 sourceArtifactCheckpointMatchesCandidate(
                   acquisition,
                   candidate,
-                ),
-              ),
+                ) &&
+                (resumedExecution.stage === "source-artifacts-acquired" ||
+                  resumedExecution.stage === "cover-acquired" ||
+                  legacyManagedArtifacts.some((managed) =>
+                    managedSourceArtifactMatchesCandidate(managed, candidate),
+                  )),
+            ),
+          );
+          for (const [selectionIndex, candidate] of selected.entries()) {
+            const acquireDispositionKey = sourceArtifactDispositionKey(
+              "acquire",
+              selected,
+              selectionIndex,
             );
-          if (
-            resumedExecution.stage === "source-artifacts-stored" ||
-            resumedExecution.stage === "cover-stored"
-          ) {
-            if (storedCheckpointMatches)
-              managedArtifacts = legacyManagedArtifacts;
-            else {
-              checkpointExecution = resumedExecution;
-              managedArtifacts = await this.sourceArtifactWork.complete({
-                candidates: selected,
-                proposal,
-                sourceRecords: inspection.sourceRecords,
-                idempotencyKey: (candidate) =>
-                  sourceArtifactIdempotencyKey(
-                    checkpointExecution.id,
-                    candidate,
-                  ),
-                requireCheckpointStore: false,
-                beforeEffect: renew,
-                beforeAcquire: async (capability) => {
-                  await retainResumedCapabilities([capability]);
-                  checkpointExecution = resumedExecution;
-                },
-                onAcquired: async (acquisitions) => {
-                  const acquiredExecution: WorkflowExecution = {
-                    ...checkpointExecution,
-                    proposalId: proposal.id,
-                    stage: "source-artifacts-acquired",
-                    sourceArtifactAcquisitions: acquisitions,
-                  };
-                  await this.transition(
-                    checkpointExecution,
-                    acquiredExecution,
-                    mutationClaim(),
-                  );
-                  checkpointExecution = acquiredExecution;
-                  notifyDurableCheckpoint(input, checkpointExecution, false);
-                },
-                onStored: async (storedArtifacts) => {
-                  const storedExecution: WorkflowExecution = {
-                    ...checkpointExecution,
-                    stage: "source-artifacts-stored",
-                    managedSourceArtifacts: storedArtifacts,
-                  };
-                  await this.transition(
-                    checkpointExecution,
-                    storedExecution,
-                    mutationClaim(),
-                  );
-                  checkpointExecution = storedExecution;
-                  notifyDurableCheckpoint(input, checkpointExecution, false);
-                },
-              });
+            const storeDispositionKey = sourceArtifactDispositionKey(
+              "store",
+              selected,
+              selectionIndex,
+            );
+            const alreadyManaged = legacyManagedArtifacts.find((managed) =>
+              managedSourceArtifactMatchesCandidate(managed, candidate),
+            );
+            if (alreadyManaged !== undefined) {
+              managedArtifacts.push(alreadyManaged);
+              continue;
             }
-          } else if (
-            resumedExecution.stage === "source-artifacts-acquired" ||
-            resumedExecution.stage === "cover-acquired"
-          ) {
-            if (
-              acquiredCheckpointMatches &&
-              this.ports.managedStore.storeStaged !== undefined
-            )
-              managedArtifacts = await this.sourceArtifactWork.resumeStore({
-                acquisitions: legacyAcquisitions,
-                beforeEffect: renew,
-                onStored: async (storedArtifacts) => {
-                  const storedExecution: WorkflowExecution = {
-                    ...checkpointExecution,
-                    stage: "source-artifacts-stored",
-                    managedSourceArtifacts: storedArtifacts,
-                    dispositions: checkpointExecution.dispositions.map((item) =>
-                      completeManagedStoreDisposition(item, storedArtifacts),
+            let acquisition = acquisitions.find((item) =>
+              sourceArtifactCheckpointMatchesCandidate(item, candidate),
+            );
+            let staged:
+              | Awaited<
+                  ReturnType<CheckpointedSourceArtifactWork["acquireAndStage"]>
+                >["staged"]
+              | undefined;
+            if (acquisition === undefined) {
+              await renew();
+              const acquired = await runSourceArtifactAcquisitionEffect({
+                necessity:
+                  requirement.artifactRoles.find(
+                    (requested) => requested.role === candidate.role,
+                  )?.necessity ?? "required",
+                acquire: async () =>
+                  await this.sourceArtifactWork.acquireAndStage({
+                    candidate,
+                    proposal,
+                    sourceRecords: inspection.sourceRecords,
+                    idempotencyKey: sourceArtifactIdempotencyKey(
+                      checkpointExecution.id,
+                      candidate,
                     ),
-                  };
-                  await this.transition(
-                    checkpointExecution,
-                    storedExecution,
-                    mutationClaim(),
-                  );
-                  checkpointExecution = storedExecution;
-                  notifyDurableCheckpoint(input, checkpointExecution, false);
-                },
+                    requireCheckpointStore: true,
+                    beforeAcquire: async (capability) => {
+                      await retainResumedCapabilities([capability]);
+                      checkpointExecution = resumedExecution;
+                    },
+                  }),
               });
-            else {
-              checkpointExecution = resumedExecution;
-              managedArtifacts = await this.sourceArtifactWork.complete({
-                candidates: selected,
-                proposal,
-                sourceRecords: inspection.sourceRecords,
-                idempotencyKey: (candidate) =>
-                  sourceArtifactIdempotencyKey(
-                    checkpointExecution.id,
-                    candidate,
-                  ),
-                requireCheckpointStore: false,
-                beforeEffect: renew,
-                beforeAcquire: async (capability) => {
-                  await retainResumedCapabilities([capability]);
-                  checkpointExecution = resumedExecution;
-                },
-                onAcquired: async (acquisitions) => {
-                  const acquiredExecution: WorkflowExecution = {
-                    ...checkpointExecution,
-                    proposalId: proposal.id,
-                    stage: "source-artifacts-acquired",
-                    sourceArtifactAcquisitions: acquisitions,
-                  };
-                  await this.transition(
-                    checkpointExecution,
-                    acquiredExecution,
-                    mutationClaim(),
-                  );
-                  checkpointExecution = acquiredExecution;
-                  notifyDurableCheckpoint(input, checkpointExecution, false);
-                },
-                onStored: async (storedArtifacts) => {
-                  const storedExecution: WorkflowExecution = {
-                    ...checkpointExecution,
-                    stage: "source-artifacts-stored",
-                    managedSourceArtifacts: storedArtifacts,
-                  };
-                  await this.transition(
-                    checkpointExecution,
-                    storedExecution,
-                    mutationClaim(),
-                  );
-                  checkpointExecution = storedExecution;
-                  notifyDurableCheckpoint(input, checkpointExecution, false);
-                },
-              });
-            }
-          } else {
-            checkpointExecution = resumedExecution;
-            managedArtifacts = await this.sourceArtifactWork.complete({
-              candidates: selected,
-              proposal,
-              sourceRecords: inspection.sourceRecords,
-              idempotencyKey: (candidate) =>
-                sourceArtifactIdempotencyKey(checkpointExecution.id, candidate),
-              requireCheckpointStore: false,
-              beforeEffect: renew,
-              beforeAcquire: async (capability) => {
-                await retainResumedCapabilities([capability]);
-                checkpointExecution = resumedExecution;
-              },
-              onAcquired: async (acquisitions) => {
-                const acquiredExecution: WorkflowExecution = {
+              if (acquired.status === "optional-failed") {
+                const skipped: WorkflowExecution = {
                   ...checkpointExecution,
-                  proposalId: proposal.id,
-                  stage: "source-artifacts-acquired",
                   sourceArtifactAcquisitions: acquisitions,
+                  managedSourceArtifacts: managedArtifacts,
                   dispositions: [
-                    ...checkpointExecution.dispositions,
-                    ...acquisitions.map((acquisition) => ({
-                      key: `source-artifact.acquire:${acquisition.role}`,
-                      status: "completed" as const,
-                      effectReference: acquisition.stagedReference,
-                    })),
-                    ...acquisitions.map((acquisition) => ({
-                      key: `source-artifact.store:${acquisition.role}`,
-                      status: "running" as const,
-                    })),
+                    ...checkpointExecution.dispositions.filter(
+                      (item) => item.key !== acquireDispositionKey,
+                    ),
+                    {
+                      key: acquireDispositionKey,
+                      status: "failed",
+                      reason: "可选来源产物获取失败；识别仍可继续",
+                    },
                   ],
                 };
                 await this.transition(
                   checkpointExecution,
-                  acquiredExecution,
+                  skipped,
                   mutationClaim(),
                 );
-                checkpointExecution = acquiredExecution;
-                notifyDurableCheckpoint(input, checkpointExecution, false);
-              },
-              onStored: async (storedArtifacts) => {
-                const storedExecution: WorkflowExecution = {
-                  ...checkpointExecution,
-                  stage: "source-artifacts-stored",
-                  managedSourceArtifacts: storedArtifacts,
-                  dispositions: checkpointExecution.dispositions.map((item) =>
-                    completeManagedStoreDisposition(item, storedArtifacts),
+                checkpointExecution = skipped;
+                resumedExecution = skipped;
+                notifyDurableCheckpoint(input, skipped, false);
+                continue;
+              }
+              acquisition = acquired.value.checkpoint;
+              staged = acquired.value.staged;
+              acquisitions.push(acquisition);
+              const acquiredExecution: WorkflowExecution = {
+                ...checkpointExecution,
+                proposalId: proposal.id,
+                stage: "source-artifacts-acquired",
+                sourceArtifactAcquisitions: acquisitions,
+                dispositions: [
+                  ...checkpointExecution.dispositions.filter(
+                    (item) =>
+                      item.key !== acquireDispositionKey &&
+                      item.key !== storeDispositionKey,
                   ),
-                };
-                await this.transition(
-                  checkpointExecution,
-                  storedExecution,
-                  mutationClaim(),
-                );
-                checkpointExecution = storedExecution;
-                notifyDurableCheckpoint(input, checkpointExecution, false);
-              },
+                  {
+                    key: acquireDispositionKey,
+                    status: "completed",
+                    effectReference: acquisition.stagedReference,
+                  },
+                  {
+                    key: storeDispositionKey,
+                    status: "running",
+                  },
+                ],
+              };
+              await this.transition(
+                checkpointExecution,
+                acquiredExecution,
+                mutationClaim(),
+              );
+              checkpointExecution = acquiredExecution;
+              resumedExecution = acquiredExecution;
+              notifyDurableCheckpoint(input, acquiredExecution, false);
+            }
+            await renew();
+            const managed = await this.sourceArtifactWork.store({
+              acquisition,
+              ...(staged === undefined ? {} : { staged }),
+              requireCheckpointStore: true,
             });
+            managedArtifacts.push(managed);
+            const storedExecution: WorkflowExecution = {
+              ...checkpointExecution,
+              proposalId: proposal.id,
+              stage: "source-artifacts-stored",
+              sourceArtifactAcquisitions: acquisitions,
+              managedSourceArtifacts: managedArtifacts,
+              dispositions: checkpointExecution.dispositions.map((item) =>
+                completeManagedStoreDisposition(
+                  item,
+                  storeDispositionKey,
+                  managed,
+                ),
+              ),
+            };
+            await this.transition(
+              checkpointExecution,
+              storedExecution,
+              mutationClaim(),
+            );
+            checkpointExecution = storedExecution;
+            resumedExecution = storedExecution;
+            notifyDurableCheckpoint(input, storedExecution, false);
+          }
+          if (
+            (checkpointExecution.stage !== "source-artifacts-stored" &&
+              checkpointExecution.stage !== "cover-stored") ||
+            (checkpointExecution.managedSourceArtifacts?.length ?? 0) !==
+              managedArtifacts.length ||
+            !(checkpointExecution.managedSourceArtifacts ?? []).every(
+              (managed) =>
+                managedArtifacts.some(
+                  (expected) =>
+                    expected.candidateId === managed.candidateId &&
+                    expected.sourceRecordId === managed.sourceRecordId &&
+                    expected.role === managed.role,
+                ),
+            )
+          ) {
+            const storedExecution: WorkflowExecution = {
+              ...checkpointExecution,
+              proposalId: proposal.id,
+              stage: "source-artifacts-stored",
+              sourceArtifactAcquisitions: acquisitions,
+              managedSourceArtifacts: managedArtifacts,
+            };
+            await this.transition(
+              checkpointExecution,
+              storedExecution,
+              mutationClaim(),
+            );
+            checkpointExecution = storedExecution;
+            notifyDurableCheckpoint(input, storedExecution, false);
           }
           const accepted = createAcceptedRecognition({
             proposal,
@@ -9725,12 +10183,71 @@ export class AssetRefreshWorkflow {
       await this.ports.changeImpactQueries.inspectChangeImpactPreviewForExecution(
         executionId,
       );
+    const sourceArtifactCandidates = await this.publicSourceArtifactCandidates(
+      inspection.accepted,
+    );
     return {
-      ...publicInspection(inspection, this.ports.metadataPolicyConfiguration),
+      ...publicInspection(
+        inspection,
+        this.ports.metadataPolicyConfiguration,
+        sourceArtifactCandidates,
+      ),
       ...(preview === undefined
         ? {}
         : { changeImpactPreview: publicChangeImpactPreview(preview) }),
     };
+  }
+
+  private async publicSourceArtifactCandidates(
+    accepted: AcceptedAssetState | undefined,
+  ): Promise<readonly PublicSourceArtifactCandidate[]> {
+    const queries = this.ports.currentSourceArtifactQueries;
+    if (accepted === undefined || queries === undefined) return [];
+    const associations = accepted.sourceAssociations;
+    const facts = await Promise.all(
+      associations.map((association) =>
+        queries.readCurrentSourceArtifactFacts({
+          subjectId: accepted.entity.id,
+          sourceIdentity: association.sourceIdentity,
+          sourceAssociationId: association.id,
+        }),
+      ),
+    );
+    return facts.flatMap((current) =>
+      current === undefined
+        ? []
+        : current.candidates.map(({ candidate }) => ({
+            sourceRecordId: candidate.sourceRecordId,
+            role: candidate.role,
+            mediaType: candidate.mediaType,
+            ...(candidate.selectionEvidence === undefined
+              ? {}
+              : {
+                  selectionEvidence: {
+                    ...(candidate.selectionEvidence.suggestedFilename ===
+                    undefined
+                      ? {}
+                      : {
+                          suggestedFilename:
+                            candidate.selectionEvidence.suggestedFilename,
+                        }),
+                    ...(candidate.selectionEvidence.declaredByteLength ===
+                    undefined
+                      ? {}
+                      : {
+                          declaredByteLength:
+                            candidate.selectionEvidence.declaredByteLength,
+                        }),
+                    ...(candidate.selectionEvidence.sourceOrdinal === undefined
+                      ? {}
+                      : {
+                          sourceOrdinal:
+                            candidate.selectionEvidence.sourceOrdinal,
+                        }),
+                  },
+                }),
+          })),
+    );
   }
 
   private async inspectResumedPublic(
@@ -10293,6 +10810,8 @@ function selectSourceArtifacts(
   proposal: RecognitionProposal,
   requirement: InformationRequirement,
 ): readonly SourceArtifactCandidate[] {
+  const interpretation = recognitionSourceInterpretation(proposal);
+  if (interpretation === undefined) return [];
   const selected: SourceArtifactCandidate[] = [];
   for (const requested of requirement.artifactRoles) {
     if (
@@ -10301,7 +10820,7 @@ function selectSourceArtifacts(
     ) {
       throw new Error("信息需求中的产物数量上限无效");
     }
-    const candidates = proposal.interpretation.sourceArtifacts.filter(
+    const candidates = interpretation.sourceArtifacts.filter(
       (candidate) => candidate.role === requested.role,
     );
     const observedCandidates = proposal.observedArtifactParts?.filter(
@@ -10317,6 +10836,23 @@ function selectSourceArtifacts(
     selected.push(...candidates.slice(0, requested.maximum ?? 1));
   }
   return selected;
+}
+
+async function runSourceArtifactAcquisitionEffect<Value>(input: {
+  readonly necessity: "required" | "optional";
+  readonly acquire: () => Promise<Value>;
+}): Promise<
+  | { readonly status: "acquired"; readonly value: Value }
+  | { readonly status: "optional-failed" }
+> {
+  try {
+    return { status: "acquired", value: await input.acquire() };
+  } catch (error) {
+    if (!(error instanceof SourceArtifactAcquisitionEffectFailure)) throw error;
+    rethrowWorkflowLifecycle(error.cause);
+    if (input.necessity === "required") throw error.cause;
+    return { status: "optional-failed" };
+  }
 }
 
 /**
@@ -10467,8 +11003,9 @@ function validateRecognitionProposalForRecords(
   sourceRecords: readonly SourceRecord[],
 ): RecognitionProposal {
   const available = new Set(sourceRecords.map((record) => record.id));
+  const interpretation = recognitionSourceInterpretation(proposal);
   const references = [
-    ...(proposal.interpretation.recognitionEvidenceReferences ?? []),
+    ...(interpretation?.recognitionEvidenceReferences ?? []),
     ...proposal.ruleResults.flatMap(
       (result) => result.evidenceReferences ?? [],
     ),
@@ -10504,6 +11041,7 @@ function sourceArtifactCacheKey(candidate: SourceArtifactCandidate): string {
     role: candidate.role,
     acquisitionReference: candidate.acquisitionReference,
     mediaType: mediaTypeEssence(candidate.mediaType),
+    selectionEvidence: candidate.selectionEvidence,
   });
 }
 
@@ -10527,8 +11065,8 @@ function resolveSourceArtifactSubject(
 }
 
 /**
- * 新接受资产在首次提交前没有耐久身份。因此完整待处理检查点同时也是已选隐式服务主体
- * 的耐久记录；任何不完整内容都不能复活该身份或其暂存字节。
+ * 新接受资产在首次提交前没有耐久身份。因此任一完整待处理检查点都可以恢复已选隐式
+ * 服务主体；重复或互相矛盾的检查点不能复活该身份或其暂存字节。
  */
 function inferCheckpointedAcceptedAssetId(
   candidates: readonly SourceArtifactCandidate[],
@@ -10541,16 +11079,17 @@ function inferCheckpointedAcceptedAssetId(
     (candidate) => candidate.subjectId === undefined,
   );
   if (implicit.length === 0) return undefined;
-  const subjects = implicit.map((candidate) => {
+  const subjects: string[] = [];
+  for (const candidate of implicit) {
     const matches = checkpoints.filter((checkpoint) =>
       checkpointMatchesCandidateExceptSubject(checkpoint, candidate),
     );
-    const [match] = matches;
-    return matches.length === 1 && match !== undefined
-      ? match.subjectId
-      : undefined;
-  });
-  if (subjects.some((subjectId) => subjectId === undefined)) return undefined;
+    const matchedSubjects = new Set(matches.map((match) => match.subjectId));
+    if (matchedSubjects.size > 1) return undefined;
+    const [subject] = matchedSubjects;
+    if (subject !== undefined) subjects.push(subject);
+  }
+  if (subjects.length === 0) return undefined;
   const resolved = new Set(subjects);
   const [subject] = subjects;
   return resolved.size === 1 ? subject : undefined;
@@ -10626,6 +11165,7 @@ function registerSourceArtifactDefinitions(
     const definition = JSON.stringify({
       acquisitionReference: candidate.acquisitionReference,
       mediaType: mediaTypeEssence(candidate.mediaType),
+      selectionEvidence: candidate.selectionEvidence,
     });
     const previous = definitions.get(identity);
     if (previous !== undefined && previous !== definition)
@@ -10640,11 +11180,12 @@ function assertInterpretationSatisfiesInformationRequirement(
   proposal: RecognitionProposal,
   requirement: InformationRequirement,
 ): void {
+  const interpretation = recognitionSourceInterpretation(proposal);
   for (const requested of requirement.metadata) {
     if (
       requested.necessity === "required" &&
       ![
-        ...proposal.interpretation.metadata,
+        ...(interpretation?.metadata ?? []),
         ...(proposal.observedMetadata ?? []).map((item) => ({
           property: item.property,
         })),
@@ -10655,12 +11196,25 @@ function assertInterpretationSatisfiesInformationRequirement(
   for (const requested of requirement.relationshipTypes) {
     if (
       requested.necessity === "required" &&
-      !(proposal.interpretation.relationships ?? []).some(
+      !(interpretation?.relationships ?? []).some(
         (relationship) => relationship.type === requested.type,
       )
     )
       throw new Error(`缺少必需的关系类型：${requested.type}`);
   }
+}
+
+function sameRecognitionIdentity(
+  current: AcceptedRecognition,
+  proposal: RecognitionProposal,
+): boolean {
+  const interpretation = recognitionSourceInterpretation(proposal);
+  const association = current.recognitionSourceAssociation;
+  if (interpretation === undefined) return association === undefined;
+  return (
+    association?.sourceIdentity === interpretation.sourceIdentity &&
+    association.nativeAddress === interpretation.sourceAddress
+  );
 }
 
 function createAcceptedRecognition(options: {
@@ -10675,6 +11229,7 @@ function createAcceptedRecognition(options: {
   readonly observedArtifactBoundary?: "filesystem-package";
   readonly objectIdentityContract?: FilesystemObjectIdentityContract;
 }): AcceptedRecognition {
+  const interpretation = recognitionSourceInterpretation(options.proposal);
   const asset: DigitalAsset = options.current?.entity ??
     options.asset ?? {
       id: id("entity"),
@@ -10923,17 +11478,29 @@ function createAcceptedRecognition(options: {
       },
     };
   });
+  const recognitionSourceAssociation: SourceAssociation | undefined =
+    options.current?.recognitionSourceAssociation ??
+    (interpretation === undefined
+      ? undefined
+      : {
+          id: id("source-association"),
+          subjectId: asset.id,
+          sourceIdentity: interpretation.sourceIdentity,
+          nativeAddress: interpretation.sourceAddress,
+          proposalId: options.proposal.id,
+        });
+  const sourceAssociations =
+    options.current?.sourceAssociations ??
+    (recognitionSourceAssociation === undefined
+      ? []
+      : [recognitionSourceAssociation]);
   return {
     proposal: options.proposal,
     entity: asset,
-    sourceAssociation: {
-      id: options.current?.sourceAssociation.id ?? id("source-association"),
-      subjectId: asset.id,
-      sourceIdentity: options.proposal.interpretation.sourceIdentity,
-      nativeAddress: options.proposal.interpretation.sourceAddress,
-      proposalId:
-        options.current?.sourceAssociation.proposalId ?? options.proposal.id,
-    },
+    sourceAssociations,
+    ...(recognitionSourceAssociation === undefined
+      ? {}
+      : { recognitionSourceAssociation }),
     recognitionDecision: {
       id: options.current?.recognitionDecision.id ?? id("recognition-decision"),
       proposalId:
@@ -10968,15 +11535,11 @@ function createAcceptedRecognition(options: {
       ...managed.associations,
       ...localParts.map((item) => item.association),
     ],
-    metadata: [
-      ...options.proposal.interpretation.metadata,
-      ...observedMetadata,
-    ],
-    entities: options.proposal.interpretation.entities ?? [],
-    entityMentions: options.proposal.interpretation.entityMentions ?? [],
-    entityResolutionDecisions:
-      options.proposal.interpretation.entityResolutionDecisions ?? [],
-    relationships: (options.proposal.interpretation.relationships ?? []).map(
+    metadata: [...(interpretation?.metadata ?? []), ...observedMetadata],
+    entities: interpretation?.entities ?? [],
+    entityMentions: interpretation?.entityMentions ?? [],
+    entityResolutionDecisions: interpretation?.entityResolutionDecisions ?? [],
+    relationships: (interpretation?.relationships ?? []).map(
       (relationship) => ({
         id: relationshipId(relationship, asset.id),
         ...relationship,

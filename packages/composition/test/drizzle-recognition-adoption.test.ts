@@ -235,6 +235,389 @@ it("commits one validated recognition adoption without direct DatabaseSync queri
   catalogue.close();
 });
 
+it("reopens and enumerates an observed-evidence recognition without a source association", async () => {
+  const root = await preparedCatalogueRoot();
+  cleanup.push(root);
+  const catalogue = SqliteCatalogue.forProductData(root);
+  const producer = {
+    capabilityId: "epub-inspector",
+    capabilityVersion: "1",
+    contractVersion: "epub/3",
+  };
+  const revision = {
+    observedArtifactReference: "book.epub",
+    blob: {
+      digest: "epub-digest",
+      mediaType: "application/epub+zip",
+      byteLength: 1,
+    },
+    producer,
+  };
+  const evidence = {
+    kind: "format.valid-publication",
+    explanation: "一个有效且边界完整的出版物修订版",
+    producer,
+    inspection: {
+      identifiers: [],
+      observedArtifactReference: revision.observedArtifactReference,
+      revision: revision.blob,
+      metadata: [],
+      parts: [],
+    },
+  };
+  const proposal = {
+    id: "local-proposal",
+    basis: {
+      kind: "observed-evidence" as const,
+      producer,
+      evidence: [evidence],
+      artifactRevisions: [revision],
+    },
+    ruleResults: [
+      {
+        capabilityId: "local-recognizer",
+        capabilityVersion: "1",
+        ruleId: "valid-single-revision",
+        ruleVersion: "1",
+        outcome: "satisfied" as const,
+        explanation: "精确观察证据建立一个本地资产边界",
+        evidence: [evidence],
+      },
+    ],
+  };
+  const accepted: AcceptedRecognition = {
+    proposal,
+    entity: { id: "local-asset", kind: "digital-asset" },
+    sourceAssociations: [],
+    recognitionDecision: {
+      id: "local-decision",
+      proposalId: proposal.id,
+      assetId: "local-asset",
+      acceptedRuleResults: proposal.ruleResults,
+    },
+    artifacts: [],
+    locations: [],
+    blobs: [],
+    artifactRevisions: [],
+    artifactAssociations: [],
+    metadata: [],
+    entities: [],
+    relationships: [],
+  };
+  const reusePlan = {
+    workItems: [
+      {
+        key: "local-book",
+        domainBaseline: "local-domain",
+        sourceBaseline: "no-source",
+        informationBaseline: "local-information",
+      },
+    ],
+  };
+  const compatibility = {
+    workflowVersion: "asset-refresh/2" as const,
+    policyVersion: "local-policy/1",
+    capabilityCoordinates: ["epub-inspector@1/epub/3"],
+  };
+  const running = {
+    ...runningExecution(),
+    id: "local-execution",
+    reusePlan,
+    compatibility,
+  };
+  await catalogue.createExecution(running);
+  await acceptRecognition(catalogue, {
+    execution: {
+      ...running,
+      status: "completed",
+      stage: "completed",
+      outcome: "accepted",
+      proposalId: proposal.id,
+      acceptedAssetId: accepted.entity.id,
+    },
+    accepted,
+  });
+  catalogue.close();
+
+  const reopened = SqliteCatalogue.forProductData(root);
+  await expect(reopened.inspectExecution(running.id)).resolves.toMatchObject({
+    accepted: {
+      entity: { id: "local-asset" },
+      proposal: { basis: { kind: "observed-evidence" } },
+      sourceAssociations: [],
+    },
+  });
+  await expect(
+    reopened.listCurrentCataloguePage({ limit: 10 }),
+  ).resolves.toMatchObject({ items: [{ entity: { id: "local-asset" } }] });
+  await expect(
+    reopened.findReusableOrdinaryScan({
+      plan: reusePlan,
+      availableCompatibility: compatibility,
+    }),
+  ).resolves.toMatchObject({ id: running.id });
+  const current = (await reopened.inspectExecution(running.id))!.accepted!;
+  expect(current.recognitionSourceAssociation).toBeUndefined();
+  expect(current.recognitionDecision.id).toBe("local-decision");
+  const nextRevision = {
+    ...revision,
+    blob: { ...revision.blob, digest: "epub-digest-2", byteLength: 2 },
+  };
+  const nextEvidence = {
+    ...evidence,
+    inspection: {
+      ...evidence.inspection,
+      revision: nextRevision.blob,
+    },
+  };
+  const nextProposal = {
+    ...proposal,
+    id: "local-proposal-2",
+    basis: {
+      ...proposal.basis,
+      evidence: [nextEvidence],
+      artifactRevisions: [nextRevision],
+    },
+    ruleResults: proposal.ruleResults.map((result) => ({
+      ...result,
+      evidence: [nextEvidence],
+    })),
+  };
+  const reevaluation = { ...runningExecution(), id: "local-reevaluation" };
+  await reopened.createExecution(reevaluation);
+  const nextAccepted: AcceptedRecognition = {
+    ...current,
+    proposal: nextProposal,
+    artifacts: [{ id: "local-epub-artifact" }],
+    locations: [
+      {
+        id: "local-epub-location-2",
+        artifactId: "local-epub-artifact",
+        address: "/observed/book.epub",
+        kind: "observed",
+      },
+    ],
+    blobs: [nextRevision.blob],
+    artifactRevisions: [
+      {
+        id: "local-epub-revision-2",
+        artifactId: "local-epub-artifact",
+        blobDigest: nextRevision.blob.digest,
+        producer,
+      },
+    ],
+    artifactAssociations: [],
+    metadata: [
+      {
+        property: "asset.title",
+        sourceSlot: "epub.opf.title",
+        value: "本地标题第二版",
+        sourceRecordIds: [],
+        producer,
+        observedArtifactPart: {
+          artifactId: "local-epub-artifact",
+          revisionId: "local-epub-revision-2",
+          locator: "epub:opf/dc:title[1]",
+        },
+      },
+    ],
+  };
+  await expect(
+    reopened.refreshAcceptedRecognition({
+      expectedExecution: reevaluation,
+      execution: {
+        ...reevaluation,
+        status: "completed",
+        stage: "completed",
+        outcome: "accepted",
+        proposalId: nextProposal.id,
+        acceptedAssetId: accepted.entity.id,
+      },
+      current,
+      accepted: nextAccepted,
+      sourceRecords: [],
+      expectedLineageHeads: [],
+    }),
+  ).resolves.toBeUndefined();
+  await expect(
+    reopened.inspectExecution(reevaluation.id),
+  ).resolves.toMatchObject({
+    proposal: { id: nextProposal.id, basis: { kind: "observed-evidence" } },
+    accepted: {
+      entity: { id: accepted.entity.id },
+      recognitionDecision: { id: accepted.recognitionDecision.id },
+      sourceAssociations: [],
+      artifactRevisions: [
+        { id: "local-epub-revision-2", blobDigest: "epub-digest-2" },
+      ],
+      metadata: [{ value: "本地标题第二版" }],
+    },
+  });
+  const currentAfterReevaluation = (await reopened.inspectExecution(
+    reevaluation.id,
+  ))!.accepted!;
+  const failedExecution = {
+    ...runningExecution(),
+    id: "local-failed-reevaluation",
+  };
+  await reopened.createExecution(failedExecution);
+  const failedProposal = { ...nextProposal, id: "local-failed-proposal" };
+  await expect(
+    reopened.refreshAcceptedRecognition({
+      expectedExecution: failedExecution,
+      execution: {
+        ...failedExecution,
+        status: "completed",
+        stage: "completed",
+        outcome: "accepted",
+        proposalId: failedProposal.id,
+        acceptedAssetId: accepted.entity.id,
+      },
+      current: currentAfterReevaluation,
+      accepted: {
+        ...currentAfterReevaluation,
+        proposal: failedProposal,
+        blobs: [
+          ...currentAfterReevaluation.blobs,
+          {
+            digest: "conflicting-epub-digest",
+            mediaType: "application/epub+zip",
+            byteLength: 3,
+          },
+        ],
+        artifactRevisions: currentAfterReevaluation.artifactRevisions.map(
+          (item) => ({
+            ...item,
+            blobDigest: "conflicting-epub-digest",
+          }),
+        ),
+      },
+      sourceRecords: [],
+      expectedLineageHeads: [],
+    }),
+  ).rejects.toThrow("Artifact Revision local-epub-revision-2 conflicts");
+  const rolledBack = await reopened.inspectExecution(failedExecution.id);
+  expect(rolledBack?.execution).toMatchObject({ status: "running" });
+  expect(rolledBack?.proposal).toBeUndefined();
+  const retryProposal = { ...nextProposal, id: "local-retry-proposal" };
+  await expect(
+    reopened.refreshAcceptedRecognition({
+      expectedExecution: failedExecution,
+      execution: {
+        ...failedExecution,
+        status: "completed",
+        stage: "completed",
+        outcome: "accepted",
+        proposalId: retryProposal.id,
+        acceptedAssetId: accepted.entity.id,
+      },
+      current: currentAfterReevaluation,
+      accepted: { ...currentAfterReevaluation, proposal: retryProposal },
+      sourceRecords: [],
+      expectedLineageHeads: [],
+    }),
+  ).resolves.toBeUndefined();
+  reopened.close();
+
+  const replacement = SqliteCatalogue.forProductData(root);
+  const replacementExecution = {
+    ...runningExecution(),
+    id: "local-identity-replacement",
+  };
+  await replacement.createExecution(replacementExecution);
+  const replacementProposal = {
+    ...nextProposal,
+    id: "local-proposal-3",
+  };
+  const currentProjection = {
+    sourceAssociations: [],
+    metadata: nextAccepted.metadata,
+    entities: nextAccepted.entities ?? [],
+    entityMentions: nextAccepted.entityMentions ?? [],
+    entityResolutionDecisions: nextAccepted.entityResolutionDecisions ?? [],
+    relationships: nextAccepted.relationships ?? [],
+    artifacts: nextAccepted.artifacts,
+    locations: nextAccepted.locations,
+    blobs: nextAccepted.blobs,
+    artifactRevisions: nextAccepted.artifactRevisions,
+    artifactAssociations: nextAccepted.artifactAssociations,
+  };
+  const completeBaseline = await replacement.freezeChangeImpactBaseline({
+    assetId: accepted.entity.id,
+    recognitionDecisionId: accepted.recognitionDecision.id,
+  });
+  const preview = {
+    id: "local-change-impact",
+    executionId: replacementExecution.id,
+    assetId: accepted.entity.id,
+    proposal: replacementProposal,
+    baselines: [
+      {
+        key: "recognition-decision",
+        value: accepted.recognitionDecision.id,
+      },
+      { key: "source-records", value: "" },
+      { key: "complete-current-projection", value: completeBaseline },
+    ],
+    current: currentProjection,
+    projected: currentProjection,
+    blockingConditions: [],
+    status: "awaiting-confirmation" as const,
+  };
+  await replacement.finishExecutionWithChangeImpactPreview({
+    expectedExecution: replacementExecution,
+    execution: {
+      ...replacementExecution,
+      status: "completed",
+      stage: "completed",
+      outcome: "proposal",
+      proposalId: replacementProposal.id,
+    },
+    proposal: replacementProposal,
+    preview,
+  });
+  replacement.close();
+
+  const afterPreviewRestart = SqliteCatalogue.forProductData(root);
+  const successorDecision = {
+    id: "local-decision-3",
+    proposalId: replacementProposal.id,
+    assetId: accepted.entity.id,
+    acceptedRuleResults: replacementProposal.ruleResults,
+  };
+  await expect(
+    afterPreviewRestart.applyChangeImpactPreview({
+      preview,
+      plan: {
+        successorDecision,
+        supersession: {
+          id: "local-decision-supersession-3",
+          predecessorDecisionId: accepted.recognitionDecision.id,
+          successorDecisionId: successorDecision.id,
+        },
+      },
+    }),
+  ).resolves.toBe("applied");
+  await expect(
+    afterPreviewRestart.findAcceptedForSubjects([accepted.entity.id]),
+  ).resolves.toMatchObject([
+    {
+      accepted: {
+        proposal: { id: replacementProposal.id },
+        recognitionDecision: { id: successorDecision.id },
+        sourceAssociations: [],
+      },
+    },
+  ]);
+  await expect(
+    afterPreviewRestart.findReusableOrdinaryScan({
+      plan: reusePlan,
+      availableCompatibility: compatibility,
+    }),
+  ).resolves.toBeUndefined();
+  afterPreviewRestart.close();
+});
+
 it("accepts an equivalent sparse Workflow Execution baseline after durable default normalization", async () => {
   const root = await preparedCatalogueRoot();
   cleanup.push(root);
@@ -290,7 +673,7 @@ it("hydrates one accepted inspection graph without direct DatabaseSync queries",
       proposal: expect.objectContaining({ id: completed.proposalId }),
       accepted: expect.objectContaining({
         entity: { id: "dlsite-work", kind: "digital-asset" },
-        sourceAssociation: expect.objectContaining({
+        recognitionSourceAssociation: expect.objectContaining({
           id: "dlsite-association",
         }),
       }),
@@ -1056,7 +1439,8 @@ it("uses shipped TMDB collection and interpretation while OMDb enrichment establ
       expectedExecution: pending,
       execution: applied,
       expectedRecognitionBaseline: {
-        sourceAssociationId: baseline.accepted.sourceAssociation.id,
+        recognitionSourceAssociationId:
+          baseline.accepted.recognitionSourceAssociation.id,
         recognitionDecisionId: baseline.accepted.recognitionDecision.id,
       },
       assetId: "tmdb-film",
@@ -1071,9 +1455,10 @@ it("uses shipped TMDB collection and interpretation while OMDb enrichment establ
   ).resolves.toEqual([
     expect.objectContaining({
       accepted: expect.objectContaining({
-        sourceAssociation: baseline.accepted.sourceAssociation,
+        recognitionSourceAssociation:
+          baseline.accepted.recognitionSourceAssociation,
         sourceAssociations: expect.arrayContaining([
-          baseline.accepted.sourceAssociation,
+          baseline.accepted.recognitionSourceAssociation,
           association,
         ]),
         metadata: expect.arrayContaining([
@@ -1356,7 +1741,8 @@ it("reuses an exact durable enrichment association and rejects a replay before f
     expectedExecution: pending,
     execution: applied,
     expectedRecognitionBaseline: {
-      sourceAssociationId: baseline.accepted.sourceAssociation.id,
+      recognitionSourceAssociationId:
+        baseline.accepted.recognitionSourceAssociation.id,
       recognitionDecisionId: baseline.accepted.recognitionDecision.id,
     },
     assetId: "tmdb-film",
@@ -1395,7 +1781,8 @@ it("reuses an exact durable enrichment association and rejects a replay before f
       expectedExecution: laterPending,
       execution: laterApplied,
       expectedRecognitionBaseline: {
-        sourceAssociationId: baseline.accepted.sourceAssociation.id,
+        recognitionSourceAssociationId:
+          baseline.accepted.recognitionSourceAssociation.id,
         recognitionDecisionId: baseline.accepted.recognitionDecision.id,
       },
       assetId: "tmdb-film",
@@ -1489,7 +1876,8 @@ it("rejects an enrichment identity conflict when another current subject already
       expectedExecution: pending,
       execution: applied,
       expectedRecognitionBaseline: {
-        sourceAssociationId: target.accepted.sourceAssociation.id,
+        recognitionSourceAssociationId:
+          target.accepted.recognitionSourceAssociation.id,
         recognitionDecisionId: target.accepted.recognitionDecision.id,
       },
       assetId: target.accepted.entity.id,
@@ -1594,7 +1982,8 @@ it("preflights an enrichment batch before creating its optional association", as
       expectedExecution: pending,
       execution: applied,
       expectedRecognitionBaseline: {
-        sourceAssociationId: baseline.accepted.sourceAssociation.id,
+        recognitionSourceAssociationId:
+          baseline.accepted.recognitionSourceAssociation.id,
         recognitionDecisionId: baseline.accepted.recognitionDecision.id,
       },
       assetId: baseline.accepted.entity.id,
@@ -1727,7 +2116,7 @@ it("scopes complete OMDb omissions to one subject record chain while retaining o
     .execution;
   const firstBHeads = await catalogue.freezeSourceLineageHeads({
     assetId: target.entity.id,
-    sourceAssociation: target.sourceAssociation,
+    sourceAssociation: target.recognitionSourceAssociation,
     coverageIds: [firstBRecord.record.coverage.id],
   });
   expect(firstBHeads).toEqual([
@@ -1742,7 +2131,7 @@ it("scopes complete OMDb omissions to one subject record chain while retaining o
     execution: firstBPending,
     submission: {
       assetId: target.entity.id,
-      sourceAssociation: target.sourceAssociation,
+      sourceAssociation: target.recognitionSourceAssociation,
       sourceRecords: [firstBRecord.record],
       interpretation: firstBInterpretation,
       expectedLineageHeads: firstBHeads,
@@ -1770,7 +2159,7 @@ it("scopes complete OMDb omissions to one subject record chain while retaining o
   ))!.execution;
   const secondBHeads = await catalogue.freezeSourceLineageHeads({
     assetId: target.entity.id,
-    sourceAssociation: target.sourceAssociation,
+    sourceAssociation: target.recognitionSourceAssociation,
     coverageIds: [secondBRecord.record.coverage.id],
   });
   expect(secondBHeads).toEqual([
@@ -1781,7 +2170,7 @@ it("scopes complete OMDb omissions to one subject record chain while retaining o
     execution: secondBPending,
     submission: {
       assetId: target.entity.id,
-      sourceAssociation: target.sourceAssociation,
+      sourceAssociation: target.recognitionSourceAssociation,
       sourceRecords: [secondBRecord.record],
       interpretation: secondBInterpretation,
       expectedLineageHeads: secondBHeads,
@@ -2911,10 +3300,16 @@ it("rejects an invalid AcceptedRecognition before the SQLite transaction writes 
   const accepted = acceptedRecognition();
   const invalid: AcceptedRecognition = {
     ...accepted,
-    sourceAssociation: {
-      ...accepted.sourceAssociation,
+    recognitionSourceAssociation: {
+      ...accepted.recognitionSourceAssociation,
       proposalId: "different-proposal",
     },
+    sourceAssociations: [
+      {
+        ...accepted.recognitionSourceAssociation!,
+        proposalId: "different-proposal",
+      },
+    ],
   };
   rejectDirectDatabaseWrites();
 
@@ -3088,10 +3483,13 @@ it("rejects foreign Source Records from proposal interpretation and recognition 
   const interpretationForeign = {
     ...base,
     id: "proposal-foreign-interpretation",
-    interpretation: {
-      ...base.interpretation,
-      id: "proposal-foreign-interpretation-batch",
-      sourceRecordIds: [foreignRecord.id],
+    basis: {
+      ...base.basis,
+      interpretation: {
+        ...base.basis.interpretation,
+        id: "proposal-foreign-interpretation-batch",
+        sourceRecordIds: [foreignRecord.id],
+      },
     },
   };
 
@@ -3121,11 +3519,14 @@ it("rejects foreign Source Records from proposal interpretation and recognition 
   const evidenceForeign = {
     ...base,
     id: "proposal-foreign-evidence",
-    interpretation: {
-      ...base.interpretation,
-      id: "proposal-foreign-evidence-batch",
-      sourceRecordIds: [ownedRecord.id, foreignRecord.id],
-      recognitionEvidenceReferences: evidenceReferences,
+    basis: {
+      ...base.basis,
+      interpretation: {
+        ...base.basis.interpretation,
+        id: "proposal-foreign-evidence-batch",
+        sourceRecordIds: [ownedRecord.id, foreignRecord.id],
+        recognitionEvidenceReferences: evidenceReferences,
+      },
     },
     ruleResults: base.ruleResults.map((result) => ({
       ...result,
@@ -3255,7 +3656,7 @@ it("keeps equal title, managed path, and Blob as independent identity facts", as
     metadataAssertions: 2,
     recognitionDecisions: 2,
     recognitionProposals: 2,
-    sourceAssociationHeads: 2,
+    recognitionHeads: 2,
     sourceAssociations: 2,
     sourceLineageHeads: 2,
   });
@@ -3273,7 +3674,7 @@ function adoptionFactCounts(root: string) {
           (SELECT count(*) FROM sourced_entities) AS sourcedEntities,
           (SELECT count(*) FROM source_associations) AS sourceAssociations,
           (SELECT count(*) FROM recognition_decisions) AS recognitionDecisions,
-          (SELECT count(*) FROM source_association_heads) AS sourceAssociationHeads,
+          (SELECT count(*) FROM recognition_heads) AS recognitionHeads,
           (SELECT count(*) FROM current_source_associations) AS currentSourceAssociations,
           (SELECT count(*) FROM source_lineage_heads) AS sourceLineageHeads,
           (SELECT count(*) FROM current_source_artifact_candidate_lineages) AS currentSourceArtifactCandidateLineages,
@@ -3374,7 +3775,7 @@ function emptyAdoptionFactCounts() {
     recognitionProposals: 0,
     relationshipLifecycles: 0,
     relationshipSources: 0,
-    sourceAssociationHeads: 0,
+    recognitionHeads: 0,
     sourceAssociations: 0,
     sourceLineageHeads: 0,
     sourcedEntities: 0,
@@ -3416,8 +3817,8 @@ function recognitionIdentityFacts(root: string) {
         .all(),
       heads: database
         .prepare(
-          `SELECT subject_id, association_id, recognition_decision_id
-           FROM source_association_heads
+          `SELECT subject_id, recognition_source_association_id, recognition_decision_id
+           FROM recognition_heads
            ORDER BY subject_id`,
         )
         .all(),
@@ -4193,7 +4594,10 @@ function omdbAcceptedRecognition(
 ): AcceptedRecognition {
   const proposal = {
     id: "omdb-initial-proposal",
-    interpretation: source.interpretation,
+    basis: {
+      kind: "source-interpretation" as const,
+      interpretation: source.interpretation,
+    },
     ruleResults: [
       {
         capabilityId: "omdb.exact-recognizer",
@@ -4209,13 +4613,22 @@ function omdbAcceptedRecognition(
   return {
     proposal,
     entity: { id: "omdb-film", kind: "digital-asset" },
-    sourceAssociation: {
+    recognitionSourceAssociation: {
       id: "omdb-association",
       subjectId: "omdb-film",
       sourceIdentity: "omdb",
       nativeAddress: "omdb:imdb:tt1234567",
       proposalId: proposal.id,
     },
+    sourceAssociations: [
+      {
+        id: "omdb-association",
+        subjectId: "omdb-film",
+        sourceIdentity: "omdb",
+        nativeAddress: "omdb:imdb:tt1234567",
+        proposalId: proposal.id,
+      },
+    ],
     recognitionDecision: {
       id: "omdb-decision",
       proposalId: proposal.id,
@@ -4286,19 +4699,28 @@ function omdbAcceptedRecognitionForAsset(input: {
   ];
   const proposal = {
     id: input.proposalId,
-    interpretation,
+    basis: { kind: "source-interpretation" as const, interpretation },
     ruleResults,
   };
   return {
     proposal,
     entity: { id: input.assetId, kind: "digital-asset" },
-    sourceAssociation: {
+    recognitionSourceAssociation: {
       id: input.associationId,
       subjectId: input.assetId,
       sourceIdentity: "omdb",
       nativeAddress: "omdb:imdb:tt1234567",
       proposalId: proposal.id,
     },
+    sourceAssociations: [
+      {
+        id: input.associationId,
+        subjectId: input.assetId,
+        sourceIdentity: "omdb",
+        nativeAddress: "omdb:imdb:tt1234567",
+        proposalId: proposal.id,
+      },
+    ],
     recognitionDecision: {
       id: input.decisionId,
       proposalId: proposal.id,
@@ -4382,9 +4804,9 @@ async function tmdbAcceptedRecognitionFromShippedAdapter(): Promise<{
   const proposal = {
     ...new TmdbStrictFilmRecognizer().recognize({
       evidence,
-      interpretation,
+      basis: { kind: "source-interpretation", interpretation },
     }),
-    interpretation,
+    basis: { kind: "source-interpretation" as const, interpretation },
   };
   return {
     records: collected.records,
@@ -4392,13 +4814,22 @@ async function tmdbAcceptedRecognitionFromShippedAdapter(): Promise<{
     accepted: {
       proposal,
       entity: { id: "tmdb-film", kind: "digital-asset" },
-      sourceAssociation: {
+      recognitionSourceAssociation: {
         id: "tmdb-shipped-association",
         subjectId: "tmdb-film",
         sourceIdentity: interpretation.sourceIdentity,
         nativeAddress: interpretation.sourceAddress,
         proposalId: proposal.id,
       },
+      sourceAssociations: [
+        {
+          id: "tmdb-shipped-association",
+          subjectId: "tmdb-film",
+          sourceIdentity: interpretation.sourceIdentity,
+          nativeAddress: interpretation.sourceAddress,
+          proposalId: proposal.id,
+        },
+      ],
       recognitionDecision: {
         id: "tmdb-shipped-decision",
         proposalId: proposal.id,
@@ -4478,7 +4909,7 @@ function tmdbAcceptedRecognition(): {
   };
   const proposal = {
     id: "tmdb-initial-proposal",
-    interpretation,
+    basis: { kind: "source-interpretation" as const, interpretation },
     ruleResults: [
       {
         capabilityId: "tmdb.exact-recognizer",
@@ -4496,13 +4927,22 @@ function tmdbAcceptedRecognition(): {
     accepted: {
       proposal,
       entity: { id: "tmdb-film", kind: "digital-asset" },
-      sourceAssociation: {
+      recognitionSourceAssociation: {
         id: "tmdb-association",
         subjectId: "tmdb-film",
         sourceIdentity: record.sourceIdentity,
         nativeAddress: record.nativeAddress,
         proposalId: proposal.id,
       },
+      sourceAssociations: [
+        {
+          id: "tmdb-association",
+          subjectId: "tmdb-film",
+          sourceIdentity: record.sourceIdentity,
+          nativeAddress: record.nativeAddress,
+          proposalId: proposal.id,
+        },
+      ],
       recognitionDecision: {
         id: "tmdb-decision",
         proposalId: proposal.id,
@@ -4553,9 +4993,10 @@ function omdbEnrichmentExecution(input: {
         subjectId: input.baseline.entity.id,
         subject: {
           subjectId: input.baseline.entity.id,
-          recognitionSourceAssociation: input.baseline.sourceAssociation,
+          recognitionSourceAssociation:
+            input.baseline.recognitionSourceAssociation,
           recognitionDecisionId: input.baseline.recognitionDecision.id,
-          sourceAssociations: [input.baseline.sourceAssociation],
+          sourceAssociations: [input.baseline.recognitionSourceAssociation],
           metadata: input.baseline.metadata,
           metadataSourceRecords: [
             {
@@ -4574,7 +5015,7 @@ function omdbEnrichmentExecution(input: {
         fulfilledArtifactRoles: [],
         metadataPolicyIds: [],
         stage: input.stage,
-        sourceAssociation: input.sourceAssociation,
+        sourceAssociation: input.recognitionSourceAssociation,
         interpretation: input.source.interpretation,
         sourceRecordIds: [input.source.record.id],
         sourceArtifacts: input.source.interpretation.sourceArtifacts,
@@ -4595,9 +5036,9 @@ function omdbCandidateEnrichmentCheckpoint(
     stage: "candidate-interpreted",
     subject: {
       subjectId: baseline.entity.id,
-      recognitionSourceAssociation: baseline.sourceAssociation,
+      recognitionSourceAssociation: baseline.recognitionSourceAssociation,
       recognitionDecisionId: baseline.recognitionDecision.id,
-      sourceAssociations: [baseline.sourceAssociation],
+      sourceAssociations: [baseline.recognitionSourceAssociation],
       metadata: baseline.metadata,
       metadataSourceRecords: [
         { id: "tmdb-initial-record", sourceIdentity: "tmdb" },
@@ -4737,61 +5178,62 @@ async function createOmdbSourceRefreshRun(input: {
 }
 
 function acceptedRecognition(): AcceptedRecognition {
+  const interpretation = {
+    id: "dlsite-interpretation",
+    producer: {
+      capabilityId: "dlsite.interpreter",
+      capabilityVersion: "1",
+      contractVersion: "1",
+    },
+    sourceRecordIds: ["dlsite-record"],
+    sourceIdentity: "dlsite",
+    sourceAddress:
+      "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html",
+    metadata: [
+      {
+        property: "asset.title",
+        sourceSlot: "dlsite.title",
+        value: "DLsite work",
+        sourceRecordIds: ["dlsite-record"],
+      },
+    ],
+    sourceArtifacts: [],
+    entities: [
+      {
+        id: "dlsite-voice",
+        kind: "persona" as const,
+        sourceIdentity: "dlsite",
+        sourceKey: "dlsite-voice",
+        identityNamespace: "dlsite.credit.voice",
+        label: "DLsite voice",
+        sourceRecordIds: ["dlsite-record"],
+      },
+    ],
+    entityMentions: [
+      {
+        id: "dlsite-voice-mention",
+        sourceRecordIds: ["dlsite-record"],
+        sourceIdentity: "dlsite",
+        field: "voice",
+        role: "voice",
+        label: "DLsite voice",
+        identityNamespace: "dlsite.credit.voice",
+        sourceKey: "dlsite-voice",
+      },
+    ],
+    entityResolutionDecisions: [
+      {
+        id: "dlsite-voice-resolution",
+        mentionId: "dlsite-voice-mention",
+        entityId: "dlsite-voice",
+        rule: "source-field-role-exact" as const,
+        sourceRecordIds: ["dlsite-record"],
+      },
+    ],
+  };
   const proposal = {
     id: "dlsite-proposal",
-    interpretation: {
-      id: "dlsite-interpretation",
-      producer: {
-        capabilityId: "dlsite.interpreter",
-        capabilityVersion: "1",
-        contractVersion: "1",
-      },
-      sourceRecordIds: ["dlsite-record"],
-      sourceIdentity: "dlsite",
-      sourceAddress:
-        "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html",
-      metadata: [
-        {
-          property: "asset.title",
-          sourceSlot: "dlsite.title",
-          value: "DLsite work",
-          sourceRecordIds: ["dlsite-record"],
-        },
-      ],
-      sourceArtifacts: [],
-      entities: [
-        {
-          id: "dlsite-voice",
-          kind: "persona" as const,
-          sourceIdentity: "dlsite",
-          sourceKey: "dlsite-voice",
-          identityNamespace: "dlsite.credit.voice",
-          label: "DLsite voice",
-          sourceRecordIds: ["dlsite-record"],
-        },
-      ],
-      entityMentions: [
-        {
-          id: "dlsite-voice-mention",
-          sourceRecordIds: ["dlsite-record"],
-          sourceIdentity: "dlsite",
-          field: "voice",
-          role: "voice",
-          label: "DLsite voice",
-          identityNamespace: "dlsite.credit.voice",
-          sourceKey: "dlsite-voice",
-        },
-      ],
-      entityResolutionDecisions: [
-        {
-          id: "dlsite-voice-resolution",
-          mentionId: "dlsite-voice-mention",
-          entityId: "dlsite-voice",
-          rule: "source-field-role-exact" as const,
-          sourceRecordIds: ["dlsite-record"],
-        },
-      ],
-    },
+    basis: { kind: "source-interpretation" as const, interpretation },
     ruleResults: [
       {
         capabilityId: "dlsite.recognizer",
@@ -4807,7 +5249,7 @@ function acceptedRecognition(): AcceptedRecognition {
   return {
     proposal,
     entity: { id: "dlsite-work", kind: "digital-asset" },
-    sourceAssociation: {
+    recognitionSourceAssociation: {
       id: "dlsite-association",
       subjectId: "dlsite-work",
       sourceIdentity: "dlsite",
@@ -4815,6 +5257,16 @@ function acceptedRecognition(): AcceptedRecognition {
         "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html",
       proposalId: proposal.id,
     },
+    sourceAssociations: [
+      {
+        id: "dlsite-association",
+        subjectId: "dlsite-work",
+        sourceIdentity: "dlsite",
+        nativeAddress:
+          "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html",
+        proposalId: proposal.id,
+      },
+    ],
     recognitionDecision: {
       id: "dlsite-decision",
       proposalId: proposal.id,
@@ -4852,7 +5304,7 @@ function acceptedRecognition(): AcceptedRecognition {
         role: "asset.primary-cover",
       },
     ],
-    metadata: proposal.interpretation.metadata,
+    metadata: interpretation.metadata,
     entities: [
       {
         id: "dlsite-voice",
@@ -4864,9 +5316,8 @@ function acceptedRecognition(): AcceptedRecognition {
         sourceRecordIds: ["dlsite-record"],
       },
     ],
-    entityMentions: proposal.interpretation.entityMentions,
-    entityResolutionDecisions:
-      proposal.interpretation.entityResolutionDecisions,
+    entityMentions: interpretation.entityMentions,
+    entityResolutionDecisions: interpretation.entityResolutionDecisions,
     relationships: [
       {
         id: "dlsite-voice-relationship",
@@ -4887,29 +5338,32 @@ function continuityConflictRecognition(): AcceptedRecognition {
   const proposal = {
     ...original.proposal,
     id: "dlsite-continuity-proposal",
-    interpretation: {
-      ...original.proposal.interpretation,
-      id: "dlsite-continuity-interpretation",
-      sourceRecordIds: [sourceRecordId],
-      metadata: [
-        {
-          property: "asset.title",
-          sourceSlot: "dlsite.title",
-          // 相同文本不得折叠不同的已接受身份。
-          value: "DLsite work",
-          sourceRecordIds: [sourceRecordId],
-        },
-      ],
-      entities: [],
-      entityMentions: [],
-      entityResolutionDecisions: [],
+    basis: {
+      kind: "source-interpretation" as const,
+      interpretation: {
+        ...original.proposal.basis.interpretation,
+        id: "dlsite-continuity-interpretation",
+        sourceRecordIds: [sourceRecordId],
+        metadata: [
+          {
+            property: "asset.title",
+            sourceSlot: "dlsite.title",
+            // 相同文本不得折叠不同的已接受身份。
+            value: "DLsite work",
+            sourceRecordIds: [sourceRecordId],
+          },
+        ],
+        entities: [],
+        entityMentions: [],
+        entityResolutionDecisions: [],
+      },
     },
   };
   return {
     ...original,
     proposal,
     entity: { id: "dlsite-continuity-work", kind: "digital-asset" },
-    sourceAssociation: {
+    recognitionSourceAssociation: {
       id: "dlsite-continuity-association",
       subjectId: "dlsite-continuity-work",
       sourceIdentity: "dlsite",
@@ -4917,6 +5371,16 @@ function continuityConflictRecognition(): AcceptedRecognition {
         "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html",
       proposalId: proposal.id,
     },
+    sourceAssociations: [
+      {
+        id: "dlsite-continuity-association",
+        subjectId: "dlsite-continuity-work",
+        sourceIdentity: "dlsite",
+        nativeAddress:
+          "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html",
+        proposalId: proposal.id,
+      },
+    ],
     recognitionDecision: {
       id: "dlsite-continuity-decision",
       proposalId: proposal.id,
@@ -4955,7 +5419,7 @@ function continuityConflictRecognition(): AcceptedRecognition {
         role: "asset.primary-cover",
       },
     ],
-    metadata: proposal.interpretation.metadata,
+    metadata: proposal.basis.interpretation.metadata,
     entities: [],
     entityMentions: [],
     entityResolutionDecisions: [],
@@ -4971,28 +5435,42 @@ function independentlyAcceptedRecognition(): AcceptedRecognition {
   const proposal = {
     ...alternate.proposal,
     id: "dlsite-independent-proposal",
-    interpretation: {
-      ...alternate.proposal.interpretation,
-      id: "dlsite-independent-interpretation",
-      sourceRecordIds: [sourceRecordId],
-      sourceAddress,
-      metadata: alternate.proposal.interpretation.metadata.map((assertion) => ({
-        ...assertion,
+    basis: {
+      kind: "source-interpretation" as const,
+      interpretation: {
+        ...alternate.proposal.basis.interpretation,
+        id: "dlsite-independent-interpretation",
         sourceRecordIds: [sourceRecordId],
-      })),
+        sourceAddress,
+        metadata: alternate.proposal.basis.interpretation.metadata.map(
+          (assertion) => ({
+            ...assertion,
+            sourceRecordIds: [sourceRecordId],
+          }),
+        ),
+      },
     },
   };
   return {
     ...alternate,
     proposal,
     entity: { id: "dlsite-independent-work", kind: "digital-asset" },
-    sourceAssociation: {
+    recognitionSourceAssociation: {
       id: "dlsite-independent-association",
       subjectId: "dlsite-independent-work",
       sourceIdentity: "dlsite",
       nativeAddress: sourceAddress,
       proposalId: proposal.id,
     },
+    sourceAssociations: [
+      {
+        id: "dlsite-independent-association",
+        subjectId: "dlsite-independent-work",
+        sourceIdentity: "dlsite",
+        nativeAddress: sourceAddress,
+        proposalId: proposal.id,
+      },
+    ],
     recognitionDecision: {
       id: "dlsite-independent-decision",
       proposalId: proposal.id,
@@ -5023,6 +5501,6 @@ function independentlyAcceptedRecognition(): AcceptedRecognition {
         role: "asset.primary-cover",
       },
     ],
-    metadata: proposal.interpretation.metadata,
+    metadata: proposal.basis.interpretation.metadata,
   };
 }

@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   customType,
+  check,
   index,
   integer,
   primaryKey,
@@ -98,6 +99,8 @@ export const workflowExecutions = sqliteTable(
     workflowInputJson: text("workflow_input_json"),
     /** 明确归因于行为主体的终态工作流执行取消。 */
     cancellationJson: text("cancellation_json"),
+    /** 新识别原子接受前可跨中断恢复的预分配主体身份。 */
+    plannedAssetId: text("planned_asset_id"),
   },
   (table) => [
     primaryKey({ name: "workflow_executions_pk", columns: [table.id] }),
@@ -143,7 +146,7 @@ export const recognitionProposals = sqliteTable(
   {
     id: text().notNull(),
     executionId: text("execution_id").notNull(),
-    interpretationJson: text("interpretation_json").notNull(),
+    basisJson: text("basis_json").notNull(),
     ruleResultsJson: text("rule_results_json").notNull(),
   },
   (table) => [
@@ -239,6 +242,86 @@ export const artifactRevisions = sqliteTable(
     primaryKey({ name: "artifact_revisions_pk", columns: [table.id] }),
     index("artifact_revisions_artifact").on(table.artifactId),
     index("artifact_revisions_blob").on(table.blobDigest),
+  ],
+);
+
+/** 渐进确认把普通修订版证据绑定到当时已有的观察；它不是选择 token 或授权状态。 */
+export const observedRevisionConfirmations = sqliteTable(
+  "observed_revision_confirmations",
+  {
+    revisionId: text("revision_id").notNull(),
+    locationId: text("location_id").notNull(),
+    snapshotId: text("snapshot_id").notNull(),
+    observedAt: text("observed_at").notNull(),
+    size: integer().notNull(),
+    modifiedAt: text("modified_at").notNull(),
+    conditionalBaseline: text("conditional_baseline").notNull(),
+  },
+  (table) => [
+    primaryKey({
+      name: "observed_revision_confirmations_pk",
+      columns: [table.revisionId, table.locationId],
+    }),
+    index("observed_revision_confirmations_revision").on(table.revisionId),
+    index("observed_revision_confirmations_location").on(table.locationId),
+  ],
+);
+
+/** 普通刷新维护的当前位置观察投影；不是 selection/token/session 状态。 */
+export const currentFileObservations = sqliteTable(
+  "current_file_observations",
+  {
+    locationId: text("location_id").notNull(),
+    snapshotId: text("snapshot_id").notNull(),
+    observedAt: text("observed_at").notNull(),
+    size: integer().notNull(),
+    modifiedAt: text("modified_at").notNull(),
+    conditionalBaseline: text("conditional_baseline").notNull(),
+  },
+  (table) => [
+    primaryKey({
+      name: "current_file_observations_pk",
+      columns: [table.locationId],
+    }),
+    index("current_file_observations_snapshot").on(table.snapshotId),
+  ],
+);
+
+/** Blob 级持久分帧证明坐标；sidecar 字节本身位于 product-data proof store。 */
+export const artifactContentProofs = sqliteTable(
+  "artifact_content_proofs",
+  {
+    blobDigest: text("blob_digest").notNull(),
+    scheme: text().notNull(),
+    byteLength: integer("byte_length").notNull(),
+    frameSize: integer("frame_size").notNull(),
+    frameCount: integer("frame_count").notNull(),
+    manifestDigest: text("manifest_digest").notNull(),
+  },
+  (table) => [
+    primaryKey({
+      name: "artifact_content_proofs_pk",
+      columns: [table.blobDigest],
+    }),
+    uniqueIndex("artifact_content_proofs_manifest").on(table.manifestDigest),
+    check(
+      "artifact_content_proofs_scheme",
+      sql`scheme = 'artifact-frame-manifest/1'`,
+    ),
+    check("artifact_content_proofs_frame_size", sql`frame_size = 1048576`),
+    check("artifact_content_proofs_length", sql`byte_length >= 0`),
+    check(
+      "artifact_content_proofs_count",
+      sql`frame_count = (byte_length + 1048575) / 1048576`,
+    ),
+    check(
+      "artifact_content_proofs_blob_digest",
+      sql`length(blob_digest) = 64 AND blob_digest NOT GLOB '*[^0-9a-f]*'`,
+    ),
+    check(
+      "artifact_content_proofs_manifest_digest",
+      sql`length(manifest_digest) = 64 AND manifest_digest NOT GLOB '*[^0-9a-f]*'`,
+    ),
   ],
 );
 
@@ -490,16 +573,16 @@ export const observedRootRegistrations = sqliteTable(
 );
 
 /** 每个已接受主体对应一个当前识别权威。 */
-export const sourceAssociationHeads = sqliteTable(
-  "source_association_heads",
+export const recognitionHeads = sqliteTable(
+  "recognition_heads",
   {
     subjectId: text("subject_id").notNull(),
-    associationId: text("association_id").notNull(),
     recognitionDecisionId: text("recognition_decision_id").notNull(),
+    recognitionSourceAssociationId: text("recognition_source_association_id"),
   },
   (table) => [
     primaryKey({
-      name: "source_association_heads_pk",
+      name: "recognition_heads_pk",
       columns: [table.subjectId],
     }),
   ],
@@ -816,6 +899,9 @@ export const catalogueSchema = {
   locations,
   blobs,
   artifactRevisions,
+  observedRevisionConfirmations,
+  currentFileObservations,
+  artifactContentProofs,
   artifactAssociations,
   metadataAssertions,
   sourcedEntities,
@@ -828,7 +914,7 @@ export const catalogueSchema = {
   automationIntents,
   automationRuntime,
   observedRootRegistrations,
-  sourceAssociationHeads,
+  recognitionHeads,
   recognitionDecisionSupersessions,
   metadataAssertionSources,
   metadataAssertionLifecycles,

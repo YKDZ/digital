@@ -107,6 +107,75 @@ async function associationOutcome(
 }
 
 describe("OMDb film source enrichment", () => {
+  it("does not propose or validate enrichment without a recognition source", () => {
+    const observedSubject = {
+      ...input,
+      recognitionSourceAssociation: undefined,
+      sourceAssociations: [],
+    };
+    const evidence = {
+      kind: "source-association" as const,
+      explanation: "test candidate",
+      sourceIdentity: "omdb",
+      sourceAddress: "omdb:imdb:tt1234567",
+      producer: {
+        capabilityId: "omdb.source-association-candidate",
+        capabilityVersion: "1",
+        contractVersion: "1",
+      },
+    };
+
+    expect(
+      new OmdbSourceAssociationCandidateInterpreter().interpret(
+        observedSubject,
+      ),
+    ).toBeUndefined();
+    expect(
+      new OmdbSourceAssociationInterpreter().interpret({
+        subject: observedSubject,
+        evidence,
+        interpretation: {
+          id: "omdb-interpretation",
+          producer: {
+            capabilityId: "omdb.source-interpreter",
+            capabilityVersion: "1",
+            contractVersion: "1",
+          },
+          sourceRecordIds: ["omdb-record"],
+          sourceIdentity: "omdb",
+          sourceAddress: "omdb:imdb:tt1234567",
+          metadata: [],
+          sourceArtifacts: [],
+        },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("retries a bounded transient official movie request inside the source capability", async () => {
+    const evidence = new OmdbSourceAssociationCandidateInterpreter().interpret(
+      input,
+    )!;
+    let attempts = 0;
+    const result = await new OmdbCollector({
+      apiKey: "private-key",
+      delay: async () => {},
+      request: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new TypeError("temporary transport failure");
+        return response({
+          Response: "True",
+          imdbID: "tt1234567",
+          Title: "Example Film",
+          Year: "2004",
+        });
+      },
+    }).collect(evidence);
+
+    expect(result.failures).toEqual([]);
+    expect(result.records).toHaveLength(1);
+    expect(attempts).toBe(2);
+  });
+
   it("classifies a missing private credential as a typed prerequisite failure", async () => {
     const evidence = new OmdbSourceAssociationCandidateInterpreter().interpret(
       input,
@@ -354,6 +423,7 @@ describe("OMDb film source enrichment", () => {
     )!;
     const result = await new OmdbCollector({
       apiKey: "omdb-error-key",
+      delay: async () => {},
       request: async () => {
         throw new Error(
           "request failed at https://www.omdbapi.com/?apikey=omdb-error-key",
@@ -503,17 +573,23 @@ describe("OMDb film source enrichment", () => {
 
   it("acquires only a valid OMDb poster candidate as bounded image bytes", async () => {
     const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
-    const acquirer = new OmdbArtifactAcquirer(async (address) => {
-      expect(address).toBe(
-        "https://m.media-amazon.com/images/M/example-poster.jpg",
-      );
-      return {
-        ok: true,
-        status: 200,
-        headers: { get: () => "image/jpeg" },
-        arrayBuffer: async () => bytes.buffer,
-      };
-    });
+    let attempts = 0;
+    const acquirer = new OmdbArtifactAcquirer(
+      async (address) => {
+        expect(address).toBe(
+          "https://m.media-amazon.com/images/M/example-poster.jpg",
+        );
+        attempts += 1;
+        if (attempts === 1) throw new TypeError("temporary transport failure");
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => "image/jpeg" },
+          arrayBuffer: async () => bytes.buffer,
+        };
+      },
+      async () => {},
+    );
     const candidate = {
       id: "omdb.primary-poster",
       sourceRecordId: "omdb-record",
@@ -529,6 +605,7 @@ describe("OMDb film source enrichment", () => {
       bytes,
       mediaType: "image/jpeg",
     });
+    expect(attempts).toBe(2);
     expect(
       acquirer.canAcquire({
         ...candidate,

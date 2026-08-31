@@ -3,6 +3,7 @@ import path from "node:path";
 import {
   AssetRefreshAutomation,
   AssetRefreshWorkflow,
+  ApplicationArtifactByteAccess,
   AutomationHost,
   ExecutionHost,
   ObservedRootRegistrations,
@@ -34,6 +35,7 @@ import {
 } from "@digital/dlsite";
 import {
   EpubEmbeddedCoverAcquirer,
+  EpubLocalPublicationRecognizer,
   EpubPublicationInspector,
 } from "@digital/epub";
 import {
@@ -50,6 +52,7 @@ import {
 } from "@digital/fanbox";
 import {
   BdmvFilesystemPackageInterpreter,
+  ArtifactFrameProofStore,
   ContentAddressedManagedArtifactStore,
   ReadOnlyFilesystemObserver,
 } from "@digital/filesystem";
@@ -68,6 +71,7 @@ import {
   OmdbSourceInterpreter,
   verifyOmdbApiKey,
 } from "@digital/omdb";
+import { boundedPlaybackFormatInspector } from "@digital/playback-format";
 import {
   CuratedMetadataPolicyConfiguration,
   type ProductApplication,
@@ -78,6 +82,7 @@ import {
   type ProductAutomationHostOptions,
   type ProductExecutionOperations,
   type ProductWorkflowOperations,
+  artifactDownloadOperations,
   ProductSourceConnections,
   RegisteredWorkflowConfigurationCompatibility,
   curatedInitialRecognitionPolicy,
@@ -102,6 +107,10 @@ import {
   verifyTmdbAccessToken,
 } from "@digital/tmdb";
 
+import {
+  ComposedArtifactByteCleanupReporter,
+  ComposedArtifactLocationByteSources,
+} from "./artifact-byte-access.ts";
 import {
   InProcessObservedRootCleanupEmergencyJournal,
   type ObservedRootCleanupEmergencyJournal,
@@ -153,6 +162,7 @@ export type ComposedAssetRefresh = ProductAssetRefresh & {
   readonly observedRootCleanupEmergencyJournal: ObservedRootCleanupEmergencyJournal;
   /** 产品管理的、供当前部署电影来源使用的私密访问能力。 */
   readonly sourceConnections: ProductSourceConnections;
+  readonly artifactByteAccess: ApplicationArtifactByteAccess;
   /** 排空 Application 工作，然后且仅然后释放一次基础设施。 */
   close(): Promise<void>;
 };
@@ -201,7 +211,7 @@ export async function assertProductDataOffline(
 export type AssetRefreshCompositionOptions = {
   readonly automationInformationRequirementForAcceptedSubject?: AutomationInformationRequirementResolver;
   /** 由运行时持有、交付层和自动化子执行共享的监督器。 */
-  readonly invocationSupervisor?: Pick<ExecutionHost, "invoke">;
+  readonly invocationSupervisor?: ExecutionHost;
 };
 
 export function composeAssetRefresh(
@@ -308,6 +318,7 @@ function composeAssetRefreshWithGeneration(
     const recognizers = [
       new DlsiteExactRecognizer(),
       new BangumiEpisodicRecognizer(),
+      new EpubLocalPublicationRecognizer(),
       new NbinetExactIsbnRecognizer(),
       new TmdbStrictFilmRecognizer(),
       ...fanbox.recognizers,
@@ -349,6 +360,7 @@ function composeAssetRefreshWithGeneration(
       managedArtifactDirectory: managedDirectory,
       cleanupFailureReporter: observedRootCleanupReporter,
       cleanupFailureFallback: observedRootCleanupEmergencyJournal,
+      operationSupervisor: invocationSupervisor,
     });
     validateCapabilityDeclarations([
       ...applicationOwnedCapabilityDeclarations,
@@ -429,6 +441,19 @@ function composeAssetRefreshWithGeneration(
         observedRootRegistrations,
         observedRootCleanupEmergencyJournal,
         sourceConnections,
+        artifactByteAccess: new ApplicationArtifactByteAccess({
+          persistence,
+          sources: new ComposedArtifactLocationByteSources(
+            observedRootRegistrations,
+            new ContentAddressedManagedArtifactStore(managedDirectory),
+          ),
+          proofStore: new ArtifactFrameProofStore(productDataDirectory),
+          executionHost: invocationSupervisor,
+          playbackInspector: boundedPlaybackFormatInspector,
+          cleanupReporter: new ComposedArtifactByteCleanupReporter(
+            observedRootRegistrations,
+          ),
+        }),
       }),
       persistence,
       ownedInvocationSupervisor,
@@ -716,6 +741,21 @@ export function composeProductApplication(input: {
         async readManagedArtifact() {
           throw new Error("尚未配置产品数据目录");
         },
+        async prepareArtifactDownload() {
+          throw new Error("尚未配置产品数据目录");
+        },
+        async openArtifactBytes() {
+          throw new Error("尚未配置产品数据目录");
+        },
+        async planPlayback() {
+          throw new Error("尚未配置产品数据目录");
+        },
+        async observedFileSelectionForLocation() {
+          throw new Error("尚未配置产品数据目录");
+        },
+        async confirmObservedFileRevision() {
+          throw new Error("尚未配置产品数据目录");
+        },
       },
       async close() {},
     };
@@ -735,6 +775,10 @@ export function composeProductApplication(input: {
         ? {}
         : { automationInformationRequirementForAcceptedSubject }),
     }));
+  const downloadOperations = () => {
+    const access = requireRuntime().workflow.artifactByteAccess;
+    return artifactDownloadOperations(access, access);
+  };
   return {
     application: {
       configured: true,
@@ -765,6 +809,27 @@ export function composeProductApplication(input: {
       },
       async readManagedArtifact(digest: string) {
         return await managedArtifacts!.read(digest);
+      },
+      async prepareArtifactDownload(selection) {
+        return await downloadOperations().prepareArtifactDownload(selection);
+      },
+      async openArtifactBytes(input) {
+        return await downloadOperations().openArtifactBytes(input);
+      },
+      async planPlayback(selection, consumer, preferences) {
+        return await downloadOperations().planPlayback(
+          selection,
+          consumer,
+          preferences,
+        );
+      },
+      async observedFileSelectionForLocation(locationId) {
+        return await downloadOperations().observedFileSelectionForLocation(
+          locationId,
+        );
+      },
+      async confirmObservedFileRevision(input) {
+        return await downloadOperations().confirmObservedFileRevision(input);
       },
     },
     async close() {

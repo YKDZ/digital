@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -13,6 +13,7 @@ import type {
   AutomationTrigger,
   ChangeImpactCommands,
   ChangeImpactPreview,
+  RecognitionSupersessionPlan,
   ChangeImpactQueries,
   CurrentAttentionItem,
   CurrentAttentionPage,
@@ -32,6 +33,13 @@ import type {
   MetadataRefreshPersistence,
   MetadataRefreshSubmission,
   ManagedSourceArtifactPersistence,
+  ArtifactRevisionAccessQueries,
+  ArtifactRevisionAccessFacts,
+  ArtifactContentProofMetadata,
+  ArtifactContentProofCommands,
+  ObservedFileConfirmationFacts,
+  ObservedFileConfirmationQueries,
+  ObservedRevisionConfirmationCommands,
   ObservedArtifactReuseMatch,
   OrdinaryScanReusePlan,
   ObservedRootRegistration,
@@ -56,6 +64,7 @@ import {
   isObservedRootAutomationScope,
   observedRootIdsDependingOn,
   workflowCompatibilityCanReuse,
+  artifactProofConditionalBaseline,
 } from "@digital/application";
 import type {
   AcceptedRecognition,
@@ -93,6 +102,7 @@ import {
   validateArtifactAssociationRetraction,
   validateReevaluatedRecognition,
   validateSourceInterpretationBatch,
+  recognitionSourceInterpretation,
 } from "@digital/domain";
 import {
   and,
@@ -124,11 +134,13 @@ import {
   artifactAssociationSupersessions,
   artifactAssociations,
   artifactRevisions,
+  artifactContentProofs,
   artifacts,
   automationIntents,
   automationRuntime,
   blobs,
   changeImpactPreviews,
+  currentFileObservations,
   currentSourceArtifactCandidateLineages,
   currentSourceAssociations,
   entities,
@@ -142,6 +154,7 @@ import {
   metadataAssertions,
   metadataPolicyEnrollments,
   observedRootRegistrations,
+  observedRevisionConfirmations,
   recognitionDecisions,
   recognitionDecisionSupersessions,
   recognitionProposals,
@@ -149,7 +162,7 @@ import {
   relationshipLifecycles,
   relationshipRetractions,
   relationshipSources,
-  sourceAssociationHeads,
+  recognitionHeads,
   sourceAssociations,
   sourceRefreshChanges,
   sourceRefreshChangeSets,
@@ -173,6 +186,132 @@ type DrizzleWriteTransaction = Pick<
   "delete" | "insert" | "select" | "update"
 >;
 
+function observedSelectionFacts(
+  query: Pick<ReturnType<typeof drizzle>, "select">,
+  locationId: string,
+  options: { readonly includeConfirmed?: boolean } = {},
+): ObservedFileConfirmationFacts | undefined {
+  const location = query
+    .select({
+      id: locations.id,
+      artifactId: locations.artifactId,
+      address: locations.address,
+      kind: locations.kind,
+    })
+    .from(locations)
+    .where(eq(locations.id, locationId))
+    .get();
+  if (location?.kind !== "observed") return undefined;
+  const current = query
+    .select()
+    .from(currentFileObservations)
+    .where(eq(currentFileObservations.locationId, location.id))
+    .get();
+  if (current === undefined) return undefined;
+  if (!options.includeConfirmed) {
+    const confirmed = query
+      .select({ revisionId: observedRevisionConfirmations.revisionId })
+      .from(observedRevisionConfirmations)
+      .where(
+        and(
+          eq(observedRevisionConfirmations.locationId, location.id),
+          eq(observedRevisionConfirmations.snapshotId, current.snapshotId),
+          eq(observedRevisionConfirmations.observedAt, current.observedAt),
+          eq(observedRevisionConfirmations.size, current.size),
+          eq(observedRevisionConfirmations.modifiedAt, current.modifiedAt),
+          eq(
+            observedRevisionConfirmations.conditionalBaseline,
+            current.conditionalBaseline,
+          ),
+        ),
+      )
+      .get();
+    if (confirmed !== undefined) return undefined;
+  }
+  const facts = {
+    artifactId: location.artifactId,
+    location: { locationId: location.id, address: location.address },
+    observation: {
+      snapshotId: current.snapshotId,
+      observedAt: current.observedAt,
+      size: current.size,
+      modifiedAt: current.modifiedAt,
+    },
+    conditionalBaseline: current.conditionalBaseline,
+  };
+  return { ...facts, selectionId: observedSelectionId(facts) };
+}
+
+function observedSelectionId(
+  facts: Omit<ObservedFileConfirmationFacts, "selectionId">,
+): string {
+  return `observed-file-selection_1_${sha256Text(
+    canonicalJson({
+      artifactId: facts.artifactId,
+      locationId: facts.location.locationId,
+      snapshotId: facts.observation.snapshotId,
+      observation: facts.observation,
+      conditionalBaseline: facts.conditionalBaseline,
+    }),
+  )}`;
+}
+
+function currentObservationConditionalBaseline(
+  query: Pick<ReturnType<typeof drizzle>, "select">,
+  input: {
+    readonly artifactId: string;
+    readonly locationId: string;
+    readonly snapshotId: string;
+    readonly observedAt: string;
+    readonly size: number;
+    readonly modifiedAt: string;
+  },
+): string {
+  const revisionHeads = query
+    .select({
+      id: artifactRevisions.id,
+      blobDigest: artifactRevisions.blobDigest,
+    })
+    .from(artifactRevisions)
+    .where(eq(artifactRevisions.artifactId, input.artifactId))
+    .orderBy(asc(artifactRevisions.id))
+    .all();
+  return sha256Text(canonicalJson({ ...input, revisionHeads }));
+}
+
+function proofMetadataMatchesBlob(
+  proof: ArtifactContentProofMetadata,
+  blobDigest: string,
+  byteLength: number,
+): boolean {
+  return (
+    proof.blobDigest === blobDigest &&
+    proof.scheme === "artifact-frame-manifest/1" &&
+    proof.byteLength === byteLength &&
+    proof.frameSize === 1_048_576 &&
+    proof.frameCount === Math.ceil(byteLength / 1_048_576) &&
+    /^[a-f0-9]{64}$/u.test(proof.manifestDigest)
+  );
+}
+
+function proofRowEquals(
+  row: typeof artifactContentProofs.$inferSelect,
+  proof: ArtifactContentProofMetadata,
+): boolean {
+  return (
+    row.blobDigest === proof.blobDigest &&
+    row.scheme === proof.scheme &&
+    row.byteLength === proof.byteLength &&
+    row.frameSize === proof.frameSize &&
+    row.frameCount === proof.frameCount &&
+    row.manifestDigest === proof.manifestDigest
+  );
+}
+
+function sha256Text(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 /** Drizzle 数据库与事务共用的只读结构子集。 */
 type DrizzleReadQuery = Pick<ReturnType<typeof drizzle>, "select">;
 
@@ -192,7 +331,7 @@ type MetadataRefreshPreflight = {
 
 type CurrentCatalogueHydrationRows = {
   readonly entities: readonly (typeof entities.$inferSelect)[];
-  readonly heads: readonly (typeof sourceAssociationHeads.$inferSelect)[];
+  readonly heads: readonly (typeof recognitionHeads.$inferSelect)[];
   readonly associations: readonly (typeof sourceAssociations.$inferSelect)[];
   readonly currentAssociations: readonly (typeof currentSourceAssociations.$inferSelect)[];
   readonly decisions: readonly (typeof recognitionDecisions.$inferSelect)[];
@@ -510,6 +649,9 @@ export class SqliteCatalogue
     InformationSubjectFactsQueries,
     CurrentSourceArtifactQueries,
     ManagedSourceArtifactPersistence,
+    ArtifactRevisionAccessQueries,
+    ObservedFileConfirmationQueries,
+    ObservedRevisionConfirmationCommands,
     ObservedRootRegistrationCommands,
     ObservedRootRegistrationQueries
 {
@@ -517,6 +659,426 @@ export class SqliteCatalogue
   private readonly productDataDirectory: string;
   private readonly clock: SqliteCatalogueClock;
   private readonly workflowExecutionPersistence: WorkflowExecutionPersistence;
+
+  async readArtifactRevisionAccessFacts(revisionId: string) {
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    const revision = query
+      .select({
+        id: artifactRevisions.id,
+        artifactId: artifactRevisions.artifactId,
+        blobDigest: artifactRevisions.blobDigest,
+        byteLength: blobs.byteLength,
+        mediaType: blobs.mediaType,
+      })
+      .from(artifactRevisions)
+      .innerJoin(blobs, eq(artifactRevisions.blobDigest, blobs.digest))
+      .where(eq(artifactRevisions.id, revisionId))
+      .get();
+    if (revision === undefined) return undefined;
+    const locationRows = query
+      .select({
+        id: locations.id,
+        kind: locations.kind,
+        address: locations.address,
+      })
+      .from(locations)
+      .where(eq(locations.artifactId, revision.artifactId))
+      .orderBy(asc(locations.id))
+      .all();
+    const observedConfirmations = query
+      .select()
+      .from(observedRevisionConfirmations)
+      .where(eq(observedRevisionConfirmations.revisionId, revision.id))
+      .all();
+    const accessLocations: ArtifactRevisionAccessFacts["locations"] =
+      locationRows.flatMap(
+        (location): ArtifactRevisionAccessFacts["locations"] => {
+          if (location.kind === "managed")
+            return [
+              {
+                kind: "managed",
+                locationId: location.id,
+                address: location.address,
+              },
+            ];
+          if (location.kind !== "observed") return [];
+          const confirmation = observedConfirmations.find(
+            (candidate) => candidate.locationId === location.id,
+          );
+          const confirmedObservation =
+            confirmation === undefined
+              ? undefined
+              : {
+                  snapshotId: confirmation.snapshotId,
+                  observedAt: confirmation.observedAt,
+                  size: confirmation.size,
+                  modifiedAt: confirmation.modifiedAt,
+                };
+          if (confirmedObservation === undefined) return [];
+          return [
+            {
+              kind: "observed",
+              locationId: location.id,
+              address: location.address,
+              confirmedObservation,
+              confirmationBaseline: confirmation!.conditionalBaseline,
+            },
+          ];
+        },
+      );
+    return {
+      revision: {
+        id: revision.id,
+        artifactId: revision.artifactId,
+        blobDigest: revision.blobDigest,
+      },
+      blob: {
+        digest: revision.blobDigest,
+        byteLength: revision.byteLength,
+        mediaType: revision.mediaType,
+      },
+      locations: accessLocations,
+    };
+  }
+
+  async readArtifactContentProof(
+    blobDigest: string,
+  ): Promise<ArtifactContentProofMetadata | undefined> {
+    const database = await this.ensure();
+    const row = drizzle({ client: database })
+      .select()
+      .from(artifactContentProofs)
+      .where(eq(artifactContentProofs.blobDigest, blobDigest))
+      .get();
+    return row === undefined
+      ? undefined
+      : {
+          blobDigest: row.blobDigest,
+          scheme: "artifact-frame-manifest/1",
+          byteLength: row.byteLength,
+          frameSize: 1_048_576,
+          frameCount: row.frameCount,
+          manifestDigest: row.manifestDigest,
+        };
+  }
+
+  async adoptArtifactContentProof(
+    input: Parameters<
+      ArtifactContentProofCommands["adoptArtifactContentProof"]
+    >[0],
+  ): Promise<"committed" | "already-committed" | "stale"> {
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    return query.transaction(
+      (transaction) => {
+        const revision = transaction
+          .select()
+          .from(artifactRevisions)
+          .where(eq(artifactRevisions.id, input.expected.revisionId))
+          .get();
+        const blob = transaction
+          .select()
+          .from(blobs)
+          .where(eq(blobs.digest, input.expected.blobDigest))
+          .get();
+        const location = transaction
+          .select()
+          .from(locations)
+          .where(eq(locations.id, input.expected.locationId))
+          .get();
+        if (
+          revision?.artifactId !== input.expected.artifactId ||
+          revision.blobDigest !== input.expected.blobDigest ||
+          blob?.byteLength !== input.expected.blobByteLength ||
+          location?.artifactId !== input.expected.artifactId ||
+          location.kind !== input.expected.locationKind ||
+          !proofMetadataMatchesBlob(input.proof, blob.digest, blob.byteLength)
+        )
+          return "stale" as const;
+        const baseline = artifactProofConditionalBaseline({
+          revisionId: revision.id,
+          artifactId: revision.artifactId,
+          blobDigest: blob.digest,
+          blobByteLength: blob.byteLength,
+          locationId: location.id,
+          locationKind: location.kind as "managed" | "observed",
+        });
+        if (baseline !== input.expected.conditionalBaseline)
+          return "stale" as const;
+        if (input.expected.locationKind === "observed") {
+          const authority = input.expected.observedAuthority;
+          const confirmation = transaction
+            .select()
+            .from(observedRevisionConfirmations)
+            .where(
+              and(
+                eq(observedRevisionConfirmations.revisionId, revision.id),
+                eq(observedRevisionConfirmations.locationId, location.id),
+              ),
+            )
+            .get();
+          const registration =
+            authority === undefined
+              ? undefined
+              : transaction
+                  .select()
+                  .from(observedRootRegistrations)
+                  .where(
+                    eq(observedRootRegistrations.id, authority.registrationId),
+                  )
+                  .get();
+          if (
+            authority === undefined ||
+            confirmation?.locationId !== location.id ||
+            confirmation.conditionalBaseline !==
+              authority.confirmationBaseline ||
+            registration?.status !== "active" ||
+            registration.configVersion !== authority.registrationVersion
+          )
+            return "stale" as const;
+        }
+        const existing = transaction
+          .select()
+          .from(artifactContentProofs)
+          .where(eq(artifactContentProofs.blobDigest, blob.digest))
+          .get();
+        if (existing !== undefined)
+          return proofRowEquals(existing, input.proof)
+            ? ("already-committed" as const)
+            : ("stale" as const);
+        transaction.insert(artifactContentProofs).values(input.proof).run();
+        return "committed" as const;
+      },
+      { behavior: "immediate" },
+    );
+  }
+
+  async observedFileSelectionForLocation(
+    locationId: string,
+  ): Promise<string | undefined> {
+    const database = await this.ensure();
+    return observedSelectionFacts(drizzle({ client: database }), locationId)
+      ?.selectionId;
+  }
+
+  async readObservedFileConfirmationFacts(
+    selectionId: string,
+  ): Promise<ObservedFileConfirmationFacts | undefined> {
+    if (!/^observed-file-selection_1_[a-f0-9]{64}$/u.test(selectionId))
+      return undefined;
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    const observedLocations = query
+      .select({ id: currentFileObservations.locationId })
+      .from(currentFileObservations)
+      .all();
+    for (const location of observedLocations) {
+      const facts = observedSelectionFacts(query, location.id, {
+        includeConfirmed: true,
+      });
+      if (facts?.selectionId === selectionId) return facts;
+    }
+    return undefined;
+  }
+
+  async submitConfirmedObservedRevision(input: {
+    readonly expected: ObservedFileConfirmationFacts;
+    readonly observedAuthority: {
+      readonly registrationId: string;
+      readonly registrationVersion: number;
+    };
+    readonly blob: {
+      readonly digest: string;
+      readonly mediaType: string;
+      readonly byteLength: number;
+    };
+    readonly revision: {
+      readonly id: string;
+      readonly artifactId: string;
+      readonly blobDigest: string;
+    };
+    readonly proof: ArtifactContentProofMetadata;
+  }): Promise<"committed" | "already-committed" | "stale"> {
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    try {
+      return query.transaction(
+        (transaction) => {
+          if (
+            input.revision.blobDigest !== input.blob.digest ||
+            !proofMetadataMatchesBlob(
+              input.proof,
+              input.blob.digest,
+              input.blob.byteLength,
+            )
+          )
+            return "stale" as const;
+          const registration = transaction
+            .select()
+            .from(observedRootRegistrations)
+            .where(
+              eq(
+                observedRootRegistrations.id,
+                input.observedAuthority.registrationId,
+              ),
+            )
+            .get();
+          if (
+            registration?.status !== "active" ||
+            registration.configVersion !==
+              input.observedAuthority.registrationVersion
+          )
+            return "stale" as const;
+          const current = observedSelectionFacts(
+            transaction,
+            input.expected.location.locationId,
+            { includeConfirmed: true },
+          );
+          if (
+            current?.selectionId !== input.expected.selectionId ||
+            current.conditionalBaseline !==
+              input.expected.conditionalBaseline ||
+            input.revision.artifactId !== current.artifactId ||
+            input.blob.byteLength !== current.observation.size
+          )
+            return "stale" as const;
+          const existing = transaction
+            .select()
+            .from(artifactRevisions)
+            .where(eq(artifactRevisions.id, input.revision.id))
+            .get();
+          if (existing !== undefined) {
+            const confirmation = transaction
+              .select()
+              .from(observedRevisionConfirmations)
+              .where(
+                and(
+                  eq(
+                    observedRevisionConfirmations.revisionId,
+                    input.revision.id,
+                  ),
+                  eq(
+                    observedRevisionConfirmations.locationId,
+                    input.expected.location.locationId,
+                  ),
+                ),
+              )
+              .get();
+            const proof = transaction
+              .select()
+              .from(artifactContentProofs)
+              .where(eq(artifactContentProofs.blobDigest, input.blob.digest))
+              .get();
+            if (
+              existing.artifactId !== input.revision.artifactId ||
+              existing.blobDigest !== input.revision.blobDigest ||
+              (proof !== undefined && !proofRowEquals(proof, input.proof))
+            )
+              return "stale" as const;
+            if (confirmation !== undefined)
+              return confirmation.snapshotId ===
+                input.expected.observation.snapshotId &&
+                confirmation.observedAt ===
+                  input.expected.observation.observedAt &&
+                confirmation.size === input.expected.observation.size &&
+                confirmation.modifiedAt ===
+                  input.expected.observation.modifiedAt &&
+                confirmation.conditionalBaseline ===
+                  input.expected.conditionalBaseline
+                ? ("already-committed" as const)
+                : ("stale" as const);
+            if (
+              current.conditionalBaseline !==
+              currentObservationConditionalBaseline(transaction, {
+                artifactId: current.artifactId,
+                locationId: current.location.locationId,
+                snapshotId: current.observation.snapshotId,
+                observedAt: current.observation.observedAt,
+                size: current.observation.size,
+                modifiedAt: current.observation.modifiedAt,
+              })
+            )
+              return "stale" as const;
+            if (proof === undefined)
+              transaction
+                .insert(artifactContentProofs)
+                .values(input.proof)
+                .run();
+            transaction
+              .insert(observedRevisionConfirmations)
+              .values({
+                revisionId: input.revision.id,
+                locationId: current.location.locationId,
+                snapshotId: current.observation.snapshotId,
+                observedAt: current.observation.observedAt,
+                size: current.observation.size,
+                modifiedAt: current.observation.modifiedAt,
+                conditionalBaseline: current.conditionalBaseline,
+              })
+              .run();
+            return "committed" as const;
+          }
+          if (
+            current.conditionalBaseline !==
+            currentObservationConditionalBaseline(transaction, {
+              artifactId: current.artifactId,
+              locationId: current.location.locationId,
+              snapshotId: current.observation.snapshotId,
+              observedAt: current.observation.observedAt,
+              size: current.observation.size,
+              modifiedAt: current.observation.modifiedAt,
+            })
+          )
+            return "stale" as const;
+          const existingProof = transaction
+            .select()
+            .from(artifactContentProofs)
+            .where(eq(artifactContentProofs.blobDigest, input.blob.digest))
+            .get();
+          if (
+            existingProof !== undefined &&
+            !proofRowEquals(existingProof, input.proof)
+          )
+            return "stale" as const;
+          transaction
+            .insert(blobs)
+            .values(input.blob)
+            .onConflictDoNothing()
+            .run();
+          const persistedBlob = transaction
+            .select()
+            .from(blobs)
+            .where(eq(blobs.digest, input.blob.digest))
+            .get();
+          if (
+            persistedBlob?.byteLength !== input.blob.byteLength ||
+            persistedBlob.mediaType !== input.blob.mediaType
+          )
+            return "stale" as const;
+          transaction.insert(artifactRevisions).values(input.revision).run();
+          transaction
+            .insert(observedRevisionConfirmations)
+            .values({
+              revisionId: input.revision.id,
+              locationId: current.location.locationId,
+              snapshotId: current.observation.snapshotId,
+              observedAt: current.observation.observedAt,
+              size: current.observation.size,
+              modifiedAt: current.observation.modifiedAt,
+              conditionalBaseline: current.conditionalBaseline,
+            })
+            .run();
+          if (existingProof === undefined)
+            transaction.insert(artifactContentProofs).values(input.proof).run();
+          return "committed" as const;
+        },
+        { behavior: "immediate" },
+      );
+    } catch {
+      throw new Error("confirmation-commit-failed");
+    }
+  }
 
   private constructor(
     productDataDirectory: string,
@@ -1548,6 +2110,11 @@ export class SqliteCatalogue
             input.accepted.proposal,
           );
           this.insertAcceptedFactsWithDrizzle(transaction, input.accepted);
+          this.projectCurrentFileObservationsWithDrizzle(
+            transaction,
+            input.execution,
+            input.accepted.locations,
+          );
           this.invalidateStaleChangeImpactPreviewsWithDrizzle(transaction, [
             input.accepted.entity.id,
           ]);
@@ -1799,9 +2366,7 @@ export class SqliteCatalogue
         row.id,
         {
           id: row.id,
-          interpretation: JSON.parse(
-            row.interpretationJson,
-          ) as RecognitionProposal["interpretation"],
+          basis: JSON.parse(row.basisJson) as RecognitionProposal["basis"],
           ruleResults: JSON.parse(
             row.ruleResultsJson,
           ) as RecognitionProposal["ruleResults"],
@@ -2246,24 +2811,24 @@ export class SqliteCatalogue
     const limit = currentCataloguePageLimit(input);
     const anchor = currentCatalogueCursor(input.cursor);
     const currentHeads = await query
-      .select({ assetId: sourceAssociationHeads.subjectId })
-      .from(sourceAssociationHeads)
+      .select({ assetId: recognitionHeads.subjectId })
+      .from(recognitionHeads)
       .innerJoin(
         entities,
         and(
-          eq(entities.id, sourceAssociationHeads.subjectId),
+          eq(entities.id, recognitionHeads.subjectId),
           eq(entities.kind, "digital-asset"),
         ),
       )
       .where(
         anchor === undefined
           ? undefined
-          : gt(sourceAssociationHeads.subjectId, anchor),
+          : gt(recognitionHeads.subjectId, anchor),
       )
       // 已审核的数据库模式保证 `subject_id` 唯一；如果未来的当前来源联接把一个主体
       // 扩展成多条物理行，这里仍是显式的分页边界守卫。
-      .groupBy(sourceAssociationHeads.subjectId)
-      .orderBy(asc(sourceAssociationHeads.subjectId))
+      .groupBy(recognitionHeads.subjectId)
+      .orderBy(asc(recognitionHeads.subjectId))
       .limit(limit + 1);
     const pageHeads = currentHeads.slice(0, limit);
     const items = await this.readCurrentAcceptedPageWithDrizzle(
@@ -2287,16 +2852,16 @@ export class SqliteCatalogue
     const database = await this.ensure();
     const query = drizzle({ client: database });
     const currentHeads = await query
-      .select({ assetId: sourceAssociationHeads.subjectId })
-      .from(sourceAssociationHeads)
+      .select({ assetId: recognitionHeads.subjectId })
+      .from(recognitionHeads)
       .innerJoin(
         entities,
         and(
-          eq(entities.id, sourceAssociationHeads.subjectId),
+          eq(entities.id, recognitionHeads.subjectId),
           eq(entities.kind, "digital-asset"),
         ),
       )
-      .orderBy(asc(sourceAssociationHeads.subjectId));
+      .orderBy(asc(recognitionHeads.subjectId));
     const assetIds = [
       ...new Set(currentHeads.map((current) => current.assetId)),
     ];
@@ -2354,11 +2919,9 @@ export class SqliteCatalogue
       if (
         execution.acceptedAssetId === undefined ||
         query
-          .select({ subjectId: sourceAssociationHeads.subjectId })
-          .from(sourceAssociationHeads)
-          .where(
-            eq(sourceAssociationHeads.subjectId, execution.acceptedAssetId),
-          )
+          .select({ subjectId: recognitionHeads.subjectId })
+          .from(recognitionHeads)
+          .where(eq(recognitionHeads.subjectId, execution.acceptedAssetId))
           .get() === undefined
       ) {
         continue;
@@ -2376,13 +2939,24 @@ export class SqliteCatalogue
             );
       // 重新评估拥有新的提案/来源记录基线，而其不可变识别决定仍指向最初建立身份的提案。
       // 因此复用时必须将当前关联与本次执行的提案比较，而不能要求两个不可变提案 ID 相等。
-      if (
-        proposal === undefined ||
-        accepted === undefined ||
-        accepted.sourceAssociation.sourceIdentity !==
-          proposal.interpretation.sourceIdentity ||
-        accepted.sourceAssociation.nativeAddress !==
-          proposal.interpretation.sourceAddress
+      const recognitionSourceAssociation =
+        accepted?.recognitionSourceAssociation;
+      if (proposal === undefined || accepted === undefined) continue;
+      const proposalInterpretation = recognitionSourceInterpretation(proposal);
+      if (proposalInterpretation === undefined) {
+        if (
+          proposal.basis.kind !== "observed-evidence" ||
+          accepted.proposal.basis.kind !== "observed-evidence" ||
+          accepted.proposal.id !== proposal.id ||
+          recognitionSourceAssociation !== undefined
+        )
+          continue;
+      } else if (
+        recognitionSourceAssociation === undefined ||
+        recognitionSourceAssociation.sourceIdentity !==
+          proposalInterpretation.sourceIdentity ||
+        recognitionSourceAssociation.nativeAddress !==
+          proposalInterpretation.sourceAddress
       )
         continue;
       if (
@@ -2461,19 +3035,16 @@ export class SqliteCatalogue
       if (accepted === undefined) continue;
       const row = query
         .select({ executionId: recognitionProposals.executionId })
-        .from(sourceAssociationHeads)
+        .from(recognitionHeads)
         .innerJoin(
           recognitionDecisions,
-          eq(
-            recognitionDecisions.id,
-            sourceAssociationHeads.recognitionDecisionId,
-          ),
+          eq(recognitionDecisions.id, recognitionHeads.recognitionDecisionId),
         )
         .innerJoin(
           recognitionProposals,
           eq(recognitionProposals.id, recognitionDecisions.proposalId),
         )
-        .where(eq(sourceAssociationHeads.subjectId, subjectId))
+        .where(eq(recognitionHeads.subjectId, subjectId))
         .get();
       if (row === undefined) continue;
       const executionRow = query
@@ -2567,9 +3138,7 @@ export class SqliteCatalogue
         subjectId,
       );
       if (accepted === undefined) continue;
-      const sourceAssociations = (
-        accepted.sourceAssociations ?? [accepted.sourceAssociation]
-      )
+      const sourceAssociations = accepted.sourceAssociations
         .filter((association) => association.subjectId === subjectId)
         .map(({ id, sourceIdentity }) => ({ id, sourceIdentity }));
       facts.push({
@@ -2772,15 +3341,12 @@ export class SqliteCatalogue
         sourceIdentity: sourceAssociations.sourceIdentity,
         nativeAddress: sourceAssociations.nativeAddress,
         proposalId: sourceAssociations.proposalId,
-        recognitionDecisionId: sourceAssociationHeads.recognitionDecisionId,
+        recognitionDecisionId: recognitionHeads.recognitionDecisionId,
       })
-      .from(sourceAssociationHeads)
+      .from(recognitionHeads)
       .innerJoin(
         currentSourceAssociations,
-        eq(
-          currentSourceAssociations.subjectId,
-          sourceAssociationHeads.subjectId,
-        ),
+        eq(currentSourceAssociations.subjectId, recognitionHeads.subjectId),
       )
       .innerJoin(
         sourceAssociations,
@@ -2788,7 +3354,7 @@ export class SqliteCatalogue
       )
       .where(
         and(
-          eq(sourceAssociationHeads.subjectId, input.subjectId),
+          eq(recognitionHeads.subjectId, input.subjectId),
           eq(sourceAssociations.sourceIdentity, input.sourceIdentity),
           ...(input.sourceAssociationId === undefined
             ? []
@@ -3040,23 +3606,17 @@ export class SqliteCatalogue
     }
     const identity = query
       .select({
-        recognitionDecisionId: sourceAssociationHeads.recognitionDecisionId,
+        recognitionDecisionId: recognitionHeads.recognitionDecisionId,
         associationId: currentSourceAssociations.associationId,
       })
-      .from(sourceAssociationHeads)
+      .from(recognitionHeads)
       .innerJoin(
         currentSourceAssociations,
-        eq(
-          currentSourceAssociations.subjectId,
-          sourceAssociationHeads.subjectId,
-        ),
+        eq(currentSourceAssociations.subjectId, recognitionHeads.subjectId),
       )
       .where(
         and(
-          eq(
-            sourceAssociationHeads.subjectId,
-            input.expectedIdentity.subjectId,
-          ),
+          eq(recognitionHeads.subjectId, input.expectedIdentity.subjectId),
           eq(
             currentSourceAssociations.associationId,
             input.expectedIdentity.sourceAssociationId,
@@ -3212,26 +3772,27 @@ export class SqliteCatalogue
     transaction: DrizzleWriteTransaction,
     accepted: AcceptedRecognition,
   ): void {
-    const sourceRecordIds =
-      accepted.proposal.interpretation.sourceRecordIds.filter(
-        (sourceRecordId) => {
-          const record = this.sourceRecordWithDrizzle(
-            transaction,
-            sourceRecordId,
-          );
-          return (
-            record.sourceIdentity ===
-              accepted.sourceAssociation.sourceIdentity &&
-            record.nativeAddress === accepted.sourceAssociation.nativeAddress
-          );
-        },
-      );
+    const sourceAssociation = accepted.recognitionSourceAssociation;
+    const interpretation = recognitionSourceInterpretation(accepted.proposal);
+    if (sourceAssociation === undefined || interpretation === undefined) return;
+    const sourceRecordIds = interpretation.sourceRecordIds.filter(
+      (sourceRecordId) => {
+        const record = this.sourceRecordWithDrizzle(
+          transaction,
+          sourceRecordId,
+        );
+        return (
+          record.sourceIdentity === sourceAssociation.sourceIdentity &&
+          record.nativeAddress === sourceAssociation.nativeAddress
+        );
+      },
+    );
     if (sourceRecordIds.length === 0) return;
     const knownSourceRecords = new Set(sourceRecordIds);
     const associationIds = accepted.artifactAssociations
       .filter(
         (association) =>
-          association.subjectId === accepted.sourceAssociation.subjectId &&
+          association.subjectId === sourceAssociation.subjectId &&
           association.sourceRecordIds !== undefined &&
           association.sourceRecordIds.length > 0 &&
           association.sourceRecordIds.every((sourceRecordId) =>
@@ -3259,7 +3820,7 @@ export class SqliteCatalogue
         row.sourceRecordIdsJson,
       ) as string[];
       if (
-        row.subjectId !== accepted.sourceAssociation.subjectId ||
+        row.subjectId !== sourceAssociation.subjectId ||
         rowSourceRecordIds.length === 0 ||
         !rowSourceRecordIds.every((sourceRecordId) =>
           knownSourceRecords.has(sourceRecordId),
@@ -3271,7 +3832,7 @@ export class SqliteCatalogue
       }
       if (
         row.sourceAssociationId !== null &&
-        row.sourceAssociationId !== accepted.sourceAssociation.id
+        row.sourceAssociationId !== sourceAssociation.id
       ) {
         throw new Error(
           "Managed source-artifact association conflicts with Source Association provenance",
@@ -3279,7 +3840,7 @@ export class SqliteCatalogue
       }
       transaction
         .update(artifactAssociations)
-        .set({ sourceAssociationId: accepted.sourceAssociation.id })
+        .set({ sourceAssociationId: sourceAssociation.id })
         .where(eq(artifactAssociations.id, row.id))
         .run();
     }
@@ -3578,55 +4139,98 @@ export class SqliteCatalogue
           );
           const identity = transaction
             .select({
-              associationId: sourceAssociationHeads.associationId,
-              recognitionDecisionId:
-                sourceAssociationHeads.recognitionDecisionId,
+              associationId: recognitionHeads.recognitionSourceAssociationId,
+              recognitionDecisionId: recognitionHeads.recognitionDecisionId,
             })
-            .from(sourceAssociationHeads)
-            .where(
-              eq(sourceAssociationHeads.subjectId, input.current.entity.id),
-            )
+            .from(recognitionHeads)
+            .where(eq(recognitionHeads.subjectId, input.current.entity.id))
             .get();
-          if (
-            identity?.associationId !== input.current.sourceAssociation.id ||
-            identity.recognitionDecisionId !==
-              input.current.recognitionDecision.id
-          ) {
+          if (identity === undefined) {
             throw new Error(
               "Recognition reevaluation lost its immutable identity baseline",
             );
           }
-          const metadataRefreshInput: MetadataRefreshInput = {
-            expectedExecution: input.expectedExecution,
-            execution: input.execution,
-            submission: {
-              assetId: input.current.entity.id,
-              sourceAssociation: input.accepted.sourceAssociation,
-              sourceRecords: input.sourceRecords,
-              interpretation: input.accepted.proposal.interpretation,
-              expectedLineageHeads: input.expectedLineageHeads,
-            },
-          };
-          const metadataRefreshPreflight =
-            this.preflightMetadataRefreshInputsWithDrizzle(
-              transaction,
-              metadataRefreshInput,
+          if (
+            (identity.associationId ?? undefined) !==
+            input.current.recognitionSourceAssociation?.id
+          )
+            throw new Error(
+              "Recognition reevaluation lost its Source Association baseline",
             );
+          if (
+            identity.recognitionDecisionId !==
+            input.current.recognitionDecision.id
+          )
+            throw new Error(
+              "Recognition reevaluation lost its Recognition Decision baseline",
+            );
+          const interpretation = recognitionSourceInterpretation(
+            input.accepted.proposal,
+          );
+          let sourceRefresh:
+            | {
+                readonly input: MetadataRefreshInput;
+                readonly preflight: MetadataRefreshPreflight;
+              }
+            | undefined;
+          if (interpretation === undefined) {
+            if (
+              input.sourceRecords.length > 0 ||
+              input.expectedLineageHeads.length > 0
+            )
+              throw new Error(
+                "Observed recognition reevaluation cannot carry source lineage",
+              );
+          } else {
+            const sourceAssociation =
+              input.accepted.recognitionSourceAssociation;
+            if (sourceAssociation === undefined)
+              throw new Error(
+                "Source recognition reevaluation requires its Source Association",
+              );
+            const metadataRefreshInput: MetadataRefreshInput = {
+              expectedExecution: input.expectedExecution,
+              execution: input.execution,
+              submission: {
+                assetId: input.current.entity.id,
+                sourceAssociation,
+                sourceRecords: input.sourceRecords,
+                interpretation,
+                expectedLineageHeads: input.expectedLineageHeads,
+              },
+            };
+            sourceRefresh = {
+              input: metadataRefreshInput,
+              preflight: this.preflightMetadataRefreshInputsWithDrizzle(
+                transaction,
+                metadataRefreshInput,
+              ),
+            };
+          }
           this.insertProposalWithDrizzle(
             transaction,
             input.execution.id,
             input.accepted.proposal,
           );
-          this.applyMetadataRefreshInTransactionWithDrizzle(
-            transaction,
-            metadataRefreshInput,
-            metadataRefreshPreflight,
-          );
+          if (sourceRefresh !== undefined)
+            this.applyMetadataRefreshInTransactionWithDrizzle(
+              transaction,
+              sourceRefresh.input,
+              sourceRefresh.preflight,
+            );
           this.insertReevaluatedArtifactFactsWithDrizzle(
             transaction,
             input.current,
             input.accepted,
           );
+          this.projectCurrentFileObservationsWithDrizzle(
+            transaction,
+            input.execution,
+            input.accepted.locations,
+          );
+          this.invalidateStaleChangeImpactPreviewsWithDrizzle(transaction, [
+            input.current.entity.id,
+          ]);
           this.workflowExecutionPersistence.replaceExecutionWithDrizzle(
             transaction,
             input.execution,
@@ -3731,7 +4335,7 @@ export class SqliteCatalogue
     readonly expectedExecution: WorkflowExecution;
     readonly execution: WorkflowExecution;
     readonly expectedRecognitionBaseline: {
-      readonly sourceAssociationId: string;
+      readonly recognitionSourceAssociationId?: string;
       readonly recognitionDecisionId: string;
     };
     readonly assetId: string;
@@ -3875,15 +4479,16 @@ export class SqliteCatalogue
     }
     const recognitionHead = query
       .select({
-        associationId: sourceAssociationHeads.associationId,
-        recognitionDecisionId: sourceAssociationHeads.recognitionDecisionId,
+        associationId: recognitionHeads.recognitionSourceAssociationId,
+        recognitionDecisionId: recognitionHeads.recognitionDecisionId,
       })
-      .from(sourceAssociationHeads)
-      .where(eq(sourceAssociationHeads.subjectId, input.assetId))
+      .from(recognitionHeads)
+      .where(eq(recognitionHeads.subjectId, input.assetId))
       .get();
     if (
-      recognitionHead?.associationId !==
-        input.expectedRecognitionBaseline.sourceAssociationId ||
+      recognitionHead === undefined ||
+      (recognitionHead.associationId ?? undefined) !==
+        input.expectedRecognitionBaseline.recognitionSourceAssociationId ||
       recognitionHead.recognitionDecisionId !==
         input.expectedRecognitionBaseline.recognitionDecisionId
     ) {
@@ -4479,18 +5084,20 @@ export class SqliteCatalogue
 
   async freezeChangeImpactBaseline(input: {
     readonly assetId: string;
-    readonly sourceAssociationId: string;
+    readonly recognitionSourceAssociationId?: string;
     readonly recognitionDecisionId: string;
   }): Promise<string> {
     const database = await this.ensure();
     const query = drizzle({ client: database });
     const head = query
       .select()
-      .from(sourceAssociationHeads)
-      .where(eq(sourceAssociationHeads.subjectId, input.assetId))
+      .from(recognitionHeads)
+      .where(eq(recognitionHeads.subjectId, input.assetId))
       .get();
     if (
-      head?.associationId !== input.sourceAssociationId ||
+      head === undefined ||
+      (head.recognitionSourceAssociationId ?? undefined) !==
+        input.recognitionSourceAssociationId ||
       head.recognitionDecisionId !== input.recognitionDecisionId
     ) {
       throw new Error("Change Impact Preview lost its identity baseline");
@@ -4527,9 +5134,11 @@ export class SqliteCatalogue
     return result;
   }
 
-  async applyChangeImpactPreview(
-    preview: ChangeImpactPreview,
-  ): Promise<"applied" | "stale"> {
+  async applyChangeImpactPreview(input: {
+    readonly preview: ChangeImpactPreview;
+    readonly plan: RecognitionSupersessionPlan;
+  }): Promise<"applied" | "stale"> {
+    const { preview, plan } = input;
     const database = await this.ensure();
     let result: "applied" | "stale" = "stale";
     const query = drizzle({ client: database });
@@ -4547,17 +5156,20 @@ export class SqliteCatalogue
         if (currentPreview.status !== "awaiting-confirmation") return;
         const currentHead = transaction
           .select({
-            associationId: sourceAssociationHeads.associationId,
-            recognitionDecisionId: sourceAssociationHeads.recognitionDecisionId,
+            associationId: recognitionHeads.recognitionSourceAssociationId,
+            recognitionDecisionId: recognitionHeads.recognitionDecisionId,
             sourceIdentity: sourceAssociations.sourceIdentity,
             nativeAddress: sourceAssociations.nativeAddress,
           })
-          .from(sourceAssociationHeads)
-          .innerJoin(
+          .from(recognitionHeads)
+          .leftJoin(
             sourceAssociations,
-            eq(sourceAssociations.id, sourceAssociationHeads.associationId),
+            eq(
+              sourceAssociations.id,
+              recognitionHeads.recognitionSourceAssociationId,
+            ),
           )
-          .where(eq(sourceAssociationHeads.subjectId, currentPreview.assetId))
+          .where(eq(recognitionHeads.subjectId, currentPreview.assetId))
           .get();
         const expectedAssociation = currentPreview.baselines.find(
           (baseline) => baseline.key === "source-association",
@@ -4575,7 +5187,11 @@ export class SqliteCatalogue
           currentHead === undefined
             ? undefined
             : transaction
-                .select({ proposalId: recognitionDecisions.proposalId })
+                .select({
+                  proposalId: recognitionDecisions.proposalId,
+                  acceptedRuleResultsJson:
+                    recognitionDecisions.acceptedRuleResultsJson,
+                })
                 .from(recognitionDecisions)
                 .where(
                   eq(
@@ -4591,11 +5207,64 @@ export class SqliteCatalogue
                 transaction,
                 currentDecision.proposalId,
               );
+        const currentInterpretation =
+          currentProposal === undefined
+            ? undefined
+            : recognitionSourceInterpretation(currentProposal);
+        const currentBasisCoordinatesMatch =
+          currentInterpretation === undefined
+            ? currentHead?.associationId === null &&
+              currentHead.sourceIdentity === null &&
+              currentHead.nativeAddress === null
+            : currentHead?.associationId !== null &&
+              currentHead?.associationId !== undefined &&
+              currentHead.sourceIdentity ===
+                currentInterpretation.sourceIdentity &&
+              currentHead.nativeAddress === currentInterpretation.sourceAddress;
+        if (!currentBasisCoordinatesMatch)
+          throw new Error(
+            "Change Impact Preview predecessor basis is inconsistent with its recognition head",
+          );
+        const projectedInterpretation = recognitionSourceInterpretation(
+          currentPreview.proposal,
+        );
+        const projectedSourceAssociation =
+          currentPreview.projected.recognitionSourceAssociation;
         const currentSourceRecords =
-          currentProposal?.interpretation.sourceRecordIds.toSorted().join(",");
+          currentInterpretation?.sourceRecordIds.toSorted().join(",") ?? "";
+        const currentAssociationId = currentHead?.associationId ?? undefined;
+        const projectedCoordinatesMatch =
+          projectedInterpretation === undefined
+            ? projectedSourceAssociation === undefined &&
+              plan.recognitionSourceAssociation === undefined
+            : projectedSourceAssociation !== undefined &&
+              plan.recognitionSourceAssociation?.subjectId ===
+                currentPreview.assetId &&
+              plan.recognitionSourceAssociation.proposalId ===
+                currentPreview.proposal.id &&
+              plan.recognitionSourceAssociation.sourceIdentity ===
+                projectedInterpretation.sourceIdentity &&
+              plan.recognitionSourceAssociation.nativeAddress ===
+                projectedInterpretation.sourceAddress &&
+              projectedSourceAssociation.sourceIdentity ===
+                projectedInterpretation.sourceIdentity &&
+              projectedSourceAssociation.nativeAddress ===
+                projectedInterpretation.sourceAddress;
+        if (
+          plan.successorDecision.proposalId !== currentPreview.proposal.id ||
+          plan.successorDecision.assetId !== currentPreview.assetId ||
+          JSON.stringify(plan.successorDecision.acceptedRuleResults) !==
+            JSON.stringify(currentPreview.proposal.ruleResults) ||
+          plan.supersession.predecessorDecisionId !== expectedDecision ||
+          plan.supersession.successorDecisionId !== plan.successorDecision.id ||
+          !projectedCoordinatesMatch
+        )
+          throw new Error(
+            "Change Impact Preview replacement plan is inconsistent",
+          );
         if (
           currentHead === undefined ||
-          currentHead.associationId !== expectedAssociation ||
+          currentAssociationId !== expectedAssociation ||
           currentHead.recognitionDecisionId !== expectedDecision ||
           currentSourceRecords !== expectedSourceRecords ||
           this.currentChangeImpactBaselineWithDrizzle(
@@ -4615,8 +5284,8 @@ export class SqliteCatalogue
             .run();
           return;
         }
-        for (const sourceRecordId of currentPreview.proposal.interpretation
-          .sourceRecordIds) {
+        for (const sourceRecordId of projectedInterpretation?.sourceRecordIds ??
+          []) {
           const record = transaction
             .select()
             .from(sourceRecords)
@@ -4630,9 +5299,8 @@ export class SqliteCatalogue
             record === undefined ||
             record.executionId !== currentPreview.executionId ||
             record.sourceIdentity !==
-              currentPreview.projected.sourceAssociation.sourceIdentity ||
-            record.nativeAddress !==
-              currentPreview.projected.sourceAssociation.nativeAddress ||
+              projectedSourceAssociation?.sourceIdentity ||
+            record.nativeAddress !== projectedSourceAssociation.nativeAddress ||
             coverage?.authority !== "official"
           ) {
             throw new Error(
@@ -4641,58 +5309,59 @@ export class SqliteCatalogue
           }
         }
         const replacementSourceRecordId =
-          currentPreview.proposal.interpretation.sourceRecordIds[0];
-        if (replacementSourceRecordId === undefined) {
+          projectedInterpretation?.sourceRecordIds[0];
+        if (
+          projectedInterpretation !== undefined &&
+          replacementSourceRecordId === undefined
+        ) {
           throw new Error(
             "Change Impact Preview requires Source Record lineage",
           );
         }
-        const associationId = `source-association-preview_${currentPreview.id}`;
-        const decisionId = `recognition-decision-preview_${currentPreview.id}`;
-        transaction
-          .insert(sourceAssociations)
-          .values({
-            id: associationId,
-            subjectId: currentPreview.assetId,
-            sourceIdentity:
-              currentPreview.projected.sourceAssociation.sourceIdentity,
-            nativeAddress:
-              currentPreview.projected.sourceAssociation.nativeAddress,
-            proposalId: currentPreview.proposal.id,
-            isCurrent: 1,
-          })
-          .run();
+        const associationId = plan.recognitionSourceAssociation?.id;
+        const decisionId = plan.successorDecision.id;
+        if (plan.recognitionSourceAssociation !== undefined)
+          transaction
+            .insert(sourceAssociations)
+            .values({
+              ...plan.recognitionSourceAssociation,
+              isCurrent: 1,
+            })
+            .run();
         transaction
           .insert(recognitionDecisions)
           .values({
-            id: decisionId,
-            proposalId: currentPreview.proposal.id,
-            assetId: currentPreview.assetId,
+            id: plan.successorDecision.id,
+            proposalId: plan.successorDecision.proposalId,
+            assetId: plan.successorDecision.assetId,
             acceptedRuleResultsJson: JSON.stringify(
-              currentPreview.proposal.ruleResults,
+              plan.successorDecision.acceptedRuleResults,
             ),
           })
           .run();
         transaction
           .insert(recognitionDecisionSupersessions)
           .values({
-            id: `recognition-decision-supersession_${currentPreview.id}`,
-            predecessorDecisionId: currentHead.recognitionDecisionId,
-            successorDecisionId: decisionId,
+            ...plan.supersession,
           })
           .run();
         const advanced = transaction
-          .update(sourceAssociationHeads)
-          .set({ associationId, recognitionDecisionId: decisionId })
+          .update(recognitionHeads)
+          .set({
+            recognitionSourceAssociationId: associationId ?? null,
+            recognitionDecisionId: decisionId,
+          })
           .where(
             and(
-              eq(sourceAssociationHeads.subjectId, currentPreview.assetId),
+              eq(recognitionHeads.subjectId, currentPreview.assetId),
+              currentHead.associationId === null
+                ? isNull(recognitionHeads.recognitionSourceAssociationId)
+                : eq(
+                    recognitionHeads.recognitionSourceAssociationId,
+                    currentHead.associationId,
+                  ),
               eq(
-                sourceAssociationHeads.associationId,
-                currentHead.associationId,
-              ),
-              eq(
-                sourceAssociationHeads.recognitionDecisionId,
+                recognitionHeads.recognitionDecisionId,
                 currentHead.recognitionDecisionId,
               ),
             ),
@@ -4716,40 +5385,132 @@ export class SqliteCatalogue
         transaction
           .delete(currentSourceAssociations)
           .where(
-            and(
-              eq(currentSourceAssociations.subjectId, currentPreview.assetId),
-              ne(currentSourceAssociations.associationId, associationId),
-            ),
+            eq(currentSourceAssociations.subjectId, currentPreview.assetId),
           )
           .run();
-        transaction
-          .insert(currentSourceAssociations)
-          .values({ subjectId: currentPreview.assetId, associationId })
-          .onConflictDoNothing()
-          .run();
-        this.retractIdentityFactsWithDrizzle(transaction, {
-          assetId: currentPreview.assetId,
-          sourceIdentity: currentHead.sourceIdentity,
-          nativeAddress: currentHead.nativeAddress,
-          sourceRecordId: replacementSourceRecordId,
-        });
+        if (associationId !== undefined)
+          transaction
+            .insert(currentSourceAssociations)
+            .values({ subjectId: currentPreview.assetId, associationId })
+            .onConflictDoNothing()
+            .run();
+        if (projectedInterpretation === undefined) {
+          if (currentProposal === undefined || currentDecision === undefined)
+            throw new Error(
+              "Observed recognition replacement requires a durable predecessor",
+            );
+          const predecessorRecognitionSourceAssociation =
+            currentInterpretation === undefined
+              ? undefined
+              : {
+                  id: currentHead.associationId!,
+                  subjectId: currentPreview.assetId,
+                  sourceIdentity: currentHead.sourceIdentity!,
+                  nativeAddress: currentHead.nativeAddress!,
+                  proposalId: currentProposal.id,
+                };
+          const currentAccepted: AcceptedRecognition = {
+            proposal: currentProposal,
+            entity: { id: currentPreview.assetId, kind: "digital-asset" },
+            sourceAssociations:
+              predecessorRecognitionSourceAssociation === undefined
+                ? []
+                : [predecessorRecognitionSourceAssociation],
+            ...(predecessorRecognitionSourceAssociation === undefined
+              ? {}
+              : {
+                  recognitionSourceAssociation:
+                    predecessorRecognitionSourceAssociation,
+                }),
+            recognitionDecision: {
+              id: currentHead.recognitionDecisionId,
+              proposalId: currentDecision.proposalId,
+              assetId: currentPreview.assetId,
+              acceptedRuleResults: JSON.parse(
+                currentDecision.acceptedRuleResultsJson,
+              ) as AcceptedRecognition["recognitionDecision"]["acceptedRuleResults"],
+            },
+            metadata: currentPreview.current.metadata,
+            entities: currentPreview.current.entities,
+            entityMentions: currentPreview.current.entityMentions,
+            entityResolutionDecisions:
+              currentPreview.current.entityResolutionDecisions,
+            relationships: currentPreview.current.relationships,
+            artifacts: currentPreview.current.artifacts,
+            locations: currentPreview.current.locations,
+            blobs: currentPreview.current.blobs,
+            artifactRevisions: currentPreview.current.artifactRevisions,
+            artifactAssociations: currentPreview.current.artifactAssociations,
+          };
+          const nextAccepted: AcceptedRecognition = {
+            proposal: currentPreview.proposal,
+            entity: { id: currentPreview.assetId, kind: "digital-asset" },
+            sourceAssociations: [],
+            recognitionDecision: plan.successorDecision,
+            metadata: currentPreview.projected.metadata,
+            entities: currentPreview.projected.entities,
+            entityMentions: currentPreview.projected.entityMentions,
+            entityResolutionDecisions:
+              currentPreview.projected.entityResolutionDecisions,
+            relationships: currentPreview.projected.relationships,
+            artifacts: currentPreview.projected.artifacts,
+            locations: currentPreview.projected.locations,
+            blobs: currentPreview.projected.blobs,
+            artifactRevisions: currentPreview.projected.artifactRevisions,
+            artifactAssociations: currentPreview.projected.artifactAssociations,
+          };
+          this.insertReevaluatedArtifactFactsWithDrizzle(
+            transaction,
+            currentAccepted,
+            nextAccepted,
+          );
+          this.invalidateStaleChangeImpactPreviewsWithDrizzle(transaction, [
+            currentPreview.assetId,
+          ]);
+          transaction
+            .update(changeImpactPreviews)
+            .set({
+              previewJson: JSON.stringify({
+                ...currentPreview,
+                status: "applied",
+              }),
+            })
+            .where(eq(changeImpactPreviews.id, currentPreview.id))
+            .run();
+          result = "applied";
+          return;
+        }
+        const sourceAssociation = plan.recognitionSourceAssociation;
+        if (
+          sourceAssociation === undefined ||
+          replacementSourceRecordId === undefined
+        )
+          throw new Error(
+            "Source recognition replacement requires exact source coordinates",
+          );
+        if (currentInterpretation !== undefined) {
+          if (
+            currentHead.sourceIdentity === null ||
+            currentHead.nativeAddress === null
+          )
+            throw new Error(
+              "Source recognition predecessor requires exact source coordinates",
+            );
+          this.retractIdentityFactsWithDrizzle(transaction, {
+            assetId: currentPreview.assetId,
+            sourceIdentity: currentHead.sourceIdentity,
+            nativeAddress: currentHead.nativeAddress,
+            sourceRecordId: replacementSourceRecordId,
+          });
+        }
         const submission: MetadataRefreshSubmission = {
           assetId: currentPreview.assetId,
-          sourceAssociation: {
-            id: associationId,
-            subjectId: currentPreview.assetId,
-            sourceIdentity:
-              currentPreview.projected.sourceAssociation.sourceIdentity,
-            nativeAddress:
-              currentPreview.projected.sourceAssociation.nativeAddress,
-            proposalId: currentPreview.proposal.id,
-          },
+          sourceAssociation,
           sourceRecords: [],
           expectedLineageHeads: [],
-          interpretation: currentPreview.proposal.interpretation,
+          interpretation: projectedInterpretation,
         };
-        for (const sourceRecordId of currentPreview.proposal.interpretation
-          .sourceRecordIds) {
+        for (const sourceRecordId of projectedInterpretation.sourceRecordIds) {
           const record = this.sourceRecordWithDrizzle(
             transaction,
             sourceRecordId,
@@ -4779,7 +5540,7 @@ export class SqliteCatalogue
               subjectId: currentPreview.assetId,
               sourceAssociation: submission.sourceAssociation,
               record,
-              interpretation: currentPreview.proposal.interpretation,
+              interpretation: projectedInterpretation,
             },
           );
         }
@@ -5800,10 +6561,8 @@ export class SqliteCatalogue
     const [heads, lineageRows, metadataRows, relationshipRows, artifactRows] = [
       query
         .select()
-        .from(sourceAssociationHeads)
-        .where(
-          inArray(sourceAssociationHeads.subjectId, sqliteTextSet(assetIds)),
-        )
+        .from(recognitionHeads)
+        .where(inArray(recognitionHeads.subjectId, sqliteTextSet(assetIds)))
         .all(),
       query
         .select({
@@ -5965,7 +6724,7 @@ export class SqliteCatalogue
         : query
             .select({
               id: recognitionProposals.id,
-              interpretationJson: recognitionProposals.interpretationJson,
+              basisJson: recognitionProposals.basisJson,
             })
             .from(recognitionProposals)
             .where(inArray(recognitionProposals.id, sqliteTextSet(proposalIds)))
@@ -6054,17 +6813,22 @@ export class SqliteCatalogue
         proposal === undefined
           ? undefined
           : (
-              JSON.parse(
-                proposal.interpretationJson,
-              ) as RecognitionProposal["interpretation"]
-            ).sourceRecordIds
+              recognitionSourceInterpretation({
+                id: proposal.id,
+                basis: JSON.parse(
+                  proposal.basisJson,
+                ) as RecognitionProposal["basis"],
+                ruleResults: [],
+              })?.sourceRecordIds ?? []
+            )
               .toSorted()
               .join(",");
       const baseline = (key: string) =>
         preview.baselines.find((item) => item.key === key)?.value;
       if (
         head !== undefined &&
-        head.associationId === baseline("source-association") &&
+        (head.recognitionSourceAssociationId ?? "") ===
+          baseline("source-association") &&
         head.recognitionDecisionId === baseline("recognition-decision") &&
         sourceRecordIds === baseline("source-records") &&
         fingerprintByAsset.get(preview.assetId) ===
@@ -6243,12 +7007,12 @@ export class SqliteCatalogue
       executionId,
       proposal,
     );
-    const interpretation = JSON.stringify(proposal.interpretation);
+    const basis = JSON.stringify(proposal.basis);
     const ruleResults = JSON.stringify(proposal.ruleResults);
     const existing = transaction
       .select({
         executionId: recognitionProposals.executionId,
-        interpretationJson: recognitionProposals.interpretationJson,
+        basisJson: recognitionProposals.basisJson,
         ruleResultsJson: recognitionProposals.ruleResultsJson,
       })
       .from(recognitionProposals)
@@ -6257,7 +7021,7 @@ export class SqliteCatalogue
     if (existing !== undefined) {
       if (
         existing.executionId !== executionId ||
-        existing.interpretationJson !== interpretation ||
+        existing.basisJson !== basis ||
         existing.ruleResultsJson !== ruleResults
       ) {
         throw new Error(
@@ -6271,7 +7035,7 @@ export class SqliteCatalogue
       .values({
         id: proposal.id,
         executionId,
-        interpretationJson: interpretation,
+        basisJson: basis,
         ruleResultsJson: ruleResults,
       })
       .run();
@@ -6283,9 +7047,11 @@ export class SqliteCatalogue
     executionId: string,
     proposal: RecognitionProposal,
   ): void {
+    const interpretation = recognitionSourceInterpretation(proposal);
+    if (interpretation === undefined) return;
     const sourceRecordIds = new Set([
-      ...proposal.interpretation.sourceRecordIds,
-      ...(proposal.interpretation.recognitionEvidenceReferences ?? []).map(
+      ...interpretation.sourceRecordIds,
+      ...(interpretation.recognitionEvidenceReferences ?? []).map(
         (reference) => reference.sourceRecordId,
       ),
       ...proposal.ruleResults.flatMap((result) =>
@@ -6320,9 +7086,7 @@ export class SqliteCatalogue
       ? undefined
       : {
           id: row.id,
-          interpretation: JSON.parse(
-            row.interpretationJson,
-          ) as RecognitionProposal["interpretation"],
+          basis: JSON.parse(row.basisJson) as RecognitionProposal["basis"],
           ruleResults: JSON.parse(
             row.ruleResultsJson,
           ) as RecognitionProposal["ruleResults"],
@@ -6340,16 +7104,18 @@ export class SqliteCatalogue
     for (const entity of accepted.entities ?? [])
       this.insertOrReuseSourcedEntityWithDrizzle(transaction, entity);
 
-    transaction
-      .insert(sourceAssociations)
-      .values({
-        id: accepted.sourceAssociation.id,
-        subjectId: accepted.sourceAssociation.subjectId,
-        sourceIdentity: accepted.sourceAssociation.sourceIdentity,
-        nativeAddress: accepted.sourceAssociation.nativeAddress,
-        proposalId: accepted.sourceAssociation.proposalId,
-      })
-      .run();
+    const recognitionSourceAssociation = accepted.recognitionSourceAssociation;
+    if (recognitionSourceAssociation !== undefined)
+      transaction
+        .insert(sourceAssociations)
+        .values({
+          id: recognitionSourceAssociation.id,
+          subjectId: recognitionSourceAssociation.subjectId,
+          sourceIdentity: recognitionSourceAssociation.sourceIdentity,
+          nativeAddress: recognitionSourceAssociation.nativeAddress,
+          proposalId: recognitionSourceAssociation.proposalId,
+        })
+        .run();
     transaction
       .insert(recognitionDecisions)
       .values({
@@ -6362,31 +7128,35 @@ export class SqliteCatalogue
       })
       .run();
     transaction
-      .insert(sourceAssociationHeads)
+      .insert(recognitionHeads)
       .values({
         subjectId: accepted.entity.id,
-        associationId: accepted.sourceAssociation.id,
         recognitionDecisionId: accepted.recognitionDecision.id,
+        recognitionSourceAssociationId:
+          recognitionSourceAssociation?.id ?? null,
       })
       .run();
-    transaction
-      .insert(currentSourceAssociations)
-      .values({
-        subjectId: accepted.entity.id,
-        associationId: accepted.sourceAssociation.id,
-      })
-      .onConflictDoNothing()
-      .run();
+    if (recognitionSourceAssociation !== undefined)
+      transaction
+        .insert(currentSourceAssociations)
+        .values({
+          subjectId: accepted.entity.id,
+          associationId: recognitionSourceAssociation.id,
+        })
+        .onConflictDoNothing()
+        .run();
 
-    for (const sourceRecordId of accepted.proposal.interpretation
-      .sourceRecordIds) {
+    const interpretation = recognitionSourceInterpretation(accepted.proposal);
+    for (const sourceRecordId of interpretation?.sourceRecordIds ?? []) {
       const context = this.sourceRecordContextWithDrizzle(
         transaction,
         sourceRecordId,
       );
       if (
-        context.sourceIdentity !== accepted.sourceAssociation.sourceIdentity ||
-        context.nativeAddress !== accepted.sourceAssociation.nativeAddress
+        recognitionSourceAssociation === undefined ||
+        context.sourceIdentity !==
+          recognitionSourceAssociation.sourceIdentity ||
+        context.nativeAddress !== recognitionSourceAssociation.nativeAddress
       )
         continue;
       transaction
@@ -6418,9 +7188,9 @@ export class SqliteCatalogue
         transaction,
         {
           subjectId: accepted.entity.id,
-          sourceAssociation: accepted.sourceAssociation,
+          sourceAssociation: recognitionSourceAssociation,
           record: this.sourceRecordWithDrizzle(transaction, sourceRecordId),
-          interpretation: accepted.proposal.interpretation,
+          interpretation: interpretation!,
         },
       );
     }
@@ -6683,11 +7453,17 @@ export class SqliteCatalogue
     const retainedIds = new Set(
       accepted.artifactAssociations.map((association) => association.id),
     );
+    const currentInterpretation = recognitionSourceInterpretation(
+      current.proposal,
+    );
+    const nextInterpretation = recognitionSourceInterpretation(
+      accepted.proposal,
+    );
     const currentSourceRecordIds = new Set(
-      current.proposal.interpretation.sourceRecordIds,
+      currentInterpretation?.sourceRecordIds ?? [],
     );
     const nextSourceRecordIds = new Set(
-      accepted.proposal.interpretation.sourceRecordIds,
+      nextInterpretation?.sourceRecordIds ?? [],
     );
     const ownedBy = (
       association: ArtifactAssociation,
@@ -6749,28 +7525,27 @@ export class SqliteCatalogue
         ).map((sourceRecordId) =>
           this.sourceRecordWithDrizzle(transaction, sourceRecordId),
         );
-        const retractionSourceRecordIds =
-          accepted.proposal.interpretation.sourceRecordIds.filter(
-            (sourceRecordId) => {
-              const sourceRecord = this.sourceRecordWithDrizzle(
-                transaction,
-                sourceRecordId,
-              );
-              return (
-                sourceRecord.coverage.completeness === "complete" &&
-                sourceRecord.coverage.authority === "official" &&
-                predecessorSourceRecords.some(
-                  (predecessorSourceRecord) =>
-                    predecessorSourceRecord.sourceIdentity ===
-                      sourceRecord.sourceIdentity &&
-                    predecessorSourceRecord.nativeAddress ===
-                      sourceRecord.nativeAddress &&
-                    predecessorSourceRecord.coverage.id ===
-                      sourceRecord.coverage.id,
-                )
-              );
-            },
+        const retractionSourceRecordIds = (
+          nextInterpretation?.sourceRecordIds ?? []
+        ).filter((sourceRecordId) => {
+          const sourceRecord = this.sourceRecordWithDrizzle(
+            transaction,
+            sourceRecordId,
           );
+          return (
+            sourceRecord.coverage.completeness === "complete" &&
+            sourceRecord.coverage.authority === "official" &&
+            predecessorSourceRecords.some(
+              (predecessorSourceRecord) =>
+                predecessorSourceRecord.sourceIdentity ===
+                  sourceRecord.sourceIdentity &&
+                predecessorSourceRecord.nativeAddress ===
+                  sourceRecord.nativeAddress &&
+                predecessorSourceRecord.coverage.id ===
+                  sourceRecord.coverage.id,
+            )
+          );
+        });
         const retraction: ArtifactAssociationRetraction = {
           id: `artifact-association-retraction_${accepted.proposal.id}_${predecessor.id}`,
           associationId: predecessor.id,
@@ -6782,7 +7557,7 @@ export class SqliteCatalogue
           predecessor,
           predecessorSourceRecords,
           proposal: accepted.proposal,
-          sourceRecords: accepted.proposal.interpretation.sourceRecordIds.map(
+          sourceRecords: (nextInterpretation?.sourceRecordIds ?? []).map(
             (sourceRecordId) =>
               this.sourceRecordWithDrizzle(transaction, sourceRecordId),
           ),
@@ -7096,6 +7871,123 @@ export class SqliteCatalogue
           .where(eq(artifactAssociations.id, association.id))
           .run();
       }
+    }
+  }
+
+  /**
+   * 普通刷新把本次有界 snapshot 规范化到 Location 键控的当前观察投影。热消费查询
+   * 只读该投影，不扫描保留的 WorkflowExecution JSON。
+   */
+  private projectCurrentFileObservationsWithDrizzle(
+    transaction: DrizzleWriteTransaction,
+    execution: WorkflowExecution,
+    acceptedLocations: readonly Location[],
+  ): void {
+    const snapshots =
+      execution.filesystemSnapshots ??
+      (execution.snapshot === undefined ? [] : [execution.snapshot]);
+    const acceptedObservedLocationIds = new Set(
+      acceptedLocations
+        .filter((location) => location.kind === "observed")
+        .map((location) => location.id),
+    );
+    const affectedArtifactIds = new Set(
+      acceptedLocations.map((location) => location.artifactId),
+    );
+    for (const artifactId of affectedArtifactIds) {
+      const previousLocations = transaction
+        .select({ id: locations.id, address: locations.address })
+        .from(locations)
+        .where(
+          and(
+            eq(locations.artifactId, artifactId),
+            eq(locations.kind, "observed"),
+          ),
+        )
+        .all();
+      for (const previous of previousLocations) {
+        if (acceptedObservedLocationIds.has(previous.id)) continue;
+        const explicitlyUnavailable = snapshots.some(
+          (snapshot) =>
+            snapshot.complete &&
+            path
+              .relative(
+                path.resolve(snapshot.root),
+                path.resolve(previous.address),
+              )
+              .split(path.sep)[0] !== "..",
+        );
+        if (explicitlyUnavailable)
+          transaction
+            .delete(currentFileObservations)
+            .where(eq(currentFileObservations.locationId, previous.id))
+            .run();
+      }
+    }
+    for (const location of acceptedLocations) {
+      if (location.kind !== "observed") continue;
+      const matches = snapshots.flatMap((snapshot) =>
+        snapshot.files
+          .filter(
+            (file) =>
+              path.resolve(snapshot.root, file.relativePath) ===
+              path.resolve(location.address),
+          )
+          .map((file) => ({ snapshot, file })),
+      );
+      const current = matches.toSorted((left, right) =>
+        right.snapshot.observedAt.localeCompare(left.snapshot.observedAt),
+      )[0];
+      if (current === undefined) {
+        const explicitlyUnavailable = snapshots.some(
+          (snapshot) =>
+            snapshot.complete &&
+            path
+              .relative(
+                path.resolve(snapshot.root),
+                path.resolve(location.address),
+              )
+              .split(path.sep)[0] !== "..",
+        );
+        if (explicitlyUnavailable)
+          transaction
+            .delete(currentFileObservations)
+            .where(eq(currentFileObservations.locationId, location.id))
+            .run();
+        continue;
+      }
+      const conditionalBaseline = currentObservationConditionalBaseline(
+        transaction,
+        {
+          artifactId: location.artifactId,
+          locationId: location.id,
+          snapshotId: current.snapshot.id,
+          observedAt: current.snapshot.observedAt,
+          size: current.file.size,
+          modifiedAt: current.file.modifiedAt,
+        },
+      );
+      transaction
+        .insert(currentFileObservations)
+        .values({
+          locationId: location.id,
+          snapshotId: current.snapshot.id,
+          observedAt: current.snapshot.observedAt,
+          size: current.file.size,
+          modifiedAt: current.file.modifiedAt,
+          conditionalBaseline,
+        })
+        .onConflictDoUpdate({
+          target: currentFileObservations.locationId,
+          set: {
+            snapshotId: current.snapshot.id,
+            observedAt: current.snapshot.observedAt,
+            size: current.file.size,
+            modifiedAt: current.file.modifiedAt,
+            conditionalBaseline,
+          },
+        })
+        .run();
     }
   }
 
@@ -7909,7 +8801,7 @@ export class SqliteCatalogue
     preview: ChangeImpactPreview,
   ): void {
     const replacementSourceRecordIds = new Set(
-      preview.proposal.interpretation.sourceRecordIds,
+      recognitionSourceInterpretation(preview.proposal)?.sourceRecordIds ?? [],
     );
     const isReplacementFact = (ids: readonly string[]) =>
       ids.length > 0 &&
@@ -8045,8 +8937,12 @@ export class SqliteCatalogue
       (association) => association.role === "asset.primary-cover",
     );
     if (
-      projectedCover.length !== 1 ||
-      projectedCover[0]?.artifactId !== preview.projected.primaryCoverArtifactId
+      (preview.projected.primaryCoverArtifactId === undefined &&
+        projectedCover.length !== 0) ||
+      (preview.projected.primaryCoverArtifactId !== undefined &&
+        (projectedCover.length !== 1 ||
+          projectedCover[0]?.artifactId !==
+            preview.projected.primaryCoverArtifactId))
     ) {
       throw new Error(
         "Projected primary-cover Information Requirement is unmet",
@@ -8100,7 +8996,8 @@ export class SqliteCatalogue
             recognitionDecisionId: null,
             proposalId: preview.proposal.id,
             sourceRecordIdsJson: JSON.stringify(
-              preview.proposal.interpretation.sourceRecordIds,
+              recognitionSourceInterpretation(preview.proposal)
+                ?.sourceRecordIds ?? [],
             ),
           })
           .run();
@@ -8147,10 +9044,8 @@ export class SqliteCatalogue
         ),
       query
         .select()
-        .from(sourceAssociationHeads)
-        .where(
-          inArray(sourceAssociationHeads.subjectId, sqliteTextSet(assetIds)),
-        ),
+        .from(recognitionHeads)
+        .where(inArray(recognitionHeads.subjectId, sqliteTextSet(assetIds))),
       query
         .select()
         .from(sourceAssociations)
@@ -8190,9 +9085,7 @@ export class SqliteCatalogue
       row,
       proposal: {
         id: row.id,
-        interpretation: JSON.parse(
-          row.interpretationJson,
-        ) as RecognitionProposal["interpretation"],
+        basis: JSON.parse(row.basisJson) as RecognitionProposal["basis"],
         ruleResults: JSON.parse(
           row.ruleResultsJson,
         ) as RecognitionProposal["ruleResults"],
@@ -8202,7 +9095,9 @@ export class SqliteCatalogue
       ...assetIds,
       ...parsedProposals.flatMap(
         ({ proposal }) =>
-          proposal.interpretation.entities?.map((entity) => entity.id) ?? [],
+          recognitionSourceInterpretation(proposal)?.entities?.map(
+            (entity) => entity.id,
+          ) ?? [],
       ),
     ]);
     const [artifactAssociationRows, metadataRows, relationshipRows] =
@@ -8242,7 +9137,8 @@ export class SqliteCatalogue
     const relationshipIds = relationshipRows.map((row) => row.id);
     const sourceRecordIds = uniqueStrings([
       ...parsedProposals.flatMap(
-        ({ proposal }) => proposal.interpretation.sourceRecordIds,
+        ({ proposal }) =>
+          recognitionSourceInterpretation(proposal)?.sourceRecordIds ?? [],
       ),
       ...artifactAssociationRows.flatMap((row) =>
         jsonStringArray(
@@ -8486,9 +9382,9 @@ export class SqliteCatalogue
     );
     const head = rows.heads.find((item) => item.subjectId === assetId);
     if (entity === undefined || head === undefined) return undefined;
-    const primarySourceAssociationRow = rows.associations.find(
+    const recognitionSourceAssociationRow = rows.associations.find(
       (association) =>
-        association.id === head.associationId &&
+        association.id === head.recognitionSourceAssociationId &&
         association.subjectId === assetId,
     );
     const decision = rows.decisions.find(
@@ -8496,9 +9392,9 @@ export class SqliteCatalogue
         item.id === head.recognitionDecisionId && item.assetId === assetId,
     );
     if (
-      primarySourceAssociationRow === undefined ||
       decision === undefined ||
-      decision.proposalId !== primarySourceAssociationRow.proposalId
+      (recognitionSourceAssociationRow !== undefined &&
+        decision.proposalId !== recognitionSourceAssociationRow.proposalId)
     )
       return undefined;
     const proposalRow = rows.proposals.find(
@@ -8507,9 +9403,7 @@ export class SqliteCatalogue
     if (proposalRow === undefined) return undefined;
     const proposal: RecognitionProposal = {
       id: proposalRow.id,
-      interpretation: JSON.parse(
-        proposalRow.interpretationJson,
-      ) as RecognitionProposal["interpretation"],
+      basis: JSON.parse(proposalRow.basisJson) as RecognitionProposal["basis"],
       ruleResults: JSON.parse(
         proposalRow.ruleResultsJson,
       ) as RecognitionProposal["ruleResults"],
@@ -8528,9 +9422,10 @@ export class SqliteCatalogue
       nativeAddress: association.nativeAddress,
       proposalId: association.proposalId,
     });
-    const primarySourceAssociation = projectSourceAssociation(
-      primarySourceAssociationRow,
-    );
+    const recognitionSourceAssociation =
+      recognitionSourceAssociationRow === undefined
+        ? undefined
+        : projectSourceAssociation(recognitionSourceAssociationRow);
     const currentAssociations = [
       ...new Map(
         rows.associations.flatMap((association) =>
@@ -8541,7 +9436,8 @@ export class SqliteCatalogue
         ),
       ).values(),
     ];
-    const relatedEntities = proposal.interpretation.entities ?? [];
+    const interpretation = recognitionSourceInterpretation(proposal);
+    const relatedEntities = interpretation?.entities ?? [];
     const factSubjectIds = new Set([
       assetId,
       ...relatedEntities.map((item) => item.id),
@@ -8559,7 +9455,7 @@ export class SqliteCatalogue
       rows.sourceRecords.map((record) => [record.id, record]),
     );
     const factLineages = new Set([
-      ...proposal.interpretation.sourceRecordIds.flatMap((id) => {
+      ...(interpretation?.sourceRecordIds ?? []).flatMap((id) => {
         const record = sourceRecordsById.get(id);
         return record === undefined
           ? []
@@ -8817,8 +9713,10 @@ export class SqliteCatalogue
     return {
       proposal,
       entity: { id: entity.id, kind: "digital-asset" },
-      sourceAssociation: primarySourceAssociation,
       sourceAssociations: currentAssociations,
+      ...(recognitionSourceAssociation === undefined
+        ? {}
+        : { recognitionSourceAssociation }),
       metadataPolicyIds: rows.policies.flatMap((item) =>
         item.subjectId === assetId ? [item.policyId] : [],
       ),
@@ -8941,11 +9839,11 @@ export class SqliteCatalogue
 
     const [head] = await query
       .select()
-      .from(sourceAssociationHeads)
-      .where(eq(sourceAssociationHeads.subjectId, assetId));
+      .from(recognitionHeads)
+      .where(eq(recognitionHeads.subjectId, assetId));
     if (head === undefined) return undefined;
 
-    const [primarySourceAssociation] = await query
+    const [recognitionSourceAssociation] = await query
       .select({
         id: sourceAssociations.id,
         subjectId: sourceAssociations.subjectId,
@@ -8956,12 +9854,10 @@ export class SqliteCatalogue
       .from(sourceAssociations)
       .where(
         and(
-          eq(sourceAssociations.id, head.associationId),
+          eq(sourceAssociations.id, head.recognitionSourceAssociationId ?? ""),
           eq(sourceAssociations.subjectId, assetId),
         ),
       );
-    if (primarySourceAssociation === undefined) return undefined;
-
     const currentAssociationRows = await query
       .select({
         id: sourceAssociations.id,
@@ -9001,7 +9897,8 @@ export class SqliteCatalogue
       );
     if (
       decision === undefined ||
-      decision.proposalId !== primarySourceAssociation.proposalId
+      (recognitionSourceAssociation !== undefined &&
+        decision.proposalId !== recognitionSourceAssociation.proposalId)
     )
       return undefined;
     const [proposalRow] = await query
@@ -9011,20 +9908,19 @@ export class SqliteCatalogue
     if (proposalRow === undefined) return undefined;
     const proposal: RecognitionProposal = {
       id: proposalRow.id,
-      interpretation: JSON.parse(
-        proposalRow.interpretationJson,
-      ) as RecognitionProposal["interpretation"],
+      basis: JSON.parse(proposalRow.basisJson) as RecognitionProposal["basis"],
       ruleResults: JSON.parse(
         proposalRow.ruleResultsJson,
       ) as RecognitionProposal["ruleResults"],
     };
 
-    const relatedEntities = proposal.interpretation.entities ?? [];
+    const interpretation = recognitionSourceInterpretation(proposal);
+    const relatedEntities = interpretation?.entities ?? [];
     const artifactSubjectIds = uniqueStrings([
       assetId,
       ...relatedEntities.map((item) => item.id),
     ]);
-    const primaryRecordIds = proposal.interpretation.sourceRecordIds;
+    const primaryRecordIds = interpretation?.sourceRecordIds ?? [];
     const [
       artifactAssociationRows,
       metadataRows,
@@ -9512,8 +10408,10 @@ export class SqliteCatalogue
     return {
       proposal,
       entity: { id: entity.id, kind: "digital-asset" },
-      sourceAssociation: primarySourceAssociation,
       sourceAssociations: currentAssociations,
+      ...(recognitionSourceAssociation === undefined
+        ? {}
+        : { recognitionSourceAssociation }),
       metadataPolicyIds: policyRows.map((row) => row.policyId),
       metadataSourceRecords,
       recognitionDecision: {

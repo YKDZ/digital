@@ -37,7 +37,7 @@ export type FixedCorpusDedicatedIntegrationStatus =
  * 绝不表示所有者已经完成其闸门。
  */
 export type FixedCorpusDedicatedIntegrationOwnershipGroup = {
-  readonly ownerIssue: number;
+  readonly ownerTicket: string;
   readonly journey?: string;
   readonly status: FixedCorpusDedicatedIntegrationStatus;
   readonly roots: readonly FixedCorpusRoot[];
@@ -246,11 +246,23 @@ export async function assertFixedCorpusContentBaseline(
   const baseline = await readFixedCorpusBaseline(context);
   if (actual.size !== baseline.roots.length)
     throw new Error("fixed corpus content baseline root count drifted");
-  for (const expected of baseline.roots) {
-    const observed = actual.get(expected.logicalRoot);
-    if (observed === undefined)
+  await assertFixedCorpusContentBaselineSubset(context, actual);
+}
+
+/** 将单个真实门的有限根集合与同一份人工批准内容摘要比较。 */
+export async function assertFixedCorpusContentBaselineSubset(
+  context: CliJourneyContext,
+  actual: ReadonlyMap<string, FixedCorpusContentDigest>,
+): Promise<void> {
+  const baseline = await readFixedCorpusBaseline(context);
+  const expectedByRoot = new Map(
+    baseline.roots.map((expected) => [expected.logicalRoot, expected]),
+  );
+  for (const observed of actual.values()) {
+    const expected = expectedByRoot.get(observed.logicalRoot);
+    if (expected === undefined)
       throw new Error(
-        `fixed corpus content baseline root missing: ${expected.logicalRoot}`,
+        `fixed corpus content baseline root missing: ${observed.logicalRoot}`,
       );
     assertContentDigestMatchesBaseline(observed, expected);
   }
@@ -372,7 +384,7 @@ function requiredSnapshot(
 }
 
 type DedicatedIntegrationOwnershipContract = {
-  readonly ownerIssue: number;
+  readonly ownerTicket: string;
   readonly rootCount: number;
   readonly status: FixedCorpusDedicatedIntegrationStatus;
   readonly journey?: string;
@@ -381,35 +393,45 @@ type DedicatedIntegrationOwnershipContract = {
 const dedicatedIntegrationOwnershipContracts: readonly DedicatedIntegrationOwnershipContract[] =
   [
     {
-      ownerIssue: 21,
+      ownerTicket: "v1-live-acceptance/issues/01-dlsite-eight-live-gate.md",
       journey: "dlsite-eight-live",
-      status: "external-gated",
+      status: "implemented",
       rootCount: 8,
     },
     {
-      ownerIssue: 22,
+      ownerTicket: "v1-live-acceptance/issues/02-fanbox-five-live-gate.md",
       journey: "fanbox-five-live",
       status: "external-gated",
       rootCount: 5,
     },
-    { ownerIssue: 23, status: "pending", rootCount: 7 },
     {
-      ownerIssue: 24,
+      ownerTicket: "v1-live-acceptance/issues/03-epub-publication-live-gate.md",
+      journey: "epub-publication-live",
+      status: "implemented",
+      rootCount: 6,
+    },
+    {
+      ownerTicket: "v1-live-acceptance/issues/04-pdf-series-live-gate.md",
+      status: "pending",
+      rootCount: 1,
+    },
+    {
+      ownerTicket: "v1-live-acceptance/issues/05-bangumi-episodic-live-gate.md",
       journey: "bangumi-episodic-live",
-      status: "external-gated",
+      status: "implemented",
       rootCount: 2,
     },
     {
-      ownerIssue: 25,
+      ownerTicket: "v1-live-acceptance/issues/06-film-tmdb-omdb-live-gate.md",
       journey: "tmdb-omdb-live",
-      status: "external-gated",
+      status: "implemented",
       rootCount: 2,
     },
   ];
 
-const dedicatedIntegrationOwnershipContractByIssue = new Map(
+const dedicatedIntegrationOwnershipContractByTicket = new Map(
   dedicatedIntegrationOwnershipContracts.map((contract) => [
-    contract.ownerIssue,
+    contract.ownerTicket,
     contract,
   ]),
 );
@@ -441,12 +463,6 @@ function requiredString(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim().length === 0)
     throw new Error(`fixed corpus routing ${label} must be a non-empty string`);
   return value;
-}
-
-function requiredIssueNumber(value: unknown, label: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) <= 0)
-    throw new Error(`fixed corpus routing ${label} must be a positive integer`);
-  return value as number;
 }
 
 function requiredStatus(
@@ -531,7 +547,7 @@ export function fixedCorpusDedicatedIntegrationOwnershipGroupsFromOracle(
       "fixed corpus routing dedicated integration ownership group count drifted",
     );
 
-  const seenOwners = new Set<number>();
+  const seenOwners = new Set<string>();
   const seenOwnedRoots = new Set<string>();
   const ownershipGroups: FixedCorpusDedicatedIntegrationOwnershipGroup[] = [];
   for (const [index, rawGroup] of rawGroups.entries()) {
@@ -539,20 +555,20 @@ export function fixedCorpusDedicatedIntegrationOwnershipGroupsFromOracle(
       rawGroup,
       `dedicatedIntegrationOwnershipGroups[${index}]`,
     );
-    const ownerIssue = requiredIssueNumber(
-      group.ownerIssue,
-      `dedicatedIntegrationOwnershipGroups[${index}].ownerIssue`,
+    const ownerTicket = requiredString(
+      group.ownerTicket,
+      `dedicatedIntegrationOwnershipGroups[${index}].ownerTicket`,
     );
-    if (seenOwners.has(ownerIssue))
+    if (seenOwners.has(ownerTicket))
       throw new Error(
-        `fixed corpus routing has a duplicate owner Issue ${ownerIssue}`,
+        `fixed corpus routing has a duplicate owner ticket ${ownerTicket}`,
       );
-    seenOwners.add(ownerIssue);
+    seenOwners.add(ownerTicket);
     const contract =
-      dedicatedIntegrationOwnershipContractByIssue.get(ownerIssue);
+      dedicatedIntegrationOwnershipContractByTicket.get(ownerTicket);
     if (contract === undefined)
       throw new Error(
-        `fixed corpus routing has an unknown owner Issue ${ownerIssue}`,
+        `fixed corpus routing has an unknown owner ticket ${ownerTicket}`,
       );
     const status = requiredStatus(
       group.status,
@@ -560,14 +576,14 @@ export function fixedCorpusDedicatedIntegrationOwnershipGroupsFromOracle(
     );
     if (status !== contract.status)
       throw new Error(
-        `fixed corpus routing owner Issue ${ownerIssue} status must be ${contract.status}`,
+        `fixed corpus routing owner ticket ${ownerTicket} status must be ${contract.status}`,
       );
 
     const hasJourney = Object.hasOwn(group, "journey");
     if (contract.journey === undefined) {
       if (hasJourney)
         throw new Error(
-          `fixed corpus routing owner Issue ${ownerIssue} must not declare a journey while pending`,
+          `fixed corpus routing owner ticket ${ownerTicket} must not declare a journey while pending`,
         );
     } else if (
       requiredString(
@@ -576,7 +592,7 @@ export function fixedCorpusDedicatedIntegrationOwnershipGroupsFromOracle(
       ) !== contract.journey
     )
       throw new Error(
-        `fixed corpus routing owner Issue ${ownerIssue} journey must be ${contract.journey}`,
+        `fixed corpus routing owner ticket ${ownerTicket} journey must be ${contract.journey}`,
       );
 
     const groupRoots = resolveKnownRoots(
@@ -586,7 +602,7 @@ export function fixedCorpusDedicatedIntegrationOwnershipGroupsFromOracle(
     );
     if (groupRoots.length !== contract.rootCount)
       throw new Error(
-        `fixed corpus routing owner Issue ${ownerIssue} root count must be ${contract.rootCount}`,
+        `fixed corpus routing owner ticket ${ownerTicket} root count must be ${contract.rootCount}`,
       );
     for (const root of groupRoots) {
       if (seenOwnedRoots.has(root.logicalRoot))
@@ -596,20 +612,24 @@ export function fixedCorpusDedicatedIntegrationOwnershipGroupsFromOracle(
       seenOwnedRoots.add(root.logicalRoot);
     }
     ownershipGroups.push({
-      ownerIssue,
+      ownerTicket,
       status,
       roots: groupRoots,
       ...(contract.journey === undefined ? {} : { journey: contract.journey }),
     });
   }
   for (const contract of dedicatedIntegrationOwnershipContracts) {
-    if (!seenOwners.has(contract.ownerIssue))
+    if (!seenOwners.has(contract.ownerTicket))
       throw new Error(
-        `fixed corpus routing is missing owner Issue ${contract.ownerIssue}`,
+        `fixed corpus routing is missing owner ticket ${contract.ownerTicket}`,
       );
   }
-  return ownershipGroups.toSorted(
-    (left, right) => left.ownerIssue - right.ownerIssue,
+  return ownershipGroups.toSorted((left, right) =>
+    left.ownerTicket < right.ownerTicket
+      ? -1
+      : left.ownerTicket > right.ownerTicket
+        ? 1
+        : 0,
   );
 }
 
@@ -622,7 +642,7 @@ async function fixedCorpusRoutingInput(context: CliJourneyContext): Promise<{
     readFile(
       path.join(
         fixedCorpusDirectory(context),
-        "references/reviewed-oracle.seed.json",
+        "references/reviewed-oracle.json",
       ),
       "utf8",
     ).then((contents) => JSON.parse(contents) as unknown),

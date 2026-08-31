@@ -30,7 +30,7 @@ afterEach(async () => {
 });
 
 describe("fixed corpus inventory baseline", () => {
-  it("routes owned roots to their dedicated integration owners without claiming an acceptance gate passed", async () => {
+  it("routes owned roots to their dedicated integration journeys and statuses", async () => {
     const context = {
       mode: "source",
       packageRoot: path.resolve(import.meta.dirname, "../.."),
@@ -47,47 +47,55 @@ describe("fixed corpus inventory baseline", () => {
     expect(allRoots).toHaveLength(29);
     expect(
       ownershipGroups.map((group) => ({
-        ownerIssue: group.ownerIssue,
+        ownerTicket: group.ownerTicket,
         journey: group.journey,
         status: group.status,
         rootCount: group.roots.length,
       })),
     ).toEqual([
       {
-        ownerIssue: 21,
+        ownerTicket: "v1-live-acceptance/issues/01-dlsite-eight-live-gate.md",
         journey: "dlsite-eight-live",
-        status: "external-gated",
+        status: "implemented",
         rootCount: 8,
       },
       {
-        ownerIssue: 22,
+        ownerTicket: "v1-live-acceptance/issues/02-fanbox-five-live-gate.md",
         journey: "fanbox-five-live",
         status: "external-gated",
         rootCount: 5,
       },
       {
-        ownerIssue: 23,
-        journey: undefined,
-        status: "pending",
-        rootCount: 7,
+        ownerTicket:
+          "v1-live-acceptance/issues/03-epub-publication-live-gate.md",
+        journey: "epub-publication-live",
+        status: "implemented",
+        rootCount: 6,
       },
       {
-        ownerIssue: 24,
+        ownerTicket: "v1-live-acceptance/issues/04-pdf-series-live-gate.md",
+        journey: undefined,
+        status: "pending",
+        rootCount: 1,
+      },
+      {
+        ownerTicket:
+          "v1-live-acceptance/issues/05-bangumi-episodic-live-gate.md",
         journey: "bangumi-episodic-live",
-        status: "external-gated",
+        status: "implemented",
         rootCount: 2,
       },
       {
-        ownerIssue: 25,
+        ownerTicket: "v1-live-acceptance/issues/06-film-tmdb-omdb-live-gate.md",
         journey: "tmdb-omdb-live",
-        status: "external-gated",
+        status: "implemented",
         rootCount: 2,
       },
     ]);
     const ownedRoots = ownershipGroups.flatMap((group) => group.roots);
     expect(ownedRoots).toHaveLength(24);
     expect(new Set(ownedRoots.map((root) => root.logicalRoot)).size).toBe(24);
-    expect(historicallyReviewedRoots).toHaveLength(13);
+    expect(historicallyReviewedRoots).toHaveLength(15);
     expect(
       historicallyReviewedRoots.some((root) =>
         root.logicalRoot.startsWith("appdata/booklore/books/"),
@@ -132,7 +140,7 @@ describe("fixed corpus inventory baseline", () => {
         path.resolve(
           context.packageRoot,
           "../..",
-          ".scratch/acceptance-corpus/references/reviewed-oracle.seed.json",
+          ".scratch/acceptance-corpus/references/reviewed-oracle.json",
         ),
         "utf8",
       ),
@@ -164,13 +172,13 @@ describe("fixed corpus inventory baseline", () => {
         path.resolve(
           context.packageRoot,
           "../..",
-          ".scratch/acceptance-corpus/references/reviewed-oracle.seed.json",
+          ".scratch/acceptance-corpus/references/reviewed-oracle.json",
         ),
         "utf8",
       ),
     ]);
     type OwnershipGroup = {
-      ownerIssue?: number;
+      ownerTicket?: string;
       journey?: string;
       status?: string;
       roots?: string[];
@@ -197,9 +205,9 @@ describe("fixed corpus inventory baseline", () => {
         },
       },
       {
-        expected: "ownerIssue must be a positive integer",
+        expected: "ownerTicket must be a non-empty string",
         mutate: (oracle) => {
-          delete oracle.dedicatedIntegrationOwnershipGroups[0]!.ownerIssue;
+          delete oracle.dedicatedIntegrationOwnershipGroups[0]!.ownerTicket;
         },
       },
       {
@@ -209,7 +217,7 @@ describe("fixed corpus inventory baseline", () => {
         },
       },
       {
-        expected: "status must be external-gated",
+        expected: "status must be implemented",
         mutate: (oracle) => {
           oracle.dedicatedIntegrationOwnershipGroups[0]!.status = "pending";
         },
@@ -217,7 +225,7 @@ describe("fixed corpus inventory baseline", () => {
       {
         expected: "must not declare a journey while pending",
         mutate: (oracle) => {
-          oracle.dedicatedIntegrationOwnershipGroups[2]!.journey =
+          oracle.dedicatedIntegrationOwnershipGroups[3]!.journey =
             "publication-seven-live";
         },
       },

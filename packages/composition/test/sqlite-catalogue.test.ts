@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   access,
   link,
@@ -33,6 +33,7 @@ import {
   ObservedRootRegistrations,
   attachAssetRefreshAutomation,
   sha256,
+  artifactProofConditionalBaseline,
 } from "@digital/application";
 import type { AcceptedRecognition, SourceRecord } from "@digital/domain";
 import {
@@ -61,6 +62,7 @@ import {
 } from "../src/runtime.ts";
 import {
   disposePreparedCatalogueTemplate,
+  prepareWithFormalMigration,
   preparedCatalogueRoot,
 } from "./prepared-catalogue.ts";
 
@@ -87,6 +89,298 @@ function collectObservedRootCleanupFailure(): {
     },
   };
 }
+
+it("serializes real SQLite proof CAS without allowing a later completion to overwrite coordinates", async () => {
+  const { root, catalogue: first } = await createCatalogueWithRoot();
+  const second = SqliteCatalogue.forProductData(root);
+  const digest = "a".repeat(64);
+  const database = new DatabaseSync(path.join(root, "catalogue.sqlite"));
+  database.exec(`
+    INSERT INTO artifacts (id) VALUES ('artifact-proof-cas');
+    INSERT INTO blobs (digest, media_type, byte_length)
+      VALUES ('${digest}', 'application/octet-stream', 3);
+    INSERT INTO artifact_revisions (id, artifact_id, blob_digest)
+      VALUES ('revision-proof-cas', 'artifact-proof-cas', '${digest}');
+    INSERT INTO locations (id, artifact_id, address, kind)
+      VALUES ('location-proof-cas', 'artifact-proof-cas', '/managed/${digest}', 'managed');
+  `);
+  database.close();
+  const expected = {
+    revisionId: "revision-proof-cas",
+    artifactId: "artifact-proof-cas",
+    blobDigest: digest,
+    blobByteLength: 3,
+    locationId: "location-proof-cas",
+    locationKind: "managed" as const,
+    conditionalBaseline: artifactProofConditionalBaseline({
+      revisionId: "revision-proof-cas",
+      artifactId: "artifact-proof-cas",
+      blobDigest: digest,
+      blobByteLength: 3,
+      locationId: "location-proof-cas",
+      locationKind: "managed",
+    }),
+  };
+  const proof = {
+    blobDigest: digest,
+    scheme: "artifact-frame-manifest/1" as const,
+    byteLength: 3,
+    frameSize: 1_048_576 as const,
+    frameCount: 1,
+    manifestDigest: "b".repeat(64),
+  };
+
+  expect(
+    (
+      await Promise.all([
+        first.adoptArtifactContentProof({ expected, proof }),
+        second.adoptArtifactContentProof({ expected, proof }),
+      ])
+    ).toSorted(),
+  ).toEqual(["already-committed", "committed"]);
+  await expect(
+    second.adoptArtifactContentProof({
+      expected,
+      proof: { ...proof, manifestDigest: "c".repeat(64) },
+    }),
+  ).resolves.toBe("stale");
+  await expect(
+    first.adoptArtifactContentProof({
+      expected: {
+        ...expected,
+        locationId: "different-location",
+        conditionalBaseline: artifactProofConditionalBaseline({
+          ...expected,
+          locationId: "different-location",
+        }),
+      },
+      proof,
+    }),
+  ).resolves.toBe("stale");
+  first.close();
+  second.close();
+});
+
+it("confirms one current revision at multiple observed Locations without re-offering confirmed selections", async () => {
+  const { root, catalogue } = await createCatalogueWithRoot();
+  const oldDigest = "1".repeat(64);
+  const newDigest = "2".repeat(64);
+  const observationBaseline = (
+    locationId: string,
+    snapshotId: string,
+    revisionHeads: readonly {
+      readonly id: string;
+      readonly blobDigest: string;
+    }[],
+  ) =>
+    createHash("sha256")
+      .update(
+        `{"artifactId":"artifact-confirmation","locationId":"${locationId}","modifiedAt":"2026-08-29T00:00:00.000Z","observedAt":"2026-08-29T00:00:00.000Z","revisionHeads":${JSON.stringify(revisionHeads)},"size":4,"snapshotId":"${snapshotId}"}`,
+      )
+      .digest("hex");
+  const baselineA = observationBaseline(
+    "location-confirmation-a",
+    "snapshot-current",
+    [{ blobDigest: oldDigest, id: "revision-old" }],
+  );
+  const baselineB = observationBaseline(
+    "location-confirmation-b",
+    "snapshot-current",
+    [{ blobDigest: oldDigest, id: "revision-old" }],
+  );
+  const database = new DatabaseSync(path.join(root, "catalogue.sqlite"));
+  database.exec(`
+    INSERT INTO observed_root_registrations (
+      id, display_name, container_path, canonical_path, status, config_version,
+      read_only, symlink_mode, allowed_target_root_ids_json
+    ) VALUES ('confirmation-root', 'Confirmation root', '/observed', '/observed',
+      'active', 1, 1, 'do-not-follow', '[]');
+    INSERT INTO artifacts (id) VALUES ('artifact-confirmation');
+    INSERT INTO blobs (digest, media_type, byte_length)
+      VALUES ('${oldDigest}', 'application/octet-stream', 3);
+    INSERT INTO artifact_revisions (id, artifact_id, blob_digest)
+      VALUES ('revision-old', 'artifact-confirmation', '${oldDigest}');
+    INSERT INTO locations (id, artifact_id, address, kind) VALUES
+      ('location-confirmation-a', 'artifact-confirmation', '/observed/a.bin', 'observed'),
+      ('location-confirmation-b', 'artifact-confirmation', '/observed/b.bin', 'observed');
+    INSERT INTO current_file_observations (
+      location_id, snapshot_id, observed_at, size, modified_at,
+      conditional_baseline
+    ) VALUES
+      ('location-confirmation-a', 'snapshot-current', '2026-08-29T00:00:00.000Z',
+       4, '2026-08-29T00:00:00.000Z', '${baselineA}'),
+      ('location-confirmation-b', 'snapshot-current', '2026-08-29T00:00:00.000Z',
+       4, '2026-08-29T00:00:00.000Z', '${baselineB}');
+  `);
+  database.close();
+  const selectionA = await catalogue.observedFileSelectionForLocation(
+    "location-confirmation-a",
+  );
+  const selectionB = await catalogue.observedFileSelectionForLocation(
+    "location-confirmation-b",
+  );
+  if (selectionA === undefined || selectionB === undefined)
+    throw new Error("missing current observed selection");
+  const factsA = await catalogue.readObservedFileConfirmationFacts(selectionA);
+  const factsB = await catalogue.readObservedFileConfirmationFacts(selectionB);
+  if (factsA === undefined || factsB === undefined)
+    throw new Error("missing current observed facts");
+  const proof = {
+    blobDigest: newDigest,
+    scheme: "artifact-frame-manifest/1" as const,
+    byteLength: 4,
+    frameSize: 1_048_576 as const,
+    frameCount: 1,
+    manifestDigest: "4".repeat(64),
+  };
+  const revision = {
+    id: "revision-current",
+    artifactId: "artifact-confirmation",
+    blobDigest: newDigest,
+  };
+  const confirmation = (expected: typeof factsA) => ({
+    expected,
+    observedAuthority: {
+      registrationId: "confirmation-root",
+      registrationVersion: 1,
+    },
+    blob: {
+      digest: newDigest,
+      mediaType: "application/octet-stream",
+      byteLength: 4,
+    },
+    revision,
+    proof,
+  });
+
+  await expect(
+    catalogue.submitConfirmedObservedRevision(confirmation(factsA)),
+  ).resolves.toBe("committed");
+  await expect(
+    catalogue.submitConfirmedObservedRevision(confirmation(factsA)),
+  ).resolves.toBe("already-committed");
+  await expect(
+    catalogue.submitConfirmedObservedRevision({
+      ...confirmation(factsA),
+      blob: {
+        digest: "7".repeat(64),
+        mediaType: "application/octet-stream",
+        byteLength: 4,
+      },
+      revision: {
+        id: "revision-conflicting-old-selection",
+        artifactId: "artifact-confirmation",
+        blobDigest: "7".repeat(64),
+      },
+      proof: {
+        ...proof,
+        blobDigest: "7".repeat(64),
+        manifestDigest: "8".repeat(64),
+      },
+    }),
+  ).resolves.toBe("stale");
+  await expect(
+    catalogue.submitConfirmedObservedRevision(confirmation(factsB)),
+  ).resolves.toBe("stale");
+  const refreshedSnapshotId = "snapshot-refreshed";
+  const refreshedBaselineB = observationBaseline(
+    "location-confirmation-b",
+    refreshedSnapshotId,
+    [
+      { blobDigest: newDigest, id: "revision-current" },
+      { blobDigest: oldDigest, id: "revision-old" },
+    ],
+  );
+  const refreshDatabase = new DatabaseSync(path.join(root, "catalogue.sqlite"));
+  refreshDatabase
+    .prepare(
+      `UPDATE current_file_observations
+       SET snapshot_id = ?, conditional_baseline = ? WHERE location_id = ?`,
+    )
+    .run(refreshedSnapshotId, refreshedBaselineB, "location-confirmation-b");
+  refreshDatabase.close();
+  const refreshedSelectionB = await catalogue.observedFileSelectionForLocation(
+    "location-confirmation-b",
+  );
+  if (refreshedSelectionB === undefined)
+    throw new Error("missing refreshed observed selection");
+  const refreshedFactsB =
+    await catalogue.readObservedFileConfirmationFacts(refreshedSelectionB);
+  if (refreshedFactsB === undefined)
+    throw new Error("missing refreshed observed facts");
+  await expect(
+    catalogue.submitConfirmedObservedRevision(confirmation(refreshedFactsB)),
+  ).resolves.toBe("committed");
+  await expect(
+    catalogue.observedFileSelectionForLocation("location-confirmation-a"),
+  ).resolves.toBeUndefined();
+  await expect(
+    catalogue.readObservedFileConfirmationFacts(selectionA),
+  ).resolves.toEqual(factsA);
+  await expect(
+    catalogue.submitConfirmedObservedRevision(
+      confirmation({ ...factsA, conditionalBaseline: "5".repeat(64) }),
+    ),
+  ).resolves.toBe("stale");
+  const verification = new DatabaseSync(path.join(root, "catalogue.sqlite"), {
+    readOnly: true,
+  });
+  expect(
+    verification
+      .prepare(
+        "SELECT location_id AS locationId FROM observed_revision_confirmations WHERE revision_id = ? ORDER BY location_id",
+      )
+      .all(revision.id),
+  ).toEqual([
+    { locationId: "location-confirmation-a" },
+    { locationId: "location-confirmation-b" },
+  ]);
+  verification.close();
+  catalogue.close();
+});
+
+it("removes a stale current observation when ordinary acceptance carries a complete snapshot that omits it", async () => {
+  const { root, catalogue } = await createCatalogueWithRoot();
+  const database = new DatabaseSync(path.join(root, "catalogue.sqlite"));
+  database.exec(`
+    INSERT INTO artifacts (id) VALUES ('artifact');
+    INSERT INTO locations (id, artifact_id, address, kind)
+      VALUES ('location', 'artifact', '/observed/missing.bin', 'observed');
+    INSERT INTO current_file_observations (
+      location_id, snapshot_id, observed_at, size, modified_at,
+      conditional_baseline
+    ) VALUES (
+      'location', 'stale-snapshot', '2026-08-28T00:00:00.000Z', 4,
+      '2026-08-28T00:00:00.000Z', '${"6".repeat(64)}'
+    );
+  `);
+  database.close();
+  await expect(
+    catalogue.observedFileSelectionForLocation("location"),
+  ).resolves.toMatch(/^observed-file-selection_1_/u);
+  const currentAccepted = {
+    ...accepted(),
+    locations: [
+      {
+        id: "location",
+        artifactId: "artifact",
+        address: "/observed/missing.bin",
+        kind: "observed" as const,
+      },
+    ],
+  };
+  await catalogue.createExecution(execution());
+  await retainSourceRecords(catalogue, "execution", [sourceRecord()]);
+  await acceptRecognition(catalogue, {
+    execution: acceptedExecution(),
+    accepted: currentAccepted,
+  });
+
+  await expect(
+    catalogue.observedFileSelectionForLocation("location"),
+  ).resolves.toBeUndefined();
+  catalogue.close();
+});
 
 async function createCatalogueWithRoot(options?: SqliteCatalogueOptions) {
   const root = await preparedCatalogueRoot();
@@ -134,6 +428,7 @@ const fixtureObservedDirectories = [
   "/observed/changed-configuration",
   "/observed/compatible-configuration",
   "/observed/conflicting-recovery",
+  "/observed/cross-basis",
   "/observed/frozen-automation-configuration",
   "/observed/legacy-boundary",
   "/observed/missing-managed",
@@ -1768,7 +2063,7 @@ describe("SqliteCatalogue lifecycle", () => {
     await expect(catalogue.listCurrentCatalogue()).resolves.toMatchObject([
       {
         entity: { id: "asset", kind: "digital-asset" },
-        sourceAssociation: {
+        recognitionSourceAssociation: {
           sourceIdentity: "source",
           nativeAddress: "https://source.example/work",
         },
@@ -1781,9 +2076,11 @@ describe("SqliteCatalogue lifecycle", () => {
       expect(database.prepare("PRAGMA journal_mode").get()).toEqual({
         journal_mode: "wal",
       });
-      expect(isPreparedCatalogue(path.join(root, "catalogue.sqlite"))).toBe(
-        true,
-      );
+      await expect(
+        SqliteCatalogue.inspectProductionReadiness({
+          productDataDirectory: root,
+        }),
+      ).resolves.toMatchObject({ state: "ready" });
       const audit = database
         .prepare("SELECT audit_json FROM workflow_executions WHERE id = ?")
         .get("execution") as { readonly audit_json: string };
@@ -1947,16 +2244,20 @@ describe("SqliteCatalogue lifecycle", () => {
         initiatedAt: "2026-08-02T00:00:00.000Z",
         requestedSelection: {
           subjectId: acceptedState.entity.id,
-          sourceAssociationId: acceptedState.sourceAssociation.id,
-          sourceIdentity: acceptedState.sourceAssociation.sourceIdentity,
-          nativeAddress: acceptedState.sourceAssociation.nativeAddress,
+          sourceAssociationId: acceptedState.recognitionSourceAssociation.id,
+          sourceIdentity:
+            acceptedState.recognitionSourceAssociation.sourceIdentity,
+          nativeAddress:
+            acceptedState.recognitionSourceAssociation.nativeAddress,
           selectors: [{ kind: "metadata-property", property: "asset.title" }],
         },
         reviewPolicy: "automatic",
         baselineLineageHeads: [
           {
-            sourceIdentity: acceptedState.sourceAssociation.sourceIdentity,
-            nativeAddress: acceptedState.sourceAssociation.nativeAddress,
+            sourceIdentity:
+              acceptedState.recognitionSourceAssociation.sourceIdentity,
+            nativeAddress:
+              acceptedState.recognitionSourceAssociation.nativeAddress,
             coverageId: acceptedRecord.coverage.id,
             sourceRecordId: acceptedRecord.id,
           },
@@ -2009,7 +2310,7 @@ describe("SqliteCatalogue lifecycle", () => {
         resultReferences: {
           acceptedAssetIds: [acceptedState.entity.id],
           recognitionDecisionIds: [acceptedState.recognitionDecision.id],
-          sourceAssociationIds: [acceptedState.sourceAssociation.id],
+          sourceAssociationIds: [acceptedState.recognitionSourceAssociation.id],
         },
       },
     ]);
@@ -2063,13 +2364,13 @@ describe("SqliteCatalogue lifecycle", () => {
     const database = new DatabaseSync(path.join(root, "catalogue.sqlite"));
     try {
       const insert = database.prepare(
-        "INSERT INTO recognition_proposals (id, execution_id, interpretation_json, rule_results_json) VALUES (?, ?, ?, ?)",
+        "INSERT INTO recognition_proposals (id, execution_id, basis_json, rule_results_json) VALUES (?, ?, ?, ?)",
       );
       for (const [index, { proposal }] of proposals.entries()) {
         insert.run(
           proposal.id,
           index < 100 ? "bounded-history-a" : "bounded-history-b",
-          JSON.stringify(proposal.interpretation),
+          JSON.stringify(proposal.basis),
           JSON.stringify(proposal.ruleResults),
         );
       }
@@ -2108,7 +2409,8 @@ describe("SqliteCatalogue lifecycle", () => {
     });
     const completeBaseline = await catalogue.freezeChangeImpactBaseline({
       assetId: baselineAccepted.entity.id,
-      sourceAssociationId: baselineAccepted.sourceAssociation.id,
+      recognitionSourceAssociationId:
+        baselineAccepted.recognitionSourceAssociation.id,
       recognitionDecisionId: baselineAccepted.recognitionDecision.id,
     });
     await catalogue.createExecution({
@@ -2122,7 +2424,7 @@ describe("SqliteCatalogue lifecycle", () => {
       baselines: [
         {
           key: "source-association",
-          value: baselineAccepted.sourceAssociation.id,
+          value: baselineAccepted.recognitionSourceAssociation.id,
         },
         {
           key: "recognition-decision",
@@ -2130,7 +2432,7 @@ describe("SqliteCatalogue lifecycle", () => {
         },
         {
           key: "source-records",
-          value: baselineAccepted.proposal.interpretation.sourceRecordIds
+          value: baselineAccepted.proposal.basis.interpretation.sourceRecordIds
             .toSorted()
             .join(","),
         },
@@ -2432,13 +2734,14 @@ describe("SqliteCatalogue lifecycle", () => {
     });
     const completeBaseline = await catalogue.freezeChangeImpactBaseline({
       assetId: baselineAccepted.entity.id,
-      sourceAssociationId: baselineAccepted.sourceAssociation.id,
+      recognitionSourceAssociationId:
+        baselineAccepted.recognitionSourceAssociation.id,
       recognitionDecisionId: baselineAccepted.recognitionDecision.id,
     });
     const currentBaselines: ChangeImpactPreview["baselines"] = [
       {
         key: "source-association",
-        value: baselineAccepted.sourceAssociation.id,
+        value: baselineAccepted.recognitionSourceAssociation.id,
       },
       {
         key: "recognition-decision",
@@ -2446,7 +2749,7 @@ describe("SqliteCatalogue lifecycle", () => {
       },
       {
         key: "source-records",
-        value: baselineAccepted.proposal.interpretation.sourceRecordIds
+        value: baselineAccepted.proposal.basis.interpretation.sourceRecordIds
           .toSorted()
           .join(","),
       },
@@ -2512,13 +2815,14 @@ describe("SqliteCatalogue lifecycle", () => {
     });
     const completeBaseline = await catalogue.freezeChangeImpactBaseline({
       assetId: baselineAccepted.entity.id,
-      sourceAssociationId: baselineAccepted.sourceAssociation.id,
+      recognitionSourceAssociationId:
+        baselineAccepted.recognitionSourceAssociation.id,
       recognitionDecisionId: baselineAccepted.recognitionDecision.id,
     });
     const baselines: ChangeImpactPreview["baselines"] = [
       {
         key: "source-association",
-        value: baselineAccepted.sourceAssociation.id,
+        value: baselineAccepted.recognitionSourceAssociation.id,
       },
       {
         key: "recognition-decision",
@@ -2526,7 +2830,7 @@ describe("SqliteCatalogue lifecycle", () => {
       },
       {
         key: "source-records",
-        value: baselineAccepted.proposal.interpretation.sourceRecordIds
+        value: baselineAccepted.proposal.basis.interpretation.sourceRecordIds
           .toSorted()
           .join(","),
       },
@@ -3056,7 +3360,8 @@ describe("SqliteCatalogue lifecycle", () => {
     const attentionCompleteBaseline =
       await catalogue.freezeChangeImpactBaseline({
         assetId: attentionAccepted.entity.id,
-        sourceAssociationId: attentionAccepted.sourceAssociation.id,
+        recognitionSourceAssociationId:
+          attentionAccepted.recognitionSourceAssociation.id,
         recognitionDecisionId: attentionAccepted.recognitionDecision.id,
       });
     const validPreview = {
@@ -3065,7 +3370,7 @@ describe("SqliteCatalogue lifecycle", () => {
       baselines: [
         {
           key: "source-association",
-          value: attentionAccepted.sourceAssociation.id,
+          value: attentionAccepted.recognitionSourceAssociation.id,
         },
         {
           key: "recognition-decision",
@@ -3073,7 +3378,7 @@ describe("SqliteCatalogue lifecycle", () => {
         },
         {
           key: "source-records",
-          value: attentionAccepted.proposal.interpretation.sourceRecordIds
+          value: attentionAccepted.proposal.basis.interpretation.sourceRecordIds
             .toSorted()
             .join(","),
         },
@@ -3089,13 +3394,13 @@ describe("SqliteCatalogue lifecycle", () => {
     const database = new DatabaseSync(path.join(root, "catalogue.sqlite"));
     try {
       const insert = database.prepare(
-        "INSERT INTO recognition_proposals (id, execution_id, interpretation_json, rule_results_json) VALUES (?, ?, ?, ?)",
+        "INSERT INTO recognition_proposals (id, execution_id, basis_json, rule_results_json) VALUES (?, ?, ?, ?)",
       );
       for (const proposal of proposals) {
         insert.run(
           proposal.id,
           "multi-recognition-review",
-          JSON.stringify(proposal.interpretation),
+          JSON.stringify(proposal.basis),
           JSON.stringify(proposal.ruleResults),
         );
       }
@@ -3222,7 +3527,7 @@ describe("SqliteCatalogue lifecycle", () => {
 
     await expect(catalogue.listCurrentCatalogue()).resolves.toMatchObject([
       {
-        sourceAssociation: { id: "association" },
+        recognitionSourceAssociation: { id: "association" },
         sourceAssociations: [
           { id: "association" },
           { id: "secondary-z" },
@@ -3259,9 +3564,9 @@ describe("SqliteCatalogue lifecycle", () => {
     }
     const afterPrimaryStoppedApplying = await catalogue.listCurrentCatalogue();
     expect(afterPrimaryStoppedApplying).toHaveLength(1);
-    expect(afterPrimaryStoppedApplying[0]?.sourceAssociation.id).toBe(
-      "association",
-    );
+    expect(
+      afterPrimaryStoppedApplying[0]?.recognitionSourceAssociation.id,
+    ).toBe("association");
     expect(
       afterPrimaryStoppedApplying[0]?.sourceAssociations.map(
         (association) => association.id,
@@ -3281,7 +3586,7 @@ describe("SqliteCatalogue lifecycle", () => {
     const withoutCurrentSources = await catalogue.listCurrentCatalogue();
     expect(withoutCurrentSources).toHaveLength(1);
     expect(withoutCurrentSources[0]).toMatchObject({
-      sourceAssociation: { id: "association" },
+      recognitionSourceAssociation: { id: "association" },
       sourceAssociations: [],
     });
     catalogue.close();
@@ -3381,7 +3686,7 @@ describe("SqliteCatalogue lifecycle", () => {
       expect(
         database
           .prepare(
-            "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'source_association_heads'",
+            "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'recognition_heads'",
           )
           .get(),
       ).toEqual({ count: 1 });
@@ -3503,13 +3808,15 @@ describe("SqliteCatalogue lifecycle", () => {
     ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("opens an explicitly Drizzle-prepared disposable schema", async () => {
+  it("rejects an explicitly Drizzle-prepared schema without a production migration ledger", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "digital-disposable-"));
     cleanup.push(root);
     await prepareDisposableCatalogue({ root });
 
     const catalogue = SqliteCatalogue.forProductData(root);
-    await expect(catalogue.listExecutions()).resolves.toEqual([]);
+    await expect(catalogue.listExecutions()).rejects.toThrow(
+      "Catalogue 缺少生产迁移账本",
+    );
     catalogue.close();
   });
 
@@ -3621,10 +3928,10 @@ describe("SqliteCatalogue lifecycle", () => {
     {
       name: "a missing primary key",
       damage: (database: DatabaseSync) => {
-        database.exec("DROP TABLE source_association_heads");
-        database.exec(`CREATE TABLE source_association_heads (
+        database.exec("DROP TABLE recognition_heads");
+        database.exec(`CREATE TABLE recognition_heads (
           subject_id TEXT NOT NULL,
-          association_id TEXT NOT NULL,
+          recognition_source_association_id TEXT,
           recognition_decision_id TEXT NOT NULL
         )`);
       },
@@ -3738,6 +4045,7 @@ describe("SqliteCatalogue lifecycle", () => {
       database.close();
     }
     expect(isPreparedCatalogue(prepared.databasePath)).toBe(true);
+    await prepareWithFormalMigration(root);
     const catalogue = SqliteCatalogue.forProductData(root);
     await expect(catalogue.listCurrentAttentionPage()).resolves.toEqual({
       items: [],
@@ -3782,7 +4090,7 @@ describe("SqliteCatalogue lifecycle", () => {
     },
   );
 
-  it("keeps independently pushed catalogues compatible with the reviewed schema", async () => {
+  it("distinguishes a production-migrated catalogue from a raw reviewed schema", async () => {
     const { root: preparedRoot, catalogue } = await createCatalogueWithRoot();
     catalogue.close();
     const disposableRoot = await mkdtemp(
@@ -3793,8 +4101,18 @@ describe("SqliteCatalogue lifecycle", () => {
 
     expect(
       isPreparedCatalogue(path.join(preparedRoot, "catalogue.sqlite")),
-    ).toBe(true);
+    ).toBe(false);
     expect(isPreparedCatalogue(prepared.databasePath)).toBe(true);
+    await expect(
+      SqliteCatalogue.inspectProductionReadiness({
+        productDataDirectory: preparedRoot,
+      }),
+    ).resolves.toMatchObject({ state: "ready" });
+    await expect(
+      SqliteCatalogue.inspectProductionReadiness({
+        productDataDirectory: disposableRoot,
+      }),
+    ).resolves.toMatchObject({ state: "catalogue-not-prepared" });
   });
 
   it("keeps every pushed TEXT primary key physically NOT NULL", async () => {
@@ -3846,13 +4164,13 @@ describe("SqliteCatalogue lifecycle", () => {
     try {
       database
         .prepare(
-          "INSERT INTO source_association_heads (subject_id, association_id, recognition_decision_id) VALUES (?, ?, ?)",
+          "INSERT INTO recognition_heads (subject_id, recognition_source_association_id, recognition_decision_id) VALUES (?, ?, ?)",
         )
         .run("asset", "association", "decision");
       expect(() =>
         database
           .prepare(
-            "INSERT INTO source_association_heads (subject_id, association_id, recognition_decision_id) VALUES (?, ?, ?)",
+            "INSERT INTO recognition_heads (subject_id, recognition_source_association_id, recognition_decision_id) VALUES (?, ?, ?)",
           )
           .run("asset", "other-association", "other-decision"),
       ).toThrow();
@@ -3934,19 +4252,25 @@ describe("SqliteCatalogue lifecycle", () => {
       ...base,
       proposal: {
         ...base.proposal,
-        interpretation: {
-          ...base.proposal.interpretation,
-          entities: [...(base.proposal.interpretation.entities ?? []), related],
-          metadata: [
-            ...base.proposal.interpretation.metadata,
-            {
-              subjectId: related.id,
-              property: "asset.related-only-title",
-              sourceSlot: "source.related.title",
-              value: "Only related",
-              sourceRecordIds: [sourceRecord.id],
-            },
-          ],
+        basis: {
+          kind: "source-interpretation",
+          interpretation: {
+            ...base.proposal.basis.interpretation,
+            entities: [
+              ...(base.proposal.basis.interpretation.entities ?? []),
+              related,
+            ],
+            metadata: [
+              ...base.proposal.basis.interpretation.metadata,
+              {
+                subjectId: related.id,
+                property: "asset.related-only-title",
+                sourceSlot: "source.related.title",
+                value: "Only related",
+                sourceRecordIds: [sourceRecord.id],
+              },
+            ],
+          },
         },
       },
       entities: [...(base.entities ?? []), related],
@@ -4358,21 +4682,23 @@ describe("SqliteCatalogue lifecycle", () => {
     };
     const base = accepted();
     const interpretation = {
-      ...base.proposal.interpretation,
+      ...base.proposal.basis.interpretation,
       producer: interpreter,
-      metadata: base.proposal.interpretation.metadata.map((assertion) => ({
-        ...assertion,
-        producer: interpreter,
-      })),
-      entities: base.proposal.interpretation.entities?.map((entity) => ({
+      metadata: base.proposal.basis.interpretation.metadata.map(
+        (assertion) => ({
+          ...assertion,
+          producer: interpreter,
+        }),
+      ),
+      entities: base.proposal.basis.interpretation.entities?.map((entity) => ({
         ...entity,
         producer: interpreter,
       })),
-      entityMentions: base.proposal.interpretation.entityMentions?.map(
+      entityMentions: base.proposal.basis.interpretation.entityMentions?.map(
         (mention) => ({ ...mention, producer: interpreter }),
       ),
       entityResolutionDecisions:
-        base.proposal.interpretation.entityResolutionDecisions?.map(
+        base.proposal.basis.interpretation.entityResolutionDecisions?.map(
           (decision) => ({ ...decision, producer: interpreter }),
         ),
     };
@@ -4426,7 +4752,11 @@ describe("SqliteCatalogue lifecycle", () => {
     };
     const fact: AcceptedRecognition = {
       ...base,
-      proposal: { ...base.proposal, interpretation, ruleResults },
+      proposal: {
+        ...base.proposal,
+        basis: { kind: "source-interpretation", interpretation },
+        ruleResults,
+      },
       recognitionDecision: {
         ...base.recognitionDecision,
         acceptedRuleResults: ruleResults,
@@ -4511,8 +4841,8 @@ describe("SqliteCatalogue lifecycle", () => {
     expect(inspection?.sourceRecords[0]?.producer).toEqual(collector);
     expect(inspection?.accepted).toMatchObject({
       proposal: {
-        interpretation: {
-          producer: interpreter,
+        basis: {
+          interpretation: { producer: interpreter },
         },
         ruleResults: [{ evidence: [{ producer: recognizer }] }],
       },
@@ -5245,64 +5575,65 @@ function sourceRecord() {
 }
 
 function accepted(): AcceptedRecognition {
+  const interpretation = {
+    id: "interpretation",
+    producer: {
+      capabilityId: "interpreter",
+      capabilityVersion: "1",
+      contractVersion: "1",
+    },
+    sourceRecordIds: ["record"],
+    sourceIdentity: "source",
+    sourceAddress: "https://source.example/work",
+    metadata: [
+      {
+        property: "asset.title",
+        sourceSlot: "source.title",
+        value: "Work",
+        sourceRecordIds: ["record"],
+        qualifiers: [
+          { key: "rating.source-label", value: "Internet Movie Database" },
+          { key: "rating.unit", value: "score" },
+        ],
+      },
+    ],
+    sourceArtifacts: [],
+    entities: [
+      {
+        id: "persona",
+        kind: "persona" as const,
+        sourceIdentity: "source",
+        sourceKey: "credited-name",
+        identityNamespace: "source.credit.voice",
+        label: "Credited name",
+        sourceRecordIds: ["record"],
+      },
+    ],
+    entityMentions: [
+      {
+        id: "mention",
+        sourceRecordIds: ["record"],
+        sourceIdentity: "source",
+        field: "voice",
+        role: "voice",
+        label: "Credited name",
+        identityNamespace: "source.credit.voice",
+        sourceKey: "Credited name",
+      },
+    ],
+    entityResolutionDecisions: [
+      {
+        id: "resolution",
+        mentionId: "mention",
+        entityId: "persona",
+        rule: "source-field-role-exact" as const,
+        sourceRecordIds: ["record"],
+      },
+    ],
+  };
   const proposal = {
     id: "proposal",
-    interpretation: {
-      id: "interpretation",
-      producer: {
-        capabilityId: "interpreter",
-        capabilityVersion: "1",
-        contractVersion: "1",
-      },
-      sourceRecordIds: ["record"],
-      sourceIdentity: "source",
-      sourceAddress: "https://source.example/work",
-      metadata: [
-        {
-          property: "asset.title",
-          sourceSlot: "source.title",
-          value: "Work",
-          sourceRecordIds: ["record"],
-          qualifiers: [
-            { key: "rating.source-label", value: "Internet Movie Database" },
-            { key: "rating.unit", value: "score" },
-          ],
-        },
-      ],
-      sourceArtifacts: [],
-      entities: [
-        {
-          id: "persona",
-          kind: "persona" as const,
-          sourceIdentity: "source",
-          sourceKey: "credited-name",
-          identityNamespace: "source.credit.voice",
-          label: "Credited name",
-          sourceRecordIds: ["record"],
-        },
-      ],
-      entityMentions: [
-        {
-          id: "mention",
-          sourceRecordIds: ["record"],
-          sourceIdentity: "source",
-          field: "voice",
-          role: "voice",
-          label: "Credited name",
-          identityNamespace: "source.credit.voice",
-          sourceKey: "Credited name",
-        },
-      ],
-      entityResolutionDecisions: [
-        {
-          id: "resolution",
-          mentionId: "mention",
-          entityId: "persona",
-          rule: "source-field-role-exact" as const,
-          sourceRecordIds: ["record"],
-        },
-      ],
-    },
+    basis: { kind: "source-interpretation" as const, interpretation },
     ruleResults: [
       {
         capabilityId: "recognizer",
@@ -5318,13 +5649,22 @@ function accepted(): AcceptedRecognition {
   return {
     proposal,
     entity: { id: "asset", kind: "digital-asset" },
-    sourceAssociation: {
+    recognitionSourceAssociation: {
       id: "association",
       subjectId: "asset",
       sourceIdentity: "source",
       nativeAddress: "https://source.example/work",
       proposalId: "proposal",
     },
+    sourceAssociations: [
+      {
+        id: "association",
+        subjectId: "asset",
+        sourceIdentity: "source",
+        nativeAddress: "https://source.example/work",
+        proposalId: "proposal",
+      },
+    ],
     recognitionDecision: {
       id: "decision",
       proposalId: "proposal",
@@ -5352,7 +5692,7 @@ function accepted(): AcceptedRecognition {
         role: "asset.primary-cover",
       },
     ],
-    metadata: proposal.interpretation.metadata,
+    metadata: interpretation.metadata,
     entities: [
       {
         id: "persona",
@@ -5364,9 +5704,8 @@ function accepted(): AcceptedRecognition {
         sourceRecordIds: ["record"],
       },
     ],
-    entityMentions: proposal.interpretation.entityMentions,
-    entityResolutionDecisions:
-      proposal.interpretation.entityResolutionDecisions,
+    entityMentions: interpretation.entityMentions,
+    entityResolutionDecisions: interpretation.entityResolutionDecisions,
     relationships: [
       {
         id: "relationship",
@@ -5442,49 +5781,63 @@ function acceptedFor(
     proposal: {
       ...base.proposal,
       id: proposalId,
-      interpretation: {
-        ...base.proposal.interpretation,
-        id: `interpretation-${assetId}`,
-        sourceRecordIds: [sourceRecordId],
-        sourceAddress: `https://source.example/work/${assetId}`,
-        metadata: base.proposal.interpretation.metadata.map((metadata) => ({
-          ...metadata,
+      basis: {
+        kind: "source-interpretation",
+        interpretation: {
+          ...base.proposal.basis.interpretation,
+          id: `interpretation-${assetId}`,
           sourceRecordIds: [sourceRecordId],
-        })),
-        entities: base.proposal.interpretation.entities?.map((entity) => ({
-          ...entity,
-          id: `${entity.id}-${assetId}`,
-          sourceKey: `${entity.sourceKey}-${assetId}`,
-          sourceRecordIds: [sourceRecordId],
-        })),
-        entityMentions: base.proposal.interpretation.entityMentions?.map(
-          (mention) => ({
-            ...mention,
-            id: `${mention.id}-${assetId}`,
-            sourceKey: `${mention.sourceKey}-${assetId}`,
-            sourceRecordIds: [sourceRecordId],
-          }),
-        ),
-        entityResolutionDecisions:
-          base.proposal.interpretation.entityResolutionDecisions?.map(
-            (decision) => ({
-              ...decision,
-              id: `${decision.id}-${assetId}`,
-              mentionId: `${decision.mentionId}-${assetId}`,
-              entityId: `${decision.entityId}-${assetId}`,
+          sourceAddress: `https://source.example/work/${assetId}`,
+          metadata: base.proposal.basis.interpretation.metadata.map(
+            (metadata) => ({ ...metadata, sourceRecordIds: [sourceRecordId] }),
+          ),
+          entities: base.proposal.basis.interpretation.entities?.map(
+            (entity) => ({
+              ...entity,
+              id: `${entity.id}-${assetId}`,
+              sourceKey: `${entity.sourceKey}-${assetId}`,
               sourceRecordIds: [sourceRecordId],
             }),
           ),
+          entityMentions:
+            base.proposal.basis.interpretation.entityMentions?.map(
+              (mention) => ({
+                ...mention,
+                id: `${mention.id}-${assetId}`,
+                sourceKey: `${mention.sourceKey}-${assetId}`,
+                sourceRecordIds: [sourceRecordId],
+              }),
+            ),
+          entityResolutionDecisions:
+            base.proposal.basis.interpretation.entityResolutionDecisions?.map(
+              (decision) => ({
+                ...decision,
+                id: `${decision.id}-${assetId}`,
+                mentionId: `${decision.mentionId}-${assetId}`,
+                entityId: `${decision.entityId}-${assetId}`,
+                sourceRecordIds: [sourceRecordId],
+              }),
+            ),
+        },
       },
     },
     entity: { id: assetId, kind: "digital-asset" },
-    sourceAssociation: {
-      ...base.sourceAssociation,
+    recognitionSourceAssociation: {
+      ...base.recognitionSourceAssociation,
       id: associationId,
       subjectId: assetId,
       nativeAddress: `https://source.example/work/${assetId}`,
       proposalId,
     },
+    sourceAssociations: [
+      {
+        ...base.recognitionSourceAssociation!,
+        id: associationId,
+        subjectId: assetId,
+        nativeAddress: `https://source.example/work/${assetId}`,
+        proposalId,
+      },
+    ],
     recognitionDecision: {
       ...base.recognitionDecision,
       id: decisionId,
@@ -5552,10 +5905,16 @@ function attentionPreview(executionId: string): ChangeImpactPreview {
     proposal: accepted().proposal,
     baselines: [],
     current: {
-      sourceAssociation: {
+      recognitionSourceAssociation: {
         sourceIdentity: "source",
         nativeAddress: "https://source.example/current",
       },
+      sourceAssociations: [
+        {
+          sourceIdentity: "source",
+          nativeAddress: "https://source.example/current",
+        },
+      ],
       metadata: [],
       entities: [],
       entityMentions: [],
@@ -5568,10 +5927,16 @@ function attentionPreview(executionId: string): ChangeImpactPreview {
       artifactAssociations: [],
     },
     projected: {
-      sourceAssociation: {
+      recognitionSourceAssociation: {
         sourceIdentity: "source",
         nativeAddress: "https://source.example/projected",
       },
+      sourceAssociations: [
+        {
+          sourceIdentity: "source",
+          nativeAddress: "https://source.example/projected",
+        },
+      ],
       metadata: [],
       entities: [],
       entityMentions: [],
@@ -5588,6 +5953,43 @@ function attentionPreview(executionId: string): ChangeImpactPreview {
   };
 }
 
+function changeImpactApplyInput(
+  preview: ChangeImpactPreview,
+): Parameters<SqliteCatalogue["applyChangeImpactPreview"]>[0] {
+  const successorDecision = {
+    id: `recognition-decision-${preview.id}`,
+    proposalId: preview.proposal.id,
+    assetId: preview.assetId,
+    acceptedRuleResults: preview.proposal.ruleResults,
+  };
+  const projectedAssociation = preview.projected.recognitionSourceAssociation;
+  return {
+    preview,
+    plan: {
+      successorDecision,
+      supersession: {
+        id: `recognition-decision-supersession-${preview.id}`,
+        predecessorDecisionId:
+          preview.baselines.find(
+            (baseline) => baseline.key === "recognition-decision",
+          )?.value ?? "",
+        successorDecisionId: successorDecision.id,
+      },
+      ...(projectedAssociation === undefined
+        ? {}
+        : {
+            recognitionSourceAssociation: {
+              id: `source-association-${preview.id}`,
+              subjectId: preview.assetId,
+              sourceIdentity: projectedAssociation.sourceIdentity,
+              nativeAddress: projectedAssociation.nativeAddress,
+              proposalId: preview.proposal.id,
+            },
+          }),
+    },
+  };
+}
+
 async function saveCurrentAttentionPreview(
   catalogue: SqliteCatalogue,
   input: {
@@ -5598,7 +6000,8 @@ async function saveCurrentAttentionPreview(
 ): Promise<void> {
   const completeBaseline = await catalogue.freezeChangeImpactBaseline({
     assetId: input.accepted.entity.id,
-    sourceAssociationId: input.accepted.sourceAssociation.id,
+    recognitionSourceAssociationId:
+      input.accepted.recognitionSourceAssociation.id,
     recognitionDecisionId: input.accepted.recognitionDecision.id,
   });
   await catalogue.createExecution({
@@ -5614,7 +6017,7 @@ async function saveCurrentAttentionPreview(
     baselines: [
       {
         key: "source-association",
-        value: input.accepted.sourceAssociation.id,
+        value: input.accepted.recognitionSourceAssociation.id,
       },
       {
         key: "recognition-decision",
@@ -5622,7 +6025,7 @@ async function saveCurrentAttentionPreview(
       },
       {
         key: "source-records",
-        value: input.accepted.proposal.interpretation.sourceRecordIds
+        value: input.accepted.proposal.basis.interpretation.sourceRecordIds
           .toSorted()
           .join(","),
       },
@@ -5871,7 +6274,7 @@ function recoveryWorkflow(
     recognizers: [
       {
         capability: capability("recovery.recognizer"),
-        canRecognize: () => true,
+        canRecognize: ({ basis }) => basis.kind === "source-interpretation",
         recognize: ({ evidence }) => ({
           id: options?.uniqueProposalIds
             ? `recovery-proposal-${++proposalSequence}`
@@ -5911,6 +6314,26 @@ function recoveryWorkflow(
       },
     ],
     managedStore: {
+      async stage(content) {
+        return {
+          candidateId: content.candidateId,
+          sourceRecordId: content.sourceRecordId,
+          role: content.role,
+          stagedReference: `staged:${content.idempotencyKey}`,
+          digest: sha256(content.bytes),
+          mediaType: content.mediaType,
+        };
+      },
+      async storeStaged(checkpoint) {
+        return {
+          blob: {
+            digest: checkpoint.digest,
+            mediaType: checkpoint.mediaType,
+            byteLength: jpeg.byteLength,
+          },
+          location: { address: "/managed/recovery-cover" },
+        };
+      },
       async store(content) {
         return {
           blob: {
@@ -6030,7 +6453,7 @@ async function createInterruptedRecoverySourceRefreshRun(
       initiatedAt: "2026-08-02T00:00:00.000Z",
       requestedSelection: {
         subjectId: seedAccepted.entity.id,
-        sourceAssociationId: seedAccepted.sourceAssociation.id,
+        sourceAssociationId: seedAccepted.recognitionSourceAssociation.id,
         sourceIdentity: coverage.sourceIdentity,
         nativeAddress: coverage.nativeAddress,
         selectors: [{ kind: "metadata-property", property: "asset.title" }],
@@ -6049,7 +6472,7 @@ async function createInterruptedRecoverySourceRefreshRun(
     digest: `interrupted-source-refresh-digest:${phase}`,
   };
   await retainSourceRecords(catalogue, executionId, [candidate]);
-  const initialInterpretation = seedAccepted.proposal.interpretation;
+  const initialInterpretation = seedAccepted.proposal.basis.interpretation;
   const staged = await catalogue.stageSourceRefreshChangeSet({
     runId,
     candidateSourceRecordId: candidate.id,
@@ -6074,9 +6497,9 @@ async function createInterruptedRecoverySourceRefreshRun(
 function sourceRunSeedAccepted(): AcceptedRecognition {
   const base = accepted();
   const interpretation = {
-    ...base.proposal.interpretation,
+    ...base.proposal.basis.interpretation,
     id: "source-run-seed-interpretation",
-    metadata: base.proposal.interpretation.metadata.map((assertion) => ({
+    metadata: base.proposal.basis.interpretation.metadata.map((assertion) => ({
       ...assertion,
       sourceRecordIds: ["record"],
     })),
@@ -6088,15 +6511,18 @@ function sourceRunSeedAccepted(): AcceptedRecognition {
   const proposal = {
     ...base.proposal,
     id: "source-run-seed-proposal",
-    interpretation,
+    basis: { kind: "source-interpretation" as const, interpretation },
   };
   return {
     ...base,
     proposal,
-    sourceAssociation: {
-      ...base.sourceAssociation,
+    recognitionSourceAssociation: {
+      ...base.recognitionSourceAssociation!,
       proposalId: proposal.id,
     },
+    sourceAssociations: [
+      { ...base.recognitionSourceAssociation!, proposalId: proposal.id },
+    ],
     recognitionDecision: {
       ...base.recognitionDecision,
       proposalId: proposal.id,
@@ -6585,7 +7011,7 @@ function reevaluationWorkflow(
     recognizers: [
       {
         capability: capability("reevaluation.recognizer"),
-        canRecognize: () => true,
+        canRecognize: ({ basis }) => basis.kind === "source-interpretation",
         recognize: ({ evidence }) => ({
           id: `reevaluation-proposal-${state.sourceVersion}`,
           ruleResults: [
@@ -6678,6 +7104,500 @@ function reevaluationWorkflow(
   });
 }
 
+function crossBasisReplacementWorkflow(
+  catalogue: SqliteCatalogue,
+  state: { basis: "observed-evidence" | "source-interpretation" },
+): AssetRefreshWorkflow {
+  const capability = (capabilityId: string) => ({
+    capabilityId,
+    capabilityVersion: "1",
+    contractVersion: "1",
+  });
+  const observedRootRegistrations = inMemoryObservedRootRegistrations({
+    capability: capability("cross-basis.observer"),
+    async observe({ scope }) {
+      return {
+        id: `cross-basis-snapshot:${state.basis}`,
+        root: scope.logicalLocation,
+        complete: true,
+        excluded: [],
+        observedAt: "2026-08-30T00:00:00.000Z",
+        files: [
+          {
+            relativePath: "work.bin",
+            size: 4,
+            modifiedAt: "2026-08-30T00:00:00.000Z",
+          },
+        ],
+      };
+    },
+  });
+  return new AssetRefreshWorkflow({
+    observedRootRegistrations,
+    directoryInterpreters: [
+      {
+        capability: capability("cross-basis.directory"),
+        interpret: () =>
+          state.basis === "source-interpretation"
+            ? [
+                {
+                  kind: "source-address" as const,
+                  sourceIdentity: "cross-basis-source",
+                  sourceAddress: "opaque:cross-basis-work",
+                  explanation: "精确来源地址",
+                  producer: capability("cross-basis.directory"),
+                },
+              ]
+            : [],
+      },
+    ],
+    formatInspectors: [
+      {
+        capability: capability("cross-basis.inspector"),
+        inspect: ({ observedArtifactReference }) =>
+          state.basis === "observed-evidence"
+            ? [
+                {
+                  kind: "format.valid-publication" as const,
+                  explanation: "精确观察到的有效作品",
+                  producer: capability("cross-basis.inspector"),
+                  inspection: {
+                    identifiers: [],
+                    observedArtifactReference,
+                    revision: {
+                      digest: "cross-basis-observed-digest",
+                      mediaType: "application/octet-stream",
+                      byteLength: 4,
+                    },
+                    metadata: [],
+                    parts: [],
+                  },
+                },
+              ]
+            : [],
+      },
+    ],
+    collectors: [
+      {
+        capability: capability("cross-basis.collector"),
+        canCollect: (evidence) =>
+          evidence.sourceIdentity === "cross-basis-source" ||
+          evidence.sourceIdentity === "cross-basis-supplement",
+        coverageScopeIds: (evidence) => [
+          evidence.sourceIdentity === "cross-basis-supplement"
+            ? "cross-basis-supplement.complete"
+            : "cross-basis.complete",
+        ],
+        async collect(evidence) {
+          const supplement =
+            evidence.sourceIdentity === "cross-basis-supplement";
+          return {
+            failures: [],
+            records: [
+              {
+                id: supplement
+                  ? "cross-basis-supplement-record"
+                  : "cross-basis-record",
+                sourceIdentity: supplement
+                  ? "cross-basis-supplement"
+                  : "cross-basis-source",
+                nativeAddress: supplement
+                  ? "opaque:cross-basis-supplement"
+                  : "opaque:cross-basis-work",
+                mediaType: "application/json",
+                acquiredAt: "2026-08-30T00:00:00.000Z",
+                acquisition: {
+                  requestedAddress: "https://source.example/cross-basis",
+                  method: "GET" as const,
+                  authorized: false,
+                },
+                coverage: {
+                  id: supplement
+                    ? "cross-basis-supplement.complete"
+                    : "cross-basis.complete",
+                  completeness: "complete" as const,
+                  authority: "official" as const,
+                },
+                digest: supplement
+                  ? "cross-basis-supplement-record-digest"
+                  : "cross-basis-record-digest",
+                body: "{}",
+              },
+            ],
+          };
+        },
+      },
+    ],
+    sourceInterpreters: [
+      {
+        capability: capability("cross-basis.interpreter"),
+        canInterpret: ({ sourceRecords }) =>
+          sourceRecords.length === 1 &&
+          sourceRecords[0]?.sourceIdentity === "cross-basis-source",
+        interpret: ({ sourceRecords }) => ({
+          id: "cross-basis-interpretation",
+          producer: capability("cross-basis.interpreter"),
+          sourceRecordIds: [sourceRecords[0].id],
+          sourceIdentity: "cross-basis-source",
+          sourceAddress: "opaque:cross-basis-work",
+          metadata: [
+            {
+              property: "asset.title",
+              sourceSlot: "cross-basis.source.title",
+              value: "Source work",
+              sourceRecordIds: [sourceRecords[0].id],
+            },
+          ],
+          sourceArtifacts: [],
+        }),
+      },
+      {
+        capability: capability("cross-basis.supplement-interpreter"),
+        canInterpret: ({ sourceRecords }) =>
+          sourceRecords.length === 1 &&
+          sourceRecords[0]?.sourceIdentity === "cross-basis-supplement",
+        interpret: ({ sourceRecords }) => ({
+          id: "cross-basis-supplement-interpretation",
+          producer: capability("cross-basis.supplement-interpreter"),
+          sourceRecordIds: [sourceRecords[0].id],
+          sourceIdentity: "cross-basis-supplement",
+          sourceAddress: "opaque:cross-basis-supplement",
+          metadata: [
+            {
+              property: "asset.awards",
+              sourceSlot: "cross-basis.supplement.awards",
+              value: "Supplement award",
+              sourceRecordIds: [sourceRecords[0].id],
+            },
+          ],
+          sourceArtifacts: [],
+        }),
+      },
+    ],
+    recognizers: [
+      {
+        capability: capability("cross-basis.recognizer"),
+        canRecognize: () => true,
+        recognize: ({ evidence }) => ({
+          id: `cross-basis-proposal:${state.basis}`,
+          ruleResults: [
+            {
+              capabilityId: "cross-basis.recognizer",
+              capabilityVersion: "1",
+              ruleId: `exact-${state.basis}`,
+              ruleVersion: "1",
+              outcome: "satisfied" as const,
+              explanation: "精确依据",
+              evidence,
+            },
+          ],
+        }),
+      },
+    ],
+    recognitionPolicy: {
+      version: "cross-basis-policy/1",
+      accepts: () => true,
+    },
+    acquirers: [],
+    managedStore: {
+      async store() {
+        throw new Error("跨依据夹具没有来源产物");
+      },
+    },
+    executionCommands: catalogue,
+    executionQueries: catalogue,
+    recoveryLease: catalogue,
+    reuseQueries: catalogue,
+    recognitionAcceptance: catalogue,
+    recognitionReevaluation: catalogue,
+    recognitionChangeImpact: catalogue,
+    metadataRefreshPersistence: catalogue,
+    sourceAssociationCandidateInterpreters: [
+      {
+        capability: capability("cross-basis.supplement-candidate"),
+        interpret: () => ({
+          kind: "source-association" as const,
+          explanation: "精确补充来源",
+          sourceIdentity: "cross-basis-supplement",
+          sourceAddress: "opaque:cross-basis-supplement",
+          producer: capability("cross-basis.supplement-candidate"),
+        }),
+      },
+    ],
+    sourceAssociationInterpreters: [
+      {
+        capability: capability("cross-basis.supplement-association"),
+        canInterpret: () => true,
+        interpret: () => ({
+          status: "accepted" as const,
+          explanation: "精确补充来源身份",
+        }),
+      },
+    ],
+    sourceEnrichmentPersistence: catalogue,
+    changeImpactQueries: catalogue,
+    changeImpactCommands: catalogue,
+  });
+}
+
+it("replaces recognition basis in both directions through a reopened Application and SQLite boundary", async () => {
+  async function replaceBasis(
+    predecessor: "observed-evidence" | "source-interpretation",
+    successor: "observed-evidence" | "source-interpretation",
+  ) {
+    const informationRequirement = {
+      metadataUsageContext: "asset.ordinary" as const,
+      metadata: [{ property: "asset.awards", necessity: "optional" as const }],
+      artifactRoles: [],
+      relationshipTypes: [],
+    };
+    const { root, catalogue } = await createCatalogueWithRoot();
+    const state = { basis: predecessor };
+    const workflow = crossBasisReplacementWorkflow(catalogue, state);
+    const initial = await workflow.scanObservedScope({
+      registrationId: "/observed/cross-basis",
+      relativeScope: ".",
+      executionId: `cross-basis-initial:${predecessor}`,
+      acceptTrusted: true,
+      informationRequirement,
+    });
+    expect(initial.execution.outcome, JSON.stringify(initial.execution)).toBe(
+      "accepted",
+    );
+    const initialInspection = (await catalogue.inspectExecution(
+      initial.execution.id,
+    ))!;
+    const before =
+      initialInspection.accepted ??
+      initialInspection.workItemInspections?.[0]?.accepted;
+    expect(before).toBeDefined();
+    expect(before!.proposal.basis.kind).toBe(predecessor);
+    expect(before!.sourceAssociations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceIdentity: "cross-basis-supplement",
+          nativeAddress: "opaque:cross-basis-supplement",
+        }),
+      ]),
+    );
+    expect(before!.metadata).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ value: "Supplement award" }),
+      ]),
+    );
+
+    state.basis = successor;
+    const proposed = await workflow.scanObservedScope({
+      registrationId: "/observed/cross-basis",
+      relativeScope: ".",
+      executionId: `cross-basis-replacement:${predecessor}:${successor}`,
+      acceptTrusted: true,
+      informationRequirement,
+    });
+    expect(proposed.execution.outcome, JSON.stringify(proposed.execution)).toBe(
+      "proposal",
+    );
+    const preview = await catalogue.inspectChangeImpactPreviewForExecution(
+      proposed.execution.id,
+    );
+    expect(preview?.status).toBe("awaiting-confirmation");
+    expect(preview?.proposal.basis.kind).toBe(successor);
+    if (preview?.proposal.basis.kind === "source-interpretation")
+      expect(preview.proposal.basis.interpretation.sourceRecordIds).toEqual([
+        "cross-basis-record",
+      ]);
+    expect(preview?.projected.recognitionSourceAssociation).toEqual(
+      successor === "source-interpretation"
+        ? {
+            sourceIdentity: "cross-basis-source",
+            nativeAddress: "opaque:cross-basis-work",
+          }
+        : undefined,
+    );
+    const expectedProjectedSourceAssociations =
+      successor === "source-interpretation"
+        ? [
+            {
+              sourceIdentity: "cross-basis-source",
+              nativeAddress: "opaque:cross-basis-work",
+            },
+          ]
+        : [];
+    expect(preview?.projected.sourceAssociations).toEqual(
+      expectedProjectedSourceAssociations,
+    );
+    expect(preview?.projected.metadata).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ value: "Supplement award" }),
+      ]),
+    );
+    await expect(
+      workflow.inspectChangeImpactPreview(preview!.id),
+    ).resolves.toMatchObject({
+      projected: { sourceAssociations: expectedProjectedSourceAssociations },
+    });
+    const beforeConfirmation = await catalogue.findAcceptedForDirectory(
+      "/observed/cross-basis",
+    );
+    expect(beforeConfirmation?.accepted.proposal.basis.kind).toBe(predecessor);
+    const stalePreviewId = `${preview!.id}:stale-sibling`;
+    await catalogue.saveChangeImpactPreview({
+      ...preview!,
+      id: stalePreviewId,
+    });
+
+    catalogue.close();
+    const reopened = SqliteCatalogue.forProductData(root);
+    const resumed = crossBasisReplacementWorkflow(reopened, state);
+    if (predecessor === "source-interpretation") {
+      const rollbackGuard = new DatabaseSync(
+        path.join(root, "catalogue.sqlite"),
+      );
+      rollbackGuard.exec(`CREATE TRIGGER fail_cross_basis_completion
+        BEFORE UPDATE ON change_impact_previews
+        WHEN NEW.id = '${preview!.id.replaceAll("'", "''")}'
+          AND json_extract(NEW.preview_json, '$.status') = 'applied'
+        BEGIN
+          SELECT RAISE(ABORT, 'forced cross-basis completion failure');
+        END`);
+      rollbackGuard.close();
+      await expect(
+        resumed.applyChangeImpactPreview(preview!.id),
+      ).rejects.toThrow();
+      await expect(
+        reopened.findAcceptedForDirectory("/observed/cross-basis"),
+      ).resolves.toMatchObject({
+        accepted: { proposal: { basis: { kind: predecessor } } },
+      });
+      await expect(
+        reopened.inspectChangeImpactPreview(preview!.id),
+      ).resolves.toMatchObject({ status: "awaiting-confirmation" });
+      const removeRollbackGuard = new DatabaseSync(
+        path.join(root, "catalogue.sqlite"),
+      );
+      removeRollbackGuard.exec("DROP TRIGGER fail_cross_basis_completion");
+      removeRollbackGuard.close();
+    }
+    await expect(
+      resumed.applyChangeImpactPreview(preview!.id),
+    ).resolves.toMatchObject({ status: "applied" });
+    const after = await reopened.findAcceptedForDirectory(
+      "/observed/cross-basis",
+    );
+    expect(after?.accepted).toMatchObject({
+      proposal: { basis: { kind: successor } },
+      sourceAssociations:
+        successor === "source-interpretation"
+          ? [
+              {
+                sourceIdentity: "cross-basis-source",
+                nativeAddress: "opaque:cross-basis-work",
+              },
+            ]
+          : [],
+      metadata:
+        successor === "source-interpretation"
+          ? [expect.objectContaining({ value: "Source work" })]
+          : [],
+    });
+    expect(after?.accepted.recognitionSourceAssociation).toEqual(
+      successor === "source-interpretation"
+        ? expect.objectContaining({
+            sourceIdentity: "cross-basis-source",
+            nativeAddress: "opaque:cross-basis-work",
+          })
+        : undefined,
+    );
+    expect(after?.accepted.sourceAssociations).toEqual(
+      expectedProjectedSourceAssociations.map((association) =>
+        expect.objectContaining(association),
+      ),
+    );
+    expect(after?.accepted.metadata).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ value: "Supplement award" }),
+      ]),
+    );
+    expect(after?.accepted.recognitionDecision.id).not.toBe(
+      before!.recognitionDecision.id,
+    );
+    await expect(
+      reopened.inspectChangeImpactPreview(stalePreviewId),
+    ).resolves.toMatchObject({ status: "stale" });
+    const durableHistory = new DatabaseSync(
+      path.join(root, "catalogue.sqlite"),
+    );
+    expect(
+      durableHistory
+        .prepare(
+          `SELECT recognition_source_association_id AS associationId,
+                  recognition_decision_id AS decisionId
+           FROM recognition_heads WHERE subject_id = ?`,
+        )
+        .get(before!.entity.id),
+    ).toEqual({
+      associationId:
+        successor === "source-interpretation"
+          ? after!.accepted.recognitionSourceAssociation!.id
+          : null,
+      decisionId: after!.accepted.recognitionDecision.id,
+    });
+    expect(
+      durableHistory
+        .prepare(
+          `SELECT 1 FROM recognition_decision_supersessions
+           WHERE predecessor_decision_id = ? AND successor_decision_id = ?`,
+        )
+        .get(
+          before!.recognitionDecision.id,
+          after!.accepted.recognitionDecision.id,
+        ),
+    ).toBeDefined();
+    expect(
+      durableHistory
+        .prepare(
+          `SELECT 1 FROM source_associations
+           WHERE subject_id = ? AND source_identity = ? AND native_address = ?`,
+        )
+        .get(
+          before!.entity.id,
+          "cross-basis-supplement",
+          "opaque:cross-basis-supplement",
+        ),
+    ).toBeDefined();
+    expect(
+      durableHistory
+        .prepare(
+          `SELECT 1 FROM metadata_assertions
+           WHERE subject_id = ? AND value = ? AND source_record_ids_json <> '[]'`,
+        )
+        .get(before!.entity.id, "Supplement award"),
+    ).toBeDefined();
+    durableHistory.close();
+    if (predecessor === "source-interpretation") {
+      expect(after?.accepted.metadata).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ value: "Source work" }),
+        ]),
+      );
+      const history = new DatabaseSync(path.join(root, "catalogue.sqlite"));
+      expect(
+        history
+          .prepare(
+            `SELECT 1 FROM metadata_assertions
+             WHERE value = ? AND source_record_ids_json <> '[]'`,
+          )
+          .get("Source work"),
+      ).toBeDefined();
+      history.close();
+    }
+    reopened.close();
+  }
+
+  await replaceBasis("observed-evidence", "source-interpretation");
+  await replaceBasis("source-interpretation", "observed-evidence");
+});
+
 function multiRecoveryWorkflow(
   catalogue: SqliteCatalogue,
   state: {
@@ -6718,7 +7638,8 @@ function multiRecoveryWorkflow(
         resumeClaim,
       );
       if (
-        proposal.interpretation.sourceArtifacts.some((candidate) =>
+        proposal.basis.kind === "source-interpretation" &&
+        proposal.basis.interpretation.sourceArtifacts.some((candidate) =>
           candidate.id.startsWith("two-attachment"),
         )
       ) {
@@ -7010,23 +7931,26 @@ describe("SQLite Asset Refresh persistence", () => {
       const proposal = {
         ...accepted().proposal,
         id: `local-lifecycle-proposal-${revision}`,
-        interpretation: {
-          ...accepted().proposal.interpretation,
-          id: `local-lifecycle-interpretation-${revision}`,
-          sourceRecordIds: [sourceRecord.id],
-          metadata: [
-            {
-              property: "book.isbn-13",
-              sourceSlot: "source.isbn",
-              value: "9780306406157",
-              sourceRecordIds: [sourceRecord.id],
-            },
-          ],
-          sourceArtifacts: [],
-          entities: [],
-          entityMentions: [],
-          entityResolutionDecisions: [],
-          relationships: [],
+        basis: {
+          kind: "source-interpretation" as const,
+          interpretation: {
+            ...accepted().proposal.basis.interpretation,
+            id: `local-lifecycle-interpretation-${revision}`,
+            sourceRecordIds: [sourceRecord.id],
+            metadata: [
+              {
+                property: "book.isbn-13",
+                sourceSlot: "source.isbn",
+                value: "9780306406157",
+                sourceRecordIds: [sourceRecord.id],
+              },
+            ],
+            sourceArtifacts: [],
+            entities: [],
+            entityMentions: [],
+            entityResolutionDecisions: [],
+            relationships: [],
+          },
         },
       };
       const parentId = `local-parent-${revision}`;
@@ -7036,16 +7960,24 @@ describe("SQLite Asset Refresh persistence", () => {
         ...accepted(),
         proposal,
         entity: current?.entity ?? accepted().entity,
-        sourceAssociation: current?.sourceAssociation ?? {
-          ...accepted().sourceAssociation,
+        recognitionSourceAssociation: current?.recognitionSourceAssociation ?? {
+          ...accepted().recognitionSourceAssociation!,
           proposalId: proposal.id,
         },
-        recognitionDecision: current?.recognitionDecision ?? {
-          ...accepted().recognitionDecision,
-          proposalId: proposal.id,
+        sourceAssociations: [
+          current?.recognitionSourceAssociation ?? {
+            ...accepted().recognitionSourceAssociation!,
+            proposalId: proposal.id,
+          },
+        ],
+        recognitionDecision: {
+          ...(current?.recognitionDecision ?? {
+            ...accepted().recognitionDecision,
+            proposalId: proposal.id,
+          }),
         },
         metadata: [
-          ...proposal.interpretation.metadata,
+          ...proposal.basis.interpretation.metadata,
           ...(title === undefined
             ? []
             : [
@@ -7157,7 +8089,7 @@ describe("SQLite Asset Refresh persistence", () => {
       await adapter.createExecution(running);
       const heads = await adapter.freezeSourceLineageHeads({
         assetId: current.entity.id,
-        sourceAssociation: current.sourceAssociation,
+        sourceAssociation: current.recognitionSourceAssociation,
         coverageIds: ["complete"],
       });
       const nextRecord = record(revision);
@@ -7424,18 +8356,23 @@ describe("SQLite Asset Refresh persistence", () => {
     const refreshedProposal = {
       ...fact.proposal,
       id: "local-provenance-refresh-proposal",
-      interpretation: {
-        ...fact.proposal.interpretation,
-        id: "local-provenance-refresh-interpretation",
-        sourceRecordIds: [refreshRecord.id],
-        metadata: fact.proposal.interpretation.metadata.map((metadata) => ({
-          ...metadata,
+      basis: {
+        kind: "source-interpretation" as const,
+        interpretation: {
+          ...fact.proposal.basis.interpretation,
+          id: "local-provenance-refresh-interpretation",
           sourceRecordIds: [refreshRecord.id],
-        })),
-        entities: [],
-        entityMentions: [],
-        entityResolutionDecisions: [],
-        relationships: [],
+          metadata: fact.proposal.basis.interpretation.metadata.map(
+            (metadata) => ({
+              ...metadata,
+              sourceRecordIds: [refreshRecord.id],
+            }),
+          ),
+          entities: [],
+          entityMentions: [],
+          entityResolutionDecisions: [],
+          relationships: [],
+        },
       },
     };
     const refreshed = {
@@ -7464,7 +8401,7 @@ describe("SQLite Asset Refresh persistence", () => {
     };
     const heads = await later.freezeSourceLineageHeads({
       assetId: fact.entity.id,
-      sourceAssociation: fact.sourceAssociation,
+      sourceAssociation: fact.recognitionSourceAssociation,
       coverageIds: [record.coverage.id],
     });
     await expect(
@@ -7537,7 +8474,7 @@ describe("SQLite Asset Refresh persistence", () => {
     await catalogue.createExecution(reevaluation);
     const expectedLineageHeads = await catalogue.freezeSourceLineageHeads({
       assetId: current.entity.id,
-      sourceAssociation: current.sourceAssociation,
+      sourceAssociation: current.recognitionSourceAssociation,
       coverageIds: ["complete"],
     });
     await retainSourceRecords(catalogue, "reevaluation", [reevaluatedRecord]);
@@ -7546,27 +8483,31 @@ describe("SQLite Asset Refresh persistence", () => {
       proposal: {
         ...accepted().proposal,
         id: "reevaluated-proposal",
-        interpretation: {
-          ...accepted().proposal.interpretation,
-          id: "reevaluated-interpretation",
-          sourceRecordIds: ["reevaluated-record"],
-          metadata: [
-            {
-              property: "asset.title",
-              sourceSlot: "source.title",
-              value: "Reevaluated work",
-              sourceRecordIds: ["reevaluated-record"],
-            },
-          ],
-          sourceArtifacts: [],
-          entityMentions: [],
-          entityResolutionDecisions: [],
-          entities: [],
-          relationships: [],
+        basis: {
+          kind: "source-interpretation" as const,
+          interpretation: {
+            ...accepted().proposal.basis.interpretation,
+            id: "reevaluated-interpretation",
+            sourceRecordIds: ["reevaluated-record"],
+            metadata: [
+              {
+                property: "asset.title",
+                sourceSlot: "source.title",
+                value: "Reevaluated work",
+                sourceRecordIds: ["reevaluated-record"],
+              },
+            ],
+            sourceArtifacts: [],
+            entityMentions: [],
+            entityResolutionDecisions: [],
+            entities: [],
+            relationships: [],
+          },
         },
       },
       entity: current.entity,
-      sourceAssociation: current.sourceAssociation,
+      recognitionSourceAssociation: current.recognitionSourceAssociation,
+      sourceAssociations: current.sourceAssociations,
       recognitionDecision: current.recognitionDecision,
       metadata: [
         {
@@ -7676,7 +8617,7 @@ describe("SQLite Asset Refresh persistence", () => {
     await catalogue.createExecution(reevaluation);
     const expectedLineageHeads = await catalogue.freezeSourceLineageHeads({
       assetId: current.entity.id,
-      sourceAssociation: current.sourceAssociation,
+      sourceAssociation: current.recognitionSourceAssociation,
       coverageIds: ["complete"],
     });
     await retainSourceRecords(catalogue, reevaluation.id, [nextRecord]);
@@ -7685,42 +8626,45 @@ describe("SQLite Asset Refresh persistence", () => {
       proposal: {
         ...current.proposal,
         id: "atomic-proposal",
-        interpretation: {
-          ...current.proposal.interpretation,
-          id: "atomic-interpretation",
-          sourceRecordIds: [nextRecord.id],
-          metadata: [
-            {
-              property: "asset.title",
-              sourceSlot: "source.title",
-              value: "Atomic replacement",
-              sourceRecordIds: [nextRecord.id],
-            },
-          ],
-          entities: [
-            {
-              id: "atomic-persona",
-              kind: "persona",
-              sourceIdentity: "source",
-              sourceKey: "atomic-persona",
-              identityNamespace: "source.credit.voice",
-              label: "Atomic persona",
-              sourceRecordIds: [nextRecord.id],
-            },
-          ],
-          entityMentions: [],
-          entityResolutionDecisions: [],
-          relationships: [
-            {
-              id: "atomic-relationship",
-              participantId: "atomic-persona",
-              type: "asset.contribution",
-              role: "voice",
-              sourceSlot: "source.credit.voice",
-              sourceRecordIds: [nextRecord.id],
-            },
-          ],
-          sourceArtifacts: [],
+        basis: {
+          kind: "source-interpretation",
+          interpretation: {
+            ...current.proposal.basis.interpretation,
+            id: "atomic-interpretation",
+            sourceRecordIds: [nextRecord.id],
+            metadata: [
+              {
+                property: "asset.title",
+                sourceSlot: "source.title",
+                value: "Atomic replacement",
+                sourceRecordIds: [nextRecord.id],
+              },
+            ],
+            entities: [
+              {
+                id: "atomic-persona",
+                kind: "persona",
+                sourceIdentity: "source",
+                sourceKey: "atomic-persona",
+                identityNamespace: "source.credit.voice",
+                label: "Atomic persona",
+                sourceRecordIds: [nextRecord.id],
+              },
+            ],
+            entityMentions: [],
+            entityResolutionDecisions: [],
+            relationships: [
+              {
+                id: "atomic-relationship",
+                participantId: "atomic-persona",
+                type: "asset.contribution",
+                role: "voice",
+                sourceSlot: "source.credit.voice",
+                sourceRecordIds: [nextRecord.id],
+              },
+            ],
+            sourceArtifacts: [],
+          },
         },
       },
       metadata: [
@@ -7912,15 +8856,18 @@ describe("SQLite Asset Refresh persistence", () => {
     const proposal = {
       ...accepted().proposal,
       id: "collision-proposal",
-      interpretation: {
-        ...accepted().proposal.interpretation,
-        id: "collision-interpretation",
-        sourceRecordIds: [collisionRecord.id],
-        metadata: [],
-        entities: [],
-        entityMentions: [],
-        entityResolutionDecisions: [],
-        relationships: [],
+      basis: {
+        kind: "source-interpretation" as const,
+        interpretation: {
+          ...accepted().proposal.basis.interpretation,
+          id: "collision-interpretation",
+          sourceRecordIds: [collisionRecord.id],
+          metadata: [],
+          entities: [],
+          entityMentions: [],
+          entityResolutionDecisions: [],
+          relationships: [],
+        },
       },
     };
     await expect(
@@ -7937,13 +8884,22 @@ describe("SQLite Asset Refresh persistence", () => {
           ...accepted(),
           proposal,
           entity: { id: "collision-asset", kind: "digital-asset" },
-          sourceAssociation: {
+          recognitionSourceAssociation: {
             id: "collision-source-association",
             subjectId: "collision-asset",
             sourceIdentity: "source",
             nativeAddress: "https://source.example/work",
             proposalId: proposal.id,
           },
+          sourceAssociations: [
+            {
+              id: "collision-source-association",
+              subjectId: "collision-asset",
+              sourceIdentity: "source",
+              nativeAddress: "https://source.example/work",
+              proposalId: proposal.id,
+            },
+          ],
           recognitionDecision: {
             id: "collision-decision",
             proposalId: proposal.id,
@@ -8003,7 +8959,9 @@ describe("SQLite Asset Refresh persistence", () => {
         relationshipTypes: [],
       },
     });
-    expect(initial.execution.outcome).toBe("accepted");
+    expect(initial.execution.outcome, JSON.stringify(initial.execution)).toBe(
+      "accepted",
+    );
     const initialHistoryBeforeReevaluation = (
       await catalogue.listWorkflowHistoryPage({ limit: 10 })
     ).items.find(({ execution }) => execution.id === initial.execution.id)!;
@@ -8038,7 +8996,7 @@ describe("SQLite Asset Refresh persistence", () => {
           `SELECT id, subject_id, source_identity, native_address, proposal_id
            FROM source_associations WHERE id = ?`,
         )
-        .get(initialAccepted!.sourceAssociation.id),
+        .get(initialAccepted!.recognitionSourceAssociation.id),
       decision: identityBeforeDatabase
         .prepare(
           `SELECT id, proposal_id, asset_id, accepted_rule_results_json
@@ -8047,8 +9005,8 @@ describe("SQLite Asset Refresh persistence", () => {
         .get(initialAccepted!.recognitionDecision.id),
       head: identityBeforeDatabase
         .prepare(
-          `SELECT subject_id, association_id, recognition_decision_id
-           FROM source_association_heads WHERE subject_id = ?`,
+          `SELECT subject_id, recognition_source_association_id, recognition_decision_id
+           FROM recognition_heads WHERE subject_id = ?`,
         )
         .get(initialAccepted!.entity.id),
     };
@@ -8104,8 +9062,8 @@ describe("SQLite Asset Refresh persistence", () => {
         expect.objectContaining({ role: "editing" }),
       ]),
     });
-    expect(refreshedAccepted?.sourceAssociation).toEqual(
-      initialAccepted?.sourceAssociation,
+    expect(refreshedAccepted?.recognitionSourceAssociation).toEqual(
+      initialAccepted?.recognitionSourceAssociation,
     );
     expect(refreshedAccepted?.recognitionDecision).toEqual(
       initialAccepted?.recognitionDecision,
@@ -8172,7 +9130,7 @@ describe("SQLite Asset Refresh persistence", () => {
           `SELECT id, subject_id, source_identity, native_address, proposal_id
            FROM source_associations WHERE id = ?`,
         )
-        .get(initialAccepted!.sourceAssociation.id),
+        .get(initialAccepted!.recognitionSourceAssociation.id),
     ).toEqual(identityBefore.association);
     expect(
       database
@@ -8185,8 +9143,8 @@ describe("SQLite Asset Refresh persistence", () => {
     expect(
       database
         .prepare(
-          `SELECT subject_id, association_id, recognition_decision_id
-           FROM source_association_heads WHERE subject_id = ?`,
+          `SELECT subject_id, recognition_source_association_id, recognition_decision_id
+           FROM recognition_heads WHERE subject_id = ?`,
         )
         .get(initialAccepted!.entity.id),
     ).toEqual(identityBefore.head);
@@ -8290,7 +9248,7 @@ describe("SQLite Asset Refresh persistence", () => {
         initiatedBy: "user-1",
         requestedSelection: {
           subjectId: current!.entity.id,
-          sourceAssociationId: current!.sourceAssociation.id,
+          sourceAssociationId: current!.recognitionSourceAssociation.id,
         },
         phase: "terminal",
         outcome: "succeeded",
@@ -9956,9 +10914,12 @@ describe("SQLite Asset Refresh persistence", () => {
       ...accepted(),
       proposal: {
         ...accepted().proposal,
-        interpretation: {
-          ...accepted().proposal.interpretation,
-          sourceRecordIds: [record.id, predecessorCoverRecord.id],
+        basis: {
+          kind: "source-interpretation",
+          interpretation: {
+            ...accepted().proposal.basis.interpretation,
+            sourceRecordIds: [record.id, predecessorCoverRecord.id],
+          },
         },
       },
       artifactAssociations: [
@@ -9999,7 +10960,7 @@ describe("SQLite Asset Refresh persistence", () => {
     await catalogue.createExecution(reevaluation);
     const expectedLineageHeads = await catalogue.freezeSourceLineageHeads({
       assetId: current.entity.id,
-      sourceAssociation: current.sourceAssociation,
+      sourceAssociation: current.recognitionSourceAssociation,
       coverageIds: ["cover", "other"],
     });
     await retainSourceRecords(catalogue, reevaluation.id, [
@@ -10011,23 +10972,26 @@ describe("SQLite Asset Refresh persistence", () => {
       proposal: {
         ...current.proposal,
         id: "cover-provenance-proposal",
-        interpretation: {
-          ...current.proposal.interpretation,
-          id: "cover-provenance-interpretation",
-          sourceRecordIds: [nextCoverRecord.id, unrelatedIncompleteRecord.id],
-          metadata: [
-            {
-              property: "asset.title",
-              sourceSlot: "source.title",
-              value: "Cover provenance refresh",
-              sourceRecordIds: [nextCoverRecord.id],
-            },
-          ],
-          sourceArtifacts: [],
-          entities: [],
-          entityMentions: [],
-          entityResolutionDecisions: [],
-          relationships: [],
+        basis: {
+          kind: "source-interpretation",
+          interpretation: {
+            ...current.proposal.basis.interpretation,
+            id: "cover-provenance-interpretation",
+            sourceRecordIds: [nextCoverRecord.id, unrelatedIncompleteRecord.id],
+            metadata: [
+              {
+                property: "asset.title",
+                sourceSlot: "source.title",
+                value: "Cover provenance refresh",
+                sourceRecordIds: [nextCoverRecord.id],
+              },
+            ],
+            sourceArtifacts: [],
+            entities: [],
+            entityMentions: [],
+            entityResolutionDecisions: [],
+            relationships: [],
+          },
         },
       },
       metadata: [
@@ -10130,9 +11094,12 @@ describe("SQLite Asset Refresh persistence", () => {
       ...accepted(),
       proposal: {
         ...accepted().proposal,
-        interpretation: {
-          ...accepted().proposal.interpretation,
-          sourceRecordIds: [record.id, predecessorCoverRecord.id],
+        basis: {
+          kind: "source-interpretation",
+          interpretation: {
+            ...accepted().proposal.basis.interpretation,
+            sourceRecordIds: [record.id, predecessorCoverRecord.id],
+          },
         },
       },
       artifactAssociations: [
@@ -10163,7 +11130,7 @@ describe("SQLite Asset Refresh persistence", () => {
     await catalogue.createExecution(reevaluation);
     const expectedLineageHeads = await catalogue.freezeSourceLineageHeads({
       assetId: current.entity.id,
-      sourceAssociation: current.sourceAssociation,
+      sourceAssociation: current.recognitionSourceAssociation,
       coverageIds: [coverage.id],
     });
     await retainSourceRecords(catalogue, reevaluation.id, [invalidRecord]);
@@ -10172,23 +11139,26 @@ describe("SQLite Asset Refresh persistence", () => {
       proposal: {
         ...current.proposal,
         id: `invalid-retraction-proposal-${coverage.id}`,
-        interpretation: {
-          ...current.proposal.interpretation,
-          id: `invalid-retraction-interpretation-${coverage.id}`,
-          sourceRecordIds: [invalidRecord.id],
-          metadata: [
-            {
-              property: "asset.title",
-              sourceSlot: "source.title",
-              value: "Invalid retraction refresh",
-              sourceRecordIds: [invalidRecord.id],
-            },
-          ],
-          sourceArtifacts: [],
-          entities: [],
-          entityMentions: [],
-          entityResolutionDecisions: [],
-          relationships: [],
+        basis: {
+          kind: "source-interpretation",
+          interpretation: {
+            ...current.proposal.basis.interpretation,
+            id: `invalid-retraction-interpretation-${coverage.id}`,
+            sourceRecordIds: [invalidRecord.id],
+            metadata: [
+              {
+                property: "asset.title",
+                sourceSlot: "source.title",
+                value: "Invalid retraction refresh",
+                sourceRecordIds: [invalidRecord.id],
+              },
+            ],
+            sourceArtifacts: [],
+            entities: [],
+            entityMentions: [],
+            entityResolutionDecisions: [],
+            relationships: [],
+          },
         },
       },
       metadata: [
@@ -10524,7 +11494,9 @@ describe("SQLite Asset Refresh persistence", () => {
       executionId,
     });
 
-    expect(applied.execution.outcome).toBe("accepted");
+    expect(applied.execution.outcome, JSON.stringify(applied.execution)).toBe(
+      "accepted",
+    );
     catalogue.close();
 
     const reopened = SqliteCatalogue.forProductData(root);
@@ -10541,7 +11513,9 @@ describe("SQLite Asset Refresh persistence", () => {
     };
     const accepted = inspection?.workItemInspections?.[0]?.accepted;
 
-    expect(accepted?.proposal.interpretation.producer).toEqual(interpreter);
+    expect(accepted?.proposal.basis.interpretation.producer).toEqual(
+      interpreter,
+    );
     expect(accepted?.metadata).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -12065,7 +13039,7 @@ describe("SQLite Asset Refresh persistence", () => {
     await retainSourceRecords(catalogue, "refresh", [refreshedRecord]);
     const frozen = await catalogue.freezeSourceLineageHeads({
       assetId: "asset",
-      sourceAssociation: accepted().sourceAssociation,
+      sourceAssociation: accepted().recognitionSourceAssociation,
       coverageIds: [refreshedRecord.coverage.id],
     });
     const completed: WorkflowExecution = {
@@ -12077,11 +13051,11 @@ describe("SQLite Asset Refresh persistence", () => {
     };
     const submission = {
       assetId: "asset",
-      sourceAssociation: accepted().sourceAssociation,
+      sourceAssociation: accepted().recognitionSourceAssociation,
       sourceRecords: [refreshedRecord],
       expectedLineageHeads: frozen,
       interpretation: {
-        ...accepted().proposal.interpretation,
+        ...accepted().proposal.basis.interpretation,
         id: "refresh-interpretation",
         sourceRecordIds: ["refreshed-record"],
         metadata: [
@@ -12167,7 +13141,7 @@ describe("SQLite Asset Refresh persistence", () => {
     };
     const incompleteBaseline = await catalogue.freezeSourceLineageHeads({
       assetId: "asset",
-      sourceAssociation: accepted().sourceAssociation,
+      sourceAssociation: accepted().recognitionSourceAssociation,
       coverageIds: [incompleteRecord.coverage.id],
     });
     await retainSourceRecords(catalogue, "incomplete-refresh", [
@@ -12303,7 +13277,7 @@ describe("SQLite Asset Refresh persistence", () => {
     };
     const atomicBaseline = await catalogue.freezeSourceLineageHeads({
       assetId: "asset",
-      sourceAssociation: accepted().sourceAssociation,
+      sourceAssociation: accepted().recognitionSourceAssociation,
       coverageIds: [atomicRecord.coverage.id],
     });
     await retainSourceRecords(catalogue, atomicExecution.id, [atomicRecord]);
@@ -12493,7 +13467,8 @@ describe("SQLite Asset Refresh persistence", () => {
       expectedExecution: supplementExecution,
       execution: supplementExecution,
       expectedRecognitionBaseline: {
-        sourceAssociationId: accepted().sourceAssociation.id,
+        recognitionSourceAssociationId:
+          accepted().recognitionSourceAssociation.id,
         recognitionDecisionId: accepted().recognitionDecision.id,
       },
       assetId: "asset",
@@ -12590,44 +13565,47 @@ describe("SQLite Asset Refresh persistence", () => {
     };
     const proposal = {
       id: "new-proposal",
-      interpretation: {
-        ...accepted().proposal.interpretation,
-        id: "new-interpretation",
-        sourceRecordIds: ["new-record"],
-        sourceAddress: "https://source.example/new-work",
-        metadata: [
-          {
-            property: "asset.title",
-            sourceSlot: "source.title",
-            value: "New work",
-            sourceRecordIds: ["new-record"],
-          },
-        ],
-        entities: [newEntity],
-        entityMentions: [newMention],
-        entityResolutionDecisions: [
-          {
-            id: "new-resolution",
-            mentionId: "new-mention",
-            entityId: "new-persona",
-            rule: "source-field-role-exact" as const,
-            sourceRecordIds: ["new-record"],
-          },
-        ],
-        relationships: [
-          {
-            participantId: "new-persona",
-            type: "asset.contribution" as const,
-            role: "voice",
-            sourceSlot: "source.credit.voice",
-            sourceRecordIds: ["new-record"],
-            qualifiers: [
-              { key: "character", value: "New character" },
-              { key: "source.order", value: "0" },
-            ],
-          },
-        ],
-        sourceArtifacts: [],
+      basis: {
+        kind: "source-interpretation" as const,
+        interpretation: {
+          ...accepted().proposal.basis.interpretation,
+          id: "new-interpretation",
+          sourceRecordIds: ["new-record"],
+          sourceAddress: "https://source.example/new-work",
+          metadata: [
+            {
+              property: "asset.title",
+              sourceSlot: "source.title",
+              value: "New work",
+              sourceRecordIds: ["new-record"],
+            },
+          ],
+          entities: [newEntity],
+          entityMentions: [newMention],
+          entityResolutionDecisions: [
+            {
+              id: "new-resolution",
+              mentionId: "new-mention",
+              entityId: "new-persona",
+              rule: "source-field-role-exact" as const,
+              sourceRecordIds: ["new-record"],
+            },
+          ],
+          relationships: [
+            {
+              participantId: "new-persona",
+              type: "asset.contribution" as const,
+              role: "voice",
+              sourceSlot: "source.credit.voice",
+              sourceRecordIds: ["new-record"],
+              qualifiers: [
+                { key: "character", value: "New character" },
+                { key: "source.order", value: "0" },
+              ],
+            },
+          ],
+          sourceArtifacts: [],
+        },
       },
       ruleResults: accepted().proposal.ruleResults,
     };
@@ -12649,7 +13627,7 @@ describe("SQLite Asset Refresh persistence", () => {
     );
     const completeBaseline = await catalogue.freezeChangeImpactBaseline({
       assetId: "asset",
-      sourceAssociationId: "association",
+      recognitionSourceAssociationId: "association",
       recognitionDecisionId: "decision",
     });
     const preview: ChangeImpactPreview = {
@@ -12664,9 +13642,18 @@ describe("SQLite Asset Refresh persistence", () => {
         { key: "complete-current-projection", value: completeBaseline },
       ],
       current: {
-        sourceAssociation: {
-          sourceIdentity: accepted().sourceAssociation.sourceIdentity,
-          nativeAddress: accepted().sourceAssociation.nativeAddress,
+        sourceAssociations: [
+          {
+            sourceIdentity:
+              accepted().recognitionSourceAssociation.sourceIdentity,
+            nativeAddress:
+              accepted().recognitionSourceAssociation.nativeAddress,
+          },
+        ],
+        recognitionSourceAssociation: {
+          sourceIdentity:
+            accepted().recognitionSourceAssociation.sourceIdentity,
+          nativeAddress: accepted().recognitionSourceAssociation.nativeAddress,
         },
         metadata: accepted().metadata,
         entities: accepted().entities ?? [],
@@ -12681,15 +13668,25 @@ describe("SQLite Asset Refresh persistence", () => {
         primaryCoverArtifactId: "artifact",
       },
       projected: {
-        sourceAssociation: {
+        sourceAssociations: [
+          {
+            sourceIdentity: "supplement",
+            nativeAddress: "supplement:work",
+          },
+          {
+            sourceIdentity: "source",
+            nativeAddress: "https://source.example/new-work",
+          },
+        ],
+        recognitionSourceAssociation: {
           sourceIdentity: "source",
           nativeAddress: "https://source.example/new-work",
         },
-        metadata: proposal.interpretation.metadata,
+        metadata: proposal.basis.interpretation.metadata,
         entities: [newEntity],
         entityMentions: [newMention],
         entityResolutionDecisions:
-          proposal.interpretation.entityResolutionDecisions,
+          proposal.basis.interpretation.entityResolutionDecisions,
         relationships: [
           {
             id: "new-relationship",
@@ -12771,7 +13768,9 @@ describe("SQLite Asset Refresh persistence", () => {
         SELECT RAISE(ABORT, 'forced Change Impact completion failure');
       END`);
     rollbackGuard.close();
-    await expect(catalogue.applyChangeImpactPreview(preview)).rejects.toThrow();
+    await expect(
+      catalogue.applyChangeImpactPreview(changeImpactApplyInput(preview)),
+    ).rejects.toThrow();
     await expect(
       catalogue.inspectChangeImpactPreview(preview.id),
     ).resolves.toMatchObject({ status: "awaiting-confirmation" });
@@ -12787,9 +13786,9 @@ describe("SQLite Asset Refresh persistence", () => {
     // 完整更正旅程不得为了 CAS 读取或投影事实写入而静默重新进入旧版原生驱动适配器。
     // 随即恢复探针：其余断言刻意使用原始 SQLite 检查查询作为测试夹具。
     rejectDirectDatabaseQueries();
-    await expect(catalogue.applyChangeImpactPreview(preview)).resolves.toBe(
-      "applied",
-    );
+    await expect(
+      catalogue.applyChangeImpactPreview(changeImpactApplyInput(preview)),
+    ).resolves.toBe("applied");
     vi.restoreAllMocks();
     catalogue.close();
     catalogue = SqliteCatalogue.forProductData(root);
@@ -12808,7 +13807,8 @@ describe("SQLite Asset Refresh persistence", () => {
         expectedExecution: lateEnrichmentExecution,
         execution: lateEnrichmentExecution,
         expectedRecognitionBaseline: {
-          sourceAssociationId: accepted().sourceAssociation.id,
+          recognitionSourceAssociationId:
+            accepted().recognitionSourceAssociation.id,
           recognitionDecisionId: accepted().recognitionDecision.id,
         },
         assetId: "asset",
@@ -12848,11 +13848,14 @@ describe("SQLite Asset Refresh persistence", () => {
       accepted: {
         proposal: {
           id: "new-proposal",
-          interpretation: {
-            sourceRecordIds: ["new-record"],
+          basis: {
+            kind: "source-interpretation",
+            interpretation: {
+              sourceRecordIds: ["new-record"],
+            },
           },
         },
-        sourceAssociation: {
+        recognitionSourceAssociation: {
           nativeAddress: "https://source.example/new-work",
         },
         sourceAssociations: [
@@ -12952,10 +13955,9 @@ describe("SQLite Asset Refresh persistence", () => {
     ).toBeDefined();
     history.close();
     await expect(
-      catalogue.applyChangeImpactPreview({
-        ...preview,
-        id: "stale-preview",
-      }),
+      catalogue.applyChangeImpactPreview(
+        changeImpactApplyInput({ ...preview, id: "stale-preview" }),
+      ),
     ).resolves.toBe("stale");
     await expect(
       catalogue.inspectChangeImpactPreview("stale-preview"),
@@ -12982,16 +13984,15 @@ describe("SQLite Asset Refresh persistence", () => {
       ]),
     );
     await expect(
-      catalogue.applyChangeImpactPreview({
-        ...preview,
-        id: "rejected-preview",
-      }),
+      catalogue.applyChangeImpactPreview(
+        changeImpactApplyInput({ ...preview, id: "rejected-preview" }),
+      ),
     ).resolves.toBe("stale");
     await expect(
       catalogue.findAcceptedForDirectory("/observed"),
     ).resolves.toMatchObject({
       accepted: {
-        sourceAssociation: {
+        recognitionSourceAssociation: {
           nativeAddress: "https://source.example/new-work",
         },
         metadata: [expect.objectContaining({ value: "New work" })],
@@ -13017,23 +14018,26 @@ describe("SQLite Asset Refresh persistence", () => {
     const reverseProposal = {
       ...accepted().proposal,
       id: "reverse-proposal",
-      interpretation: {
-        ...accepted().proposal.interpretation,
-        id: "reverse-interpretation",
-        sourceRecordIds: ["reverse-record"],
-        metadata: [
-          {
-            property: "asset.title",
-            sourceSlot: "source.title",
-            value: "Work again",
-            sourceRecordIds: ["reverse-record"],
-          },
-        ],
-        sourceArtifacts: [],
-        entities: [],
-        entityMentions: [],
-        entityResolutionDecisions: [],
-        relationships: [],
+      basis: {
+        kind: "source-interpretation" as const,
+        interpretation: {
+          ...accepted().proposal.basis.interpretation,
+          id: "reverse-interpretation",
+          sourceRecordIds: ["reverse-record"],
+          metadata: [
+            {
+              property: "asset.title",
+              sourceSlot: "source.title",
+              value: "Work again",
+              sourceRecordIds: ["reverse-record"],
+            },
+          ],
+          sourceArtifacts: [],
+          entities: [],
+          entityMentions: [],
+          entityResolutionDecisions: [],
+          relationships: [],
+        },
       },
     };
     await catalogue.createExecution(reverseExecution);
@@ -13055,13 +14059,22 @@ describe("SQLite Asset Refresh persistence", () => {
     );
     const reverseBaseline = await catalogue.freezeChangeImpactBaseline({
       assetId: "asset",
-      sourceAssociationId: current.accepted.sourceAssociation.id,
+      recognitionSourceAssociationId:
+        current.accepted.recognitionSourceAssociation.id,
       recognitionDecisionId: current.accepted.recognitionDecision.id,
     });
     const currentProjection = {
-      sourceAssociation: {
-        sourceIdentity: current.accepted.sourceAssociation.sourceIdentity,
-        nativeAddress: current.accepted.sourceAssociation.nativeAddress,
+      sourceAssociations: current.accepted.sourceAssociations.map(
+        ({ sourceIdentity, nativeAddress }) => ({
+          sourceIdentity,
+          nativeAddress,
+        }),
+      ),
+      recognitionSourceAssociation: {
+        sourceIdentity:
+          current.accepted.recognitionSourceAssociation.sourceIdentity,
+        nativeAddress:
+          current.accepted.recognitionSourceAssociation.nativeAddress,
       },
       metadata: current.accepted.metadata,
       entities: current.accepted.entities ?? [],
@@ -13084,7 +14097,7 @@ describe("SQLite Asset Refresh persistence", () => {
       baselines: [
         {
           key: "source-association",
-          value: current.accepted.sourceAssociation.id,
+          value: current.accepted.recognitionSourceAssociation.id,
         },
         {
           key: "recognition-decision",
@@ -13092,7 +14105,7 @@ describe("SQLite Asset Refresh persistence", () => {
         },
         {
           key: "source-records",
-          value: current.accepted.proposal.interpretation.sourceRecordIds
+          value: current.accepted.proposal.basis.interpretation.sourceRecordIds
             .toSorted()
             .join(","),
         },
@@ -13101,24 +14114,36 @@ describe("SQLite Asset Refresh persistence", () => {
       current: currentProjection,
       projected: {
         ...currentProjection,
-        sourceAssociation: {
+        sourceAssociations: currentProjection.sourceAssociations.map(
+          (association) =>
+            association.nativeAddress ===
+            current.accepted.recognitionSourceAssociation.nativeAddress
+              ? {
+                  sourceIdentity: "source",
+                  nativeAddress: "https://source.example/work",
+                }
+              : association,
+        ),
+        recognitionSourceAssociation: {
           sourceIdentity: "source",
           nativeAddress: "https://source.example/work",
         },
-        metadata: reverseProposal.interpretation.metadata,
+        metadata: reverseProposal.basis.interpretation.metadata,
       },
       blockingConditions: [],
       status: "awaiting-confirmation",
     };
     await catalogue.saveChangeImpactPreview(reversePreview);
     await expect(
-      catalogue.applyChangeImpactPreview(reversePreview),
+      catalogue.applyChangeImpactPreview(
+        changeImpactApplyInput(reversePreview),
+      ),
     ).resolves.toBe("applied");
     await expect(
       catalogue.freezeSourceLineageHeads({
         assetId: "asset",
         sourceAssociation: {
-          ...current.accepted.sourceAssociation,
+          ...current.accepted.recognitionSourceAssociation,
           sourceIdentity: "source",
           nativeAddress: "https://source.example/work",
         },
@@ -13152,7 +14177,13 @@ describe("SQLite Asset Refresh persistence", () => {
       proposal,
       baselines: [],
       current: {
-        sourceAssociation: {
+        sourceAssociations: [
+          {
+            sourceIdentity: "source",
+            nativeAddress: "https://source.example/current",
+          },
+        ],
+        recognitionSourceAssociation: {
           sourceIdentity: "source",
           nativeAddress: "https://source.example/current",
         },
@@ -13168,7 +14199,13 @@ describe("SQLite Asset Refresh persistence", () => {
         artifactAssociations: [],
       },
       projected: {
-        sourceAssociation: {
+        sourceAssociations: [
+          {
+            sourceIdentity: "source",
+            nativeAddress: "https://source.example/projected",
+          },
+        ],
+        recognitionSourceAssociation: {
           sourceIdentity: "source",
           nativeAddress: "https://source.example/projected",
         },
@@ -13359,6 +14396,7 @@ describe("SQLite Asset Refresh persistence", () => {
     const initial: WorkflowExecution = {
       ...execution(),
       id: "generic-artifact",
+      plannedAssetId: "planned-generic-asset",
       selection: {
         directory: "/observed",
         informationRequirement: {
@@ -13409,6 +14447,7 @@ describe("SQLite Asset Refresh persistence", () => {
           },
         },
         stage: "source-artifacts-acquired",
+        plannedAssetId: "planned-generic-asset",
         sourceArtifactAcquisitions: [
           {
             candidateId: "attachment",
@@ -13620,9 +14659,10 @@ describe("SQLite Asset Refresh persistence", () => {
       subjectId: "asset",
       subject: {
         subjectId: "asset",
-        recognitionSourceAssociation: acceptedSubject.sourceAssociation,
+        recognitionSourceAssociation:
+          acceptedSubject.recognitionSourceAssociation,
         recognitionDecisionId: acceptedSubject.recognitionDecision.id,
-        sourceAssociations: [acceptedSubject.sourceAssociation],
+        sourceAssociations: [acceptedSubject.recognitionSourceAssociation],
         metadata: acceptedSubject.metadata,
         metadataSourceRecords: [{ id: "record", sourceIdentity: "source" }],
         informationRequirement,
@@ -13772,7 +14812,9 @@ describe("SQLite Asset Refresh persistence", () => {
         execution: { outcome: "accepted", acceptedAssetId: "asset" },
         accepted: {
           entity: { kind: "digital-asset" },
-          sourceAssociation: { nativeAddress: "https://source.example/work" },
+          recognitionSourceAssociation: {
+            nativeAddress: "https://source.example/work",
+          },
           recognitionDecision: { id: "decision" },
           artifactAssociations: [{ role: "asset.primary-cover" }],
           blobs: [{ digest: "digest" }],
@@ -13852,9 +14894,12 @@ describe("SQLite Asset Refresh persistence", () => {
     ];
     const proposal = {
       ...base.proposal,
-      interpretation: {
-        ...base.proposal.interpretation,
-        recognitionEvidenceReferences: evidenceReferences,
+      basis: {
+        kind: "source-interpretation" as const,
+        interpretation: {
+          ...base.proposal.basis.interpretation,
+          recognitionEvidenceReferences: evidenceReferences,
+        },
       },
       ruleResults: base.proposal.ruleResults.map((result) => ({
         ...result,
@@ -13864,10 +14909,8 @@ describe("SQLite Asset Refresh persistence", () => {
     const acceptedWithEvidence: AcceptedRecognition = {
       ...base,
       proposal,
-      sourceAssociation: {
-        ...base.sourceAssociation,
-        proposalId: proposal.id,
-      },
+      recognitionSourceAssociation: base.recognitionSourceAssociation,
+      sourceAssociations: base.sourceAssociations,
       recognitionDecision: {
         ...base.recognitionDecision,
         proposalId: proposal.id,
@@ -13885,9 +14928,11 @@ describe("SQLite Asset Refresh persistence", () => {
       restarted.inspectExecution("execution"),
     ).resolves.toMatchObject({
       proposal: {
-        interpretation: {
-          sourceRecordIds: ["record"],
-          recognitionEvidenceReferences: evidenceReferences,
+        basis: {
+          interpretation: {
+            sourceRecordIds: ["record"],
+            recognitionEvidenceReferences: evidenceReferences,
+          },
         },
         ruleResults: [{ evidenceReferences }],
       },
@@ -13932,9 +14977,12 @@ describe("SQLite Asset Refresh persistence", () => {
       proposal: {
         ...base.proposal,
         interpretation: {
-          ...base.proposal.interpretation,
-          metadata: [...base.proposal.interpretation.metadata, workTitle],
-          entities: [...(base.proposal.interpretation.entities ?? []), work],
+          ...base.proposal.basis.interpretation,
+          metadata: [...base.proposal.basis.interpretation.metadata, workTitle],
+          entities: [
+            ...(base.proposal.basis.interpretation.entities ?? []),
+            work,
+          ],
         },
       },
       metadata: [...base.metadata, workTitle],
@@ -14067,25 +15115,28 @@ describe("SQLite Asset Refresh persistence", () => {
       const artifactIds = covers.map((item) => item.artifactId);
       const proposal = {
         id: `proposal-${assetId}`,
-        interpretation: {
-          id: `interpretation-${assetId}`,
-          producer: {
-            capabilityId: "shared-work-interpreter",
-            capabilityVersion: "1",
-            contractVersion: "1",
+        basis: {
+          kind: "source-interpretation" as const,
+          interpretation: {
+            id: `interpretation-${assetId}`,
+            producer: {
+              capabilityId: "shared-work-interpreter",
+              capabilityVersion: "1",
+              contractVersion: "1",
+            },
+            sourceRecordIds: [recordId],
+            sourceIdentity: "bangumi",
+            sourceAddress: nativeAddress,
+            metadata: [metadata],
+            sourceArtifacts: [],
+            entities: [
+              { ...work, sourceRecordIds: [recordId] },
+              { ...participant, sourceRecordIds: [recordId] },
+            ],
+            entityMentions: [],
+            entityResolutionDecisions: [],
+            relationships: [relationship],
           },
-          sourceRecordIds: [recordId],
-          sourceIdentity: "bangumi",
-          sourceAddress: nativeAddress,
-          metadata: [metadata],
-          sourceArtifacts: [],
-          entities: [
-            { ...work, sourceRecordIds: [recordId] },
-            { ...participant, sourceRecordIds: [recordId] },
-          ],
-          entityMentions: [],
-          entityResolutionDecisions: [],
-          relationships: [relationship],
         },
         ruleResults: [
           {
@@ -14102,13 +15153,22 @@ describe("SQLite Asset Refresh persistence", () => {
       return {
         proposal,
         entity: { id: assetId, kind: "digital-asset" },
-        sourceAssociation: {
+        recognitionSourceAssociation: {
           id: `source-association-${assetId}`,
           subjectId: assetId,
           sourceIdentity: "bangumi",
           nativeAddress,
           proposalId: proposal.id,
         },
+        sourceAssociations: [
+          {
+            id: `source-association-${assetId}`,
+            subjectId: assetId,
+            sourceIdentity: "bangumi",
+            nativeAddress,
+            proposalId: proposal.id,
+          },
+        ],
         recognitionDecision: {
           id: `recognition-decision-${assetId}`,
           proposalId: proposal.id,
@@ -14383,45 +15443,62 @@ describe("SQLite Asset Refresh persistence", () => {
       proposal: {
         ...first.proposal,
         id: "proposal-2",
-        interpretation: {
-          ...first.proposal.interpretation,
-          id: "interpretation-2",
-          sourceRecordIds: [secondRecordId],
-          sourceAddress: "https://source.example/work-2",
-          metadata: first.proposal.interpretation.metadata.map((assertion) => ({
-            ...assertion,
+        basis: {
+          kind: "source-interpretation",
+          interpretation: {
+            ...first.proposal.basis.interpretation,
+            id: "interpretation-2",
             sourceRecordIds: [secondRecordId],
-          })),
-          entities: first.proposal.interpretation.entities?.map((entity) => ({
-            ...entity,
-            sourceRecordIds: [secondRecordId],
-          })),
-          entityMentions: first.proposal.interpretation.entityMentions.map(
-            (mention) => ({
-              ...mention,
-              id: "mention-2",
-              sourceRecordIds: [secondRecordId],
-            }),
-          ),
-          entityResolutionDecisions:
-            first.proposal.interpretation.entityResolutionDecisions.map(
-              (decision) => ({
-                ...decision,
-                id: "resolution-2",
-                mentionId: "mention-2",
+            sourceAddress: "https://source.example/work-2",
+            metadata: first.proposal.basis.interpretation.metadata.map(
+              (assertion) => ({
+                ...assertion,
                 sourceRecordIds: [secondRecordId],
               }),
             ),
+            entities: first.proposal.basis.interpretation.entities?.map(
+              (entity) => ({
+                ...entity,
+                sourceRecordIds: [secondRecordId],
+              }),
+            ),
+            entityMentions:
+              first.proposal.basis.interpretation.entityMentions.map(
+                (mention) => ({
+                  ...mention,
+                  id: "mention-2",
+                  sourceRecordIds: [secondRecordId],
+                }),
+              ),
+            entityResolutionDecisions:
+              first.proposal.basis.interpretation.entityResolutionDecisions.map(
+                (decision) => ({
+                  ...decision,
+                  id: "resolution-2",
+                  mentionId: "mention-2",
+                  sourceRecordIds: [secondRecordId],
+                }),
+              ),
+          },
         },
       },
       entity: { id: "asset-2", kind: "digital-asset" },
-      sourceAssociation: {
-        ...first.sourceAssociation,
+      recognitionSourceAssociation: {
+        ...first.recognitionSourceAssociation,
         id: "association-2",
         subjectId: "asset-2",
         nativeAddress: "https://source.example/work-2",
         proposalId: "proposal-2",
       },
+      sourceAssociations: [
+        {
+          ...first.recognitionSourceAssociation!,
+          id: "association-2",
+          subjectId: "asset-2",
+          nativeAddress: "https://source.example/work-2",
+          proposalId: "proposal-2",
+        },
+      ],
       recognitionDecision: {
         ...first.recognitionDecision,
         id: "decision-2",
@@ -14670,9 +15747,9 @@ describe("SQLite Asset Refresh persistence", () => {
       subjectId: "asset",
       subject: {
         subjectId: "asset",
-        recognitionSourceAssociation: accepted().sourceAssociation,
+        recognitionSourceAssociation: accepted().recognitionSourceAssociation,
         recognitionDecisionId: accepted().recognitionDecision.id,
-        sourceAssociations: [accepted().sourceAssociation],
+        sourceAssociations: [accepted().recognitionSourceAssociation],
         metadata: accepted().metadata,
         metadataSourceRecords: [{ id: "record", sourceIdentity: "source" }],
         informationRequirement: {
@@ -14785,7 +15862,8 @@ describe("SQLite Asset Refresh persistence", () => {
       expectedExecution: pendingEnrichmentExecution,
       execution: appliedEnrichmentExecution,
       expectedRecognitionBaseline: {
-        sourceAssociationId: accepted().sourceAssociation.id,
+        recognitionSourceAssociationId:
+          accepted().recognitionSourceAssociation.id,
         recognitionDecisionId: accepted().recognitionDecision.id,
       },
       assetId: "asset",
@@ -14833,7 +15911,7 @@ describe("SQLite Asset Refresh persistence", () => {
         candidate.inspectExecution("execution"),
       ).resolves.toMatchObject({
         accepted: {
-          sourceAssociation: { id: "association" },
+          recognitionSourceAssociation: { id: "association" },
           sourceAssociations: [
             { id: "association", sourceIdentity: "source" },
             { id: "other-association", sourceIdentity: "other-source" },

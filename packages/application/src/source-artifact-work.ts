@@ -10,6 +10,7 @@ import {
   type RecognitionProposal,
   type SourceArtifactCandidate,
   type SourceRecord,
+  recognitionSourceInterpretation,
 } from "@digital/domain";
 
 export type SourceArtifactAcquisitionCheckpoint = {
@@ -84,6 +85,16 @@ type CheckpointedSourceArtifactWorkPorts = {
   readonly acquirers: readonly SourceArtifactAcquirer[];
   readonly managedStore: ManagedArtifactStore;
 };
+
+/** 只标记真正越过 Source Artifact Acquirer seam 的外部获取效果失败。 */
+export class SourceArtifactAcquisitionEffectFailure extends Error {
+  override readonly cause: unknown;
+
+  constructor(cause: unknown) {
+    super("Source Artifact external acquisition effect failed");
+    this.cause = cause;
+  }
+}
 
 export class CheckpointedSourceArtifactWork {
   private readonly ports: CheckpointedSourceArtifactWorkPorts;
@@ -371,7 +382,12 @@ export class CheckpointedSourceArtifactWork {
       throw new Error("No Source Artifact Acquirer accepted the candidate");
     if (acquirer.capability !== undefined)
       await beforeAcquire?.(acquirer.capability);
-    const staged = await acquirer.acquire(candidate);
+    let staged: AcquiredSourceArtifact;
+    try {
+      staged = await acquirer.acquire(candidate);
+    } catch (error) {
+      throw new SourceArtifactAcquisitionEffectFailure(error);
+    }
     if (
       staged.candidateId !== candidate.id ||
       staged.sourceRecordId !== candidate.sourceRecordId
@@ -401,7 +417,9 @@ function interpretationSourceRecordIds(input: {
 }): readonly string[] {
   const sourceRecordIds =
     input.interpretationSourceRecordIds ??
-    input.proposal?.interpretation.sourceRecordIds;
+    (input.proposal === undefined
+      ? undefined
+      : recognitionSourceInterpretation(input.proposal)?.sourceRecordIds);
   if (sourceRecordIds === undefined)
     throw new Error("Source Artifact work requires interpretation provenance");
   return sourceRecordIds;

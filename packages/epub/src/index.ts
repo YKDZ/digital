@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { inflateRawSync } from "node:zlib";
 
@@ -6,11 +6,18 @@ import {
   declareCapability,
   type ArtifactFormatInspector,
   type ObservedArtifactPartAcquirer,
+  type Recognizer,
+  type RecognitionCandidateContext,
 } from "@digital/application";
 import type {
+  CapabilityCoordinate,
   RecognitionEvidence,
   ObservedArtifactPartCandidate,
+  RecognitionProposalDraft,
 } from "@digital/domain";
+
+const maximumArchiveMemberBytes = 32 * 1024 * 1024;
+const maximumDeflateCompressionRatio = 100;
 
 const directoryCapability = declareCapability({
   identity: "epub.publication-inspection",
@@ -26,73 +33,187 @@ const acquirerCapability = declareCapability({
   contractVersion: "1",
   interpretationContractVersions: ["1"],
 });
+const localRecognizerCapability = declareCapability({
+  identity: "epub.local-publication-recognizer",
+  implementationVersion: "1",
+  kind: "recognizer",
+  contractVersion: "1",
+  interpretationContractVersions: ["1"],
+});
+
+export const trustedEpubLocalPublicationRule = {
+  capabilityId: localRecognizerCapability.capabilityId,
+  capabilityVersion: localRecognizerCapability.capabilityVersion,
+  ruleId: "epub.valid-single-publication-revision",
+  ruleVersion: "1",
+} as const;
 
 export type EpubPublication = {
-  readonly isbn13?: string;
+  readonly opfPath: string;
+  readonly isbn13s: readonly string[];
+  readonly invalidIsbnCount: number;
   readonly title?: string;
   readonly contributors: readonly string[];
   readonly contributorFacts: readonly {
     readonly role: "creator" | "contributor";
+    readonly declaredRole?: LocatedText;
     readonly value: string;
     readonly locator: string;
   }[];
   readonly language?: string;
-  readonly cover?: { readonly bytes: Uint8Array; readonly mediaType: string };
+  readonly publisherFacts: readonly LocatedText[];
+  readonly dateFacts: readonly LocatedText[];
+  readonly collectionFacts: readonly {
+    readonly sourceKey: string;
+    readonly value: string;
+    readonly locator: string;
+    readonly groupPosition?: LocatedText;
+  }[];
+  readonly cover?: {
+    readonly locator: string;
+    readonly entryPath: string;
+    readonly mediaType: string;
+  };
 };
+
+type LocatedText = { readonly value: string; readonly locator: string };
 
 /** 解析应用层已绑定观察者能力提供的字节。 */
 export function inspectEpubPublication(bytes: Uint8Array): EpubPublication {
   const archive = new ZipArchive(bytes);
   const container = archive.text("META-INF/container.xml");
-  const rootfile = attribute(
-    /<rootfile\b[^>]*>/iu.exec(container)?.[0],
-    "full-path",
-  );
-  if (rootfile === undefined)
+  requireClosedXmlRoot(container, "container");
+  requireClosedXmlRoot(container, "rootfiles");
+  const rootfilesBody = container.match(
+    /<rootfiles\b[^>]*>([\s\S]*?)<\/rootfiles\s*>/iu,
+  )?.[1];
+  if (rootfilesBody === undefined)
+    throw new Error("EPUB container rootfiles wrapper is malformed");
+  const rootfiles = [...rootfilesBody.matchAll(/<rootfile\b[^>]*>/giu)];
+  if (rootfiles.length !== 1)
+    throw new Error("EPUB container must declare one OPF rootfile");
+  const rootfilePaths = [
+    ...rootfiles[0]![0].matchAll(/\bfull-path\s*=\s*(["'])(.*?)\1/giu),
+  ];
+  if (rootfilePaths.length !== 1)
     throw new Error("EPUB container has no OPF rootfile");
+  const rootfile = decodeXml(rootfilePaths[0]![2]!);
   const opf = archive.text(rootfile);
+  requireClosedXmlRoot(opf, "package");
   const title = firstElementText(opf, "dc:title");
   const contributorFacts = [
-    ...elementTexts(opf, "dc:creator").map((value, index) => ({
+    ...elementFacts(opf, "dc:creator", rootfile).map((fact) => ({
       role: "creator" as const,
-      value,
-      locator: `epub:opf/dc:creator[${index + 1}]`,
+      value: fact.value,
+      locator: fact.locator,
+      ...declaredContributorRole(opf, rootfile, fact),
     })),
-    ...elementTexts(opf, "dc:contributor").map((value, index) => ({
+    ...elementFacts(opf, "dc:contributor", rootfile).map((fact) => ({
       role: "contributor" as const,
-      value,
-      locator: `epub:opf/dc:contributor[${index + 1}]`,
+      value: fact.value,
+      locator: fact.locator,
+      ...declaredContributorRole(opf, rootfile, fact),
     })),
   ];
   const contributors = contributorFacts.map((item) => item.value);
   const language = firstElementText(opf, "dc:language");
-  const isbn13 = isbnIdentifiers(opf).find(isValidIsbn13);
+  const publisherFacts = elementFacts(opf, "dc:publisher", rootfile);
+  const dateFacts = elementFacts(opf, "dc:date", rootfile);
+  const collectionFacts = metaElements(opf)
+    .filter(
+      (meta) => attribute(meta.tag, "property") === "belongs-to-collection",
+    )
+    .flatMap((meta, index) => {
+      const id = attribute(meta.tag, "id");
+      if (meta.value === undefined) return [];
+      const groupPosition =
+        id === undefined ? undefined : refinedMeta(opf, id, "group-position");
+      return [
+        {
+          sourceKey: id ?? `mention-${index + 1}`,
+          value: meta.value,
+          locator:
+            id === undefined
+              ? `epub:${rootfile}#/metadata/meta[@property='belongs-to-collection'][${index + 1}]`
+              : metaLocator(rootfile, `@id='${id}'`, "belongs-to-collection"),
+          ...(groupPosition === undefined
+            ? {}
+            : {
+                groupPosition: {
+                  value: groupPosition,
+                  locator: metaLocator(
+                    rootfile,
+                    `@refines='#${id}'`,
+                    "group-position",
+                  ),
+                },
+              }),
+        },
+      ];
+    });
+  const isbnIdentifiers = isbnIdentifierFacts(opf);
+  const isbn13s = [
+    ...new Set(
+      isbnIdentifiers
+        .filter((identifier) => identifier.valid)
+        .map((identifier) => identifier.value),
+    ),
+  ];
   const manifest = manifestItems(opf);
-  const coverId =
-    attribute(
-      /<meta\b[^>]*\bname\s*=\s*["']cover["'][^>]*>/iu.exec(opf)?.[0],
-      "content",
-    ) ??
-    manifest.find((item) =>
-      /(?:^|\s)cover-image(?:\s|$)/u.test(item.properties ?? ""),
-    )?.id;
-  const coverItem =
-    coverId === undefined
-      ? undefined
-      : manifest.find((item) => item.id === coverId);
+  const coverDeclarations = [
+    ...metaElements(opf).flatMap((meta) => {
+      if (attribute(meta.tag, "name") !== "cover" || meta.value === undefined)
+        return [];
+      return [
+        {
+          id: meta.value,
+          selector: `/metadata/meta[@name='cover'][@content='${meta.value}']->manifest/item[@id='${meta.value}']`,
+        },
+      ];
+    }),
+    ...manifest.flatMap((item) =>
+      /(?:^|\s)cover-image(?:\s|$)/u.test(item.properties ?? "")
+        ? [
+            {
+              id: item.id,
+              selector: `/manifest/item[@id='${item.id}'][@properties~='cover-image']`,
+            },
+          ]
+        : [],
+    ),
+  ];
+  const coverDeclaration =
+    coverDeclarations.length === 1 ? coverDeclarations[0] : undefined;
+  const coverItems =
+    coverDeclaration === undefined
+      ? []
+      : manifest.filter((item) => item.id === coverDeclaration.id);
+  const coverItem = coverItems.length === 1 ? coverItems[0] : undefined;
+  const coverEntry =
+    coverItem === undefined ? undefined : resolveHref(rootfile, coverItem.href);
   const cover =
-    coverItem === undefined
+    coverDeclaration === undefined ||
+    coverItem === undefined ||
+    coverEntry === undefined ||
+    !archive.has(coverEntry)
       ? undefined
       : {
-          bytes: archive.bytes(resolveHref(rootfile, coverItem.href)),
+          locator: `epub:${rootfile}#${coverDeclaration.selector}->entry:${coverEntry}`,
+          entryPath: coverEntry,
           mediaType: coverItem.mediaType,
         };
   return {
-    ...(isbn13 === undefined ? {} : { isbn13 }),
+    opfPath: rootfile,
+    isbn13s,
+    invalidIsbnCount: isbnIdentifiers.filter((identifier) => !identifier.valid)
+      .length,
     ...(title === undefined ? {} : { title }),
     contributors,
     contributorFacts,
     ...(language === undefined ? {} : { language }),
+    publisherFacts,
+    dateFacts,
+    collectionFacts,
     ...(cover === undefined ? {} : { cover }),
   };
 }
@@ -116,14 +237,16 @@ export class EpubPublicationInspector implements ArtifactFormatInspector {
     } catch {
       return [];
     }
-    if (publication.isbn13 === undefined) return [];
     return [
       {
         kind: "artifact-format-inspection",
-        explanation: "本地格式检查发现有效 ISBN-13",
+        explanation: inspectionExplanation(publication),
         producer: this.capability,
         inspection: {
-          identifiers: [{ scheme: "isbn-13", value: publication.isbn13 }],
+          identifiers: publication.isbn13s.map((value) => ({
+            scheme: "isbn-13",
+            value,
+          })),
           observedArtifactReference: input.observedArtifactReference,
           revision: {
             digest: createHash("sha256").update(sourceBytes).digest("hex"),
@@ -138,7 +261,7 @@ export class EpubPublicationInspector implements ArtifactFormatInspector {
                     property: "asset.title",
                     sourceSlot: "opf.title",
                     value: publication.title,
-                    locator: "epub:opf/dc:title[1]",
+                    locator: elementLocator(publication.opfPath, "dc:title", 1),
                   },
                 ]),
             ...(publication.language === undefined
@@ -148,15 +271,61 @@ export class EpubPublicationInspector implements ArtifactFormatInspector {
                     property: "asset.declared-language",
                     sourceSlot: "opf.language",
                     value: publication.language,
-                    locator: "epub:opf/dc:language[1]",
+                    locator: elementLocator(
+                      publication.opfPath,
+                      "dc:language",
+                      1,
+                    ),
                   },
                 ]),
             ...publication.contributorFacts.map((item, index) => ({
               property: "book.contributor",
-              sourceSlot: `opf.${item.role}.${index + 1}`,
+              sourceSlot: `opf.${item.role}.${indexWithinRole(publication.contributorFacts, index)}`,
               value: item.value,
               locator: item.locator,
             })),
+            ...publication.contributorFacts.flatMap((item, index) =>
+              item.declaredRole === undefined
+                ? []
+                : [
+                    {
+                      property: "book.contributor-role",
+                      sourceSlot: `opf.${item.role}.${indexWithinRole(publication.contributorFacts, index)}.role`,
+                      value: item.declaredRole.value,
+                      locator: item.declaredRole.locator,
+                    },
+                  ],
+            ),
+            ...publication.publisherFacts.map((item, index) => ({
+              property: "book.publisher",
+              sourceSlot: `opf.publisher.${index + 1}`,
+              value: item.value,
+              locator: item.locator,
+            })),
+            ...publication.dateFacts.map((item, index) => ({
+              property: "book.publication-date",
+              sourceSlot: `opf.date.${index + 1}`,
+              value: item.value,
+              locator: item.locator,
+            })),
+            ...publication.collectionFacts.flatMap((item) => [
+              {
+                property: "book.collection-mention",
+                sourceSlot: `opf.collection.${item.sourceKey}`,
+                value: item.value,
+                locator: item.locator,
+              },
+              ...(item.groupPosition === undefined
+                ? []
+                : [
+                    {
+                      property: "book.collection-group-position",
+                      sourceSlot: `opf.collection.${item.sourceKey}.group-position`,
+                      value: item.groupPosition.value,
+                      locator: item.groupPosition.locator,
+                    },
+                  ]),
+            ]),
           ],
           parts:
             publication.cover === undefined
@@ -164,7 +333,7 @@ export class EpubPublicationInspector implements ArtifactFormatInspector {
               : [
                   {
                     role: "asset.primary-cover",
-                    locator: "epub:cover",
+                    locator: publication.cover.locator,
                     mediaType: publication.cover.mediaType,
                   },
                 ],
@@ -174,12 +343,98 @@ export class EpubPublicationInspector implements ArtifactFormatInspector {
   }
 }
 
+/** 无有效 ISBN 的单 EPUB 修订版只形成观察依据提案。 */
+export class EpubLocalPublicationRecognizer implements Recognizer {
+  readonly capability = localRecognizerCapability;
+
+  canRecognize(input: RecognitionCandidateContext): boolean {
+    if (input.basis.kind !== "observed-evidence") return false;
+    if (
+      !sameCapabilityCoordinate(input.basis.producer, directoryCapability) ||
+      input.basis.artifactRevisions.length !== 1 ||
+      input.evidence.length !== 1
+    )
+      return false;
+    const evidence = input.evidence[0]!;
+    const inspection = evidence.inspection;
+    const revision = input.basis.artifactRevisions[0]!;
+    return (
+      evidence.kind === "artifact-format-inspection" &&
+      sameCapabilityCoordinate(evidence.producer, directoryCapability) &&
+      inspection !== undefined &&
+      inspection.identifiers.filter(
+        (identifier) =>
+          identifier.scheme === "isbn-13" && isValidIsbn13(identifier.value),
+      ).length === 0 &&
+      revision.observedArtifactReference ===
+        inspection.observedArtifactReference &&
+      revision.blob.digest === inspection.revision.digest &&
+      revision.blob.mediaType === inspection.revision.mediaType &&
+      revision.blob.byteLength === inspection.revision.byteLength &&
+      sameCapabilityCoordinate(revision.producer, directoryCapability)
+    );
+  }
+
+  recognize(input: RecognitionCandidateContext): RecognitionProposalDraft {
+    if (!this.canRecognize(input))
+      throw new Error("EPUB 本地识别只接受无有效 ISBN 的单一出版物修订版");
+    return {
+      id: `recognition-proposal_${randomUUID()}`,
+      ruleResults: [
+        {
+          ...trustedEpubLocalPublicationRule,
+          outcome: "satisfied",
+          explanation:
+            "格式检查确认该单一 EPUB 修订版是无有效 ISBN 的独立本地出版物边界",
+          evidence: input.evidence,
+        },
+      ],
+    };
+  }
+}
+
+function sameCapabilityCoordinate(
+  actual: CapabilityCoordinate,
+  expected: CapabilityCoordinate,
+): boolean {
+  return (
+    actual.capabilityId === expected.capabilityId &&
+    actual.capabilityVersion === expected.capabilityVersion &&
+    actual.contractVersion === expected.contractVersion &&
+    actual.identity === expected.identity &&
+    actual.implementationVersion === expected.implementationVersion &&
+    actual.kind === expected.kind &&
+    sameStrings(
+      actual.interpretationContractVersions,
+      expected.interpretationContractVersions,
+    )
+  );
+}
+
+function sameStrings(
+  left: readonly string[] | undefined,
+  right: readonly string[] | undefined,
+): boolean {
+  return (
+    left === right ||
+    (left !== undefined &&
+      right !== undefined &&
+      left.length === right.length &&
+      left.every((value, index) => value === right[index]))
+  );
+}
+
 /** 只有应用层提出请求后，才实体化 EPUB 内嵌封面。 */
 export class EpubEmbeddedCoverAcquirer implements ObservedArtifactPartAcquirer {
   readonly capability = acquirerCapability;
 
   canAcquire(candidate: ObservedArtifactPartCandidate): boolean {
-    return candidate.locator === "epub:cover";
+    return (
+      candidate.role === "asset.primary-cover" &&
+      sameCapabilityCoordinate(candidate.producer, directoryCapability) &&
+      mediaTypeEssence(candidate.mediaType).startsWith("image/") &&
+      candidate.locator.startsWith("epub:")
+    );
   }
 
   async acquire(input: {
@@ -199,8 +454,13 @@ export class EpubEmbeddedCoverAcquirer implements ObservedArtifactPartAcquirer {
       throw new Error("EPUB cover candidate is unsupported");
     const sourceBytes = await input.byteSource.read();
     const publication = inspectEpubPublication(sourceBytes);
-    if (publication.cover === undefined)
+    if (
+      publication.cover === undefined ||
+      publication.cover.locator !== input.candidate.locator
+    )
       throw new Error("EPUB no longer contains its declared cover");
+    const archive = new ZipArchive(sourceBytes);
+    const coverBytes = archive.bytes(publication.cover.entryPath);
     if (
       mediaTypeEssence(publication.cover.mediaType) !==
       mediaTypeEssence(input.candidate.mediaType)
@@ -210,8 +470,8 @@ export class EpubEmbeddedCoverAcquirer implements ObservedArtifactPartAcquirer {
       );
     return {
       candidateId: input.candidate.id,
-      bytes: publication.cover.bytes,
-      mediaType: publication.cover.mediaType,
+      bytes: coverBytes,
+      mediaType: input.candidate.mediaType,
       origin: {
         digest: createHash("sha256").update(sourceBytes).digest("hex"),
         mediaType: "application/epub+zip",
@@ -221,38 +481,168 @@ export class EpubEmbeddedCoverAcquirer implements ObservedArtifactPartAcquirer {
   }
 }
 
-function isbnIdentifiers(opf: string): readonly string[] {
+function indexWithinRole(
+  facts: EpubPublication["contributorFacts"],
+  index: number,
+): number {
+  return facts
+    .slice(0, index + 1)
+    .filter((item) => item.role === facts[index]!.role).length;
+}
+
+function elementLocator(opfPath: string, name: string, index: number): string {
+  return `epub:${opfPath}#/metadata/${name}[${index}]`;
+}
+
+function elementFacts(
+  source: string,
+  name: string,
+  opfPath: string,
+): readonly (LocatedText & { readonly attributes: string })[] {
+  return [
+    ...source.matchAll(
+      new RegExp(`<${name}\\b([^>]*)>([\\s\\S]*?)</${name}>`, "giu"),
+    ),
+  ].flatMap((match, index) => {
+    const value = decodeXml(match[2]!.replaceAll(/<[^>]+>/gu, "").trim());
+    return value.length === 0
+      ? []
+      : [
+          {
+            value,
+            attributes: match[1]!,
+            locator: elementLocator(opfPath, name, index + 1),
+          },
+        ];
+  });
+}
+
+function declaredContributorRole(
+  opf: string,
+  opfPath: string,
+  fact: LocatedText & { readonly attributes: string },
+): { readonly declaredRole?: LocatedText } {
+  const opfRole = attribute(fact.attributes, "opf:role");
+  if (opfRole !== undefined)
+    return {
+      declaredRole: { value: opfRole, locator: `${fact.locator}/@opf:role` },
+    };
+  const role = attribute(fact.attributes, "role");
+  if (role !== undefined)
+    return { declaredRole: { value: role, locator: `${fact.locator}/@role` } };
+  const id = attribute(fact.attributes, "id");
+  if (id === undefined) return {};
+  const refined = refinedMeta(opf, id, "role");
+  return refined === undefined
+    ? {}
+    : {
+        declaredRole: {
+          value: refined,
+          locator: metaLocator(opfPath, `@refines='#${id}'`, "role"),
+        },
+      };
+}
+
+function metaElements(
+  opf: string,
+): readonly { readonly tag: string; readonly value?: string }[] {
+  return [...opf.matchAll(/<meta\b([^>]*?)(?:\/>|>([\s\S]*?)<\/meta>)/giu)].map(
+    (match) => {
+      const tag = `<meta${match[1]!}>`;
+      const body = decodeXml(
+        (match[2] ?? "").replaceAll(/<[^>]+>/gu, "").trim(),
+      );
+      const content = attribute(tag, "content");
+      const value = body || content;
+      return value === undefined || value.length === 0
+        ? { tag }
+        : { tag, value };
+    },
+  );
+}
+
+function refinedMeta(
+  opf: string,
+  id: string,
+  property: string,
+): string | undefined {
+  return metaElements(opf).find(
+    (meta) =>
+      attribute(meta.tag, "refines") === `#${id}` &&
+      attribute(meta.tag, "property") === property,
+  )?.value;
+}
+
+function metaLocator(
+  opfPath: string,
+  selector: string,
+  property: string,
+): string {
+  return `epub:${opfPath}#/metadata/meta[${selector}][@property='${property}']`;
+}
+
+function inspectionExplanation(publication: EpubPublication): string {
+  if (publication.isbn13s.length > 1)
+    return `本地格式检查发现 ${publication.isbn13s.length} 个冲突的有效 ISBN-13`;
+  if (publication.isbn13s.length === 1)
+    return "本地格式检查发现唯一有效 ISBN-13";
+  if (publication.invalidIsbnCount > 0)
+    return `本地格式检查确认有效 EPUB，并拒绝 ${publication.invalidIsbnCount} 个无效 ISBN`;
+  return "本地格式检查确认有效 EPUB，但没有声明 ISBN";
+}
+
+function isbnIdentifierFacts(
+  opf: string,
+): readonly { readonly value: string; readonly valid: boolean }[] {
   return [
     ...opf.matchAll(/<dc:identifier\b([^>]*)>([\s\S]*?)<\/dc:identifier>/giu),
   ].flatMap((match) => {
     const identifierId = attribute(match[1], "id");
-    const scheme =
-      attribute(match[1], "opf:scheme") ??
-      attribute(match[1], "scheme") ??
-      identifierId;
-    const value = decodeXml(
-      match[2]!.replaceAll(/<[^>]+>/gu, "").trim(),
-    ).replaceAll(/[^\d]/gu, "");
-    const epub3Semantic =
-      identifierId === undefined
-        ? false
-        : new RegExp(
-            `<meta\\b[^>]*\\brefines\\s*=\\s*(["'])#${escapeRegExp(identifierId)}\\1[^>]*\\bproperty\\s*=\\s*(["'])identifier-type\\2[^>]*>\\s*isbn(?:-13)?\\s*<\\/meta>`,
-            "iu",
-          ).test(opf);
-    // 显式非 ISBN 方案始终优先。EPUB2 未提供方案时，只接受 ISBN-13 前缀/校验和本身的语义。
+    const explicitScheme =
+      attribute(match[1], "opf:scheme") ?? attribute(match[1], "scheme");
     if (
-      scheme !== undefined &&
-      !/^isbn(?:-13)?$/iu.test(scheme) &&
-      !epub3Semantic
+      explicitScheme !== undefined &&
+      !/^isbn(?:-13)?$/iu.test(explicitScheme)
     )
       return [];
-    return isValidIsbn13(value) ? [value] : [];
+    const refinedTypes =
+      identifierId === undefined
+        ? []
+        : refinedMetaValues(opf, identifierId, "identifier-type");
+    if (
+      refinedTypes.length > 0 &&
+      !refinedTypes.every((value) => /^isbn(?:-13)?$/iu.test(value))
+    )
+      return [];
+    const value = supportedIsbn13Lexeme(
+      decodeXml(match[2]!.replaceAll(/<[^>]+>/gu, "").trim()),
+    );
+    return [
+      {
+        value: value ?? "",
+        valid: value !== undefined && isValidIsbn13(value),
+      },
+    ];
   });
 }
 
-function escapeRegExp(value: string): string {
-  return value.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+function refinedMetaValues(
+  opf: string,
+  id: string,
+  property: string,
+): readonly string[] {
+  return metaElements(opf).flatMap((meta) =>
+    attribute(meta.tag, "refines") === `#${id}` &&
+    attribute(meta.tag, "property") === property
+      ? [meta.value ?? ""]
+      : [],
+  );
+}
+
+function supportedIsbn13Lexeme(value: string): string | undefined {
+  const match =
+    /^(?:ISBN(?:-13)?(?:\s*:\s*|\s+))?(97[89](?:[ -]?\d){10})$/iu.exec(value);
+  return match?.[1]?.replaceAll(/[ -]/gu, "");
 }
 
 function isValidIsbn13(value: string): boolean {
@@ -326,6 +716,17 @@ function decodeXml(value: string): string {
     .replaceAll("&apos;", "'");
 }
 
+function requireClosedXmlRoot(source: string, name: string): void {
+  const openings = [...source.matchAll(new RegExp(`<${name}\\b[^>]*>`, "giu"))];
+  const closings = [...source.matchAll(new RegExp(`</${name}\\s*>`, "giu"))];
+  if (
+    openings.length !== 1 ||
+    closings.length !== 1 ||
+    closings[0]!.index <= openings[0]!.index
+  )
+    throw new Error(`EPUB ${name} XML root is malformed`);
+}
+
 function resolveHref(opf: string, href: string): string {
   return path.posix.normalize(path.posix.join(path.posix.dirname(opf), href));
 }
@@ -357,6 +758,8 @@ class ZipArchive {
         archiveBytes.subarray(offset + 46, offset + 46 + nameLength),
         flags,
       );
+      if (this.entries.has(name))
+        throw new Error("EPUB ZIP contains a duplicate archive member");
       this.entries.set(name, {
         method,
         compressedSize,
@@ -371,6 +774,10 @@ class ZipArchive {
     return new TextDecoder().decode(this.bytesFor(name));
   }
 
+  has(name: string): boolean {
+    return this.entries.has(name);
+  }
+
   bytes(name: string): Uint8Array {
     return this.bytesFor(name);
   }
@@ -379,13 +786,28 @@ class ZipArchive {
     const entry = this.entries.get(name);
     if (entry === undefined)
       throw new Error(`EPUB archive member is absent: ${name}`);
-    if (entry.uncompressedSize > 32 * 1024 * 1024)
+    if (entry.uncompressedSize > maximumArchiveMemberBytes)
       throw new Error("EPUB archive member exceeds inspection limit");
+    if (
+      entry.method === 8 &&
+      (entry.compressedSize === 0
+        ? entry.uncompressedSize > 0
+        : entry.uncompressedSize / entry.compressedSize >
+          maximumDeflateCompressionRatio)
+    )
+      throw new Error("EPUB archive member exceeds compression ratio limit");
     const offset = entry.localOffset;
     if (readU32(this.archiveBytes, offset) !== 0x04034b50)
       throw new Error("EPUB ZIP local header is invalid");
+    const flags = readU16(this.archiveBytes, offset + 6);
     const nameLength = readU16(this.archiveBytes, offset + 26);
     const extraLength = readU16(this.archiveBytes, offset + 28);
+    const localName = decodeZipName(
+      this.archiveBytes.subarray(offset + 30, offset + 30 + nameLength),
+      flags,
+    );
+    if (localName !== name)
+      throw new Error("EPUB ZIP local and central member names disagree");
     const raw = this.archiveBytes.subarray(
       offset + 30 + nameLength + extraLength,
       offset + 30 + nameLength + extraLength + entry.compressedSize,
@@ -394,7 +816,11 @@ class ZipArchive {
       entry.method === 0
         ? raw
         : entry.method === 8
-          ? new Uint8Array(inflateRawSync(raw))
+          ? new Uint8Array(
+              inflateRawSync(raw, {
+                maxOutputLength: Math.max(1, entry.uncompressedSize),
+              }),
+            )
           : undefined;
     if (
       unpacked === undefined ||

@@ -3,11 +3,13 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   declareCapability,
   type Recognizer,
+  type RecognitionCandidateContext,
   type SourceCollectionResult,
   type SourceCollector,
   type SourceInterpreter,
 } from "@digital/application";
 import type {
+  CapabilityCoordinate,
   RecognitionEvidence,
   RecognitionProposalDraft,
   SourceInterpretationBatch,
@@ -15,6 +17,15 @@ import type {
 } from "@digital/domain";
 
 const maximumResponseBytes = 2 * 1024 * 1024;
+const epubInspectorCapability = {
+  capabilityId: "epub.publication-inspection",
+  capabilityVersion: "1",
+  contractVersion: "1",
+  identity: "epub.publication-inspection",
+  implementationVersion: "1",
+  kind: "artifact-format-inspector",
+  interpretationContractVersions: ["1"],
+} as const satisfies CapabilityCoordinate;
 const collectorCapability = declareCapability({
   identity: "nbinet.exact-isbn-collection",
   implementationVersion: "1",
@@ -60,12 +71,7 @@ export class NbinetCollector implements SourceCollector {
   }
 
   canCollect(evidence: RecognitionEvidence): boolean {
-    return (
-      inspectionFrom(evidence)?.identifiers.some(
-        (identifier) =>
-          identifier.scheme === "isbn-13" && isValidIsbn13(identifier.value),
-      ) ?? false
-    );
+    return uniqueIsbnFromInspection(evidence) !== undefined;
   }
 
   coverageScopeIds(evidence: RecognitionEvidence): readonly string[] {
@@ -81,7 +87,8 @@ export class NbinetCollector implements SourceCollector {
         failures: [
           {
             capability: this.capability,
-            reason: "NBINet collection requires exact EPUB ISBN evidence",
+            reason:
+              "NBINet collection requires exactly one unique valid ISBN in one EPUB inspection（单一唯一有效 ISBN）",
           },
         ],
       };
@@ -118,6 +125,7 @@ export class NbinetCollector implements SourceCollector {
           },
           digest: createHash("sha256").update(bytes).digest("hex"),
           body,
+          producer: this.capability,
         },
       ],
       failures: [],
@@ -133,12 +141,8 @@ export class NbinetSourceInterpreter implements SourceInterpreter {
     readonly sourceRecords: readonly SourceRecord[];
   }): boolean {
     return (
-      input.evidence.some((item) => isbnFromEvidence(item) !== undefined) &&
-      input.sourceRecords.some(
-        (record) =>
-          record.sourceIdentity === "nbinet" &&
-          record.coverage.id === "nbinet.exact-isbn",
-      )
+      exactInspectionIsbn(input.evidence) !== undefined &&
+      officialRecords(input.sourceRecords).length === 1
     );
   }
 
@@ -146,24 +150,17 @@ export class NbinetSourceInterpreter implements SourceInterpreter {
     readonly evidence: readonly RecognitionEvidence[];
     readonly sourceRecords: readonly SourceRecord[];
   }): SourceInterpretationBatch {
-    const evidence = input.evidence.find(
-      (item) => isbnFromEvidence(item) !== undefined,
-    );
-    const isbn =
-      evidence === undefined ? undefined : isbnFromEvidence(evidence);
+    const isbn = exactInspectionIsbn(input.evidence);
     if (isbn === undefined)
       throw new Error(
         "NBINet interpretation requires exact EPUB ISBN evidence",
       );
-    const official = input.sourceRecords.find(
-      (record) =>
-        record.sourceIdentity === "nbinet" &&
-        record.coverage.id === "nbinet.exact-isbn",
-    );
-    if (official === undefined)
+    const records = officialRecords(input.sourceRecords);
+    if (records.length !== 1)
       throw new Error(
-        "NBINet interpretation requires official record and EPUB evidence",
+        "NBINet interpretation requires one unique official record with its exact producer coordinate and EPUB evidence",
       );
+    const official = records[0]!;
     if (official.nativeAddress !== canonicalIsbnAddress(isbn))
       throw new Error("book source records disagree about the ISBN address");
     const bibliographic = exactBibliographicRecord(official.body, isbn);
@@ -171,6 +168,46 @@ export class NbinetSourceInterpreter implements SourceInterpreter {
       throw new Error("国家图书馆未返回包含该精确 ISBN 的唯一书目记录");
     const metadata = [
       assertion("book.isbn-13", "nbinet.isbn-13", isbn, official.id),
+      ...bibliographic.titles.map((value, index) =>
+        assertion(
+          "asset.title",
+          `nbinet.title.${index + 1}`,
+          value,
+          official.id,
+        ),
+      ),
+      ...bibliographic.contributors.map((value, index) =>
+        assertion(
+          "book.contributor",
+          `nbinet.contributor.${index + 1}`,
+          value,
+          official.id,
+        ),
+      ),
+      ...bibliographic.publishers.map((value, index) =>
+        assertion(
+          "book.publisher",
+          `nbinet.publisher.${index + 1}`,
+          value,
+          official.id,
+        ),
+      ),
+      ...bibliographic.dates.map((value, index) =>
+        assertion(
+          "book.publication-date",
+          `nbinet.date.${index + 1}`,
+          value,
+          official.id,
+        ),
+      ),
+      ...bibliographic.languages.map((value, index) =>
+        assertion(
+          "asset.declared-language",
+          `nbinet.language.${index + 1}`,
+          value,
+          official.id,
+        ),
+      ),
     ];
     return {
       id: `source-interpretation_${randomUUID()}`,
@@ -186,17 +223,23 @@ export class NbinetSourceInterpreter implements SourceInterpreter {
 
 export class NbinetExactIsbnRecognizer implements Recognizer {
   readonly capability = recognizerCapability;
-  canRecognize(input: SourceInterpretationBatch): boolean {
+  canRecognize(input: RecognitionCandidateContext): boolean {
+    if (input.basis.kind !== "source-interpretation") return false;
+    const interpretation = input.basis.interpretation;
     return (
-      input.sourceIdentity === "nbinet" &&
-      input.producer.capabilityId === interpreterCapability.capabilityId
+      interpretation.sourceIdentity === "nbinet" &&
+      sameCapabilityCoordinate(interpretation.producer, interpreterCapability)
     );
   }
-  recognize(input: {
-    readonly evidence: readonly RecognitionEvidence[];
-    readonly interpretation: SourceInterpretationBatch;
-  }): RecognitionProposalDraft {
-    const isbn = isbnFromAddress(input.interpretation.sourceAddress);
+  recognize(input: RecognitionCandidateContext): RecognitionProposalDraft {
+    if (
+      input.basis.kind !== "source-interpretation" ||
+      !this.canRecognize(input)
+    )
+      throw new Error(
+        "国家图书馆识别器需要精确解释器 producer coordinate 的来源解释",
+      );
+    const isbn = isbnFromAddress(input.basis.interpretation.sourceAddress);
     const satisfied =
       isbn !== undefined &&
       input.evidence.some((item) => isbnFromEvidence(item) === isbn);
@@ -227,18 +270,47 @@ function assertion(
   return { property, sourceSlot, value, sourceRecordIds: [sourceRecordId] };
 }
 
-function exactBibliographicRecord(body: string, isbn: string): {} | undefined {
+function exactBibliographicRecord(
+  body: string,
+  isbn: string,
+):
+  | {
+      readonly titles: readonly string[];
+      readonly contributors: readonly string[];
+      readonly publishers: readonly string[];
+      readonly dates: readonly string[];
+      readonly languages: readonly string[];
+    }
+  | undefined {
   const parsed = JSON.parse(body) as { readonly docs?: unknown };
   const matches = (Array.isArray(parsed.docs) ? parsed.docs : []).flatMap(
     (doc) => {
       const record = doc as {
         readonly pnx?: {
+          readonly display?: {
+            readonly title?: unknown;
+            readonly creator?: unknown;
+            readonly publisher?: unknown;
+            readonly creationdate?: unknown;
+            readonly language?: unknown;
+          };
           readonly addata?: { readonly isbn?: unknown };
         };
       };
-      const identifiers = strings(record.pnx?.addata?.isbn).map(normalizeIsbn);
+      const identifiers = strings(record.pnx?.addata?.isbn).flatMap((value) => {
+        const normalized = supportedIsbn13Lexeme(value);
+        return normalized === undefined ? [] : [normalized];
+      });
       if (!identifiers.includes(isbn)) return [];
-      return [{}];
+      return [
+        {
+          titles: strings(record.pnx?.display?.title),
+          contributors: strings(record.pnx?.display?.creator),
+          publishers: strings(record.pnx?.display?.publisher),
+          dates: strings(record.pnx?.display?.creationdate),
+          languages: strings(record.pnx?.display?.language),
+        },
+      ];
     },
   );
   return matches.length === 1 ? matches[0] : undefined;
@@ -294,10 +366,82 @@ function inspectionFrom(
 }
 
 function isbnFromEvidence(evidence: RecognitionEvidence): string | undefined {
-  return inspectionFrom(evidence)?.identifiers.find(
-    (identifier) =>
-      identifier.scheme === "isbn-13" && isValidIsbn13(identifier.value),
-  )?.value;
+  return uniqueIsbnFromInspection(evidence);
+}
+
+function uniqueIsbnFromInspection(
+  evidence: RecognitionEvidence,
+): string | undefined {
+  if (!sameCapabilityCoordinate(evidence.producer, epubInspectorCapability))
+    return undefined;
+  const inspection = inspectionFrom(evidence);
+  if (inspection === undefined) return undefined;
+  const values = [
+    ...new Set(
+      inspection.identifiers
+        .filter(
+          (identifier) =>
+            identifier.scheme === "isbn-13" && isValidIsbn13(identifier.value),
+        )
+        .map((identifier) => identifier.value),
+    ),
+  ];
+  return values.length === 1 ? values[0] : undefined;
+}
+
+function exactInspectionIsbn(
+  evidence: readonly RecognitionEvidence[],
+): string | undefined {
+  const inspections = evidence.filter(
+    (item) => inspectionFrom(item) !== undefined,
+  );
+  return inspections.length === 1
+    ? uniqueIsbnFromInspection(inspections[0]!)
+    : undefined;
+}
+
+function officialRecords(
+  records: readonly SourceRecord[],
+): readonly SourceRecord[] {
+  return records.filter(
+    (record) =>
+      record.sourceIdentity === "nbinet" &&
+      record.coverage.id === "nbinet.exact-isbn" &&
+      record.coverage.authority === "official" &&
+      record.producer !== undefined &&
+      sameCapabilityCoordinate(record.producer, collectorCapability),
+  );
+}
+
+function sameCapabilityCoordinate(
+  actual: CapabilityCoordinate,
+  expected: CapabilityCoordinate,
+): boolean {
+  return (
+    actual.capabilityId === expected.capabilityId &&
+    actual.capabilityVersion === expected.capabilityVersion &&
+    actual.contractVersion === expected.contractVersion &&
+    actual.identity === expected.identity &&
+    actual.implementationVersion === expected.implementationVersion &&
+    actual.kind === expected.kind &&
+    sameStrings(
+      actual.interpretationContractVersions,
+      expected.interpretationContractVersions,
+    )
+  );
+}
+
+function sameStrings(
+  left: readonly string[] | undefined,
+  right: readonly string[] | undefined,
+): boolean {
+  return (
+    left === right ||
+    (left !== undefined &&
+      right !== undefined &&
+      left.length === right.length &&
+      left.every((value, index) => value === right[index]))
+  );
 }
 
 function isValidIsbn13(value: string): boolean {
@@ -342,8 +486,10 @@ function isbnFromAddress(address: string): string | undefined {
   }
 }
 
-function normalizeIsbn(value: string): string {
-  return value.replaceAll(/[^\dX]/giu, "");
+function supportedIsbn13Lexeme(value: string): string | undefined {
+  const match =
+    /^(?:ISBN(?:-13)?(?:\s*:\s*|\s+))?(97[89](?:[ -]?\d){10})$/iu.exec(value);
+  return match?.[1]?.replaceAll(/[ -]/gu, "");
 }
 function string(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0

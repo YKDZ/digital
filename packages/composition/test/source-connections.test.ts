@@ -980,9 +980,9 @@ describe("product-managed film source connections", () => {
     const observedCookies: string[] = [];
     vi.stubGlobal("fetch", async (input: string | URL, init?: RequestInit) => {
       const address = new URL(input);
-      expect(address.href).toContain("api.fanbox.cc/user.me");
+      expect(address.href).toContain("api.fanbox.cc/user.countUnreadMessages");
       observedCookies.push(new Headers(init?.headers).get("Cookie") ?? "");
-      return jsonResponse({ body: { userId: "123456" } });
+      return jsonResponse({ body: 0 });
     });
 
     const workflow = composeAssetRefresh(productDataDirectory, {});
@@ -1038,7 +1038,7 @@ describe("product-managed film source connections", () => {
     vi.stubGlobal("fetch", async (input: string | URL) => {
       const address = new URL(input);
       requests.push(address.pathname);
-      return jsonResponse({ body: { items: [] } });
+      return jsonResponse({ body: { posts: [] } });
     });
 
     const workflow = composeAssetRefresh(productDataDirectory, {});
@@ -1049,7 +1049,7 @@ describe("product-managed film source connections", () => {
           browserCookies: [{ name: "FANBOXSESSID", value: privateSession }],
         }),
       ).rejects.toThrow("FANBOX 来源连接验证失败");
-      expect(requests).toEqual(["/user.me"]);
+      expect(requests).toEqual(["/user.countUnreadMessages"]);
       expect(
         workflow.sourceConnections.fanbox.inspect("customudon"),
       ).toMatchObject({
@@ -1064,7 +1064,7 @@ describe("product-managed film source connections", () => {
     ).toBe(false);
   });
 
-  it("does not persist malformed, rejected, or reflected FANBOX browser credentials", async () => {
+  it("does not persist malformed, rejected, or invalid FANBOX browser credentials", async () => {
     const root = await mkdtemp(
       path.join(tmpdir(), "digital-source-connections-"),
     );
@@ -1072,20 +1072,51 @@ describe("product-managed film source connections", () => {
     const productDataDirectory = path.join(root, "product-data");
     await prepareCatalogueAt(productDataDirectory);
     const privateSession = "fanbox-rejected-private-session";
-    vi.stubGlobal("fetch", async () => ({
-      ok: false,
-      status: 403,
-      headers: { get: () => "text/html" },
-      arrayBuffer: async () => new TextEncoder().encode(privateSession).buffer,
-    }));
+    const encoded = (value: string) => new TextEncoder().encode(value).buffer;
+    const invalidResponses = [
+      {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        arrayBuffer: async () => encoded('{"body":0,"error":null}'),
+      },
+      {
+        ok: true,
+        status: 200,
+        headers: { get: () => "text/html" },
+        arrayBuffer: async () => encoded('{"body":0}'),
+      },
+      {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        arrayBuffer: async () => encoded(""),
+      },
+      {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        arrayBuffer: async () => encoded(" ".repeat(1025)),
+      },
+      jsonResponse({ body: -1 }),
+      jsonResponse({ body: Number.MAX_SAFE_INTEGER + 1 }),
+      {
+        ok: false,
+        status: 403,
+        headers: { get: () => "text/html" },
+        arrayBuffer: async () => encoded(privateSession),
+      },
+    ];
+    vi.stubGlobal("fetch", async () => invalidResponses.shift()!);
     const workflow = composeAssetRefresh(productDataDirectory, {});
     try {
-      await expect(
-        workflow.sourceConnections.fanbox.importBrowserCredentials({
-          creatorId: "customudon",
-          browserCookies: [{ name: "FANBOXSESSID", value: privateSession }],
-        }),
-      ).rejects.toThrow("FANBOX 来源连接验证失败");
+      while (invalidResponses.length > 0)
+        await expect(
+          workflow.sourceConnections.fanbox.importBrowserCredentials({
+            creatorId: "customudon",
+            browserCookies: [{ name: "FANBOXSESSID", value: privateSession }],
+          }),
+        ).rejects.toThrow("FANBOX 来源连接验证失败");
       await expect(
         workflow.sourceConnections.fanbox.importBrowserCredentials({
           creatorId: "customudon",
@@ -1151,9 +1182,7 @@ describe("product-managed film source connections", () => {
     temporaryRoots.push(root);
     const productDataDirectory = path.join(root, "product-data");
     await prepareCatalogueAt(productDataDirectory);
-    vi.stubGlobal("fetch", async () =>
-      jsonResponse({ body: { userId: "123456" } }),
-    );
+    vi.stubGlobal("fetch", async () => jsonResponse({ body: 0 }));
     const firstSecret = "fanbox-first-private-session";
     const secondSecret = "fanbox-second-private-session";
 
@@ -1206,7 +1235,7 @@ describe("product-managed film source connections", () => {
     }
   });
 
-  it("binds only the imported creator's frozen FANBOX connection and never treats a summary preview as full post content", async () => {
+  it("binds only the imported creator's frozen FANBOX connection and never adopts a summary after detail failure", async () => {
     const root = await mkdtemp(
       path.join(tmpdir(), "digital-source-connections-"),
     );
@@ -1218,8 +1247,8 @@ describe("product-managed film source connections", () => {
     vi.stubGlobal("fetch", async (input: string | URL, init?: RequestInit) => {
       const url = new URL(input);
       requestCookies.push(new Headers(init?.headers).get("Cookie") ?? "");
-      if (url.pathname.endsWith("user.me"))
-        return jsonResponse({ body: { userId: "123456" } });
+      if (url.pathname.endsWith("user.countUnreadMessages"))
+        return jsonResponse({ body: 0 });
       if (url.pathname.endsWith("post.info")) {
         return {
           ok: false,
@@ -1230,7 +1259,7 @@ describe("product-managed film source connections", () => {
       }
       return jsonResponse({
         body: {
-          items: [
+          posts: [
             {
               id: "9135862",
               creatorId: "customudon",
@@ -1258,7 +1287,7 @@ describe("product-managed film source connections", () => {
         scanned.execution.workflowInput?.configurationReferences,
       ).toContain(`source-connection/fanbox/customudon@${imported.version}`);
       expect(scanned.sourceRecords).toHaveLength(1);
-      expect(scanned.execution.status).toBe("completed");
+      expect(scanned.execution.status).toBe("failed");
       expect(scanned.execution.dispositions).toContainEqual(
         expect.objectContaining({
           key: "official-collection",
@@ -1266,20 +1295,14 @@ describe("product-managed film source connections", () => {
           reason: expect.stringContaining("未请求的信息仍不可用"),
         }),
       );
-      expect(scanned.accepted?.effectiveMetadata).toEqual(
-        expect.not.arrayContaining([
-          expect.objectContaining({
-            property: "asset.body",
-            value: "这个预览绝不能成为正文",
-          }),
-        ]),
-      );
-      expect(requestCookies).toEqual(
-        Array.from(
-          { length: requestCookies.length },
+      expect(scanned.accepted).toBeUndefined();
+      expect(requestCookies).toEqual([
+        ...Array.from(
+          { length: requestCookies.length - 1 },
           () => `FANBOXSESSID=${privateSession}`,
         ),
-      );
+        "",
+      ]);
       expect(JSON.stringify(scanned)).not.toContain(privateSession);
     } finally {
       await workflow.close();
@@ -1297,44 +1320,66 @@ describe("product-managed film source connections", () => {
     let malformedDetail = false;
     vi.stubGlobal("fetch", async (input: string | URL) => {
       const url = new URL(input);
-      if (url.pathname.endsWith("user.me"))
-        return jsonResponse({ body: { userId: "123456" } });
+      if (url.pathname.endsWith("user.countUnreadMessages"))
+        return jsonResponse({ body: 0 });
       if (url.pathname.endsWith("post.listCreator"))
         return jsonResponse({
           body: {
-            items: [
+            posts: [
               {
                 id: "9135862",
                 creatorId: "customudon",
-                title: "可局部刷新",
+                title: malformedDetail
+                  ? "摘要不得竞争的新标题"
+                  : "初始完整详情",
                 publishedDatetime: "2025-01-01T00:11:17+09:00",
+                likeCount: malformedDetail ? 999 : 1,
+                commentCount: malformedDetail ? 888 : 2,
               },
             ],
           },
         });
       if (url.pathname.endsWith("post.info"))
         return jsonResponse({
-          body: malformedDetail
-            ? {
-                id: "9135862",
-                creatorId: "customudon",
-                title: "可局部刷新",
-                publishedDatetime: "2025-01-01T00:11:17+09:00",
-                type: "article",
-                body: { blocks: [] },
-              }
-            : {
-                id: "9135862",
-                creatorId: "customudon",
-                title: "可局部刷新",
-                publishedDatetime: "2025-01-01T00:11:17+09:00",
-                type: "text",
-                body: { text: "初始完整正文必须保留" },
-              },
+          body: {
+            post: malformedDetail
+              ? {
+                  id: "9135862",
+                  creatorId: "customudon",
+                  title: "摘要不得竞争的新标题",
+                  publishedDatetime: "2025-01-01T00:11:17+09:00",
+                  type: "article",
+                  body: { blocks: [] },
+                }
+              : {
+                  id: "9135862",
+                  creatorId: "customudon",
+                  title: "初始完整详情",
+                  publishedDatetime: "2025-01-01T00:11:17+09:00",
+                  likeCount: 7,
+                  commentCount: 8,
+                  type: "article",
+                  body: {
+                    blocks: [
+                      { type: "p", text: "初始完整正文必须保留" },
+                      { type: "file", fileId: "official" },
+                    ],
+                    fileMap: {
+                      official: {
+                        id: "official",
+                        name: "official.zip",
+                        size: 42,
+                        url: "https://downloads.fanbox.cc/files/post/official.zip",
+                      },
+                    },
+                  },
+                },
+          },
         });
       throw new Error("unexpected official source host");
     });
-    const workflow = composeAssetRefresh(productDataDirectory, {});
+    let workflow = composeAssetRefresh(productDataDirectory, {});
+    let workflowClosed = false;
     try {
       await workflow.sourceConnections.fanbox.importBrowserCredentials({
         creatorId: "customudon",
@@ -1350,11 +1395,35 @@ describe("product-managed film source connections", () => {
       expect(initial.accepted?.effectiveMetadata).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
+            property: "asset.title",
+            value: "初始完整详情",
+          }),
+          expect.objectContaining({
             property: "asset.body",
             value: "初始完整正文必须保留",
           }),
         ]),
       );
+      expect(initial.accepted?.metadata).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            property: "fanbox.post.body-block",
+            value: JSON.stringify({ type: "file", fileId: "official" }),
+            qualifiers: expect.arrayContaining([
+              { key: "fanbox.post.block-ordinal", value: "1" },
+            ]),
+          }),
+        ]),
+      );
+      expect(initial.accepted?.sourceArtifactCandidates).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: "fanbox.attachment.file",
+            selectionEvidence: expect.objectContaining({ sourceOrdinal: 0 }),
+          }),
+        ]),
+      );
+      expect(JSON.stringify(initial)).not.toContain("acquisitionReference");
 
       malformedDetail = true;
       const refreshed = await workflow.refreshMetadata({
@@ -1384,21 +1453,63 @@ describe("product-managed film source connections", () => {
           }),
         }),
       ]);
-      await expect(
-        workflow.inspectCurrentCatalogueSubject(subjectId),
-      ).resolves.toEqual(
-        expect.objectContaining({
-          effectiveMetadata: expect.arrayContaining([
-            expect.objectContaining({
-              property: "asset.body",
-              value: "初始完整正文必须保留",
-            }),
-          ]),
-        }),
-      );
       expect(JSON.stringify(refreshed)).not.toContain(privateSession);
-    } finally {
+
       await workflow.close();
+      workflowClosed = true;
+      workflow = composeAssetRefresh(productDataDirectory, {});
+      workflowClosed = false;
+      const reopened = await workflow.inspectCurrentCatalogueSubject(subjectId);
+      const detailOwned = new Map(
+        [
+          "asset.title",
+          "asset.publication-datetime",
+          "fanbox.post.entitlement",
+          "fanbox.post.form",
+          "fanbox.post.like-count",
+          "fanbox.post.comment-count",
+          "asset.body",
+        ].map((property) => [
+          property,
+          reopened.metadata
+            .filter((item) => item.property === property)
+            .map((item) => item.value),
+        ]),
+      );
+      expect(detailOwned).toEqual(
+        new Map([
+          ["asset.title", ["初始完整详情"]],
+          ["asset.publication-datetime", ["2025-01-01T00:11:17+09:00"]],
+          ["fanbox.post.entitlement", ["available"]],
+          ["fanbox.post.form", ["article"]],
+          ["fanbox.post.like-count", ["7"]],
+          ["fanbox.post.comment-count", ["8"]],
+          ["asset.body", ["初始完整正文必须保留"]],
+        ]),
+      );
+      expect(reopened.metadata).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            property: "fanbox.post.body-block",
+            value: JSON.stringify({ type: "file", fileId: "official" }),
+            qualifiers: expect.arrayContaining([
+              { key: "fanbox.post.block-ordinal", value: "1" },
+            ]),
+          }),
+        ]),
+      );
+      expect(reopened.sourceArtifactCandidates).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: "fanbox.attachment.file",
+            selectionEvidence: expect.objectContaining({ sourceOrdinal: 0 }),
+          }),
+        ]),
+      );
+      expect(JSON.stringify(reopened)).not.toContain("unverified");
+      expect(JSON.stringify(reopened)).not.toContain("摘要不得竞争的新标题");
+    } finally {
+      if (!workflowClosed) await workflow.close();
     }
   });
 
@@ -1433,8 +1544,8 @@ describe("product-managed film source connections", () => {
       if (phase === "first-scan" || phase === "release-first")
         firstCollectionCookies.push(cookie);
       if (phase === "later") laterCollectionCookies.push(cookie);
-      if (url.pathname.endsWith("user.me"))
-        return jsonResponse({ body: { userId: "123456" } });
+      if (url.pathname.endsWith("user.countUnreadMessages"))
+        return jsonResponse({ body: 0 });
       if (url.pathname.endsWith("post.listCreator")) {
         if (phase === "first-scan") {
           firstCollectionStarted();
@@ -1442,7 +1553,7 @@ describe("product-managed film source connections", () => {
         }
         return jsonResponse({
           body: {
-            items: [
+            posts: [
               {
                 id: "9135862",
                 creatorId: "customudon",
@@ -1534,11 +1645,11 @@ describe("product-managed film source connections", () => {
     const privateSession = "fanbox-revoked-private-session";
     vi.stubGlobal("fetch", async (input: string | URL) => {
       const url = new URL(input);
-      return url.pathname.endsWith("user.me")
-        ? jsonResponse({ body: { userId: "123456" } })
+      return url.pathname.endsWith("user.countUnreadMessages")
+        ? jsonResponse({ body: 0 })
         : jsonResponse({
             body: {
-              items: [
+              posts: [
                 {
                   id: "9135862",
                   publishedDatetime: "2025-01-01T00:11:17+09:00",
@@ -1585,9 +1696,7 @@ describe("product-managed film source connections", () => {
     const productDataDirectory = path.join(root, "product-data");
     await prepareCatalogueAt(productDataDirectory);
     const privateSession = "fanbox-unsafe-private-session";
-    vi.stubGlobal("fetch", async () =>
-      jsonResponse({ body: { userId: "123456" } }),
-    );
+    vi.stubGlobal("fetch", async () => jsonResponse({ body: 0 }));
     const workflow = composeAssetRefresh(productDataDirectory, {});
     try {
       await workflow.sourceConnections.fanbox.importBrowserCredentials({

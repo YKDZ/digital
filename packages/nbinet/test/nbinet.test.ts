@@ -14,6 +14,10 @@ const evidence = [
       capabilityId: "epub.publication-inspection",
       capabilityVersion: "1",
       contractVersion: "1",
+      identity: "epub.publication-inspection",
+      implementationVersion: "1",
+      kind: "artifact-format-inspector",
+      interpretationContractVersions: ["1"],
     },
     inspection: {
       identifiers: [{ scheme: "isbn-13", value: "9789864738281" }],
@@ -43,6 +47,38 @@ const evidence = [
 ];
 
 describe("NBINet exact ISBN source", () => {
+  it("requests only one unique valid ISBN and does not request conflicts", async () => {
+    const requested: string[] = [];
+    const collector = new NbinetCollector(async (address) => {
+      requested.push(address);
+      return response({ docs: [] });
+    });
+    const conflict = {
+      ...evidence[0],
+      inspection: {
+        ...evidence[0].inspection,
+        identifiers: [
+          { scheme: "isbn-13", value: "9789864738281" },
+          { scheme: "isbn-13", value: "9786264151726" },
+        ],
+      },
+    };
+
+    expect(collector.canCollect(evidence[0])).toBe(true);
+    expect(collector.canCollect(conflict)).toBe(false);
+    await expect(collector.collect(conflict)).resolves.toMatchObject({
+      records: [],
+      failures: [{ reason: expect.stringContaining("唯一有效 ISBN") }],
+    });
+    expect(requested).toEqual([]);
+    await collector.collect(evidence[0]);
+    expect(requested).toEqual([
+      expect.stringMatching(
+        /^https:\/\/nbinet\.primo\.exlibrisgroup\.com\/primaws\/rest\/pub\/pnxs\?.*q=isbn%2Cexact%2C9789864738281/u,
+      ),
+    ]);
+  });
+
   it("keeps a matching identifier boundary separate from another local inspection", () => {
     const recognizer = new NbinetExactIsbnRecognizer();
     const proposal = recognizer.recognize({
@@ -57,15 +93,18 @@ describe("NBINet exact ISBN source", () => {
           },
         },
       ],
-      interpretation: {
-        id: "interpretation",
-        producer: recognizer.capability,
-        sourceRecordIds: [],
-        sourceIdentity: "nbinet",
-        sourceAddress:
-          "https://nbinet.primo.exlibrisgroup.com/discovery/search?q=isbn%2Cexact%2C9789864738281",
-        metadata: [],
-        sourceArtifacts: [],
+      basis: {
+        kind: "source-interpretation",
+        interpretation: {
+          id: "interpretation",
+          producer: new NbinetSourceInterpreter().capability,
+          sourceRecordIds: [],
+          sourceIdentity: "nbinet",
+          sourceAddress:
+            "https://nbinet.primo.exlibrisgroup.com/discovery/search?q=isbn%2Cexact%2C9789864738281",
+          metadata: [],
+          sourceArtifacts: [],
+        },
       },
     });
     expect(proposal.ruleResults[0].evidence).toEqual([evidence[0]]);
@@ -99,7 +138,7 @@ describe("NBINet exact ISBN source", () => {
     });
     const proposal = new NbinetExactIsbnRecognizer().recognize({
       evidence,
-      interpretation: batch,
+      basis: { kind: "source-interpretation", interpretation: batch },
     });
 
     expect(batch.sourceAddress).toContain("9789864738281");
@@ -108,6 +147,26 @@ describe("NBINet exact ISBN source", () => {
         expect.objectContaining({
           property: "book.isbn-13",
           value: "9789864738281",
+        }),
+        expect.objectContaining({
+          property: "asset.title",
+          value: "幼女戰記",
+        }),
+        expect.objectContaining({
+          property: "book.contributor",
+          value: "東條チカ",
+        }),
+        expect.objectContaining({
+          property: "book.publisher",
+          value: "臺灣角川",
+        }),
+        expect.objectContaining({
+          property: "book.publication-date",
+          value: "2017",
+        }),
+        expect.objectContaining({
+          property: "asset.declared-language",
+          value: "chi",
         }),
       ]),
     );
@@ -120,7 +179,148 @@ describe("NBINet exact ISBN source", () => {
       ),
     ).toBe(true);
   });
+
+  it("fails closed when more than one official response record can match", () => {
+    const duplicate = sourceRecord({
+      docs: [{ pnx: { addata: { isbn: ["9789864738281"] } } }],
+    });
+    expect(() =>
+      new NbinetSourceInterpreter().interpret({
+        evidence,
+        sourceRecords: [duplicate, { ...duplicate, id: "official-2" }],
+      }),
+    ).toThrow(/unique|唯一|恰有/u);
+  });
+
+  it("fails closed for zero or multiple body matches and an address conflict", () => {
+    const interpreter = new NbinetSourceInterpreter();
+    for (const docs of [
+      [{ pnx: { addata: { isbn: ["9786264151726"] } } }],
+      [{ pnx: { addata: { isbn: ["junk9789864738281tail"] } } }],
+      [
+        { pnx: { addata: { isbn: ["9789864738281"] } } },
+        { pnx: { addata: { isbn: ["9789864738281"] } } },
+      ],
+    ]) {
+      expect(() =>
+        interpreter.interpret({
+          evidence,
+          sourceRecords: [sourceRecord({ docs })],
+        }),
+      ).toThrow(/唯一/u);
+    }
+    expect(() =>
+      interpreter.interpret({
+        evidence,
+        sourceRecords: [
+          {
+            ...sourceRecord({
+              docs: [{ pnx: { addata: { isbn: ["9789864738281"] } } }],
+            }),
+            nativeAddress: sourceRecord({}).nativeAddress.replace(
+              "9789864738281",
+              "9786264151726",
+            ),
+          },
+        ],
+      }),
+    ).toThrow(/disagree|address/u);
+  });
+
+  it("rejects incomplete or forged producer coordinates at every NBINet trust boundary", () => {
+    const collector = new NbinetCollector(async () => response({ docs: [] }));
+    const {
+      implementationVersion: _missingImplementation,
+      ...missingImplementation
+    } = evidence[0].producer;
+    expect(
+      collector.canCollect({
+        ...evidence[0],
+        producer: { ...evidence[0].producer, capabilityId: "forged.epub" },
+      }),
+    ).toBe(false);
+    expect(
+      collector.canCollect({ ...evidence[0], producer: missingImplementation }),
+    ).toBe(false);
+
+    const interpreter = new NbinetSourceInterpreter();
+    const record = sourceRecord({
+      docs: [{ pnx: { addata: { isbn: ["9789864738281"] } } }],
+    });
+    const forgedRecord = {
+      ...record,
+      producer: { ...record.producer, contractVersion: "forged" },
+    };
+    const {
+      interpretationContractVersions: _missingInterpretationContract,
+      ...missingInterpretationContract
+    } = evidence[0].producer;
+    expect(
+      interpreter.canInterpret({
+        evidence,
+        sourceRecords: [forgedRecord],
+      }),
+    ).toBe(false);
+    expect(() =>
+      interpreter.interpret({ evidence, sourceRecords: [forgedRecord] }),
+    ).toThrow(/producer|coordinate/u);
+    expect(
+      interpreter.canInterpret({
+        evidence: [{ ...evidence[0], producer: missingInterpretationContract }],
+        sourceRecords: [record],
+      }),
+    ).toBe(false);
+
+    const batch = interpreter.interpret({ evidence, sourceRecords: [record] });
+    const recognizer = new NbinetExactIsbnRecognizer();
+    const forgedInterpretation = {
+      ...batch,
+      producer: { ...batch.producer, capabilityVersion: "forged" },
+    };
+    const input = {
+      evidence,
+      basis: {
+        kind: "source-interpretation" as const,
+        interpretation: forgedInterpretation,
+      },
+    };
+    expect(recognizer.canRecognize(input)).toBe(false);
+    expect(() => recognizer.recognize(input)).toThrow(/producer|coordinate/u);
+  });
 });
+
+function sourceRecord(body: unknown) {
+  return {
+    id: "official-1",
+    sourceIdentity: "nbinet",
+    nativeAddress:
+      "https://nbinet.primo.exlibrisgroup.com/discovery/search?inst=886NCL_NBINET&vid=886NCL_NBINET%3ANBINET&lang=zh-tw&q=isbn%2Cexact%2C9789864738281&scope=MyInstitution&tab=NBINET&skipDelivery=Y",
+    mediaType: "application/json",
+    acquiredAt: "2026-08-30T00:00:00.000Z",
+    acquisition: {
+      requestedAddress:
+        "https://nbinet.primo.exlibrisgroup.com/primaws/rest/pub/pnxs",
+      method: "GET" as const,
+      authorized: false,
+    },
+    coverage: {
+      id: "nbinet.exact-isbn",
+      completeness: "complete" as const,
+      authority: "official" as const,
+    },
+    digest: "b".repeat(64),
+    body: JSON.stringify(body),
+    producer: {
+      capabilityId: "nbinet.exact-isbn-collection",
+      capabilityVersion: "1",
+      contractVersion: "1",
+      identity: "nbinet.exact-isbn-collection",
+      implementationVersion: "1",
+      kind: "source-collector",
+      interpretationContractVersions: ["1"],
+    },
+  };
+}
 
 function response(body: unknown) {
   const bytes = new TextEncoder().encode(JSON.stringify(body));
