@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { sendAction } from "@digital/web-delivery";
+import { sendAction } from "@digital/web-delivery/client";
 import { ref } from "vue";
 
 import { Button } from "#/components/ui/button";

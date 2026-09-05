@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { AssetViewModel } from "@digital/web-delivery";
+import type { AssetViewModel } from "@digital/web-delivery/client";
 import { Film } from "@lucide/vue";
 
 import { Badge } from "#/components/ui/badge";

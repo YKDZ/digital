@@ -71,6 +71,7 @@ import {
   OmdbSourceInterpreter,
   verifyOmdbApiKey,
 } from "@digital/omdb";
+import { createPdfRecognitionCapabilities } from "@digital/pdf";
 import { boundedPlaybackFormatInspector } from "@digital/playback-format";
 import {
   CuratedMetadataPolicyConfiguration,
@@ -285,6 +286,7 @@ function composeAssetRefreshWithGeneration(
       bangumiCapabilitiesFromProductConnections(sourceConnections);
     const tmdb = tmdbCapabilitiesFromPrivateConfiguration(sourceConnections);
     const omdb = omdbCapabilitiesFromPrivateConfiguration(sourceConnections);
+    const pdf = createPdfRecognitionCapabilities();
     const directoryInterpreters = [
       new DlsiteExactDirectoryInterpreter(),
       new BangumiEpisodicDirectoryInterpreter(),
@@ -294,7 +296,10 @@ function composeAssetRefreshWithGeneration(
     const filesystemPackageInterpreters = [
       new BdmvFilesystemPackageInterpreter(),
     ];
-    const formatInspectors = [new EpubPublicationInspector()];
+    const formatInspectors = [
+      new EpubPublicationInspector(),
+      ...pdf.formatInspectors,
+    ];
     const collectors = [
       new DlsiteCollector(),
       bangumi.collector,
@@ -319,6 +324,7 @@ function composeAssetRefreshWithGeneration(
       new DlsiteExactRecognizer(),
       new BangumiEpisodicRecognizer(),
       new EpubLocalPublicationRecognizer(),
+      ...pdf.recognizers,
       new NbinetExactIsbnRecognizer(),
       new TmdbStrictFilmRecognizer(),
       ...fanbox.recognizers,
@@ -330,7 +336,10 @@ function composeAssetRefreshWithGeneration(
       new OmdbArtifactAcquirer(),
       ...fanbox.acquirers,
     ];
-    const observedArtifactPartAcquirers = [new EpubEmbeddedCoverAcquirer()];
+    const observedArtifactPartAcquirers = [
+      new EpubEmbeddedCoverAcquirer(),
+      ...pdf.observedArtifactPartAcquirers,
+    ];
     const filesystem = new ReadOnlyFilesystemObserver();
     const persistence = SqliteCatalogue.forProductData(productDataDirectory);
     const recognitionPolicy = curatedInitialRecognitionPolicy();

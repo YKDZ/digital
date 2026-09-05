@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { sendAction } from "@digital/web-delivery";
+import { sendAction } from "@digital/web-delivery/client";
 import { computed, ref } from "vue";
 
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";

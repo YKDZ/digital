@@ -20,6 +20,7 @@ import type {
   CurrentAttentionPageRequest,
   CurrentAttentionQueries,
   CurrentCataloguePageRequest,
+  CurrentCatalogueIndexFacts,
   CurrentCataloguePersistencePage,
   CurrentCatalogueQueries,
   WorkflowHistoryPageRequest,
@@ -346,7 +347,10 @@ type CurrentCatalogueHydrationRows = {
   readonly relationshipLifecycles: readonly (typeof relationshipLifecycles.$inferSelect)[];
   readonly relationshipRetractions: readonly (typeof relationshipRetractions.$inferSelect)[];
   readonly policies: readonly (typeof metadataPolicyEnrollments.$inferSelect)[];
-  readonly sourceRecords: readonly (typeof sourceRecords.$inferSelect)[];
+  readonly sourceRecords: readonly Pick<
+    typeof sourceRecords.$inferSelect,
+    "id" | "sourceIdentity" | "nativeAddress"
+  >[];
   readonly artifacts: readonly (typeof artifacts.$inferSelect)[];
   readonly locations: readonly (typeof locations.$inferSelect)[];
   readonly revisions: readonly (typeof artifactRevisions.$inferSelect)[];
@@ -2821,9 +2825,17 @@ export class SqliteCatalogue
         ),
       )
       .where(
-        anchor === undefined
-          ? undefined
-          : gt(recognitionHeads.subjectId, anchor),
+        and(
+          anchor === undefined
+            ? undefined
+            : gt(recognitionHeads.subjectId, anchor),
+          input.subjectIds === undefined
+            ? undefined
+            : inArray(
+                recognitionHeads.subjectId,
+                sqliteTextSet(input.subjectIds),
+              ),
+        ),
       )
       // 已审核的数据库模式保证 `subject_id` 唯一；如果未来的当前来源联接把一个主体
       // 扩展成多条物理行，这里仍是显式的分页边界守卫。
@@ -2842,6 +2854,53 @@ export class SqliteCatalogue
         ? {}
         : { nextCursor: encodeCurrentCatalogueCursor(last.assetId) }),
     };
+  }
+
+  async listCurrentCatalogueIndex(
+    metadataProperties: readonly string[],
+  ): Promise<readonly CurrentCatalogueIndexFacts[]> {
+    const query = drizzle({ client: await this.ensure() });
+    const heads = await query
+      .select({
+        id: recognitionHeads.subjectId,
+        additionOrder: sql<number>`${recognitionHeads}.rowid`,
+      })
+      .from(recognitionHeads)
+      .orderBy(asc(recognitionHeads.subjectId));
+    const result: CurrentCatalogueIndexFacts[] = [];
+    // 只投影轻量检索事实；完整文件图仍只为最终选中的页面装配。
+    for (
+      let offset = 0;
+      offset < heads.length;
+      offset += maximumCataloguePageLimit
+    ) {
+      const batch = heads.slice(offset, offset + maximumCataloguePageLimit);
+      const facts = await this.readCurrentAcceptedPageWithDrizzle(
+        query,
+        batch.map((head) => head.id),
+        metadataProperties,
+      );
+      const orders = new Map(
+        batch.map((head) => [head.id, head.additionOrder]),
+      );
+      for (const item of facts)
+        result.push({
+          entity: item.entity,
+          additionOrder: orders.get(item.entity.id)!,
+          metadata: item.metadata,
+          metadataPolicyIds: item.metadataPolicyIds ?? [],
+          metadataSourceRecords: item.metadataSourceRecords ?? [],
+          sourceAssociations: item.sourceAssociations,
+          ...(item.recognitionSourceAssociation === undefined
+            ? {}
+            : {
+                recognitionSourceAssociation: item.recognitionSourceAssociation,
+              }),
+          entities: item.entities ?? [],
+          relationships: item.relationships ?? [],
+        });
+    }
+    return result;
   }
 
   /**
@@ -9023,6 +9082,7 @@ export class SqliteCatalogue
   private async readCurrentAcceptedPageWithDrizzle(
     query: DrizzleReadQuery,
     assetIds: readonly string[],
+    indexMetadataProperties?: readonly string[],
   ): Promise<readonly AcceptedAssetState[]> {
     if (assetIds.length === 0) return [];
     const [
@@ -9102,23 +9162,33 @@ export class SqliteCatalogue
     ]);
     const [artifactAssociationRows, metadataRows, relationshipRows] =
       await Promise.all([
-        query
-          .select()
-          .from(artifactAssociations)
-          .where(
-            inArray(
-              artifactAssociations.subjectId,
-              sqliteTextSet(factSubjectIds),
-            ),
-          )
-          .orderBy(asc(artifactAssociations.id)),
+        indexMetadataProperties !== undefined
+          ? Promise.resolve([])
+          : query
+              .select()
+              .from(artifactAssociations)
+              .where(
+                inArray(
+                  artifactAssociations.subjectId,
+                  sqliteTextSet(factSubjectIds),
+                ),
+              )
+              .orderBy(asc(artifactAssociations.id)),
         query
           .select()
           .from(metadataAssertions)
           .where(
-            inArray(
-              metadataAssertions.subjectId,
-              sqliteTextSet(factSubjectIds),
+            and(
+              inArray(
+                metadataAssertions.subjectId,
+                sqliteTextSet(factSubjectIds),
+              ),
+              indexMetadataProperties === undefined
+                ? undefined
+                : inArray(
+                    metadataAssertions.property,
+                    sqliteTextSet(indexMetadataProperties),
+                  ),
             ),
           ),
         query
@@ -9234,7 +9304,11 @@ export class SqliteCatalogue
       sourceRecordIds.length === 0
         ? Promise.resolve([])
         : query
-            .select()
+            .select({
+              id: sourceRecords.id,
+              sourceIdentity: sourceRecords.sourceIdentity,
+              nativeAddress: sourceRecords.nativeAddress,
+            })
             .from(sourceRecords)
             .where(inArray(sourceRecords.id, sqliteTextSet(sourceRecordIds)))
             .orderBy(asc(sql<number>`${sourceRecords}.rowid`)),
@@ -9268,7 +9342,7 @@ export class SqliteCatalogue
       ...observedArtifactIds,
     ]);
     const [artifactRows, locationRows, revisionRows] =
-      artifactIds.length === 0
+      artifactIds.length === 0 || indexMetadataProperties !== undefined
         ? [[], [], []]
         : await Promise.all([
             query

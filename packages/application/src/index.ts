@@ -1990,6 +1990,7 @@ export type AssetRefreshReuseQueries = Pick<
 export type CurrentCataloguePageRequest = {
   readonly limit?: number;
   readonly cursor?: string;
+  readonly subjectIds?: readonly string[];
 };
 
 /**
@@ -2017,7 +2018,33 @@ export type CurrentCatalogueQueries = {
   ): Promise<CurrentCataloguePersistencePage>;
   /** @deprecated 交付层应使用上方的有界页面契约。 */
   listCurrentCatalogue(): Promise<readonly AcceptedAssetState[]>;
+  /** 仅载入检索所需事实，不读取文件、产物内容或工作流历史。 */
+  listCurrentCatalogueIndex(
+    metadataProperties: readonly string[],
+  ): Promise<readonly CurrentCatalogueIndexFacts[]>;
 };
+
+export type CurrentCatalogueIndexFacts = Pick<
+  AcceptedAssetState,
+  | "entity"
+  | "metadata"
+  | "metadataPolicyIds"
+  | "metadataSourceRecords"
+  | "sourceAssociations"
+  | "recognitionSourceAssociation"
+  | "entities"
+  | "relationships"
+> & { readonly additionOrder: number };
+
+export type CurrentCatalogueIndexEntry = Pick<
+  NonNullable<AssetRefreshInspection["accepted"]>,
+  | "entity"
+  | "sourceAssociations"
+  | "recognitionSourceAssociation"
+  | "effectiveMetadata"
+  | "entities"
+  | "relationships"
+> & { readonly additionOrder: number };
 
 /** 永久工作流历史的游标输入。 */
 export type WorkflowHistoryPageRequest = {
@@ -3109,14 +3136,15 @@ function requiredFilesystemDirectory(execution: WorkflowExecution): string {
   return execution.selection.directory;
 }
 
-function publicAccepted(
-  accepted: AcceptedAssetState | undefined,
+function effectiveMetadataForAccepted(
+  accepted: Pick<
+    AcceptedAssetState,
+    "entity" | "metadata" | "metadataPolicyIds" | "metadataSourceRecords"
+  >,
   sourceRecords: readonly Pick<SourceRecord, "id" | "sourceIdentity">[],
   metadataUsageContext: string,
   configuration: MetadataPolicyConfiguration | undefined,
-  sourceArtifactCandidates: readonly PublicSourceArtifactCandidate[] = [],
-): AssetRefreshInspection["accepted"] | undefined {
-  if (accepted === undefined) return undefined;
+) {
   const enrolledDefinitions = (accepted.metadataPolicyIds ?? []).flatMap(
     (policyId) =>
       configuration?.policies.filter(
@@ -3138,13 +3166,29 @@ function publicAccepted(
     (record, index, records) =>
       records.findIndex((candidate) => candidate.id === record.id) === index,
   );
-  const effectiveMetadata = deriveEffectiveMetadata({
+  return deriveEffectiveMetadata({
     subjectId: accepted.entity.id,
     metadataUsageContext,
     policies,
     sourceRecords: provenance,
     metadata: accepted.metadata,
   });
+}
+
+function publicAccepted(
+  accepted: AcceptedAssetState | undefined,
+  sourceRecords: readonly Pick<SourceRecord, "id" | "sourceIdentity">[],
+  metadataUsageContext: string,
+  configuration: MetadataPolicyConfiguration | undefined,
+  sourceArtifactCandidates: readonly PublicSourceArtifactCandidate[] = [],
+): AssetRefreshInspection["accepted"] | undefined {
+  if (accepted === undefined) return undefined;
+  const effectiveMetadata = effectiveMetadataForAccepted(
+    accepted,
+    sourceRecords,
+    metadataUsageContext,
+    configuration,
+  );
   return {
     entity: accepted.entity,
     sourceAssociations: accepted.sourceAssociations.map((association) => ({
@@ -7378,9 +7422,20 @@ export class AssetRefreshWorkflow {
     if (queries === undefined) {
       throw new Error("Current Catalogue page query is not configured");
     }
-    const page = await queries.listCurrentCataloguePage(
-      boundedPageRequest(input, "Current Catalogue"),
-    );
+    if (
+      input?.subjectIds !== undefined &&
+      (input.subjectIds.length > maximumBrowsePageLimit ||
+        input.subjectIds.some(
+          (id) => typeof id !== "string" || id.length === 0,
+        ))
+    )
+      throw new Error("Current Catalogue subject selection is invalid");
+    const page = await queries.listCurrentCataloguePage({
+      ...boundedPageRequest(input, "Current Catalogue"),
+      ...(input?.subjectIds === undefined
+        ? {}
+        : { subjectIds: input.subjectIds }),
+    });
     const items = [];
     for (const accepted of page.items) {
       const projected = publicAccepted(
@@ -7396,6 +7451,42 @@ export class AssetRefreshWorkflow {
       items,
       ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
     };
+  }
+
+  /** 检索索引使用与详情相同的生效元数据规则；不为检索重新定义来源优先级。 */
+  async listCurrentCatalogueIndex(
+    metadataProperties: readonly string[],
+  ): Promise<readonly CurrentCatalogueIndexEntry[]> {
+    const queries = this.ports.currentCatalogueQueries;
+    if (queries === undefined)
+      throw new Error("Current Catalogue index query is not configured");
+    const facts = await queries.listCurrentCatalogueIndex(metadataProperties);
+    return facts.map((item) => ({
+      entity: item.entity,
+      additionOrder: item.additionOrder,
+      sourceAssociations: item.sourceAssociations.map(
+        ({ sourceIdentity, nativeAddress }) => ({
+          sourceIdentity,
+          nativeAddress,
+        }),
+      ),
+      ...(item.recognitionSourceAssociation === undefined
+        ? {}
+        : {
+            recognitionSourceAssociation: {
+              sourceIdentity: item.recognitionSourceAssociation.sourceIdentity,
+              nativeAddress: item.recognitionSourceAssociation.nativeAddress,
+            },
+          }),
+      effectiveMetadata: effectiveMetadataForAccepted(
+        item,
+        [],
+        "asset.ordinary",
+        this.ports.metadataPolicyConfiguration,
+      ).values,
+      entities: item.entities ?? [],
+      relationships: item.relationships ?? [],
+    }));
   }
 
   /**

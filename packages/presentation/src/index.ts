@@ -14,6 +14,7 @@ import { nameSchema } from "./name-schema";
 
 export * from "./asset-refresh-selection";
 export * from "./bangumi";
+export * from "./library.ts";
 
 export type Greeting = { message: string };
 
@@ -301,7 +302,14 @@ export function assetViewComponent(
   if (identities.includes("fanbox")) return "fanbox";
   if (identities.includes("dlsite")) return "dlsite";
   if (identities.includes("tmdb")) return "film";
-  if (input.metadata.some((item) => item.property === "book.isbn-13"))
+  if (identities.includes("bangumi")) return "bangumi";
+  if (
+    input.metadata.some((item) =>
+      ["book.isbn-13", "book.contributor", "book.publisher"].includes(
+        item.property,
+      ),
+    )
+  )
     return "book";
   return "generic";
 }

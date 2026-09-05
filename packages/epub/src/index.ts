@@ -51,6 +51,10 @@ export const trustedEpubLocalPublicationRule = {
 export type EpubPublication = {
   readonly opfPath: string;
   readonly isbn13s: readonly string[];
+  readonly isbn13Identifiers: readonly {
+    readonly value: string;
+    readonly locators: readonly [string, ...string[]];
+  }[];
   readonly invalidIsbnCount: number;
   readonly title?: string;
   readonly contributors: readonly string[];
@@ -151,14 +155,20 @@ export function inspectEpubPublication(bytes: Uint8Array): EpubPublication {
         },
       ];
     });
-  const isbnIdentifiers = isbnIdentifierFacts(opf);
-  const isbn13s = [
-    ...new Set(
-      isbnIdentifiers
-        .filter((identifier) => identifier.valid)
-        .map((identifier) => identifier.value),
-    ),
-  ];
+  const isbnIdentifiers = isbnIdentifierFacts(opf, rootfile);
+  const isbn13Locators = new Map<string, string[]>();
+  for (const identifier of isbnIdentifiers) {
+    if (!identifier.valid) continue;
+    const locators = isbn13Locators.get(identifier.value) ?? [];
+    if (!locators.includes(identifier.locator))
+      locators.push(identifier.locator);
+    isbn13Locators.set(identifier.value, locators);
+  }
+  const isbn13Identifiers = [...isbn13Locators].map(([value, locators]) => ({
+    value,
+    locators: [locators[0]!, ...locators.slice(1)] as const,
+  }));
+  const isbn13s = isbn13Identifiers.map((identifier) => identifier.value);
   const manifest = manifestItems(opf);
   const coverDeclarations = [
     ...metaElements(opf).flatMap((meta) => {
@@ -205,6 +215,7 @@ export function inspectEpubPublication(bytes: Uint8Array): EpubPublication {
   return {
     opfPath: rootfile,
     isbn13s,
+    isbn13Identifiers,
     invalidIsbnCount: isbnIdentifiers.filter((identifier) => !identifier.valid)
       .length,
     ...(title === undefined ? {} : { title }),
@@ -243,9 +254,10 @@ export class EpubPublicationInspector implements ArtifactFormatInspector {
         explanation: inspectionExplanation(publication),
         producer: this.capability,
         inspection: {
-          identifiers: publication.isbn13s.map((value) => ({
+          identifiers: publication.isbn13Identifiers.map((identifier) => ({
             scheme: "isbn-13",
-            value,
+            value: identifier.value,
+            locators: identifier.locators,
           })),
           observedArtifactReference: input.observedArtifactReference,
           revision: {
@@ -593,10 +605,15 @@ function inspectionExplanation(publication: EpubPublication): string {
 
 function isbnIdentifierFacts(
   opf: string,
-): readonly { readonly value: string; readonly valid: boolean }[] {
+  opfPath: string,
+): readonly {
+  readonly value: string;
+  readonly valid: boolean;
+  readonly locator: string;
+}[] {
   return [
     ...opf.matchAll(/<dc:identifier\b([^>]*)>([\s\S]*?)<\/dc:identifier>/giu),
-  ].flatMap((match) => {
+  ].flatMap((match, index) => {
     const identifierId = attribute(match[1], "id");
     const explicitScheme =
       attribute(match[1], "opf:scheme") ?? attribute(match[1], "scheme");
@@ -621,6 +638,7 @@ function isbnIdentifierFacts(
       {
         value: value ?? "",
         valid: value !== undefined && isValidIsbn13(value),
+        locator: elementLocator(opfPath, "dc:identifier", index + 1),
       },
     ];
   });

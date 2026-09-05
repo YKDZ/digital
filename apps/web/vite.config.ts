@@ -5,4 +5,7 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [vike(), vue(), tailwindcss()],
+  ssr: {
+    external: ["@digital/composition"],
+  },
 });

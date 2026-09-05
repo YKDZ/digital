@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { CatalogueAssetViewModel } from "@digital/web-delivery";
+import type { CatalogueAssetViewModel } from "@digital/web-delivery/client";
 import { computed } from "vue";
 
 import AssetActions from "./AssetActions.vue";

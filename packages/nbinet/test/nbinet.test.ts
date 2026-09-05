@@ -20,7 +20,13 @@ const evidence = [
       interpretationContractVersions: ["1"],
     },
     inspection: {
-      identifiers: [{ scheme: "isbn-13", value: "9789864738281" }],
+      identifiers: [
+        {
+          scheme: "isbn-13",
+          value: "9789864738281",
+          locators: ["epub:OPS/book.opf#/metadata/dc:identifier[1]"],
+        },
+      ],
       observedArtifactReference: "book.epub",
       revision: {
         digest: "a".repeat(64),
@@ -58,8 +64,16 @@ describe("NBINet exact ISBN source", () => {
       inspection: {
         ...evidence[0].inspection,
         identifiers: [
-          { scheme: "isbn-13", value: "9789864738281" },
-          { scheme: "isbn-13", value: "9786264151726" },
+          {
+            scheme: "isbn-13",
+            value: "9789864738281",
+            locators: ["epub:OPS/book.opf#/metadata/dc:identifier[1]"],
+          },
+          {
+            scheme: "isbn-13",
+            value: "9786264151726",
+            locators: ["epub:OPS/book.opf#/metadata/dc:identifier[2]"],
+          },
         ],
       },
     };
@@ -88,7 +102,13 @@ describe("NBINet exact ISBN source", () => {
           ...evidence[0],
           inspection: {
             ...evidence[0].inspection,
-            identifiers: [{ scheme: "isbn-13", value: "9786264151726" }],
+            identifiers: [
+              {
+                scheme: "isbn-13",
+                value: "9786264151726",
+                locators: ["epub:OPS/book.opf#/metadata/dc:identifier[1]"],
+              },
+            ],
             observedArtifactReference: "other.epub",
           },
         },

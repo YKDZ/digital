@@ -3,7 +3,7 @@ import type {
   BangumiEpisodeViewModel,
   BangumiSeriesViewModel,
   BangumiWorkViewModel,
-} from "@digital/web-delivery";
+} from "@digital/web-delivery/client";
 import { ArrowLeft } from "@lucide/vue";
 
 import { Badge } from "#/components/ui/badge";

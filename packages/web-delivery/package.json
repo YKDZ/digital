@@ -11,6 +11,11 @@
       "digital-source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./client": {
+      "digital-source": "./src/catalogue.ts",
+      "types": "./dist/catalogue.d.ts",
+      "default": "./dist/catalogue.js"
     }
   },
   "scripts": {

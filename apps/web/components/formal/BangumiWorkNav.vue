@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { BangumiWorkViewModel } from "@digital/web-delivery";
+import type { BangumiWorkViewModel } from "@digital/web-delivery/client";
 
 import { TabsList, TabsTrigger } from "#/components/ui/tabs";
 

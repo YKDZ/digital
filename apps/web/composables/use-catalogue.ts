@@ -2,7 +2,7 @@ import {
   emptyCatalogue,
   requestCatalogue,
   type CatalogueSnapshot,
-} from "@digital/web-delivery";
+} from "@digital/web-delivery/client";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 
 export function useCatalogue() {

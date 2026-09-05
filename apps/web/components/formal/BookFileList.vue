@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { AssetViewModel } from "@digital/web-delivery";
+import type { AssetViewModel } from "@digital/web-delivery/client";
 
 import { Badge } from "#/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "#/components/ui/card";

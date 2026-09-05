@@ -295,3 +295,33 @@ export async function sendAction<T>(
   if (!response.ok) throw new Error(data.error ?? "操作暂时无法完成");
   return data;
 }
+
+export {
+  libraryCategories,
+  projectLibraryAsset,
+} from "@digital/presentation/library";
+export type { LibraryCategory } from "@digital/presentation";
+
+export type LibraryQuery = {
+  readonly text?: string;
+  readonly category?: string;
+  readonly sort?: "recent" | "name";
+};
+
+export type CatalogueSubjectResponse = {
+  readonly asset: CatalogueAssetViewModel;
+  readonly selectedEpisodeId?: string;
+};
+
+export async function requestCatalogueSubject(
+  id: string,
+  signal?: AbortSignal,
+): Promise<CatalogueSubjectResponse | undefined> {
+  const response = await fetch(
+    `/api/catalogue/${encodeURIComponent(id)}`,
+    signal === undefined ? undefined : { signal },
+  );
+  if (response.status === 404) return undefined;
+  if (!response.ok) throw new Error("暂时无法读取内容");
+  return (await response.json()) as CatalogueSubjectResponse;
+}

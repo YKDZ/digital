@@ -3,7 +3,7 @@ import {
   executionOutcomeLabel,
   sendAction,
   type ExecutionViewModel,
-} from "@digital/web-delivery";
+} from "@digital/web-delivery/client";
 import { computed, ref } from "vue";
 
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";

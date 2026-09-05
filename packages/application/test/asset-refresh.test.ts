@@ -1579,7 +1579,11 @@ function refreshFixture(options?: {
                         : this.capability,
                     inspection: {
                       identifiers: [
-                        { scheme: "isbn-13", value: "9780306406157" },
+                        {
+                          scheme: "isbn-13",
+                          value: "9780306406157",
+                          locators: ["format:identifier[1]"],
+                        },
                       ],
                       observedArtifactReference,
                       revision: {

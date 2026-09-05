@@ -74,26 +74,41 @@ describe("EPUB publication inspection", () => {
       explanation: expect.stringContaining("2 个冲突的有效 ISBN-13"),
       inspection: {
         identifiers: [
-          { scheme: "isbn-13", value: "9780306406157" },
-          { scheme: "isbn-13", value: "9789864738281" },
+          {
+            scheme: "isbn-13",
+            value: "9780306406157",
+            locators: ["epub:OPS/book.opf#/metadata/dc:identifier[1]"],
+          },
+          {
+            scheme: "isbn-13",
+            value: "9789864738281",
+            locators: ["epub:OPS/book.opf#/metadata/dc:identifier[2]"],
+          },
         ],
       },
     });
   });
 
-  it("recognizes an EPUB 3 refined ISBN without depending on meta attribute order", async () => {
+  it("recognizes an EPUB 3 refined ISBN and aggregates duplicate carrier locators", async () => {
     const evidence = await new EpubPublicationInspector().inspect({
       observedArtifactReference: "epub3-isbn",
       byteSource: byteSource(
         fixture(
-          `<dc:identifier id="book-id">9780306406157</dc:identifier><meta property="identifier-type" refines="#book-id">ISBN</meta>`,
+          `<dc:identifier id="book-id">9780306406157</dc:identifier><meta property="identifier-type" refines="#book-id">ISBN</meta><dc:identifier>978-0-306-40615-7</dc:identifier>`,
         ),
         "epub3.epub",
       ),
     });
 
     expect(evidence[0]?.inspection?.identifiers).toEqual([
-      { scheme: "isbn-13", value: "9780306406157" },
+      {
+        scheme: "isbn-13",
+        value: "9780306406157",
+        locators: [
+          "epub:OPS/book.opf#/metadata/dc:identifier[1]",
+          "epub:OPS/book.opf#/metadata/dc:identifier[2]",
+        ],
+      },
     ]);
   });
 
@@ -123,7 +138,11 @@ describe("EPUB publication inspection", () => {
     );
 
     expect(prefixed.inspection?.identifiers).toEqual([
-      { scheme: "isbn-13", value: "9780306406157" },
+      {
+        scheme: "isbn-13",
+        value: "9780306406157",
+        locators: ["epub:OPS/book.opf#/metadata/dc:identifier[1]"],
+      },
     ]);
     for (const rejected of [
       garbage,

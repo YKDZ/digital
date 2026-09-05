@@ -2,7 +2,7 @@
 import {
   executionOutcomeLabel,
   type ExecutionViewModel,
-} from "@digital/web-delivery";
+} from "@digital/web-delivery/client";
 
 import { Badge } from "#/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "#/components/ui/card";

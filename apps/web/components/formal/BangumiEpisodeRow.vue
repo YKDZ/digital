@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { BangumiEpisodeViewModel } from "@digital/web-delivery";
+import type { BangumiEpisodeViewModel } from "@digital/web-delivery/client";
 
 import AssetActions from "./AssetActions.vue";
 

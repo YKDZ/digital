@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Hono as HonoType } from "hono";
 
 import {
+  catalogueSubject,
   beginBangumiAuthorization,
   catalogueSurface,
   catalogueSnapshot,
@@ -63,6 +64,16 @@ export function createApi(
                 c.req.query("limit"),
               ),
         );
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
+    .get("/catalogue/:subjectId", async (c) => {
+      try {
+        const subject = await catalogueSubject(c.req.param("subjectId"));
+        return subject === undefined
+          ? c.json({ error: "未找到内容" }, 404)
+          : c.json(subject);
       } catch (error) {
         return c.json({ error: errorMessage(error) }, 400);
       }

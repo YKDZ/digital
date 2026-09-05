@@ -14,6 +14,7 @@ import {
   informationRequirementForAssetView,
   projectAssetView,
   projectCatalogue,
+  libraryIndexMetadataProperties,
 } from "@digital/presentation";
 import type {
   ProductApplication,
@@ -1451,4 +1452,42 @@ export async function updatePreview(input: {
       ? await application().applyChangeImpactPreview(input.previewId)
       : await application().rejectChangeImpactPreview(input.previewId);
   return { status: preview.status };
+}
+
+import type { CatalogueSubjectResponse } from "./catalogue.ts";
+import { libraryItems } from "./library-query.ts";
+/** 详情按稳定主体读取，不依赖首页恰好加载了哪一页。 */
+export async function catalogueSubject(
+  id: string,
+): Promise<CatalogueSubjectResponse | undefined> {
+  if (productApplication?.configured !== true) return undefined;
+  const items = libraryItems(
+    await application().listCurrentCatalogueIndex(
+      libraryIndexMetadataProperties,
+    ),
+  );
+  const item = items.find(
+    (entry) => entry.view.id === id || entry.subjectIds.includes(id),
+  );
+  if (item === undefined) return undefined;
+  const assets = await catalogueViewsForSubjects(item.subjectIds);
+  const asset = assets.find((view) => view.id === item.view.id);
+  if (asset === undefined) return undefined;
+  return {
+    asset,
+    ...("works" in asset && asset.id !== id ? { selectedEpisodeId: id } : {}),
+  };
+}
+
+async function catalogueViewsForSubjects(subjectIds: readonly string[]) {
+  const facts: AssetViewFacts[] = [];
+  for (let offset = 0; offset < subjectIds.length; offset += 100) {
+    const batch = subjectIds.slice(offset, offset + 100);
+    const page = await application().listCurrentCataloguePage({
+      limit: batch.length,
+      subjectIds: batch,
+    });
+    facts.push(...page.items.map(assetViewFactsForAccepted));
+  }
+  return projectCatalogueAssets(facts);
 }

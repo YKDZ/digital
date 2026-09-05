@@ -1,3 +1,4 @@
+import { workflowCompatibilityCanReuse } from "@digital/application";
 import { expect, it, vi } from "vitest";
 
 import {
@@ -22,6 +23,41 @@ it("产品只信任精确 EPUB 本地出版物规则坐标", () => {
   );
   expect(policy.accepts(result)).toBe(true);
   expect(policy.accepts({ ...result, ruleVersion: "2" })).toBe(false);
+});
+
+it("产品只信任精确 PDF v1 本地出版物规则坐标", () => {
+  const policy = curatedInitialRecognitionPolicy();
+  const result = {
+    capabilityId: "pdf.local-publication-recognizer",
+    capabilityVersion: "1",
+    ruleId: "pdf.valid-single-publication-revision",
+    ruleVersion: "1",
+    outcome: "satisfied" as const,
+    explanation: "synthetic PDF",
+    evidence: [],
+  };
+
+  expect(policy.trustedRuleCoordinates).toContain(
+    "pdf.local-publication-recognizer@1/pdf.valid-single-publication-revision@1",
+  );
+  expect(policy.version).toBe("curated-initial-sources/5");
+  expect(policy.accepts(result)).toBe(true);
+  expect(policy.accepts({ ...result, ruleVersion: "2" })).toBe(false);
+  expect(policy.accepts({ ...result, capabilityVersion: "2" })).toBe(false);
+  expect(
+    workflowCompatibilityCanReuse(
+      {
+        workflowVersion: "asset-refresh/2",
+        policyVersion: "curated-initial-sources/4",
+        capabilityCoordinates: ["pdf.local-publication-recognizer@1/1/1"],
+      },
+      {
+        workflowVersion: "asset-refresh/2",
+        policyVersion: policy.version,
+        capabilityCoordinates: ["pdf.local-publication-recognizer@1/1/1"],
+      },
+    ),
+  ).toBe(false);
 });
 
 it("ProductApplication 以固定 planPlayback 入口委托同一个精确字节深模块", async () => {

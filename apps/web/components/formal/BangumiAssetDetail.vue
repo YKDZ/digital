@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { BangumiSeriesViewModel } from "@digital/web-delivery";
+import type { BangumiSeriesViewModel } from "@digital/web-delivery/client";
 import { computed, ref } from "vue";
 
 import { Tabs, TabsContent } from "#/components/ui/tabs";

@@ -64,7 +64,8 @@
     "tailwind-merge": "^3.6.0",
     "vike": "catalog:",
     "vike-vue": "catalog:",
-    "vue": "catalog:"
+    "vue": "catalog:",
+    "vue-sonner": "^2.0.9"
   },
   "devDependencies": {
     "@digital/application": "workspace:*",

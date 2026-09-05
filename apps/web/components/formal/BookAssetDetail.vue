@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { AssetViewModel } from "@digital/web-delivery";
+import type { AssetViewModel } from "@digital/web-delivery/client";
 
 import AssetActions from "./AssetActions.vue";
 import AssetCover from "./AssetCover.vue";

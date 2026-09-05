@@ -56,6 +56,7 @@ export type RecognitionEvidence = {
     readonly identifiers: readonly {
       readonly scheme: string;
       readonly value: string;
+      readonly locators: readonly [string, ...string[]];
     }[];
     readonly observedArtifactReference: string;
     readonly revision: Blob;
@@ -490,6 +491,20 @@ function validateObservedRecognitionBasis(
       throw new Error(
         "Observed recognition evidence is invalid or cross-input",
       );
+    }
+    for (const identifier of inspection.identifiers) {
+      const locators = identifier.locators;
+      if (
+        !Array.isArray(locators) ||
+        locators.length === 0 ||
+        locators.some(
+          (locator) => typeof locator !== "string" || locator.trim() === "",
+        ) ||
+        new Set(locators).size !== locators.length
+      )
+        throw new Error(
+          "Observed recognition identifier requires unique non-empty locators",
+        );
     }
     selected.add(key);
   }

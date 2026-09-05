@@ -378,6 +378,29 @@ describe("识别依据", () => {
     } as unknown as RecognitionProposal;
   }
 
+  function observedProposalWithIdentifiers(
+    identifiers: unknown,
+  ): RecognitionProposal {
+    const identifiedEvidence = {
+      ...evidence,
+      inspection: { ...evidence.inspection, identifiers },
+    };
+    const proposal = observedProposal();
+    if (proposal.basis.kind !== "observed-evidence")
+      throw new Error("测试提案缺少观察证据依据");
+    return {
+      ...proposal,
+      basis: {
+        ...proposal.basis,
+        evidence: [identifiedEvidence],
+      },
+      ruleResults: proposal.ruleResults.map((result) => ({
+        ...result,
+        evidence: [identifiedEvidence],
+      })),
+    } as unknown as RecognitionProposal;
+  }
+
   it("验证来源解释与观察证据两种互斥识别依据", () => {
     const legacy = accepted().proposal;
     if (legacy.basis.kind !== "source-interpretation")
@@ -404,6 +427,50 @@ describe("识别依据", () => {
     expect(validateRecognitionProposal(source)).toBe(source);
     const observed = observedProposal();
     expect(validateRecognitionProposal(observed)).toBe(observed);
+  });
+
+  it.each([
+    ["缺少 locators", [{ scheme: "isbn-13", value: "9784049131291" }]],
+    [
+      "locators 不是数组",
+      [{ scheme: "isbn-13", value: "9784049131291", locators: "pdf:xmp" }],
+    ],
+    [
+      "locators 为空数组",
+      [{ scheme: "isbn-13", value: "9784049131291", locators: [] }],
+    ],
+    [
+      "locator 为空白",
+      [{ scheme: "isbn-13", value: "9784049131291", locators: [" "] }],
+    ],
+    [
+      "locator 重复",
+      [
+        {
+          scheme: "isbn-13",
+          value: "9784049131291",
+          locators: ["pdf:xmp/dc:identifier[1]", "pdf:xmp/dc:identifier[1]"],
+        },
+      ],
+    ],
+  ])("拒绝 identifier %s", (_, identifiers) => {
+    expect(() =>
+      validateRecognitionProposal(observedProposalWithIdentifiers(identifiers)),
+    ).toThrow();
+  });
+
+  it("保留合法 identifier locator 的原顺序", () => {
+    const locators = ["pdf:xmp/dc:identifier[2]", "pdf:xmp/dc:identifier[1]"];
+    const proposal = observedProposalWithIdentifiers([
+      { scheme: "isbn-13", value: "9784049131291", locators },
+    ]);
+
+    expect(validateRecognitionProposal(proposal)).toBe(proposal);
+    if (proposal.basis.kind !== "observed-evidence")
+      throw new Error("测试提案缺少观察证据依据");
+    expect(
+      proposal.basis.evidence[0]!.inspection!.identifiers[0]!.locators,
+    ).toBe(locators);
   });
 
   it.each([

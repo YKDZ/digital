@@ -333,6 +333,7 @@ type FormatInspection = {
   readonly identifiers: readonly {
     readonly scheme: string;
     readonly value: string;
+    readonly locators: readonly [string, ...string[]];
   }[];
   readonly observedArtifactReference: string;
   readonly revision: {
