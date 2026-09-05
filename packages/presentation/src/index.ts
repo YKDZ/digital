@@ -304,6 +304,11 @@ export function assetViewComponent(
   if (identities.includes("tmdb")) return "film";
   if (identities.includes("bangumi")) return "bangumi";
   if (
+    input.metadata.some(
+      (item) =>
+        item.property === "asset.content-classification" &&
+        item.value === "book",
+    ) ||
     input.metadata.some((item) =>
       ["book.isbn-13", "book.contributor", "book.publisher"].includes(
         item.property,
@@ -434,7 +439,7 @@ export function projectAssetView(input: AssetViewFacts): AssetViewModel {
       } as const,
     ];
   });
-  const title = firstMetadata(input.metadata, "asset.title") ?? "未命名内容";
+  const title = firstMetadata(input.metadata, "asset.title") ?? "未命名";
   const releaseDate = firstMetadata(input.metadata, "asset.release-date");
   const publicationDateTime = firstMetadata(
     input.metadata,

@@ -8141,7 +8141,7 @@ describe("SQLite Asset Refresh persistence", () => {
     ).toEqual([
       {
         assertion_id: expect.any(Number),
-        predecessor_assertion_id: expect.any(Number),
+        predecessor_assertion_id: null,
       },
     ]);
     lifecycleAfterSecond.close();

@@ -2,6 +2,10 @@ import { Hono } from "hono";
 import type { Hono as HonoType } from "hono";
 
 import {
+  intakeSnapshot,
+  updateIntake,
+  inspectIntakeContent,
+  updateSettingsRoot,
   catalogueSubject,
   beginBangumiAuthorization,
   catalogueSurface,
@@ -38,6 +42,43 @@ export function createApi(
 ): HonoType {
   const commands: ApiCommands = { ...defaultCommands, ...configuredCommands };
   return new Hono()
+    .get("/intake", async (c) => {
+      try {
+        return c.json(
+          await intakeSnapshot({
+            ...(c.req.query("rootId") === undefined
+              ? {}
+              : { rootId: c.req.query("rootId")! }),
+            ...(c.req.query("executionId") === undefined
+              ? {}
+              : { executionId: c.req.query("executionId")! }),
+          }),
+        );
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
+    .get("/intake/reviews/:id", async (c) => {
+      try {
+        return c.json(await inspectIntakeContent(c.req.param("id")));
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
+    .post("/intake", async (c) => {
+      try {
+        return c.json(await updateIntake(await c.req.json()));
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
+    .post("/settings/roots", async (c) => {
+      try {
+        return c.json(await updateSettingsRoot(await c.req.json()));
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
     .get("/health", (c) => c.json({ ok: true, service: "digital-web" }))
     .get("/live", (c) => c.json({ ok: true, service: "digital-web" }))
     .get("/catalogue", async (c) => {

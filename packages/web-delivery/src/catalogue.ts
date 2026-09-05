@@ -283,7 +283,7 @@ export async function requestCatalogue(
 }
 
 export async function sendAction<T>(
-  endpoint: "/api/refresh" | "/api/automation" | "/api/preview",
+  endpoint: "/api/intake" | "/api/refresh" | "/api/automation" | "/api/preview",
   body: object,
 ): Promise<T> {
   const response = await fetch(endpoint, {
@@ -324,4 +324,40 @@ export async function requestCatalogueSubject(
   if (response.status === 404) return undefined;
   if (!response.ok) throw new Error("暂时无法读取内容");
   return (await response.json()) as CatalogueSubjectResponse;
+}
+
+export type IntakeContent = {
+  readonly executionId: string;
+  readonly status: "proposed" | "accepted";
+  readonly relativePaths: readonly string[];
+  readonly asset: AssetViewModel;
+};
+
+export type IntakeSnapshot = {
+  readonly roots: readonly {
+    readonly id: string;
+    readonly displayName: string;
+  }[];
+  readonly rootId?: string;
+  readonly execution?: ExecutionViewModel;
+  readonly files: readonly {
+    readonly relativePath: string;
+    readonly size: number;
+    readonly assetIds: readonly string[];
+    readonly problem?: string;
+  }[];
+  readonly contents: readonly AssetViewModel[];
+};
+
+export async function requestIntake(
+  input: { rootId?: string; executionId?: string } = {},
+): Promise<IntakeSnapshot> {
+  const query = new URLSearchParams();
+  if (input.rootId) query.set("rootId", input.rootId);
+  if (input.executionId) query.set("executionId", input.executionId);
+  const response = await fetch(`/api/intake?${query}`);
+  const result = await response.json();
+  if (!response.ok)
+    throw new Error((result as { error?: string }).error ?? "暂时无法检查文件");
+  return result as IntakeSnapshot;
 }

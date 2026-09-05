@@ -209,6 +209,20 @@ export type RecognitionProposalDraft = {
 
 export type RecognitionBasis =
   | {
+      readonly kind: "manual-boundary";
+      readonly proposedBy: string;
+      readonly observationSnapshotId: string;
+      /** 观察器范围内的不透明材料引用；核心不解释路径。 */
+      readonly materialReferences: readonly string[];
+      readonly revisesProposalIds: readonly string[];
+      readonly metadata: readonly {
+        readonly property: string;
+        readonly value: string;
+      }[];
+      /** 文件检查事实与人的范围判断各自保留归属，不充当自动识别规则。 */
+      readonly evidence: readonly RecognitionEvidence[];
+    }
+  | {
       readonly kind: "source-interpretation";
       readonly interpretation: SourceInterpretationBatch;
     }
@@ -379,6 +393,42 @@ export type AcceptedRecognition = {
 export function validateRecognitionProposal(
   proposal: RecognitionProposal,
 ): RecognitionProposal {
+  if (proposal.basis.kind === "manual-boundary") {
+    const basis = proposal.basis;
+    if (
+      !basis.proposedBy.trim() ||
+      !basis.observationSnapshotId ||
+      !basis.materialReferences.length ||
+      basis.materialReferences.some((reference) => !reference) ||
+      new Set(basis.materialReferences).size !==
+        basis.materialReferences.length ||
+      basis.revisesProposalIds.some(
+        (reference) => !reference || reference === proposal.id,
+      ) ||
+      new Set(basis.revisesProposalIds).size !==
+        basis.revisesProposalIds.length ||
+      basis.metadata.some(
+        (assertion) => !assertion.property || !assertion.value.trim(),
+      ) ||
+      new Set(basis.metadata.map((assertion) => assertion.property)).size !==
+        basis.metadata.length ||
+      basis.evidence.some(
+        (evidence) =>
+          evidence.inspection === undefined ||
+          !basis.materialReferences.includes(
+            evidence.inspection.observedArtifactReference,
+          ) ||
+          !evidence.producer.capabilityId ||
+          !evidence.producer.capabilityVersion ||
+          !evidence.producer.contractVersion,
+      ) ||
+      proposal.ruleResults.length !== 0
+    )
+      throw new Error(
+        "人工范围提案必须保留明确材料、判断归属和修订来源，不能伪造规则结果",
+      );
+    return proposal;
+  }
   if (proposal.ruleResults.length === 0) {
     throw new Error("Recognition Proposal requires Recognition Rule Results");
   }
@@ -990,6 +1040,26 @@ function validateRecognitionFactShape(accepted: AcceptedRecognition): void {
     }
   }
   for (const assertion of accepted.metadata) {
+    if (assertion.authoredBy !== undefined) {
+      const basis = accepted.proposal.basis;
+      if (
+        basis.kind !== "manual-boundary" ||
+        assertion.authoredBy.initiatedBy !== basis.proposedBy ||
+        assertion.authoredBy.proposalId !== accepted.proposal.id ||
+        assertion.sourceRecordIds.length !== 0 ||
+        assertion.observedArtifactPart !== undefined ||
+        assertion.producer !== undefined ||
+        (assertion.subjectId !== undefined &&
+          assertion.subjectId !== accepted.entity.id) ||
+        !basis.metadata.some(
+          (item) =>
+            item.property === assertion.property &&
+            item.value === assertion.value,
+        )
+      )
+        throw new Error("人工元数据必须来自该提案的明确判断");
+      continue;
+    }
     const localPart = assertion.observedArtifactPart;
     if (
       (assertion.sourceRecordIds.length === 0 && localPart === undefined) ||

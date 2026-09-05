@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { matchesReviewedCatalogueSchema } from "./schema-contract.ts";
 
 export const productionCatalogueMigrationHead =
-  "20260830010000_recognition_basis_heads";
+  "20260905000000_manual_metadata_provenance";
 export const productionCatalogueMigrationPlan = [
   {
     id: "20260820000000_v1_catalogue_baseline",
@@ -23,9 +23,14 @@ export const productionCatalogueMigrationPlan = [
       "c9bb262d857134d5d14472843140ea80070b159f9d54cfb3c0b5a4d9dbb6d553",
   },
   {
-    id: productionCatalogueMigrationHead,
+    id: "20260830010000_recognition_basis_heads",
     checksum:
       "ae98fd168398e6de560826765eb0dc71c99b919a6fff6b4d0f8e7756a50a1683",
+  },
+  {
+    id: productionCatalogueMigrationHead,
+    checksum:
+      "7282224c344292790837fbe01cfafd4008e3e93a96797c37152f8a3ee36052be",
   },
 ] as const;
 

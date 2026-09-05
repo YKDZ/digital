@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import {
   declareCapability,
+  type AssetRefreshWorkPlan,
   type DirectoryInterpreter,
   type FilesystemPackageSnapshot,
   type InformationFulfillmentCapability,
@@ -31,7 +32,7 @@ const maximumResponseBytes = 2 * 1024 * 1024;
 
 const directoryCapability = declareCapability({
   identity: "dlsite.exact-directory",
-  implementationVersion: "1",
+  implementationVersion: "2",
   kind: "directory-interpreter",
   contractVersion: "1",
   interpretationContractVersions: ["1"],
@@ -109,18 +110,54 @@ export class DlsiteExactDirectoryInterpreter implements DirectoryInterpreter {
 
   interpret(
     snapshot: FilesystemPackageSnapshot,
-  ): readonly RecognitionEvidence[] {
+  ): AssetRefreshWorkPlan | readonly RecognitionEvidence[] {
     const basename = snapshot.root.split(/[\\/]/u).at(-1) ?? "";
-    if (!exactProductId.test(basename)) return [];
-    return [
-      {
-        kind: "source-address",
-        sourceIdentity: "dlsite",
-        sourceAddress: canonicalProductAddress(basename),
-        explanation: "DLsite 精确目录规则匹配",
-        producer: this.capability,
-      },
-    ];
+    if (exactProductId.test(basename) && snapshot.files.length > 0)
+      return [
+        {
+          kind: "source-address",
+          sourceIdentity: "dlsite",
+          sourceAddress: canonicalProductAddress(basename),
+          explanation: "DLsite 精确目录规则匹配；普通下级文件服务同一作品",
+          producer: this.capability,
+        },
+      ];
+    const groups = new Map<
+      string,
+      { productId: string; relativePaths: string[] }
+    >();
+    for (const file of snapshot.files) {
+      const directories = file.relativePath.split("/").slice(0, -1);
+      const index = directories.findIndex((directory) =>
+        exactProductId.test(directory),
+      );
+      const productId = exactProductId.test(basename)
+        ? basename
+        : directories[index];
+      if (productId === undefined) continue;
+      const boundary = exactProductId.test(basename)
+        ? "."
+        : directories.slice(0, index + 1).join("/");
+      const group = groups.get(boundary) ?? { productId, relativePaths: [] };
+      group.relativePaths.push(file.relativePath);
+      groups.set(boundary, group);
+    }
+    if (groups.size === 0) return [];
+    return {
+      workItems: [...groups].map(([boundary, group]) => ({
+        key: `dlsite-directory:${boundary}`,
+        relativePaths: group.relativePaths,
+        evidence: [
+          {
+            kind: "source-address",
+            sourceIdentity: "dlsite",
+            sourceAddress: canonicalProductAddress(group.productId),
+            explanation: "DLsite 精确目录规则匹配；普通下级文件服务同一作品",
+            producer: this.capability,
+          },
+        ],
+      })),
+    };
   }
 }
 

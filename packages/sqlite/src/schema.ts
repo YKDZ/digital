@@ -361,6 +361,7 @@ export const metadataAssertions = sqliteTable(
     observedArtifactPartJson: text("observed_artifact_part_json"),
     qualifiersJson: text("qualifiers_json").notNull().default("[]"),
     producerJson: text("producer_json"),
+    authoredByJson: text("authored_by_json"),
   },
   (table) => [
     index("metadata_assertions_subject_property").on(

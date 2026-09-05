@@ -86,11 +86,23 @@ export function curatedInitialRecognitionPolicy(): RecognitionPolicy & {
 }
 
 const ordinaryFilmMetadataPolicyId = "ordinary-film-metadata";
+const ordinaryManualMetadataPolicyId = "ordinary-manual-metadata";
 
-/** 当前产品对普通电影元数据采用的来源优先级。 */
+/** 当前产品在普通浏览语境采用的来源优先级。 */
 export class CuratedMetadataPolicyConfiguration implements MetadataPolicyConfiguration {
-  readonly version = "curated-metadata/2";
+  readonly version = "curated-metadata/3";
   readonly policies = [
+    {
+      id: ordinaryManualMetadataPolicyId,
+      metadataUsageContext: "asset.ordinary",
+      rules: ["asset.title", "asset.content-classification"].map(
+        (property) => ({
+          property,
+          preferredSourceIdentities: ["user"],
+          cardinality: "one" as const,
+        }),
+      ),
+    },
     {
       id: ordinaryFilmMetadataPolicyId,
       metadataUsageContext: "asset.ordinary",
@@ -132,6 +144,8 @@ export class CuratedMetadataPolicyConfiguration implements MetadataPolicyConfigu
   ];
 
   enroll(accepted: AcceptedRecognition): readonly string[] {
+    if (accepted.proposal.basis.kind === "manual-boundary")
+      return [ordinaryManualMetadataPolicyId];
     const acceptedTmdbFilmRule =
       accepted.recognitionDecision.acceptedRuleResults.some((result) =>
         trustedTmdbRules.some(

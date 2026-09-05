@@ -107,7 +107,8 @@ describe("production catalogue preparation", () => {
           occurred_at TEXT NOT NULL
         );
       `);
-      for (const artifact of productionMigrationArtifacts.slice(0, -1)) {
+      for (const artifact of productionMigrationArtifacts) {
+        if (artifact.id === "20260830010000_recognition_basis_heads") break;
         const sql = await readFile(
           new URL(
             `../migrations/${artifact.id}/migration.sql`,
@@ -170,7 +171,7 @@ describe("production catalogue preparation", () => {
     try {
       await expect(
         prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 1 });
+      ).resolves.toEqual({ applied: 2 });
       const reopened = SqliteCatalogue.forProductData(productDataDirectory);
       await expect(reopened.listCurrentCatalogue()).resolves.toMatchObject([
         {

@@ -1491,3 +1491,160 @@ async function catalogueViewsForSubjects(subjectIds: readonly string[]) {
   }
   return projectCatalogueAssets(facts);
 }
+
+import type { IntakeSnapshot, IntakeContent } from "./catalogue.ts";
+export async function intakeSnapshot(input: {
+  readonly rootId?: string;
+  readonly executionId?: string;
+}): Promise<IntakeSnapshot> {
+  const roots = (await application().observedRootRegistrations.list())
+    .filter((root) => root.status === "active")
+    .map(({ id, displayName }) => ({ id, displayName }));
+  const rootId = input.rootId ?? roots[0]?.id;
+  if (rootId === undefined) return { roots, files: [], contents: [] };
+  if (!roots.some((root) => root.id === rootId))
+    throw new Error("文件位置已停用，请重新选择");
+  const intake = await application().inspectLocalIntake({
+    registrationId: rootId,
+    ...(input.executionId === undefined
+      ? {}
+      : { executionId: input.executionId }),
+  });
+  const execution = deliveryExecution(intake.execution);
+  return {
+    roots,
+    rootId,
+    files: intake.files,
+    contents: intake.contents.map((content) =>
+      deliveryAssetView(projectAssetView(assetViewFactsForAccepted(content))),
+    ),
+    ...(execution === undefined ? {} : { execution }),
+  };
+}
+
+function intakeContent(
+  review: Awaited<ReturnType<ProductAssetRefresh["prepareLocalContent"]>>,
+): IntakeContent {
+  return {
+    executionId: review.executionId,
+    status: review.status,
+    relativePaths: review.relativePaths,
+    asset: deliveryAssetView(
+      projectAssetView(assetViewFactsForAccepted(review.content)),
+    ),
+  };
+}
+
+export async function inspectIntakeContent(
+  executionId: string,
+): Promise<IntakeContent> {
+  return intakeContent(await application().inspectLocalContent(executionId));
+}
+
+export async function updateIntake(value: unknown): Promise<IntakeContent> {
+  const input = settingsObject(value);
+  const executionId = input.executionId;
+  if (typeof executionId !== "string" || !executionId)
+    throw new Error("请先检查文件");
+  if (input.action === "confirm")
+    return intakeContent(
+      await application().confirmLocalContent({ executionId }),
+    );
+  if (
+    input.action !== "prepare" ||
+    !Array.isArray(input.relativePaths) ||
+    !input.relativePaths.every((item: unknown) => typeof item === "string")
+  )
+    throw new Error("请选择待整理的文件");
+  if (
+    input.classification !== undefined &&
+    (typeof input.classification !== "string" ||
+      !["book", "audio", "video"].includes(input.classification))
+  )
+    throw new Error("请选择有效的内容类别");
+  if (input.name !== undefined && typeof input.name !== "string")
+    throw new Error("内容名称无效");
+  return intakeContent(
+    await application().prepareLocalContent({
+      executionId,
+      relativePaths: input.relativePaths as string[],
+      ...(input.name === undefined ? {} : { name: input.name as string }),
+      ...(input.classification === undefined
+        ? {}
+        : { classification: input.classification as string }),
+    }),
+  );
+}
+
+export async function updateSettingsRoot(value: unknown) {
+  const input = settingsObject(value);
+  const registrations = application().observedRootRegistrations;
+  const action = settingsText(input, "action");
+  if (action === "deactivate")
+    return await registrations.deactivate({
+      id: settingsText(input, "id"),
+      expectedVersion: settingsVersion(input),
+    });
+  if (action === "reconnect")
+    return await registrations.reconnect({
+      id: settingsText(input, "id"),
+      expectedVersion: settingsVersion(input),
+      containerPath: settingsText(input, "containerPath"),
+      readOnly: true,
+    });
+  const symlinkMode = settingsText(input, "symlinkMode");
+  if (
+    ![
+      "do-not-follow",
+      "follow-file-links",
+      "follow-file-and-directory-links",
+    ].includes(symlinkMode)
+  )
+    throw new Error("请选择链接策略");
+  const targets = input.allowedTargetRootIds;
+  if (
+    !Array.isArray(targets) ||
+    !targets.every((id): id is string => typeof id === "string")
+  )
+    throw new Error("请选择允许的链接目标");
+  const fields = {
+    displayName: settingsText(input, "displayName"),
+    readOnly: true as const,
+    symlinkMode: symlinkMode as
+      | "do-not-follow"
+      | "follow-file-links"
+      | "follow-file-and-directory-links",
+    allowedTargetRootIds: targets,
+  };
+  if (action === "create")
+    return await registrations.create({
+      ...fields,
+      containerPath: settingsText(input, "containerPath"),
+    });
+  if (action === "update")
+    return await registrations.update({
+      ...fields,
+      id: settingsText(input, "id"),
+      expectedVersion: settingsVersion(input),
+    });
+  throw new Error("未知文件位置操作");
+}
+
+function settingsObject(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("设置请求无效");
+  return value as Record<string, unknown>;
+}
+
+function settingsText(value: Record<string, unknown>, field: string): string {
+  const result = value[field];
+  if (typeof result !== "string" || !result.trim())
+    throw new Error("请填写完整的设置");
+  return result.trim();
+}
+function settingsVersion(value: Record<string, unknown>): number {
+  const result = value.expectedVersion;
+  if (typeof result !== "number" || !Number.isSafeInteger(result) || result < 0)
+    throw new Error("设置版本无效，请刷新后重试");
+  return result;
+}

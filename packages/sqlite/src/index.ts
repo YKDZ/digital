@@ -2086,6 +2086,10 @@ export class SqliteCatalogue
     readonly expectedExecution: WorkflowExecution;
     readonly execution: WorkflowExecution;
     readonly accepted: AcceptedRecognition;
+    readonly expectedUnassignedMaterials?: readonly Pick<
+      Location,
+      "artifactId" | "address"
+    >[];
     readonly metadataPolicyIds?: readonly string[];
     readonly resumeClaim?: { readonly token: string; readonly now: string };
   }): Promise<void> {
@@ -2108,6 +2112,62 @@ export class SqliteCatalogue
             input.execution.id,
             input.resumeClaim,
           );
+          const unassigned = input.expectedUnassignedMaterials;
+          if (unassigned !== undefined && unassigned.length > 0) {
+            // 只保护本次“从未采用材料建立内容”的旧页面提交。后续显式建立整体／成员
+            // 关系可以共享材料，不能把这里变成数据库全局独占约束。
+            const claimed = transaction
+              .select({ subjectId: artifactAssociations.subjectId })
+              .from(artifactAssociations)
+              .innerJoin(
+                locations,
+                eq(locations.artifactId, artifactAssociations.artifactId),
+              )
+              .where(
+                and(
+                  eq(locations.kind, "observed"),
+                  or(
+                    inArray(
+                      locations.address,
+                      sqliteTextSet(unassigned.map((item) => item.address)),
+                    ),
+                    inArray(
+                      artifactAssociations.artifactId,
+                      sqliteTextSet(unassigned.map((item) => item.artifactId)),
+                    ),
+                  ),
+                  notExists(
+                    transaction
+                      .select({
+                        id: artifactAssociationRetractions.associationId,
+                      })
+                      .from(artifactAssociationRetractions)
+                      .where(
+                        eq(
+                          artifactAssociationRetractions.associationId,
+                          artifactAssociations.id,
+                        ),
+                      ),
+                  ),
+                  notExists(
+                    transaction
+                      .select({
+                        id: artifactAssociationSupersessions.predecessorAssociationId,
+                      })
+                      .from(artifactAssociationSupersessions)
+                      .where(
+                        eq(
+                          artifactAssociationSupersessions.predecessorAssociationId,
+                          artifactAssociations.id,
+                        ),
+                      ),
+                  ),
+                ),
+              )
+              .get();
+            if (claimed !== undefined)
+              throw new Error("材料已经归入内容，请重新检查后继续整理");
+          }
           this.insertProposalWithDrizzle(
             transaction,
             input.execution.id,
@@ -2624,6 +2684,31 @@ export class SqliteCatalogue
             proposalIsAwaitingRecognitionDecision,
             isNull(recognitionDecisions.id),
             notExists(proposalHasChangeImpactPreview),
+            sql`not exists (
+              with adopted_materials as (
+                select material.value from recognition_proposals as adopted
+                join recognition_decisions as decision on decision.proposal_id = adopted.id
+                join recognition_heads as head on head.recognition_decision_id = decision.id
+                join json_each(adopted.basis_json, '$.materialReferences') as material
+                where json_extract(adopted.basis_json, '$.kind') = 'manual-boundary'
+                  and json_extract(adopted.basis_json, '$.observationSnapshotId') = json_extract(${workflowExecutions.snapshotJson}, '$.id')
+                  and exists (
+                    select 1 from json_each(adopted.basis_json, '$.revisesProposalIds') as revised
+                    where revised.value = ${recognitionProposals.id}
+                  )
+                )
+                select 1 from adopted_materials where not exists (
+                  select material.value from json_each(coalesce(
+                    json_extract(${recognitionProposals.basisJson}, '$.materialReferences'),
+                    (select json_extract(item.value, '$.relativePaths')
+                     from json_each(${workflowExecutions.workItemsJson}) as item
+                     where json_extract(item.value, '$.proposalId') = ${recognitionProposals.id}),
+                    (select json_group_array(json_extract(file.value, '$.relativePath'))
+                     from json_each(${workflowExecutions.snapshotJson}, '$.files') as file)
+                  )) as material
+                  except select value from adopted_materials
+                )
+            )`,
             recognitionAfter,
           ),
         )
@@ -4093,17 +4178,20 @@ export class SqliteCatalogue
   > {
     const database = await this.ensure();
     const query = drizzle({ client: database });
-    const expectedPaths = JSON.stringify(
-      [...input.relativePaths].toSorted((left, right) =>
-        left.localeCompare(right),
-      ),
-    );
+    // 同一个已接受范围可从其父目录或自身发起检查。这里归一化范围表达，
+    // 不是据位置证明文件身份；Application 仍须比较该范围原有的识别决定。
+    const boundary = (directory: string, references: readonly string[]) =>
+      JSON.stringify(
+        references
+          .map((reference) => path.resolve(directory, reference))
+          .toSorted((left, right) => left.localeCompare(right)),
+      );
+    const expectedPaths = boundary(input.directory, input.relativePaths);
     const rows = query
       .select({ id: workflowExecutions.id })
       .from(workflowExecutions)
       .where(
         and(
-          eq(workflowExecutions.selectionDirectory, input.directory),
           inArray(workflowExecutions.outcome, [
             "accepted",
             "partially-succeeded",
@@ -4124,21 +4212,28 @@ export class SqliteCatalogue
         (current) =>
           current.acceptedAssetId !== undefined &&
           current.proposalId !== undefined &&
-          JSON.stringify(
-            [...current.relativePaths].toSorted((left, right) =>
-              left.localeCompare(right),
-            ),
-          ) === expectedPaths,
+          execution.selection.directory !== undefined &&
+          boundary(execution.selection.directory, current.relativePaths) ===
+            expectedPaths,
       );
+      const manualProposal =
+        execution.proposalId === undefined
+          ? undefined
+          : this.readProposalWithDrizzle(query, execution.proposalId);
+      const manualReferences =
+        manualProposal?.basis.kind === "manual-boundary"
+          ? manualProposal.basis.materialReferences
+          : undefined;
       const legacyMatchesBoundary =
         (execution.workItems === undefined ||
           execution.workItems.length === 0) &&
         execution.snapshot !== undefined &&
-        execution.snapshot.complete &&
-        JSON.stringify(
-          execution.snapshot.files
-            .map((file) => file.relativePath)
-            .toSorted((left, right) => left.localeCompare(right)),
+        (execution.snapshot.complete || manualReferences !== undefined) &&
+        execution.selection.directory !== undefined &&
+        boundary(
+          execution.selection.directory,
+          manualReferences ??
+            execution.snapshot.files.map((file) => file.relativePath),
         ) === expectedPaths;
       const acceptedAssetId =
         item?.acceptedAssetId ??
@@ -7353,6 +7448,10 @@ export class SqliteCatalogue
             assertion.observedArtifactPart === undefined
               ? null
               : JSON.stringify(assertion.observedArtifactPart),
+          authoredByJson:
+            assertion.authoredBy === undefined
+              ? null
+              : JSON.stringify(assertion.authoredBy),
           producerJson: producerJson(assertion.producer),
         })
         .run();
@@ -7535,7 +7634,11 @@ export class SqliteCatalogue
       (association) =>
         !retainedIds.has(association.id) &&
         (ownedBy(association, currentSourceRecordIds) ||
-          association.observedArtifactPart !== undefined),
+          association.observedArtifactPart !== undefined ||
+          (current.proposal.basis.kind === "manual-boundary" &&
+            accepted.proposal.basis.kind === "manual-boundary" &&
+            association.role === "asset.material-delivered" &&
+            (association.sourceRecordIds?.length ?? 0) === 0)),
     );
     const successors = accepted.artifactAssociations.filter(
       (association) =>
@@ -7565,7 +7668,11 @@ export class SqliteCatalogue
             successorAssociationId: sameCoordinateSuccessors[0]!.id,
           })
           .run();
-      } else if (predecessor.observedArtifactPart !== undefined) {
+      } else if (
+        predecessor.observedArtifactPart !== undefined ||
+        (accepted.proposal.basis.kind === "manual-boundary" &&
+          (predecessor.sourceRecordIds?.length ?? 0) === 0)
+      ) {
         // 本地格式修订可以直接停止暴露某个部分。这是本地生命周期事件，
         // 不是外部来源断言。
         transaction
@@ -7649,7 +7756,7 @@ export class SqliteCatalogue
         .filter(local)
         .map(
           (item) =>
-            `${item.subjectId ?? accepted.entity.id}\u0000${item.property}\u0000${item.sourceSlot}`,
+            `${item.subjectId ?? accepted.entity.id}\u0000${item.property}\u0000${item.sourceSlot}\u0000${item.observedArtifactPart!.artifactId}\u0000${item.observedArtifactPart!.locator}`,
         ),
     );
     for (const next of accepted.metadata.filter(local)) {
@@ -7672,7 +7779,11 @@ export class SqliteCatalogue
           local(previous) &&
           (previous.subjectId ?? current.entity.id) === subject &&
           previous.property === next.property &&
-          previous.sourceSlot === next.sourceSlot,
+          previous.sourceSlot === next.sourceSlot &&
+          previous.observedArtifactPart?.artifactId ===
+            next.observedArtifactPart?.artifactId &&
+          previous.observedArtifactPart?.locator ===
+            next.observedArtifactPart?.locator,
       );
       // 旧行最初持久化时没有本地生命周期；按精确溯源查找其持久 ID。
       const predecessor =
@@ -7684,6 +7795,7 @@ export class SqliteCatalogue
               .where(
                 and(
                   eq(metadataAssertions.subjectId, subject),
+                  lt(metadataAssertions.id, Number(result.lastInsertRowid)),
                   eq(metadataAssertions.property, predecessors[0].property),
                   eq(metadataAssertions.sourceSlot, predecessors[0].sourceSlot),
                   eq(
@@ -7709,7 +7821,7 @@ export class SqliteCatalogue
     }
     for (const previous of current.metadata.filter(local)) {
       const subject = previous.subjectId ?? current.entity.id;
-      const coordinate = `${subject}\u0000${previous.property}\u0000${previous.sourceSlot}`;
+      const coordinate = `${subject}\u0000${previous.property}\u0000${previous.sourceSlot}\u0000${previous.observedArtifactPart!.artifactId}\u0000${previous.observedArtifactPart!.locator}`;
       if (nextCoordinates.has(coordinate)) continue;
       const row = transaction
         .select({ id: metadataAssertions.id })
@@ -9596,7 +9708,9 @@ export class SqliteCatalogue
         );
       const isLocalObservedFact =
         recordIds.length === 0 && row.observedArtifactPartJson !== null;
-      if (!livesOnCurrentLineage && !isLocalObservedFact) return [];
+      const isUserFact = recordIds.length === 0 && row.authoredByJson !== null;
+      if (!livesOnCurrentLineage && !isLocalObservedFact && !isUserFact)
+        return [];
       return [
         {
           subjectId: row.subjectId,
@@ -9604,6 +9718,13 @@ export class SqliteCatalogue
           sourceSlot: lifecycle?.sourceSlot ?? row.sourceSlot ?? "",
           value: row.value,
           sourceRecordIds: recordIds,
+          ...(row.authoredByJson === null
+            ? {}
+            : {
+                authoredBy: JSON.parse(row.authoredByJson) as NonNullable<
+                  MetadataAssertion["authoredBy"]
+                >,
+              }),
           ...(row.qualifiersJson === "[]"
             ? {}
             : {
@@ -10195,7 +10316,10 @@ export class SqliteCatalogue
       const isLocalObservedFact =
         sourceRecordIdsForAssertion.length === 0 &&
         row.observedArtifactPartJson !== null;
-      if (!livesOnCurrentLineage && !isLocalObservedFact) return [];
+      const isUserFact =
+        sourceRecordIdsForAssertion.length === 0 && row.authoredByJson !== null;
+      if (!livesOnCurrentLineage && !isLocalObservedFact && !isUserFact)
+        return [];
       return [
         {
           subjectId: row.subjectId,
@@ -10203,6 +10327,13 @@ export class SqliteCatalogue
           sourceSlot: lifecycle?.sourceSlot ?? row.sourceSlot ?? "",
           value: row.value,
           sourceRecordIds: sourceRecordIdsForAssertion,
+          ...(row.authoredByJson === null
+            ? {}
+            : {
+                authoredBy: JSON.parse(row.authoredByJson) as NonNullable<
+                  MetadataAssertion["authoredBy"]
+                >,
+              }),
           ...(row.qualifiersJson === "[]"
             ? {}
             : {

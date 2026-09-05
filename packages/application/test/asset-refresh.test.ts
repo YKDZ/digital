@@ -9583,7 +9583,6 @@ describe("Automation host", () => {
     expect(calls).toEqual([
       "recover",
       "due:2026-07-29T00:00:00.000Z",
-      "recover",
       "due:2026-07-29T00:00:00.250Z",
     ]);
 
@@ -9593,7 +9592,7 @@ describe("Automation host", () => {
     now = new Date("2026-07-29T00:00:00.500Z");
     timer?.();
     await host.settled();
-    expect(calls).toHaveLength(4);
+    expect(calls).toHaveLength(3);
   });
 
   it("passes the shared Host checkpoint request into an active interval execution", async () => {

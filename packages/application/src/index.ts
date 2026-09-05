@@ -656,6 +656,8 @@ export function workflowCompatibilityCanReuse(
 
 export type WorkItemDisposition = {
   readonly key: string;
+  /** 本次处理实际涉及的观察材料，供部分失败后的检查与继续操作使用。 */
+  readonly materialReferences?: readonly string[];
   readonly status:
     | "running"
     | "completed"
@@ -1063,6 +1065,14 @@ export type UnresolvedObservation = {
   readonly fileCount: number;
   readonly totalSize: number;
   readonly representativePaths: readonly string[];
+};
+
+/** 使用与普通资产相同的事实投影，外层状态区分尚未采用的人工提案。 */
+export type LocalContentReview = {
+  readonly executionId: string;
+  readonly status: "proposed" | "accepted";
+  readonly relativePaths: readonly string[];
+  readonly content: NonNullable<AssetRefreshInspection["accepted"]>;
 };
 
 /** 对交付层安全的当前来源产物候选；获取引用和能力私有坐标永不公开。 */
@@ -1645,6 +1655,16 @@ function recognitionCandidateContexts(input: {
       evidence: input.evidence,
     }),
   );
+  // 明确目录已经提出整项内容的身份。下级格式检查仍保留，但不再把台本等材料
+  // 作为另一项内容发起识别；格式中独立提供的编号不属于这种目录边界声明。
+  if (
+    input.evidence.some(
+      (evidence) =>
+        evidence.kind === "source-address" ||
+        evidence.kind === "directed-source-address",
+    )
+  )
+    return sourced;
   const observed = new Map<
     string,
     {
@@ -1803,6 +1823,11 @@ type CataloguePersistenceOperations = {
     readonly expectedExecution: WorkflowExecution;
     readonly execution: WorkflowExecution;
     readonly accepted: AcceptedRecognition;
+    /** 首次人工整理的并发基线；不是材料只能服务一个资产的领域约束。 */
+    readonly expectedUnassignedMaterials?: readonly Pick<
+      Location,
+      "artifactId" | "address"
+    >[];
     readonly metadataPolicyIds?: readonly string[];
     readonly resumeClaim?: { readonly token: string; readonly now: string };
   }): Promise<void>;
@@ -2466,6 +2491,8 @@ export type AutomationClock = {
 
 export type RecoveryLifecycle = {
   readonly onCheckpoint?: (() => void) | undefined;
+  /** 后续轮询只重访启动时仍在等待的执行，不能接管新开始的工作。 */
+  readonly executionIds?: ReadonlySet<string>;
   /** 耐久且未过期的持有者声明使本次执行继续等待重试。 */
   readonly onWaitingExecution?: (executionId: string) => void;
 };
@@ -2504,7 +2531,7 @@ export class AutomationHost {
   private poll: Promise<void> = Promise.resolve();
   private polling = false;
   private started = false;
-  private recoveryWaiting = false;
+  private pendingRecoveryExecutionIds: ReadonlySet<string> | undefined;
 
   constructor(
     runner: DueAutomationRunner,
@@ -2575,20 +2602,19 @@ export class AutomationHost {
     this.polling = true;
     this.poll = (async () => {
       try {
-        const waiting = new Set<string>();
         const poll = async (lifecycle?: RecoveryLifecycle) => {
-          await this.runner.recoverRunningExecutions(
-            lifecycle === undefined
-              ? {
-                  onWaitingExecution: (executionId) => waiting.add(executionId),
-                }
-              : {
-                  ...lifecycle,
-                  onWaitingExecution: (executionId) => waiting.add(executionId),
-                },
-          );
-          this.recoveryWaiting = waiting.size > 0;
-          if (this.recoveryWaiting) return;
+          if (this.pendingRecoveryExecutionIds?.size !== 0) {
+            const waiting = new Set<string>();
+            await this.runner.recoverRunningExecutions({
+              ...lifecycle,
+              ...(this.pendingRecoveryExecutionIds === undefined
+                ? {}
+                : { executionIds: this.pendingRecoveryExecutionIds }),
+              onWaitingExecution: (executionId) => waiting.add(executionId),
+            });
+            this.pendingRecoveryExecutionIds = waiting;
+            if (waiting.size > 0) return;
+          }
           const checkpoint = lifecycle?.onCheckpoint;
           await this.runner.triggerDueAutomation(
             this.clock.now(),
@@ -2638,7 +2664,7 @@ function planRecognitionWorkItems(
     throw new Error("Explicit recognition work plan must contain a work item");
   }
   const explicitItems = new Set(explicit);
-  const planned = [
+  const candidates: AssetRefreshWorkItemPlan[] = [
     ...(legacyEvidence.length === 0
       ? []
       : [
@@ -2650,6 +2676,24 @@ function planRecognitionWorkItems(
         ]),
     ...explicit,
   ];
+  const formatOnly = (item: AssetRefreshWorkItemPlan) =>
+    item.evidence.length > 0 &&
+    item.evidence.every((evidence) => evidence.inspection !== undefined);
+  const planned = candidates.filter((item) => !formatOnly(item));
+  for (const format of candidates.filter(formatOnly)) {
+    const ownerIndex = planned.findIndex((item) =>
+      format.relativePaths.every((reference) =>
+        item.relativePaths.includes(reference),
+      ),
+    );
+    const owner = planned[ownerIndex];
+    if (owner === undefined) planned.push(format);
+    else
+      planned[ownerIndex] = {
+        ...owner,
+        evidence: [...owner.evidence, ...format.evidence],
+      };
+  }
   const keys = new Set<string>();
   const observed = new Set(snapshot.files.map((file) => file.relativePath));
   const claimedBoundaries = new Map<string, string>();
@@ -4047,6 +4091,487 @@ export class AssetRefreshWorkflow {
     });
     notifyDurableCheckpoint(input, finished, false);
     return await this.inspectResumedPublic(finished.id);
+  }
+
+  /** 人工选择只修订观察结果的范围，不要求先满足任何自动识别规则。 */
+  async inspectLocalIntake(input: {
+    readonly registrationId: string;
+    readonly executionId?: string;
+  }) {
+    const execution =
+      input.executionId === undefined
+        ? (await this.ports.executionQueries.listExecutions()).find(
+            (item) =>
+              item.operationKind === "scan-filesystem" &&
+              !item.dispositions.some(
+                (disposition) => disposition.key === "manual-boundary",
+              ) &&
+              item.resolvedSelection?.filesystemScopes[0]?.observedRoot?.id ===
+                input.registrationId,
+          )
+        : (
+            await this.ports.executionQueries.inspectExecution(
+              input.executionId,
+            )
+          )?.execution;
+    if (
+      execution !== undefined &&
+      execution.resolvedSelection?.filesystemScopes[0]?.observedRoot?.id !==
+        input.registrationId
+    )
+      throw new Error("本次检查不属于所选文件位置");
+    const snapshot = execution?.snapshot;
+    const current =
+      snapshot === undefined ? [] : await this.listCurrentCatalogue();
+    const files =
+      snapshot?.files.map((file) => {
+        const address = `${snapshot.root}/${file.relativePath}`;
+        const problem = execution?.dispositions.find(
+          (disposition) =>
+            disposition.status === "failed" &&
+            disposition.materialReferences?.includes(file.relativePath),
+        );
+        return {
+          relativePath: file.relativePath,
+          size: file.size,
+          assetIds: current
+            .filter((content) =>
+              content.locations.some(
+                (location) =>
+                  location.kind === "observed" && location.address === address,
+              ),
+            )
+            .map((content) => content.entity.id),
+          ...(problem === undefined ? {} : { problem: "无法读取此文件" }),
+        };
+      }) ?? [];
+    for (const relativePath of new Set(
+      execution?.dispositions.flatMap((item) =>
+        item.status === "failed" ? (item.materialReferences ?? []) : [],
+      ) ?? [],
+    )) {
+      if (files.some((file) => file.relativePath === relativePath)) continue;
+      files.push({
+        relativePath,
+        size: 0,
+        problem: "找不到文件或无法读取",
+        assetIds: current
+          .filter((content) =>
+            content.locations.some(
+              (location) =>
+                location.kind === "observed" &&
+                location.address === `${snapshot?.root}/${relativePath}`,
+            ),
+          )
+          .map((content) => content.entity.id),
+      });
+    }
+    const assetIds = new Set(files.flatMap((file) => file.assetIds));
+    return {
+      execution:
+        execution === undefined ? undefined : await this.inspect(execution.id),
+      files: [
+        ...files,
+        ...(snapshot?.diagnostics
+          ?.filter(
+            (item) =>
+              !files.some((file) => file.relativePath === item.relativePath),
+          )
+          .map((item) => ({
+            relativePath: item.relativePath,
+            size: 0,
+            assetIds: [] as string[],
+            problem: "未能检查此位置",
+          })) ?? []),
+      ],
+      contents: current.filter((content) => assetIds.has(content.entity.id)),
+    };
+  }
+
+  async inspectLocalContent(executionId: string): Promise<LocalContentReview> {
+    const prepared =
+      await this.ports.executionQueries.inspectExecution(executionId);
+    if (
+      prepared?.proposal?.basis.kind !== "manual-boundary" ||
+      prepared.execution.plannedAssetId === undefined
+    )
+      throw new Error("未找到待确认的内容，请重新整理");
+    const [current] = await this.ports.reuseQueries.findAcceptedForSubjects([
+      prepared.execution.plannedAssetId,
+    ]);
+    return this.localContentReview(
+      prepared.execution,
+      prepared.proposal,
+      current?.accepted,
+    );
+  }
+
+  /** 人工选择只修订观察结果的范围，不要求先满足任何自动识别规则。 */
+  async prepareLocalContent(input: {
+    readonly executionId: string;
+    readonly relativePaths: readonly string[];
+    readonly name?: string;
+    readonly classification?: string;
+  }): Promise<LocalContentReview> {
+    const observed = await this.ports.executionQueries.inspectExecution(
+      input.executionId,
+    );
+    if (
+      observed === undefined ||
+      observed.execution.status === "running" ||
+      observed.execution.snapshot === undefined
+    )
+      throw new Error("请先完成文件检查");
+    const snapshot = observed.execution.snapshot;
+    const paths = new Set(input.relativePaths);
+    if (
+      !paths.size ||
+      paths.size !== input.relativePaths.length ||
+      input.relativePaths.some(
+        (reference) =>
+          !snapshot.files.some((file) => file.relativePath === reference),
+      )
+    )
+      throw new Error("请选择本次检查中可用的完整文件");
+    const selected = {
+      ...snapshot,
+      files: snapshot.files.filter((file) => paths.has(file.relativePath)),
+    };
+    const scope = observed.execution.resolvedSelection?.filesystemScopes[0];
+    if (scope?.observedRoot === undefined || scope.relativeScope === undefined)
+      throw new Error("文件位置已失效，请重新检查");
+    const evidence = await this.observedRootExecution.invoke(
+      {
+        registrationId: scope.observedRoot.id,
+        relativeScope: scope.relativeScope,
+      },
+      async (bound) => {
+        if (
+          bound.resolvedSelection.filesystemScopes[0]?.observedRoot
+            ?.configVersion !== scope.observedRoot!.configVersion
+        )
+          throw new Error("文件位置已变化，请重新检查");
+        return await this.checkLocalContentFiles(bound.scope, selected);
+      },
+    );
+    const proposal: RecognitionProposal = {
+      id: id("recognition-proposal"),
+      basis: {
+        kind: "manual-boundary",
+        evidence,
+        proposedBy:
+          observed.execution.workflowInput?.initiatedBy ?? "interactive",
+        observationSnapshotId: snapshot.id,
+        materialReferences: [...paths].toSorted(),
+        metadata: [
+          ...(input.name?.trim()
+            ? [{ property: "asset.title", value: input.name.trim() }]
+            : []),
+          ...(input.classification?.trim()
+            ? [
+                {
+                  property: "asset.content-classification",
+                  value: input.classification.trim(),
+                },
+              ]
+            : []),
+        ],
+        revisesProposalIds: [
+          ...new Set([
+            ...(observed.proposal === undefined ? [] : [observed.proposal.id]),
+            ...(observed.proposal?.basis.kind === "manual-boundary"
+              ? observed.proposal.basis.revisesProposalIds
+              : []),
+            ...(observed.workItemInspections ?? []).flatMap((item) =>
+              item.proposal !== undefined &&
+              item.workItem.relativePaths.some((reference) =>
+                paths.has(reference),
+              )
+                ? [item.proposal.id]
+                : [],
+            ),
+          ]),
+        ],
+      },
+      ruleResults: [],
+    };
+    validateRecognitionProposal(proposal);
+    const initial = this.localContentExecution(observed.execution, snapshot);
+    await this.ports.executionCommands.createExecution(initial);
+    const prepared: WorkflowExecution = {
+      ...initial,
+      status: "completed",
+      stage: "completed",
+      outcome: "proposal",
+      proposalId: proposal.id,
+      plannedAssetId: id("entity"),
+    };
+    await this.ports.executionCommands.finishExecutionWithProposal(
+      initial,
+      prepared,
+      proposal,
+    );
+    return this.localContentReview(prepared, proposal);
+  }
+
+  async confirmLocalContent(input: {
+    readonly executionId: string;
+  }): Promise<LocalContentReview> {
+    const prepared = await this.ports.executionQueries.inspectExecution(
+      input.executionId,
+    );
+    if (
+      prepared?.proposal?.basis.kind !== "manual-boundary" ||
+      prepared.execution.plannedAssetId === undefined
+    )
+      throw new Error("未找到待确认的内容，请重新整理");
+    const [existing] = await this.ports.reuseQueries.findAcceptedForSubjects([
+      prepared.execution.plannedAssetId,
+    ]);
+    const preparedProposal = prepared.proposal;
+    const basis = prepared.proposal.basis;
+    const assetId = prepared.execution.plannedAssetId;
+    if (existing !== undefined)
+      return this.localContentReview(
+        prepared.execution,
+        prepared.proposal,
+        existing.accepted,
+      );
+    const selected = this.localContentSnapshot(
+      prepared.execution,
+      prepared.proposal,
+    );
+    const scope = prepared.execution.resolvedSelection?.filesystemScopes[0];
+    if (scope?.observedRoot === undefined || scope.relativeScope === undefined)
+      throw new Error("文件位置已失效，请重新检查");
+    return await this.observedRootExecution.invoke(
+      {
+        registrationId: scope.observedRoot.id,
+        relativeScope: scope.relativeScope,
+      },
+      async (bound) => {
+        if (
+          bound.resolvedSelection.filesystemScopes[0]?.observedRoot
+            ?.configVersion !== scope.observedRoot!.configVersion
+        )
+          throw new Error("文件位置已变化，请重新检查");
+        const currentEvidence = await this.checkLocalContentFiles(
+          bound.scope,
+          selected,
+        );
+        if (
+          inspectedRevisionCoordinates(currentEvidence, selected.root) !==
+          inspectedRevisionCoordinates(basis.evidence, selected.root)
+        )
+          throw new Error("所选文件已变化，请重新检查后确认");
+        const proposal = attachObservedFormatFacts(
+          {
+            ...preparedProposal,
+            id: id("recognition-proposal"),
+            basis: {
+              ...basis,
+              revisesProposalIds: [
+                preparedProposal.id,
+                ...basis.revisesProposalIds,
+              ],
+            },
+          },
+          basis.evidence,
+        );
+        const initial = this.localContentExecution(
+          prepared.execution,
+          requiredFilesystemSnapshot(prepared.execution),
+        );
+        await this.ports.executionCommands.createExecution(initial);
+        const accepted = createAcceptedRecognition({
+          proposal,
+          snapshot: selected,
+          managedArtifacts: [],
+          asset: {
+            id: assetId,
+            kind: "digital-asset",
+          },
+          ...(this.ports.observedRootRegistrations.objectIdentityContract ===
+          undefined
+            ? {}
+            : {
+                objectIdentityContract:
+                  this.ports.observedRootRegistrations.objectIdentityContract,
+              }),
+        });
+        const finished: WorkflowExecution = {
+          ...initial,
+          status: "completed",
+          stage: "completed",
+          outcome: "accepted",
+          proposalId: proposal.id,
+          acceptedAssetId: accepted.entity.id,
+        };
+        try {
+          await this.ports.recognitionAcceptance.acceptRecognition({
+            expectedExecution: initial,
+            execution: finished,
+            accepted,
+            metadataPolicyIds: this.metadataPolicyIdsFor(accepted),
+            expectedUnassignedMaterials: accepted.locations.filter(
+              (location) => location.kind === "observed",
+            ),
+          });
+        } catch (error) {
+          const [concurrent] =
+            await this.ports.reuseQueries.findAcceptedForSubjects([
+              accepted.entity.id,
+            ]);
+          await this.transition(
+            initial,
+            terminal(
+              initial,
+              concurrent === undefined ? "failed" : "no-change",
+              concurrent === undefined ? errorMessage(error) : "该内容已确认",
+            ),
+          );
+          if (concurrent !== undefined)
+            return this.localContentReview(
+              prepared.execution,
+              prepared.proposal!,
+              concurrent.accepted,
+            );
+          throw error;
+        }
+        return this.localContentReview(
+          prepared.execution,
+          prepared.proposal!,
+          accepted,
+        );
+      },
+    );
+  }
+
+  private async checkLocalContentFiles(
+    scope: BoundObservedScope,
+    selected: FilesystemPackageSnapshot,
+  ): Promise<RecognitionEvidence[]> {
+    const evidence: RecognitionEvidence[] = [];
+    const current =
+      await this.ports.observedRootRegistrations.observeBoundScope(scope);
+    for (const file of selected.files) {
+      const now = current.files.find(
+        (candidate) => candidate.relativePath === file.relativePath,
+      );
+      if (
+        now === undefined ||
+        now.size !== file.size ||
+        now.modifiedAt !== file.modifiedAt ||
+        (file.objectIdentity?.kind === "durable" &&
+          JSON.stringify(now.objectIdentity) !==
+            JSON.stringify(file.objectIdentity))
+      )
+        throw new Error("所选文件已变化，请重新检查后确认");
+      const source = await this.openObservedByteSource(
+        scope,
+        file.relativePath,
+      );
+      try {
+        for (const inspector of this.ports.formatInspectors ?? [])
+          evidence.push(
+            ...bindRecognitionEvidenceOutputToProducer(
+              await inspector.inspect({
+                observedArtifactReference: file.relativePath,
+                byteSource: source,
+              }),
+              inspector.capability,
+            ),
+          );
+      } catch (cause) {
+        throw new Error(`无法完成文件检查：${file.relativePath}`, { cause });
+      } finally {
+        await source.close();
+      }
+    }
+    return evidence;
+  }
+
+  private localContentExecution(
+    observed: WorkflowExecution,
+    snapshot: FilesystemPackageSnapshot,
+  ): WorkflowExecution {
+    return {
+      id: id("execution"),
+      selection: observed.selection,
+      snapshot,
+      filesystemSnapshots: [snapshot],
+      ...(observed.workflowInput === undefined
+        ? {}
+        : {
+            workflowInput: {
+              ...observed.workflowInput,
+            },
+          }),
+      ...(observed.requestedSelection === undefined
+        ? {}
+        : { requestedSelection: observed.requestedSelection }),
+      ...(observed.resolvedSelection === undefined
+        ? {}
+        : { resolvedSelection: observed.resolvedSelection }),
+      operationKind: "scan-filesystem",
+      status: "running",
+      stage: "recognition",
+      sourceRecordIds: [],
+      compatibility: observed.compatibility,
+      dispositions: [{ key: "manual-boundary", status: "completed" }],
+    };
+  }
+
+  private localContentReview(
+    execution: WorkflowExecution,
+    proposal: RecognitionProposal,
+    accepted?: AcceptedRecognition,
+  ): LocalContentReview {
+    if (proposal.basis.kind === "manual-boundary")
+      proposal = attachObservedFormatFacts(proposal, proposal.basis.evidence);
+    const selected = this.localContentSnapshot(execution, proposal);
+    const value =
+      accepted ??
+      createAcceptedRecognition({
+        proposal,
+        snapshot: selected,
+        managedArtifacts: [],
+        asset: { id: execution.plannedAssetId!, kind: "digital-asset" },
+        ...(this.ports.observedRootRegistrations.objectIdentityContract ===
+        undefined
+          ? {}
+          : {
+              objectIdentityContract:
+                this.ports.observedRootRegistrations.objectIdentityContract,
+            }),
+      });
+    return {
+      executionId: execution.id,
+      status: accepted === undefined ? "proposed" : "accepted",
+      relativePaths: selected.files.map((file) => file.relativePath),
+      content: publicAccepted(
+        { ...value, metadataPolicyIds: this.metadataPolicyIdsFor(value) },
+        [],
+        "asset.ordinary",
+        this.ports.metadataPolicyConfiguration,
+      )!,
+    };
+  }
+
+  private localContentSnapshot(
+    execution: WorkflowExecution,
+    proposal: RecognitionProposal,
+  ): FilesystemPackageSnapshot {
+    const snapshot = requiredFilesystemSnapshot(execution);
+    if (proposal.basis.kind !== "manual-boundary")
+      throw new Error("人工内容缺少明确范围");
+    const references = proposal.basis.materialReferences;
+    return {
+      ...snapshot,
+      files: snapshot.files.filter((file) =>
+        references.includes(file.relativePath),
+      ),
+    };
   }
 
   /** 生产文件系统扫描边界：调用方绝不提供服务器路径。 */
@@ -5463,6 +5988,7 @@ export class AssetRefreshWorkflow {
       readonly observedArtifactBoundaryProducer: CapabilityCoordinate;
     }[] = [];
     const formatInterpretation: AssetRefreshWorkPlan[] = [];
+    const formatFailures: WorkItemDisposition[] = [];
     const directoryInterpretations: Array<
       ReturnType<DirectoryInterpreter["interpret"]>
     > = [];
@@ -5541,16 +6067,27 @@ export class AssetRefreshWorkflow {
           );
           let evidence: readonly RecognitionEvidence[];
           try {
-            evidence = bindRecognitionEvidenceOutputToProducer(
-              await inspector.inspect({
-                observedArtifactReference: group.representative.relativePath,
-                byteSource,
-              }),
-              inspector.capability,
-            );
+            evidence = await inspector.inspect({
+              observedArtifactReference: group.representative.relativePath,
+              byteSource,
+            });
+          } catch (error) {
+            rethrowWorkflowLifecycle(error);
+            evidence = [];
+            formatFailures.push({
+              key: `format-inspection:${inspector.capability.capabilityId}:${group.representative.relativePath}`,
+              status: "failed",
+              materialReferences: group.relativePaths,
+              reason: "无法读取此文件",
+            });
           } finally {
             await byteSource.close();
           }
+          // 不可信能力输出不是单个材料损坏，不能被部分可用策略吞掉。
+          evidence = bindRecognitionEvidenceOutputToProducer(
+            evidence,
+            inspector.capability,
+          );
           if (evidence.length === 0) continue;
           formatInterpretation.push({
             workItems: [
@@ -5612,7 +6149,7 @@ export class AssetRefreshWorkflow {
       input.directedSourceAddress !== undefined
         ? []
         : [...directoryInterpretations, ...formatInterpretation];
-    const hasExplicitWorkItems =
+    let hasExplicitWorkItems =
       packageBoundary !== undefined ||
       interpretations.some(isAssetRefreshWorkPlan);
     const directedWorkItems: readonly AssetRefreshWorkItemPlan[] =
@@ -5638,12 +6175,76 @@ export class AssetRefreshWorkflow {
               ],
             },
           ];
-    const plannedWorkItems: readonly AssetRefreshWorkItemPlan[] =
+    let plannedWorkItems: readonly AssetRefreshWorkItemPlan[] =
       input.intent === "metadata-refresh"
         ? []
         : input.directedSourceAddress === undefined
           ? planRecognitionWorkItems(snapshot, interpretations)
           : directedWorkItems;
+    if (
+      input.intent === "scan-now" &&
+      input.directedSourceAddress === undefined
+    ) {
+      const manualContents = (
+        (await this.ports.currentCatalogueQueries?.listCurrentCatalogue()) ?? []
+      ).filter((content) => content.proposal.basis.kind === "manual-boundary");
+      for (const content of manualContents) {
+        const addresses = content.locations
+          .filter((location) => location.kind === "observed")
+          .map((location) => location.address);
+        const files = snapshot.files.filter((file) =>
+          addresses.includes(`${snapshot.root}/${file.relativePath}`),
+        );
+        const missing = addresses.filter(
+          (address) =>
+            address.startsWith(`${snapshot.root}/`) &&
+            !snapshot.files.some(
+              (file) => `${snapshot.root}/${file.relativePath}` === address,
+            ),
+        );
+        if (missing.length > 0) {
+          formatFailures.push({
+            key: `manual-boundary-missing:${content.entity.id}`,
+            status: "failed",
+            materialReferences: missing.map((address) =>
+              address.slice(snapshot.root.length + 1),
+            ),
+            reason: "已添加的内容中有文件无法找到，请检查文件位置后重试",
+          });
+          hasExplicitWorkItems = true;
+        }
+        if (files.length === 0) continue;
+        const references = files.map((file) => file.relativePath);
+        // 已采用的人工范围优先于本次重新推导的自动分组，不能静默裁剪自动提案后采用。
+        plannedWorkItems = plannedWorkItems.filter(
+          (plan) =>
+            !plan.relativePaths.some((reference) =>
+              references.includes(reference),
+            ),
+        );
+        if (references.length === addresses.length) {
+          plannedWorkItems = [
+            ...plannedWorkItems,
+            {
+              key: `manual-boundary:${content.entity.id}`,
+              relativePaths: references,
+              evidence: formatInterpretation.flatMap((interpretation) =>
+                interpretation.workItems.flatMap((item) =>
+                  item.evidence.filter(
+                    (evidence) =>
+                      evidence.inspection !== undefined &&
+                      references.includes(
+                        evidence.inspection.observedArtifactReference,
+                      ),
+                  ),
+                ),
+              ),
+            },
+          ];
+          hasExplicitWorkItems = true;
+        }
+      }
+    }
     const evidence = plannedWorkItems.flatMap((item) => item.evidence);
     const initial: WorkflowExecution = {
       ...planningExecution,
@@ -5655,6 +6256,7 @@ export class AssetRefreshWorkflow {
       ),
       dispositions: [
         ...planningExecution.dispositions,
+        ...formatFailures,
         { key: "directory-interpretation", status: "running" },
       ],
       ...(hasExplicitWorkItems
@@ -5747,11 +6349,15 @@ export class AssetRefreshWorkflow {
       const finished = terminal(
         {
           ...initial,
-          dispositions: initial.dispositions.map((item) => ({
-            ...item,
-            status: "completed" as const,
-            reason: "未发现适用的目录识别线索",
-          })),
+          dispositions: initial.dispositions.map((item) =>
+            item.status === "failed"
+              ? item
+              : {
+                  ...item,
+                  status: "completed" as const,
+                  reason: "未发现适用的目录识别线索",
+                },
+          ),
         },
         "unresolved",
       );
@@ -5825,6 +6431,9 @@ export class AssetRefreshWorkflow {
       stage: "source-records-retained",
       sourceRecordIds: collectionExecution.sourceRecordIds,
       dispositions: [
+        ...initial.dispositions.filter(
+          (item) => item.materialReferences !== undefined,
+        ),
         { key: "directory-interpretation", status: "completed" },
         {
           key: "official-collection",
@@ -6336,6 +6945,9 @@ export class AssetRefreshWorkflow {
     let execution: WorkflowExecution = {
       ...initial,
       dispositions: [
+        ...initial.dispositions.filter(
+          (item) => item.materialReferences !== undefined,
+        ),
         { key: "directory-interpretation", status: "completed" },
         ...plans.map((item) => {
           const prior = initial.workItems?.find(
@@ -6463,6 +7075,117 @@ export class AssetRefreshWorkflow {
         execution.workItems?.find((item) => item.key === plan.key)?.outcome !==
         undefined
       ) {
+        continue;
+      }
+      if (
+        execution.dispositions.some(
+          (disposition) =>
+            disposition.status === "failed" &&
+            disposition.materialReferences?.some((reference) =>
+              plan.relativePaths.includes(reference),
+            ),
+        )
+      ) {
+        execution = completeWorkItem(execution, plan.key, {
+          sourceRecordIds: [],
+          outcome: "failed",
+          reason: "这项内容中有文件未能通过检查",
+        });
+        await this.transitionAfterWorkItem(execution, resumeClaim);
+        continue;
+      }
+      const retained = await this.ports.reuseQueries.findAcceptedForWorkItem({
+        directory: requiredFilesystemDirectory(initial),
+        relativePaths: plan.relativePaths,
+      });
+      if (retained?.accepted.proposal.basis.kind === "manual-boundary") {
+        const baseline = retained.execution.snapshot;
+        const previousEvidence =
+          retained.execution.workItems?.find(
+            (item) => item.acceptedAssetId === retained.accepted.entity.id,
+          )?.planningEvidence ?? retained.accepted.proposal.basis.evidence;
+        const changed =
+          baseline === undefined ||
+          inspectedRevisionCoordinates(
+            plan.evidence,
+            requiredFilesystemSnapshot(initial).root,
+          ) !== inspectedRevisionCoordinates(previousEvidence, baseline.root) ||
+          plan.relativePaths.some((reference) => {
+            const file = initial.snapshot?.files.find(
+              (item) => item.relativePath === reference,
+            );
+            const previous = baseline.files.find(
+              (item) =>
+                `${baseline.root}/${item.relativePath}` ===
+                `${initial.snapshot?.root}/${reference}`,
+            );
+            return (
+              file === undefined ||
+              previous === undefined ||
+              file.size !== previous.size ||
+              file.modifiedAt !== previous.modifiedAt
+            );
+          });
+        if (changed) {
+          const snapshot = requiredFilesystemSnapshot(initial);
+          const proposal = attachObservedFormatFacts(
+            {
+              ...retained.accepted.proposal,
+              id: id("recognition-proposal"),
+              basis: {
+                ...retained.accepted.proposal.basis,
+                observationSnapshotId: snapshot.id,
+                materialReferences: plan.relativePaths,
+                evidence: plan.evidence,
+                revisesProposalIds: [retained.accepted.proposal.id],
+              },
+            },
+            plan.evidence,
+          );
+          const accepted = createAcceptedRecognition({
+            proposal,
+            snapshot: {
+              ...snapshot,
+              files: snapshot.files.filter((file) =>
+                plan.relativePaths.includes(file.relativePath),
+              ),
+            },
+            managedArtifacts: [],
+            current: retained.accepted,
+            ...(this.ports.observedRootRegistrations.objectIdentityContract ===
+            undefined
+              ? {}
+              : {
+                  objectIdentityContract:
+                    this.ports.observedRootRegistrations.objectIdentityContract,
+                }),
+          });
+          const expectedExecution = persistedWorkflowExecution(execution);
+          execution = completeWorkItem(expectedExecution, plan.key, {
+            sourceRecordIds: [],
+            proposalId: proposal.id,
+            acceptedAssetId: accepted.entity.id,
+            outcome: "accepted",
+          });
+          await this.ports.recognitionReevaluation.refreshAcceptedRecognition({
+            expectedExecution,
+            execution,
+            current: retained.accepted,
+            accepted,
+            sourceRecords: [],
+            expectedLineageHeads: [],
+            ...(resumeClaim === undefined ? {} : { resumeClaim }),
+          });
+          continue;
+        }
+        execution = completeWorkItem(execution, plan.key, {
+          sourceRecordIds: [],
+          proposalId: retained.accepted.proposal.id,
+          acceptedAssetId: retained.accepted.entity.id,
+          outcome: "no-change",
+          reason: "保留用户已经确认的内容范围",
+        });
+        await this.transitionAfterWorkItem(execution, resumeClaim);
         continue;
       }
       const reusable = await this.ports.reuseQueries.findReusableWorkItem({
@@ -8908,6 +9631,12 @@ export class AssetRefreshWorkflow {
       ? this.legacyFilesystemScopeRecoveryReason(inspection.execution)
       : decodedInput.reason;
     if (
+      inspection.execution.dispositions.some(
+        (disposition) => disposition.key === "manual-boundary",
+      )
+    )
+      interruptionReason = "人工确认尚未提交，请回到待添加内容重新确认";
+    if (
       interruptionReason === undefined &&
       !hasExplicitWorkItems &&
       !hasDurableObservationCheckpoint &&
@@ -9707,6 +10436,11 @@ export class AssetRefreshWorkflow {
     const running = await this.ports.executionQueries.listRunningExecutions();
     const recovered: AssetRefreshInspection[] = [];
     for (const execution of running) {
+      if (
+        lifecycle?.executionIds !== undefined &&
+        !lifecycle.executionIds.has(execution.id)
+      )
+        continue;
       lifecycle?.onCheckpoint?.();
       try {
         recovered.push(
@@ -11052,9 +11786,11 @@ function attachObservedFormatFacts(
   evidence: readonly import("@digital/domain").RecognitionEvidence[],
 ): RecognitionProposal {
   const selectedEvidence = new Set(
-    proposal.ruleResults
-      .filter((result) => result.outcome === "satisfied")
-      .flatMap((result) => result.evidence),
+    proposal.basis.kind === "manual-boundary"
+      ? proposal.basis.evidence
+      : proposal.ruleResults
+          .filter((result) => result.outcome === "satisfied")
+          .flatMap((result) => result.evidence),
   );
   const inspections = evidence
     .filter((item) => selectedEvidence.has(item))
@@ -11305,6 +12041,30 @@ function sameRecognitionIdentity(
   return (
     association?.sourceIdentity === interpretation.sourceIdentity &&
     association.nativeAddress === interpretation.sourceAddress
+  );
+}
+
+function inspectedRevisionCoordinates(
+  evidence: readonly RecognitionEvidence[],
+  root: string,
+): string {
+  return JSON.stringify(
+    evidence
+      .flatMap((item) =>
+        item.inspection === undefined
+          ? []
+          : [
+              JSON.stringify([
+                `${root}/${item.inspection.observedArtifactReference}`,
+                item.producer.capabilityId,
+                item.producer.capabilityVersion,
+                item.producer.contractVersion,
+                item.inspection.revision.digest,
+                item.inspection.revision.byteLength,
+              ]),
+            ],
+      )
+      .toSorted(),
   );
 }
 
@@ -11626,7 +12386,24 @@ function createAcceptedRecognition(options: {
       ...managed.associations,
       ...localParts.map((item) => item.association),
     ],
-    metadata: [...(interpretation?.metadata ?? []), ...observedMetadata],
+    metadata: [
+      ...(interpretation?.metadata ?? []),
+      ...observedMetadata,
+      ...(options.proposal.basis.kind !== "manual-boundary"
+        ? []
+        : options.proposal.basis.metadata.map((assertion) => ({
+            ...assertion,
+            sourceSlot: assertion.property,
+            sourceRecordIds: [],
+            authoredBy: {
+              initiatedBy:
+                options.proposal.basis.kind === "manual-boundary"
+                  ? options.proposal.basis.proposedBy
+                  : "",
+              proposalId: options.proposal.id,
+            },
+          }))),
+    ],
     entities: interpretation?.entities ?? [],
     entityMentions: interpretation?.entityMentions ?? [],
     entityResolutionDecisions: interpretation?.entityResolutionDecisions ?? [],

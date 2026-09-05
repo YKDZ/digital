@@ -38,11 +38,20 @@ const response = (body: string, mediaType: string) => ({
 });
 
 describe("DLsite exact directory convention", () => {
-  it("recognizes only the selected directory basename", () => {
+  it("精确目录建立有限内容范围，普通文件名和范围之外的祖先名称不建立身份", () => {
     const interpreter = new DlsiteExactDirectoryInterpreter();
-    expect(interpreter.interpret(snapshot("/library/RJ01668691"))).toHaveLength(
-      1,
-    );
+    expect(
+      interpreter.interpret({
+        ...snapshot("/library/RJ01668691"),
+        files: [
+          {
+            relativePath: "audio/track.wav",
+            size: 1,
+            modifiedAt: "2026-07-29T00:00:00.000Z",
+          },
+        ],
+      }),
+    ).toEqual([expect.objectContaining({ sourceIdentity: "dlsite" })]);
     expect(
       interpreter.interpret(snapshot("/library/RJ01668691 notes")),
     ).toEqual([]);

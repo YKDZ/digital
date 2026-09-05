@@ -10,6 +10,11 @@ export type MetadataAssertion = {
   readonly sourceSlot: string;
   readonly value: string;
   readonly sourceRecordIds: readonly string[];
+  /** 保留判断的发起方式与提案引用；不将交互入口伪装成用户账户身份。 */
+  readonly authoredBy?: {
+    readonly initiatedBy: string;
+    readonly proposalId: string;
+  };
   /** 建立该断言的解释器坐标。 */
   readonly producer?: CapabilityCoordinate;
   /** 由来源契约定义的开放语义，例如评分单位和量表。 */

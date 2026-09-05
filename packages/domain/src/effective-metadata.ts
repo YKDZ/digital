@@ -192,6 +192,8 @@ function resolveAssertions(
       assertion.subjectId !== input.subjectId
     )
       return [];
+    if (assertion.authoredBy !== undefined)
+      return [{ assertion, sourceIdentity: "user" }];
     const identities = [
       ...new Set(
         assertion.sourceRecordIds.flatMap((id) => {
