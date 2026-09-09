@@ -81,8 +81,8 @@ export async function prepareWithFormalMigration(
 ): Promise<void> {
   const exitCode = await new Promise<number>((resolve, reject) => {
     const child = spawn(
-      "pnpm",
-      ["--filter", "@digital/db-migrations", "prepare-only"],
+      process.execPath,
+      ["packages/db-migrations/dist/cli.js", "prepare-only"],
       {
         cwd: repositoryRoot,
         env: { ...process.env, DIGITAL_PRODUCT_DATA: productDataDirectory },

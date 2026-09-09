@@ -85,6 +85,7 @@ export type ArtifactDownloadDescriptor = ArtifactByteDescriptor;
  */
 export type ProductApplication = {
   readonly configured: boolean;
+  readonly productDataDirectory?: string;
   readonly workflow: ProductWorkflowOperations;
   readonly automation: ProductAutomationOperations;
   readonly execution: ProductExecutionOperations;

@@ -17,9 +17,9 @@ class FakeProcessControl
   extends EventEmitter
   implements ProcessLifecycleControl
 {
-  readonly resent: NodeJS.Signals[] = [];
   readonly forced: number[] = [];
   readonly shutdownErrors: unknown[] = [];
+  readonly lifecycleEvents: string[] = [];
 
   addSignalListener(
     signal: NodeJS.Signals,
@@ -35,20 +35,173 @@ class FakeProcessControl
     this.off(signal, listener);
   }
 
-  resendSignal(signal: NodeJS.Signals): void {
-    this.resent.push(signal);
-  }
-
   forceExit(code: number): void {
     this.forced.push(code);
+    this.lifecycleEvents.push(`exit:${code}`);
   }
 
   reportShutdownError(error: unknown): void {
     this.shutdownErrors.push(error);
+    this.lifecycleEvents.push("report-error");
   }
 }
 
 describe("process lifecycle registry", () => {
+  it("pre-ready abort closes only the same-tick replacement and preserves the stable owner", async () => {
+    const processControl = new FakeProcessControl();
+    const registry = createProcessLifecycleRegistry(processControl);
+    const events: string[] = [];
+    const stable = registry.register({
+      async shutdown(reason) {
+        events.push(`stable:${reason}`);
+      },
+    });
+    await stable.ready;
+    stable.publish();
+    const candidate = registry.register({
+      async shutdown(reason) {
+        events.push(`candidate:${reason}`);
+      },
+    });
+    const readyError = candidate.ready.catch((error: unknown) => error);
+
+    await candidate.abort();
+
+    expect(((await readyError) as Error).message).toBe("进程产品登记已中止");
+    expect(events).toEqual(["candidate:replacement"]);
+    await stable.abort();
+    expect(events).toEqual(["candidate:replacement", "stable:replacement"]);
+  });
+
+  it("pre-ready abort observed while cleanup debt is settling does not start closing the stable owner", async () => {
+    const processControl = new FakeProcessControl();
+    const registry = createProcessLifecycleRegistry(processControl);
+    let stableCloseAttempts = 0;
+    const stable = registry.register({
+      async shutdown() {
+        stableCloseAttempts += 1;
+        if (stableCloseAttempts === 1) throw new Error("stable close failed");
+      },
+    });
+    await stable.ready;
+    stable.publish();
+    let releaseDebt!: () => void;
+    let enterDebt!: () => void;
+    const debtEntered = new Promise<void>((resolve) => {
+      enterDebt = resolve;
+    });
+    const debtBarrier = new Promise<void>((resolve) => {
+      releaseDebt = resolve;
+    });
+    let debtCloseAttempts = 0;
+    const failedReplacement = registry.register({
+      async shutdown() {
+        debtCloseAttempts += 1;
+        if (debtCloseAttempts === 1) throw new Error("candidate close failed");
+        enterDebt();
+        await debtBarrier;
+      },
+    });
+    await expect(failedReplacement.ready).rejects.toBeInstanceOf(
+      AggregateError,
+    );
+    const cancelled = registry.register({ async shutdown() {} });
+    const readyError = cancelled.ready.catch((error: unknown) => error);
+    await debtEntered;
+
+    const abort = cancelled.abort();
+    releaseDebt();
+    await abort;
+
+    expect(((await readyError) as Error).message).toBe("进程产品登记已中止");
+    expect(stableCloseAttempts).toBe(1);
+    await stable.abort();
+    expect(stableCloseAttempts).toBe(2);
+  });
+
+  it("reports the same cleanup-incomplete outcome to ready and abort before terminal retries the candidate", async () => {
+    const processControl = new FakeProcessControl();
+    const events: string[] = [];
+    const registry = createProcessLifecycleRegistry(processControl, {
+      closeTerminalProcessResources: async () => {
+        events.push("process-root");
+      },
+    });
+    let closeAttempts = 0;
+    const candidate = registry.register({
+      async shutdown() {
+        closeAttempts += 1;
+        events.push(`candidate:${closeAttempts}`);
+        if (closeAttempts === 1) throw new Error("candidate close failed");
+      },
+    });
+    const readyError = candidate.ready.catch((error: unknown) => error);
+
+    const abortError = await candidate.abort().catch((error: unknown) => error);
+
+    const cleanupError = await readyError;
+    const errorWrappedByReplacementModule = new AggregateError([cleanupError]);
+    expect(registry.hasCleanupIncomplete(cleanupError)).toBe(true);
+    expect(registry.hasCleanupIncomplete(abortError)).toBe(true);
+    expect(registry.hasCleanupIncomplete(errorWrappedByReplacementModule)).toBe(
+      true,
+    );
+    expect(events).toEqual(["candidate:1"]);
+    const handler = processControl.listeners(
+      "SIGTERM",
+    )[0] as () => Promise<void>;
+    await handler();
+    expect(events).toEqual(["candidate:1", "candidate:2", "process-root"]);
+    expect(registry.hasCleanupIncomplete(cleanupError)).toBe(false);
+    expect(registry.hasCleanupIncomplete(errorWrappedByReplacementModule)).toBe(
+      false,
+    );
+  });
+
+  it("remembers an admission cleanup failure for late and repeated abort observers", async () => {
+    const processControl = new FakeProcessControl();
+    const registry = createProcessLifecycleRegistry(processControl);
+    const stable = registry.register({
+      async shutdown() {
+        throw new Error("stable close failed");
+      },
+    });
+    await stable.ready;
+    stable.publish();
+    const candidate = registry.register({
+      async shutdown() {
+        throw new Error("candidate close failed");
+      },
+    });
+    const readyError = await candidate.ready.catch((error: unknown) => error);
+    expect(registry.hasCleanupIncomplete(readyError)).toBe(true);
+
+    const firstAbort = candidate.abort();
+    const repeatedAbort = candidate.abort();
+
+    expect(repeatedAbort).toBe(firstAbort);
+    await expect(firstAbort).rejects.toBe(readyError);
+    await expect(repeatedAbort).rejects.toBe(readyError);
+  });
+
+  it("lets late abort resolve after an ordinary failed admission already cleaned its candidate", async () => {
+    const processControl = new FakeProcessControl();
+    const registry = createProcessLifecycleRegistry(processControl, {
+      closeTerminalProcessResources: async () => undefined,
+    });
+    const candidate = registry.register({ async shutdown() {} });
+    const handler = processControl.listeners(
+      "SIGTERM",
+    )[0] as () => Promise<void>;
+    const terminal = handler();
+
+    await expect(candidate.ready).rejects.toThrow(
+      "进程正在关闭，不能启动内容目录",
+    );
+    await expect(candidate.abort()).resolves.toBeUndefined();
+    await terminal;
+  });
+
   it("closes the old HMR owner before publishing the replacement without adding listeners", async () => {
     const processControl = new FakeProcessControl();
     const registry = createProcessLifecycleRegistry(processControl);
@@ -59,12 +212,14 @@ describe("process lifecycle registry", () => {
       },
     });
     await oldOwner.ready;
+    oldOwner.publish();
     const replacement = registry.register({
       async shutdown(reason) {
         closed.push(`new:${reason}`);
       },
     });
     await replacement.ready;
+    replacement.publish();
 
     expect(closed).toEqual(["old:replacement"]);
     expect(processControl.listenerCount("SIGINT")).toBe(1);
@@ -75,7 +230,98 @@ describe("process lifecycle registry", () => {
     expect(closed).toEqual(["old:replacement", "new:replacement"]);
   });
 
-  it("waits for the current owner to close before restoring the signal's default exit", async () => {
+  it("keeps process resources across replacement and closes them after the terminal product owner", async () => {
+    const processControl = new FakeProcessControl();
+    const order: string[] = [];
+    const registry = createProcessLifecycleRegistry(processControl, {
+      closeTerminalProcessResources: async () => {
+        order.push("process-root");
+      },
+    });
+    const first = registry.register({
+      async shutdown(reason) {
+        order.push(`first:${reason}`);
+      },
+    });
+    await first.ready;
+    first.publish();
+    const replacement = registry.register({
+      async shutdown(reason) {
+        order.push(`replacement:${reason}`);
+      },
+    });
+    await replacement.ready;
+    replacement.publish();
+    expect(order).toEqual(["first:replacement"]);
+
+    const handler = processControl.listeners(
+      "SIGTERM",
+    )[0] as () => Promise<void>;
+    await handler();
+
+    expect(order).toEqual([
+      "first:replacement",
+      "replacement:terminal",
+      "process-root",
+    ]);
+    expect(processControl.forced).toEqual([143]);
+  });
+
+  it.each([
+    ["SIGINT", 130],
+    ["SIGTERM", 143],
+  ] as const)(
+    "exits exactly once with the explicit %s code after terminal resources close",
+    async (signal, exitCode) => {
+      const processControl = new FakeProcessControl();
+      const order: string[] = [];
+      createProcessLifecycleRegistry(processControl, {
+        closeTerminalProcessResources: async () => {
+          order.push("process-root");
+        },
+      });
+      const handler = processControl.listeners(
+        signal,
+      )[0] as () => Promise<void>;
+
+      await handler();
+
+      expect(order).toEqual(["process-root"]);
+      expect(processControl.forced).toEqual([exitCode]);
+      expect(processControl.lifecycleEvents).toEqual([`exit:${exitCode}`]);
+    },
+  );
+
+  it("rejects publication after terminal reaches a ready reservation and closes the candidate before the process root", async () => {
+    const processControl = new FakeProcessControl();
+    const order: string[] = [];
+    const registry = createProcessLifecycleRegistry(processControl, {
+      closeTerminalProcessResources: async () => {
+        order.push("process-root");
+      },
+    });
+    const candidate = registry.register({
+      async shutdown(reason) {
+        order.push(`candidate:${reason}`);
+      },
+    });
+    await candidate.ready;
+
+    const handler = processControl.listeners(
+      "SIGTERM",
+    )[0] as () => Promise<void>;
+    const terminal = handler();
+    expect(() => candidate.publish()).toThrow("进程正在关闭，不能发布内容目录");
+    const abort = candidate.abort();
+    expect(candidate.abort()).toBe(abort);
+    await abort;
+    await terminal;
+
+    expect(order).toEqual(["candidate:terminal", "process-root"]);
+    expect(() => candidate.publish()).toThrow("进程产品登记尚未取得发布权");
+  });
+
+  it("waits for the current owner to close before explicitly exiting with the signal code", async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "digital-web-signal-"));
     const marker = path.join(directory, "closed");
     const moduleUrl = new URL("../server/process-lifecycle.ts", import.meta.url)
@@ -91,6 +337,7 @@ describe("process lifecycle registry", () => {
         }
       });
       await registration.ready;
+      registration.publish();
       process.stdout.write("ready\\n");
     `;
     const child = spawn(
@@ -129,7 +376,7 @@ describe("process lifecycle registry", () => {
         child.once("close", (code, signal) => resolve({ code, signal }));
       });
       expect(await readFile(marker, "utf8")).toBe("terminal");
-      expect(outcome).toEqual({ code: null, signal: "SIGTERM" });
+      expect(outcome).toEqual({ code: 143, signal: null });
     } finally {
       if (child.exitCode === null && child.signalCode === null)
         child.kill("SIGKILL");
@@ -155,6 +402,7 @@ describe("process lifecycle registry", () => {
       },
     });
     await registration.ready;
+    registration.publish();
     const handler = processControl.listeners(
       "SIGTERM",
     )[0] as () => Promise<void>;
@@ -164,7 +412,7 @@ describe("process lifecycle registry", () => {
     expect(processControl.forced).toEqual([143]);
     release();
     await graceful;
-    expect(processControl.resent).toEqual(["SIGTERM"]);
+    expect(processControl.forced).toEqual([143]);
   });
 
   it("force exits a stuck SQLite owner and lets a new Host recover its non-terminal execution", async () => {
@@ -185,6 +433,7 @@ describe("process lifecycle registry", () => {
         async shutdown() { await new Promise(() => undefined); }
       });
       await registration.ready;
+      registration.publish();
       process.stdout.write("ready\\n");
       setInterval(() => undefined, 1000);
     `;
@@ -269,6 +518,7 @@ describe("process lifecycle registry", () => {
         },
       });
       await registration.ready;
+      registration.publish();
 
       const handler = processControl.listeners(
         "SIGTERM",
@@ -280,12 +530,13 @@ describe("process lifecycle registry", () => {
       expect(released).toBe(false);
       release();
       await shutdown;
+      expect(processControl.forced).toEqual([143]);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("rejects an HMR replacement and retains the old owner when its shutdown fails", async () => {
+  it("repays the old owner and unaccepted cleanup debts before publishing a later replacement", async () => {
     const processControl = new FakeProcessControl();
     const registry = createProcessLifecycleRegistry(processControl);
     const failure = new Error("old owner close failed");
@@ -297,33 +548,67 @@ describe("process lifecycle registry", () => {
       },
     });
     await oldOwner.ready;
-    let replacementClosed = false;
+    oldOwner.publish();
+    let replacementCloseAttempts = 0;
     const replacement = registry.register({
       async shutdown() {
-        replacementClosed = true;
+        replacementCloseAttempts += 1;
+        if (replacementCloseAttempts === 1)
+          throw new Error("unaccepted owner close failed");
       },
     });
 
-    await expect(replacement.ready).rejects.toBe(failure);
-    await expect(replacement.dispose()).resolves.toBeUndefined();
-    expect(replacementClosed).toBe(false);
-
-    await expect(oldOwner.dispose()).resolves.toBeUndefined();
-    expect(oldCloseAttempts).toBe(2);
+    await expect(replacement.ready).rejects.toBeInstanceOf(AggregateError);
+    expect(oldCloseAttempts).toBe(1);
+    expect(replacementCloseAttempts).toBe(1);
     const retry = registry.register({
-      async shutdown() {
-        replacementClosed = true;
-      },
+      async shutdown() {},
     });
     await expect(retry.ready).resolves.toBeUndefined();
+    retry.publish();
+    expect(oldCloseAttempts).toBe(2);
+    expect(replacementCloseAttempts).toBe(2);
     await expect(retry.dispose()).resolves.toBeUndefined();
-    expect(replacementClosed).toBe(true);
     expect(processControl.shutdownErrors).toEqual([]);
   });
 
-  it("reports a terminal owner failure and still restores signal exit", async () => {
+  it("settles an unaccepted owner cleanup debt before terminal process resources without a queue deadlock", async () => {
     const processControl = new FakeProcessControl();
-    const registry = createProcessLifecycleRegistry(processControl);
+    const order: string[] = [];
+    let closeAttempts = 0;
+    const registry = createProcessLifecycleRegistry(processControl, {
+      closeTerminalProcessResources: async () => {
+        order.push("process-root");
+      },
+    });
+    const candidate = registry.register({
+      async shutdown() {
+        closeAttempts += 1;
+        order.push(`candidate:${closeAttempts}`);
+        if (closeAttempts === 1)
+          throw new Error("unaccepted owner close failed");
+      },
+    });
+
+    const handler = processControl.listeners(
+      "SIGTERM",
+    )[0] as () => Promise<void>;
+    const terminal = handler();
+
+    await expect(candidate.ready).rejects.toBeInstanceOf(AggregateError);
+    await terminal;
+    expect(order).toEqual(["candidate:1", "candidate:2", "process-root"]);
+    expect(processControl.shutdownErrors).toEqual([]);
+  });
+
+  it("reports a terminal owner failure before explicitly exiting", async () => {
+    const processControl = new FakeProcessControl();
+    let processRootCloses = 0;
+    const registry = createProcessLifecycleRegistry(processControl, {
+      closeTerminalProcessResources: async () => {
+        processRootCloses += 1;
+      },
+    });
     const failure = new Error("terminal owner close failed");
     const owner = registry.register({
       async shutdown() {
@@ -331,6 +616,7 @@ describe("process lifecycle registry", () => {
       },
     });
     await owner.ready;
+    owner.publish();
 
     const handler = processControl.listeners(
       "SIGTERM",
@@ -338,6 +624,10 @@ describe("process lifecycle registry", () => {
     await handler();
 
     expect(processControl.shutdownErrors).toEqual([failure]);
-    expect(processControl.resent).toEqual(["SIGTERM"]);
+    expect(processRootCloses).toBe(0);
+    expect(processControl.lifecycleEvents).toEqual([
+      "report-error",
+      "exit:143",
+    ]);
   });
 });

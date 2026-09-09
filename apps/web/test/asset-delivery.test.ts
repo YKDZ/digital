@@ -68,6 +68,169 @@ async function shutdownBoundWebProduct(): Promise<void> {
 }
 
 describe("asset delivery view", () => {
+  it("transports typed source and identity correction intents through the formal HTTP API", async () => {
+    const startDecision = vi.fn(async (input: unknown) => ({
+      executionId: "decision-execution",
+      input,
+    }));
+    const inspectDecision = vi.fn(async (id: string) => ({
+      executionId: id,
+      state: "awaiting-selection",
+      candidates: [
+        {
+          reference: "opaque-candidate",
+          outcome: "accepted",
+          sourceIdentity: "nbinet",
+          nativeAddress: "nbinet:9786264151726",
+          explanation: "来源候选匹配",
+          ruleResults: [],
+        },
+      ],
+      evidenceComparison: {
+        observed: [],
+        manual: [],
+        sourceCandidates: [
+          {
+            outcome: "accepted",
+            sourceIdentity: "nbinet",
+            nativeAddress: "nbinet:9786264151726",
+            explanation: "来源候选匹配",
+            ruleResults: [],
+          },
+        ],
+        conflicts: [],
+      },
+    }));
+    const inspectSubject = vi.fn(async (id: string) => ({
+      assetId: id,
+      current: [],
+      historical: [],
+    }));
+    const selectCandidate = vi.fn(async (id: string, input: unknown) => ({
+      executionId: id,
+      input,
+    }));
+    const retryDecision = vi.fn(async (id: string) => ({ executionId: id }));
+    const retractIdentity = vi.fn(async (input: unknown) => ({
+      id: "recognition-preview",
+      input,
+    }));
+    const api = createApi({
+      startSourceAssociationDecision: startDecision as never,
+      inspectSourceAssociationDecision: inspectDecision as never,
+      inspectCorrectionSubject: inspectSubject as never,
+      selectSourceAssociationDecisionCandidate: selectCandidate as never,
+      retrySourceAssociationDecision: retryDecision as never,
+      startRecognitionRetraction: retractIdentity as never,
+    });
+
+    const prepared = await api.request("/source-association-decisions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        intent: "retract",
+        assetId: "asset",
+        predecessorAssociationId: "association",
+        initiatedBy: "reviewer",
+        reason: "wrong source",
+      }),
+    });
+    expect(prepared.status).toBe(202);
+    expect(startDecision).toHaveBeenCalledWith(
+      expect.objectContaining({ intent: "retract", initiatedBy: "reviewer" }),
+    );
+    const inspected = await api.request(
+      "/source-association-decisions/execution",
+    );
+    expect(inspected.status).toBe(200);
+    const inspectedJson = await inspected.text();
+    expect(JSON.parse(inspectedJson)).toMatchObject({
+      candidates: [expect.objectContaining({ sourceIdentity: "nbinet" })],
+    });
+    for (const forbidden of [
+      "interpretation",
+      "sourceRecordIds",
+      "producer",
+      "capabilityId",
+      "capabilityVersion",
+      "contractVersion",
+    ])
+      expect(inspectedJson).not.toContain(forbidden);
+    expect((await api.request("/correction-subjects/asset")).status).toBe(200);
+    const selected = await api.request(
+      "/source-association-decisions/execution/select",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          candidateReference: "opaque-candidate",
+        }),
+      },
+    );
+    expect(selected.status).toBe(200);
+    expect(selectCandidate).toHaveBeenCalledWith("execution", {
+      candidateReference: "opaque-candidate",
+    });
+    expect(
+      (
+        await api.request("/source-association-decisions/execution/retry", {
+          method: "POST",
+        })
+      ).status,
+    ).toBe(202);
+    const retraction = await api.request("/recognition-retractions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        assetId: "asset",
+        predecessorDecisionId: "decision",
+        proposedBy: "reviewer",
+        reason: "wrong identity",
+      }),
+    });
+    expect(retraction.status).toBe(202);
+    expect(retractIdentity).toHaveBeenCalledWith(
+      expect.objectContaining({ proposedBy: "reviewer" }),
+    );
+  });
+
+  it("rejects malformed preview actions without consuming the live preview", async () => {
+    const previewAction = vi.fn(async () => ({ status: "applied" as const }));
+    const api = createApi({ updatePreview: previewAction as never });
+
+    for (const body of [
+      { action: "approve", previewId: "preview", actorId: "reviewer" },
+      {
+        action: "apply",
+        previewId: "preview",
+        actorId: "reviewer",
+        unexpected: true,
+      },
+      { action: "apply", previewId: "preview", actorId: " " },
+      { action: "apply", previewId: " ", actorId: "reviewer" },
+    ]) {
+      const response = await api.request("/preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(400);
+    }
+    expect(previewAction).not.toHaveBeenCalled();
+
+    const valid = await api.request("/preview", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        action: "apply",
+        previewId: "preview",
+        actorId: "reviewer",
+      }),
+    });
+    expect(valid.status).toBe(200);
+    expect(previewAction).toHaveBeenCalledOnce();
+  });
+
   it("exposes Bangumi authorization, browser callback, and revoke through one safe HTTP surface", async () => {
     const beginAuthorization = vi.fn(() => ({
       authorizationUrl: "https://bgm.tv/oauth/authorize?state=web-state",
@@ -465,9 +628,11 @@ describe("asset delivery view", () => {
   it("submits exact current subject, filesystem scope, and designation for re-scrape", async () => {
     const requests: unknown[] = [];
     const workflow = {
-      async rescrapeObservedScope(
+      async rescrapeCurrentObservedScope(
         input: Parameters<
-          Parameters<typeof startAssetRescrape>[0]["rescrapeObservedScope"]
+          Parameters<
+            typeof startAssetRescrape
+          >[0]["rescrapeCurrentObservedScope"]
         >[0],
       ) {
         requests.push(input);
@@ -494,8 +659,6 @@ describe("asset delivery view", () => {
         subjectId: "episode-b",
         registrationId: "series-root",
         relativeScope: ".",
-        sourceIdentity: "bangumi",
-        sourceAddress: "https://bgm.tv/ep/2",
       }),
     ]);
   });
@@ -513,7 +676,7 @@ describe("asset delivery view", () => {
         input.onExecutionStarted?.({ id: "scan" });
         return {} as never;
       },
-      async rescrapeObservedScope(input: {
+      async rescrapeCurrentObservedScope(input: {
         readonly informationRequirement?: unknown;
         readonly onExecutionStarted?: (execution: { id: string }) => void;
       }) {
@@ -819,7 +982,7 @@ describe("asset delivery view", () => {
       async listInspections() {
         return [];
       },
-      async rescrapeObservedScope(input: unknown) {
+      async rescrapeCurrentObservedScope(input: unknown) {
         requests.push(input);
         (
           input as {
@@ -843,8 +1006,6 @@ describe("asset delivery view", () => {
           subjectId: "episode-b",
           registrationId: "series-root",
           relativeScope: ".",
-          sourceIdentity: "bangumi",
-          sourceAddress: "https://bgm.tv/ep/2",
         }),
       ]);
     } finally {
@@ -878,7 +1039,7 @@ describe("asset delivery view", () => {
       async listInspections() {
         return [];
       },
-      async rescrapeObservedScope(input: {
+      async rescrapeCurrentObservedScope(input: {
         onExecutionStarted?: (execution: { id: string }) => void;
       }) {
         calls.push(input);
@@ -905,8 +1066,6 @@ describe("asset delivery view", () => {
       await expect(response.json()).resolves.toEqual({ id: "episode-b-api" });
       expect(calls).toEqual([
         expect.objectContaining({
-          sourceIdentity: "bangumi",
-          sourceAddress: "https://bgm.tv/ep/2",
           subjectId: "episode-b",
           registrationId: "series-root",
           relativeScope: ".",
@@ -976,7 +1135,7 @@ describe("asset delivery view", () => {
         void subjectId;
         return undefined;
       },
-      async rescrapeObservedScope() {
+      async rescrapeCurrentObservedScope() {
         rescrapeCalls += 1;
         return {} as never;
       },
@@ -1229,12 +1388,41 @@ describe("asset delivery view", () => {
         detailComponent: "generic",
         title: "带封面的内容",
         cover: `/workspaces/digital/.scratch/product/managed-artifacts/e3/${digest}`,
+        files: [
+          {
+            name: "台本.pdf",
+            format: "PDF",
+            revisionId: "artifact-revision_script",
+            image: `/workspaces/digital/.scratch/product/managed-artifacts/e3/${digest}`,
+          },
+        ],
+        book: {
+          title: "带封面的内容",
+          contributors: [],
+          files: [
+            {
+              name: "台本.pdf",
+              format: "PDF",
+              revisionId: "artifact-revision_script",
+              image: `/workspaces/digital/.scratch/product/managed-artifacts/e3/${digest}`,
+            },
+          ],
+        },
         classifications: [],
         available: true,
         relationships: [],
       });
 
       expect(view.cover).toBe(`/api/artifacts/${digest}`);
+      expect(view.files).toEqual([
+        {
+          name: "台本.pdf",
+          format: "PDF",
+          revisionId: "artifact-revision_script",
+          image: `/api/artifacts/${digest}`,
+        },
+      ]);
+      expect(view.book?.files).toEqual(view.files);
     } finally {
       if (previous === undefined) delete process.env.DIGITAL_PRODUCT_DATA;
       else process.env.DIGITAL_PRODUCT_DATA = previous;

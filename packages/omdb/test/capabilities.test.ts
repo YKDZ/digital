@@ -95,7 +95,7 @@ async function associationOutcome(
         Released: "01 Jan 2004",
       }),
   }).collect(evidence);
-  const interpretation = new OmdbSourceInterpreter().interpret({
+  const [interpretation] = new OmdbSourceInterpreter().interpret({
     evidence: [evidence],
     sourceRecords: collection.records,
   });
@@ -214,7 +214,7 @@ describe("OMDb film source enrichment", () => {
           Released: "06 Aug 2004",
         }),
     }).collect(evidence!);
-    const interpretation = new OmdbSourceInterpreter().interpret({
+    const [interpretation] = new OmdbSourceInterpreter().interpret({
       evidence: [evidence!],
       sourceRecords: collection.records,
     });
@@ -292,7 +292,7 @@ describe("OMDb film source enrichment", () => {
     });
 
     const result = await collector.collect(evidence);
-    const interpretation = new OmdbSourceInterpreter().interpret({
+    const [interpretation] = new OmdbSourceInterpreter().interpret({
       evidence: [evidence],
       sourceRecords: result.records,
     });
@@ -389,7 +389,7 @@ describe("OMDb film source enrichment", () => {
     });
 
     const result = await collector.collect(evidence);
-    const interpretation = new OmdbSourceInterpreter().interpret({
+    const [interpretation] = new OmdbSourceInterpreter().interpret({
       evidence: [evidence],
       sourceRecords: result.records,
     });
@@ -551,7 +551,7 @@ describe("OMDb film source enrichment", () => {
     };
 
     const collected = await collector.collect(evidence);
-    const interpretation = new OmdbSourceInterpreter().interpret({
+    const [interpretation] = new OmdbSourceInterpreter().interpret({
       evidence: [evidence],
       sourceRecords: collected.records,
     });

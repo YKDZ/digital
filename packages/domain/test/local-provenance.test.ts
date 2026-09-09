@@ -110,21 +110,6 @@ function accepted(): AcceptedRecognition {
 describe("local format provenance", () => {
   it.each([
     [
-      "Source Association proposal",
-      (value: AcceptedRecognition): AcceptedRecognition => ({
-        ...value,
-        recognitionSourceAssociation: {
-          ...value.recognitionSourceAssociation!,
-          proposalId: "different-proposal",
-        },
-        sourceAssociations: value.sourceAssociations.map((association) => ({
-          ...association,
-          proposalId: "different-proposal",
-        })),
-      }),
-      "Source Association must reference the accepted Recognition Proposal",
-    ],
-    [
       "Recognition Decision proposal",
       (value: AcceptedRecognition): AcceptedRecognition => ({
         ...value,

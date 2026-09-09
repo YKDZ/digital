@@ -2,7 +2,7 @@ import {
   requestCatalogue,
   type CatalogueSnapshot,
   type CatalogueSurfaceResponse,
-} from "@digital/web-delivery";
+} from "@digital/web-delivery/client";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { useCatalogue } from "#/composables/use-catalogue";

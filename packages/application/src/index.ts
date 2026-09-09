@@ -11,10 +11,14 @@ import {
   type DigitalAsset,
   deriveEffectiveMetadata,
   type EffectiveMetadata,
+  type EvidenceComparison,
   type Location,
   type MetadataAssertion,
   type MetadataPolicy,
   type MetadataPolicyConflict,
+  type ObservedMaterialAssociationSubmission,
+  type ObservedMaterialAssociationAudit,
+  type ObservedMaterialAssociationProjection,
   type RecognitionEvidence,
   type RecognitionDecision,
   type RecognitionBasis,
@@ -22,6 +26,8 @@ import {
   type RecognitionProposalDraft,
   type RecognitionRuleResult,
   type SourceAssociation,
+  type SourceAssociationChangeProposal,
+  type SourceAssociationDecision,
   type SourceArtifactCandidate,
   type SourceCoverageScope,
   type SourceRefreshRun,
@@ -32,7 +38,9 @@ import {
   validateAcceptedRecognition,
   validateMetadataPolicy,
   validateRecognitionProposal,
+  validateObservedMaterialAssociationSubmission,
   validateReevaluatedRecognition,
+  validateSourceAssociationChange,
   validateSourceInterpretationBatch,
 } from "@digital/domain";
 
@@ -257,8 +265,50 @@ export type SourceEnrichmentInput = {
   readonly metadataSourceRecords: readonly {
     readonly id: string;
     readonly sourceIdentity: string;
+    readonly nativeAddress?: string;
   }[];
   readonly informationRequirement: InformationRequirement;
+};
+
+/**
+ * 来源能力公开其真正接受的显式寻址输入。字段只是稳定的调用合同，不是由核心解释的
+ * 来源 DSL；规范化和语法校验始终由实现该端口的来源能力完成。
+ */
+export type SourceInputRequirement = {
+  readonly sourceIdentity: string;
+  readonly displayName: string;
+  readonly fields: readonly {
+    readonly key: string;
+    readonly label: string;
+    readonly required: boolean;
+    readonly acceptedInput: string;
+    readonly example?: string;
+  }[];
+};
+
+export type SourceAddressingCapability = {
+  readonly capability: CapabilityCoordinate;
+  readonly inputRequirement: SourceInputRequirement;
+  normalize(input: Readonly<Record<string, string>>):
+    | {
+        readonly status: "accepted";
+        readonly normalizedInput: Readonly<Record<string, string>>;
+        readonly evidence: import("@digital/domain").RecognitionEvidence;
+      }
+    | { readonly status: "invalid"; readonly reason: string };
+};
+
+export type ExplicitSourceEnrichmentInput = {
+  readonly subjectId: string;
+  readonly sourceIdentity: string;
+  readonly sourceInput: Readonly<Record<string, string>>;
+  readonly informationRequirement?: InformationRequirement;
+  readonly initiatedBy?: string;
+  readonly onExecutionStarted?: (execution: WorkflowExecution) => void;
+  readonly onProgress?: (message: string) => void;
+  readonly onCheckpoint?: (execution: WorkflowExecution) => void;
+  /** 进程持有者生命周期；绝不作为工作流输入持久化。 */
+  readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
 };
 
 /** 把当前已接受事实解释为一个精确的补充来源候选。 */
@@ -290,6 +340,10 @@ export type SourceAssociationInterpreter = {
 
 /** 主识别关联以及当前适用的所有来源。 */
 export type AcceptedAssetState = AcceptedRecognition & {
+  readonly artifactAssociationRecognitionSupports?: readonly {
+    readonly associationId: string;
+    readonly recognitionDecisionId: string;
+  }[];
   /**
    * 该明确主体的不透明产品策略登记。定义仍由组合层持有；持久化只保存耐久适用性。
    */
@@ -298,6 +352,7 @@ export type AcceptedAssetState = AcceptedRecognition & {
   readonly metadataSourceRecords?: readonly {
     readonly id: string;
     readonly sourceIdentity: string;
+    readonly nativeAddress?: string;
   }[];
 };
 
@@ -321,6 +376,8 @@ export type ObservedArtifactReuseMatch =
     };
 
 export type AssetStateProjection = {
+  readonly recognitionState?: "recognized" | "unresolved";
+  readonly recognitionDecisionId?: string;
   readonly sourceAssociations: readonly Pick<
     SourceAssociation,
     "sourceIdentity" | "nativeAddress"
@@ -342,11 +399,98 @@ export type AssetStateProjection = {
   readonly primaryCoverArtifactId?: string;
 };
 
+export type PublicAssetStateProjection = Omit<
+  AssetStateProjection,
+  | "metadata"
+  | "entities"
+  | "entityMentions"
+  | "entityResolutionDecisions"
+  | "relationships"
+  | "locations"
+  | "artifactRevisions"
+  | "artifactAssociations"
+> & {
+  readonly metadata: readonly Omit<
+    import("@digital/domain").MetadataAssertion,
+    "producer" | "sourceRecordIds" | "authoredBy" | "observedArtifactPart"
+  >[];
+  readonly entities: readonly Omit<
+    import("@digital/domain").SourcedEntity,
+    "producer" | "sourceRecordIds"
+  >[];
+  readonly entityMentions: readonly Omit<
+    import("@digital/domain").EntityMention,
+    "producer" | "sourceRecordIds"
+  >[];
+  readonly entityResolutionDecisions: readonly Omit<
+    import("@digital/domain").EntityResolutionDecision,
+    "producer" | "sourceRecordIds"
+  >[];
+  readonly relationships: readonly Omit<
+    import("@digital/domain").EntityRelationship,
+    "producer" | "sourceRecordIds"
+  >[];
+  readonly artifactRevisions: readonly Omit<
+    import("@digital/domain").ArtifactRevision,
+    "producer"
+  >[];
+  readonly locations: readonly Pick<Location, "id" | "artifactId" | "kind">[];
+  readonly artifactAssociations: readonly (Pick<
+    ArtifactAssociation,
+    "id" | "subjectId" | "artifactId" | "role"
+  > &
+    Partial<Pick<ArtifactAssociation, "sourceAssociationId">>)[];
+};
+
+export type PublicRecognitionRuleResult = Pick<
+  RecognitionRuleResult,
+  "ruleId" | "ruleVersion" | "outcome" | "explanation"
+>;
+
+export type PublicRecognitionEvidence = {
+  readonly kind: string;
+  readonly explanation: string;
+  readonly sourceIdentity?: string;
+  readonly sourceAddress?: string;
+};
+
+export type PublicSourceAssociationCandidate = Pick<
+  SourceAssociationDecisionCandidate,
+  "outcome" | "sourceIdentity" | "nativeAddress" | "explanation"
+> & {
+  /** 对一次冻结执行稳定、且不暴露来源记录或能力坐标的选择引用。 */
+  readonly reference: string;
+  readonly ruleResults: readonly PublicRecognitionRuleResult[];
+};
+
+export type PublicEvidenceComparison = {
+  readonly observed: readonly PublicRecognitionEvidence[];
+  readonly manual: readonly PublicRecognitionEvidence[];
+  readonly sourceCandidates: readonly PublicSourceAssociationCandidate[];
+  readonly conflicts: readonly string[];
+};
+
 export type ChangeImpactPreview = {
+  readonly version: "change-impact-preview/2";
   readonly id: string;
   readonly executionId: string;
   readonly assetId: string;
-  readonly proposal: RecognitionProposal;
+  /** 识别取代兼容视图；来源关联与撤回预演不携带它。 */
+  readonly proposal?: RecognitionProposal;
+  readonly change:
+    | {
+        readonly kind: "source-association";
+        readonly proposal: SourceAssociationChangeProposal;
+      }
+    | {
+        readonly kind: "recognition-supersession";
+        readonly proposal: RecognitionProposal;
+      }
+    | {
+        readonly kind: "recognition-retraction";
+        readonly intent: import("@digital/domain").RecognitionDecisionRetractionIntent;
+      };
+  readonly evidenceComparison: import("@digital/domain").EvidenceComparison;
   /** 应用确认时仍必须成立的每个值。 */
   readonly baselines: readonly {
     readonly key: string;
@@ -357,6 +501,7 @@ export type ChangeImpactPreview = {
   /** 变更后由同一应用投影推导的完整状态。 */
   readonly projected: AssetStateProjection;
   readonly blockingConditions: readonly string[];
+  readonly rejectedBy?: string;
   readonly status: "awaiting-confirmation" | "rejected" | "applied" | "stale";
 };
 
@@ -376,10 +521,11 @@ export type ChangeImpactPreviewInspection = {
   readonly executionId: string;
   readonly assetId: string;
   readonly status: ChangeImpactPreview["status"];
+  readonly evidenceComparison: PublicEvidenceComparison;
   readonly sourceAssociations: ChangeImpactPreview["projected"]["sourceAssociations"];
   readonly recognitionSourceAssociation?: ChangeImpactPreview["projected"]["recognitionSourceAssociation"];
-  readonly current: AssetStateProjection;
-  readonly projected: AssetStateProjection;
+  readonly current: PublicAssetStateProjection;
+  readonly projected: PublicAssetStateProjection;
   readonly metadataCount: number;
   readonly entityCount: number;
   readonly mentionCount: number;
@@ -462,6 +608,42 @@ export type AssetRefreshWorkflowInput = {
   };
 };
 
+export type ObservedMaterialAssociationWorkflowInput = {
+  readonly version: "observed-material-association-input/1";
+  readonly trigger: "interactive";
+  readonly initiatedBy: string;
+  readonly acceptTrusted: false;
+  readonly configurationReferences: readonly string[];
+  readonly observedRoots?: undefined;
+  readonly operation?: undefined;
+  readonly targetAssetId: string;
+  readonly registrationId: string;
+  readonly relativeScope: string;
+  readonly relativePaths: readonly string[];
+};
+
+export type SourceAssociationDecisionWorkflowInput = {
+  readonly version: "source-association-decision-input/1";
+  readonly trigger: "interactive";
+  readonly initiatedBy: string;
+  readonly acceptTrusted: false;
+  readonly configurationReferences: readonly string[];
+  readonly intent: "establish" | "replace" | "retract";
+  readonly assetId: string;
+  readonly sourceIdentity?: string;
+  readonly predecessorAssociationId?: string;
+  readonly sourceInput?: Readonly<Record<string, string>>;
+  readonly reason?: string;
+  readonly priorExecutionId?: string;
+  readonly observedRoots?: undefined;
+  readonly operation?: undefined;
+};
+
+export type WorkflowExecutionInput =
+  | AssetRefreshWorkflowInput
+  | ObservedMaterialAssociationWorkflowInput
+  | SourceAssociationDecisionWorkflowInput;
+
 export type InvalidAssetRefreshWorkflowInput = {
   /**
    * 原始、不可执行的耐久输入，只为检查和明确的中断审计保留。兼容性读取器可以对无法
@@ -474,6 +656,134 @@ export type InvalidAssetRefreshWorkflowInput = {
 export type AssetRefreshWorkflowInputDecodeResult =
   | { readonly valid: true; readonly input: AssetRefreshWorkflowInput }
   | { readonly valid: false; readonly reason: string };
+
+export function decodeWorkflowExecutionInput(
+  value: unknown,
+):
+  | { readonly valid: true; readonly input: WorkflowExecutionInput }
+  | { readonly valid: false; readonly reason: string } {
+  if (
+    isStringRecord(value) &&
+    value.version === "source-association-decision-input/1"
+  ) {
+    const required = [
+      "acceptTrusted",
+      "assetId",
+      "configurationReferences",
+      "initiatedBy",
+      "intent",
+      "trigger",
+      "version",
+    ];
+    if (
+      !hasExactKeys(value, required, [
+        "predecessorAssociationId",
+        "priorExecutionId",
+        "reason",
+        "sourceIdentity",
+        "sourceInput",
+      ]) ||
+      value.trigger !== "interactive" ||
+      value.acceptTrusted !== false ||
+      !isNonEmptyString(value.initiatedBy) ||
+      !isNonEmptyString(value.assetId) ||
+      !["establish", "replace", "retract"].includes(value.intent as string) ||
+      !Array.isArray(value.configurationReferences) ||
+      value.configurationReferences.some((item) => !isNonEmptyString(item)) ||
+      new Set(value.configurationReferences).size !==
+        value.configurationReferences.length ||
+      [
+        value.predecessorAssociationId,
+        value.priorExecutionId,
+        value.reason,
+        value.sourceIdentity,
+      ].some((item) => item !== undefined && !isNonEmptyString(item)) ||
+      (value.sourceInput !== undefined &&
+        (!isStringRecord(value.sourceInput) ||
+          Object.values(value.sourceInput).some(
+            (item) => typeof item !== "string",
+          )))
+    )
+      return { valid: false, reason: "来源关联决定版本化输入无效" };
+    const intent =
+      value.intent as SourceAssociationDecisionWorkflowInput["intent"];
+    const hasSourceInput = value.sourceInput !== undefined;
+    const hasPredecessor = value.predecessorAssociationId !== undefined;
+    const hasReason = value.reason !== undefined;
+    if (
+      (intent === "establish" &&
+        (!isNonEmptyString(value.sourceIdentity) ||
+          !hasSourceInput ||
+          hasPredecessor ||
+          hasReason)) ||
+      (intent === "replace" &&
+        (!isNonEmptyString(value.sourceIdentity) ||
+          !hasSourceInput ||
+          !hasPredecessor ||
+          hasReason)) ||
+      (intent === "retract" &&
+        (!isNonEmptyString(value.sourceIdentity) ||
+          hasSourceInput ||
+          !hasPredecessor ||
+          !hasReason))
+    )
+      return { valid: false, reason: "来源关联决定输入与明确意图不匹配" };
+    return {
+      valid: true,
+      input: value as unknown as SourceAssociationDecisionWorkflowInput,
+    };
+  }
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    (value as { version?: unknown }).version ===
+      "observed-material-association-input/1"
+  ) {
+    const input = value as Record<string, unknown>;
+    const keys = [
+      "acceptTrusted",
+      "configurationReferences",
+      "initiatedBy",
+      "registrationId",
+      "relativePaths",
+      "relativeScope",
+      "targetAssetId",
+      "trigger",
+      "version",
+    ].toSorted((left, right) => left.localeCompare(right));
+    if (
+      JSON.stringify(Object.keys(input).toSorted()) !== JSON.stringify(keys) ||
+      input.trigger !== "interactive" ||
+      input.acceptTrusted !== false ||
+      !Array.isArray(input.configurationReferences) ||
+      input.configurationReferences.some(
+        (item) => typeof item !== "string" || item.length === 0,
+      ) ||
+      new Set(input.configurationReferences).size !==
+        input.configurationReferences.length ||
+      typeof input.initiatedBy !== "string" ||
+      input.initiatedBy.trim().length === 0 ||
+      typeof input.targetAssetId !== "string" ||
+      input.targetAssetId.length === 0 ||
+      typeof input.registrationId !== "string" ||
+      input.registrationId.length === 0 ||
+      typeof input.relativeScope !== "string" ||
+      !Array.isArray(input.relativePaths) ||
+      input.relativePaths.length === 0 ||
+      input.relativePaths.some(
+        (item) => typeof item !== "string" || item.length === 0,
+      ) ||
+      new Set(input.relativePaths).size !== input.relativePaths.length
+    )
+      return { valid: false, reason: "观察材料关联版本化输入无效" };
+    return {
+      valid: true,
+      input: input as unknown as ObservedMaterialAssociationWorkflowInput,
+    };
+  }
+  return decodeAssetRefreshWorkflowInput(value);
+}
 
 function isWorkflowExecutionTrigger(
   value: unknown,
@@ -668,7 +978,13 @@ export type WorkItemDisposition = {
   readonly reason?: string;
   /** 由 Application 持有、且平台中立的操作失败分类。 */
   readonly failureClassification?: OperationalFailureClassification;
+  readonly sourceFailureCodes?: readonly SourceFailureCode[];
   readonly effectReference?: string;
+};
+
+export type SourceFailureCode = {
+  readonly capability: CapabilityCoordinate;
+  readonly code: string;
 };
 
 export type AssetRefreshTargetDisposition = {
@@ -924,6 +1240,8 @@ type SourceEnrichmentCheckpointBase = {
   /** 在采集前冻结，使恢复过程无需重新发现该意图。 */
   readonly subject: SourceEnrichmentInput;
   readonly evidence: RecognitionEvidence;
+  /** 来源能力规范化后的非秘密显式输入，供失败检查和正式重试复用。 */
+  readonly explicitInput?: Readonly<Record<string, string>>;
   readonly fulfilledArtifactRoles: readonly {
     readonly role: string;
     readonly count: number;
@@ -945,14 +1263,71 @@ type InterpretedSourceEnrichmentCheckpoint = SourceEnrichmentCheckpointBase & {
   readonly managedSourceArtifacts?: readonly ManagedSourceArtifactCheckpoint[];
 };
 
+function sourceEnrichmentDecision(
+  checkpoint: InterpretedSourceEnrichmentCheckpoint,
+  initiatedBy: string,
+): {
+  readonly proposal: SourceAssociationChangeProposal;
+  readonly decision: SourceAssociationDecision;
+} {
+  const explicitActor =
+    checkpoint.explicitInput === undefined ? undefined : initiatedBy;
+  const proposal: SourceAssociationChangeProposal = {
+    id: `source-association-proposal:${checkpoint.sourceAssociation.id}`,
+    kind: "establish",
+    subjectId: checkpoint.subjectId,
+    successor: checkpoint.sourceAssociation,
+    sourceRecordIds: checkpoint.sourceRecordIds,
+    proposedBy:
+      explicitActor === undefined
+        ? { kind: "capability", coordinate: checkpoint.evidence.producer }
+        : { kind: "user", actorId: explicitActor },
+    evidence: {
+      observed: [],
+      manual:
+        checkpoint.explicitInput === undefined ? [] : [checkpoint.evidence],
+      sourceCandidates: [
+        {
+          outcome: "accepted",
+          sourceIdentity: checkpoint.interpretation.sourceIdentity,
+          nativeAddress: checkpoint.interpretation.sourceAddress,
+          sourceRecordIds: checkpoint.sourceRecordIds,
+          ruleResults: [],
+          explanation: "来源解释与明确地址一致",
+        },
+      ],
+      conflicts: [],
+    },
+  };
+  const decision: SourceAssociationDecision = {
+    id: `source-association-decision:${checkpoint.sourceAssociation.id}`,
+    proposalId: proposal.id,
+    subjectId: checkpoint.subjectId,
+    decidedBy:
+      explicitActor === undefined
+        ? {
+            kind: "application-policy",
+            policyCoordinate: "source-enrichment/exact-interpretation/1",
+          }
+        : { kind: "user", actorId: explicitActor },
+  };
+  validateSourceAssociationChange({ proposal, decision });
+  return { proposal, decision };
+}
+
 type CandidateSourceEnrichmentCheckpoint = SourceEnrichmentCheckpointBase & {
   readonly stage: "candidate-interpreted";
 };
 
+type DurableSourceCollectionFailure = Omit<
+  SourceCollectionFailure,
+  "failureCode"
+>;
+
 type RetainedSourceEnrichmentCheckpoint = SourceEnrichmentCheckpointBase & {
   readonly stage: "source-records-retained";
   readonly sourceRecordIds: readonly string[];
-  readonly collectionFailures: readonly SourceCollectionFailure[];
+  readonly collectionFailures: readonly DurableSourceCollectionFailure[];
 };
 
 export type SourceEnrichmentCheckpoint =
@@ -961,7 +1336,7 @@ export type SourceEnrichmentCheckpoint =
   | (SourceEnrichmentCheckpointBase & {
       readonly stage: "failed";
       readonly sourceRecordIds: readonly string[];
-      readonly collectionFailures: readonly SourceCollectionFailure[];
+      readonly collectionFailures: readonly DurableSourceCollectionFailure[];
     })
   | InterpretedSourceEnrichmentCheckpoint;
 
@@ -988,18 +1363,26 @@ export type WorkflowExecutionCancellation = {
 export type WorkflowExecution = {
   readonly id: string;
   /** 仅旧行可能缺失；这类行不能安全恢复。 */
-  readonly workflowInput?: AssetRefreshWorkflowInput;
+  readonly workflowInput?: WorkflowExecutionInput;
   /** 不可执行的持久化重放坐标仍可查询，只为使恢复过程能够停止它。 */
   readonly workflowInputInvalid?: InvalidAssetRefreshWorkflowInput;
   readonly selection: {
     /** 旧版单范围输入；精确主体执行中不存在。 */
     readonly directory?: string;
-    readonly intent?: "scan-now" | "metadata-refresh" | "directed-recognition";
+    readonly intent?:
+      | "scan-now"
+      | "metadata-refresh"
+      | "directed-recognition"
+      | "source-enrichment";
     readonly informationRequirement?: InformationRequirement;
   };
   /** 旧版单范围观察；仅主体执行中不存在。 */
   readonly snapshot?: FilesystemPackageSnapshot;
-  readonly operationKind?: "scan-filesystem" | "refresh-metadata" | "rescrape";
+  readonly operationKind?:
+    | "scan-filesystem"
+    | "refresh-metadata"
+    | "rescrape"
+    | "associate-observed-material";
   readonly requestedSelection?: AssetRefreshSelection;
   readonly resolvedSelection?: ResolvedAssetRefreshSelection;
   readonly filesystemSnapshots?: readonly FilesystemPackageSnapshot[];
@@ -1037,9 +1420,131 @@ export type WorkflowExecution = {
   readonly sourceArtifactAcquisitions?: readonly SourceArtifactAcquisitionCheckpoint[];
   readonly managedSourceArtifacts?: readonly ManagedSourceArtifactCheckpoint[];
   readonly sourceEnrichments?: readonly SourceEnrichmentCheckpoint[];
+  readonly materialAssociation?: ObservedMaterialAssociationCheckpoint;
+  readonly materialAssociationInvalid?: InvalidAssetRefreshWorkflowInput;
+  readonly sourceAssociationDecision?: SourceAssociationDecisionCheckpoint;
+  readonly sourceAssociationDecisionInvalid?: InvalidAssetRefreshWorkflowInput;
   readonly automationIntentId?: string;
   /** 仅供旧版使用的触发列；新执行使用 `workflowInput.trigger`。 */
   readonly trigger?: string;
+};
+
+export type SourceAssociationDecisionCandidate = {
+  readonly outcome: "accepted" | "contradicted";
+  readonly sourceIdentity: string;
+  readonly nativeAddress: string;
+  readonly sourceRecordIds: readonly string[];
+  readonly ruleResults: readonly RecognitionRuleResult[];
+  readonly interpretation: SourceInterpretationBatch;
+  readonly explanation: string;
+};
+
+export type SourceAssociationDecisionInspection = {
+  readonly executionId: string;
+  readonly status: WorkflowExecution["status"];
+  readonly state: SourceAssociationDecisionCheckpoint["state"];
+  readonly assetId: string;
+  readonly intent: SourceAssociationDecisionCheckpoint["intent"];
+  readonly predecessor?: SourceAssociation;
+  readonly currentAssociations: readonly SourceAssociation[];
+  readonly historicalAssociations: readonly {
+    readonly association: SourceAssociation;
+    readonly status: "superseded" | "retracted" | "legacy-retired";
+    readonly authorizedBy?: SourceAssociationTerminationAudit;
+  }[];
+  readonly inputRequirements: readonly SourceInputRequirement[];
+  readonly candidates: readonly PublicSourceAssociationCandidate[];
+  readonly evidenceComparison?: PublicEvidenceComparison;
+  readonly failure?: string;
+  readonly preview?: ChangeImpactPreviewInspection;
+  readonly availableActions: readonly (
+    | "select"
+    | "apply"
+    | "reject"
+    | "retry"
+    | "cancel"
+  )[];
+};
+
+/** 正式检查路径公开的追加式终止权威；只含可核对的领域标识，不泄漏存储坐标。 */
+export type SourceAssociationTerminationAudit =
+  | {
+      readonly kind: "recognition-decision-supersession";
+      readonly supersessionId: string;
+      readonly predecessorDecisionId: string;
+      readonly predecessorProposalId: string;
+      readonly successorDecisionId: string;
+      readonly successorProposalId: string;
+    }
+  | {
+      readonly kind: "source-association-decision";
+      readonly decisionId: string;
+    }
+  | {
+      readonly kind: "recognition-decision-retraction";
+      readonly retractionId: string;
+    };
+
+export type SourceNormalizationRecord = {
+  readonly version: "source-normalization-record/1";
+  readonly rawInput: Readonly<Record<string, string>>;
+  readonly capability: CapabilityCoordinate;
+  readonly normalizedInput: Readonly<Record<string, string>>;
+  readonly evidence: RecognitionEvidence;
+  readonly integrityFingerprint: string;
+};
+
+type SourceNormalizationRecordContent = Omit<
+  SourceNormalizationRecord,
+  "integrityFingerprint"
+>;
+
+function canonicalIntegrityValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalIntegrityValue);
+  if (!isStringRecord(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .toSorted(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([key, item]) => [key, canonicalIntegrityValue(item)]),
+  );
+}
+
+/** 只检测归一化记录的非对抗性局部损坏，不证明外部来源语义。 */
+function sourceNormalizationIntegrityFingerprint(
+  value: SourceNormalizationRecordContent,
+): string {
+  return createHash("sha256")
+    .update("source-normalization-record-integrity/1\0")
+    .update(JSON.stringify(canonicalIntegrityValue(value)))
+    .digest("hex");
+}
+
+export type SourceAssociationDecisionCheckpoint = {
+  readonly version: "source-association-decision-checkpoint/1";
+  readonly state:
+    | "created"
+    | "normalizing"
+    | "collecting"
+    | "interpreting"
+    | "awaiting-selection"
+    | "awaiting-confirmation"
+    | "no-change"
+    | "applied"
+    | "rejected"
+    | "stale"
+    | "failed"
+    | "cancelled"
+    | "interrupted";
+  readonly intent: "establish" | "replace" | "retract";
+  readonly assetId: string;
+  readonly sourceIdentity?: string;
+  readonly predecessor?: SourceAssociation;
+  readonly normalization?: SourceNormalizationRecord;
+  readonly candidates: readonly SourceAssociationDecisionCandidate[];
+  readonly capturedSourceRecordIds: readonly string[];
+  readonly proposal?: SourceAssociationChangeProposal;
+  readonly previewId?: string;
+  readonly failure?: string;
 };
 
 export type ExecutionInspection = {
@@ -1073,6 +1578,2062 @@ export type LocalContentReview = {
   readonly status: "proposed" | "accepted";
   readonly relativePaths: readonly string[];
   readonly content: NonNullable<AssetRefreshInspection["accepted"]>;
+};
+
+export type ObservedMaterialAssociationCheckpoint = {
+  readonly version: "observed-material-association-checkpoint/1";
+  readonly state:
+    | "created"
+    | "observing"
+    | "inspecting"
+    | "awaiting-confirmation"
+    | "confirmation-recorded"
+    | "revalidating"
+    | "accepted"
+    | "no-change"
+    | "stale"
+    | "failed"
+    | "interrupted";
+  readonly input: {
+    readonly targetAssetId: string;
+    readonly registrationId: string;
+    readonly registrationVersion?: number;
+    readonly relativeScope: string;
+    readonly relativePaths: readonly string[];
+    readonly initiatedBy: string;
+  };
+  readonly registrationDisplayName?: string;
+  readonly snapshot?: FilesystemPackageSnapshot;
+  readonly identityBaseline?: string;
+  readonly materialBaseline?: string;
+  readonly submission?: ObservedMaterialAssociationSubmission;
+  readonly confirmedBy?: string;
+  readonly associationIds?: readonly string[];
+  readonly decisionId?: string;
+};
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): boolean {
+  const keys = Object.keys(value);
+  return (
+    required.every((key) => keys.includes(key)) &&
+    keys.every((key) => required.includes(key) || optional.includes(key))
+  );
+}
+
+function isStringRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isStrictProposalAuthor(value: unknown): boolean {
+  if (!isStringRecord(value)) return false;
+  if (value.kind === "user")
+    return (
+      hasExactKeys(value, ["actorId", "kind"]) &&
+      isNonEmptyString(value.actorId)
+    );
+  return (
+    value.kind === "capability" &&
+    hasExactKeys(value, ["coordinate", "kind"]) &&
+    isStrictCapabilityCoordinate(value.coordinate)
+  );
+}
+
+function isStrictSourceAssociation(value: unknown): boolean {
+  return (
+    isStringRecord(value) &&
+    hasExactKeys(value, [
+      "id",
+      "nativeAddress",
+      "sourceIdentity",
+      "subjectId",
+    ]) &&
+    [
+      value.id,
+      value.nativeAddress,
+      value.sourceIdentity,
+      value.subjectId,
+    ].every(isNonEmptyString)
+  );
+}
+
+function isStrictSourceNormalizationRecord(
+  value: unknown,
+): value is SourceNormalizationRecord {
+  return (
+    isStringRecord(value) &&
+    hasExactKeys(value, [
+      "capability",
+      "evidence",
+      "integrityFingerprint",
+      "normalizedInput",
+      "rawInput",
+      "version",
+    ]) &&
+    value.version === "source-normalization-record/1" &&
+    isStringRecord(value.rawInput) &&
+    Object.values(value.rawInput).every((item) => typeof item === "string") &&
+    isStringRecord(value.normalizedInput) &&
+    Object.values(value.normalizedInput).every(
+      (item) => typeof item === "string",
+    ) &&
+    isStrictCapabilityCoordinate(value.capability) &&
+    isStrictRecognitionEvidence(value.evidence) &&
+    capabilityCoordinate((value.evidence as RecognitionEvidence).producer) ===
+      capabilityCoordinate(value.capability as CapabilityCoordinate) &&
+    value.integrityFingerprint ===
+      sourceNormalizationIntegrityFingerprint({
+        version: value.version,
+        rawInput: value.rawInput as Readonly<Record<string, string>>,
+        capability: value.capability as CapabilityCoordinate,
+        normalizedInput: value.normalizedInput as Readonly<
+          Record<string, string>
+        >,
+        evidence: value.evidence as RecognitionEvidence,
+      })
+  );
+}
+
+function isStrictEvidenceComparison(value: unknown): boolean {
+  if (
+    !isStringRecord(value) ||
+    !hasExactKeys(value, [
+      "conflicts",
+      "manual",
+      "observed",
+      "sourceCandidates",
+    ]) ||
+    !Array.isArray(value.observed) ||
+    !value.observed.every(isStrictRecognitionEvidence) ||
+    !Array.isArray(value.manual) ||
+    !value.manual.every(isStrictRecognitionEvidence) ||
+    !Array.isArray(value.conflicts) ||
+    !value.conflicts.every(isNonEmptyString) ||
+    !Array.isArray(value.sourceCandidates)
+  )
+    return false;
+  return value.sourceCandidates.every(
+    (candidate) =>
+      isStringRecord(candidate) &&
+      hasExactKeys(
+        candidate,
+        [
+          "explanation",
+          "nativeAddress",
+          "outcome",
+          "ruleResults",
+          "sourceIdentity",
+          "sourceRecordIds",
+        ],
+        ["reference"],
+      ) &&
+      (candidate.reference === undefined ||
+        isNonEmptyString(candidate.reference)) &&
+      ["accepted", "contradicted"].includes(candidate.outcome as string) &&
+      isNonEmptyString(candidate.explanation) &&
+      isNonEmptyString(candidate.nativeAddress) &&
+      isNonEmptyString(candidate.sourceIdentity) &&
+      Array.isArray(candidate.sourceRecordIds) &&
+      candidate.sourceRecordIds.every(isNonEmptyString) &&
+      new Set(candidate.sourceRecordIds).size ===
+        candidate.sourceRecordIds.length &&
+      Array.isArray(candidate.ruleResults) &&
+      candidate.ruleResults.every(isStrictRecognitionRuleResult),
+  );
+}
+
+function isStrictSourceAssociationProposal(value: unknown): boolean {
+  if (
+    !isStringRecord(value) ||
+    !["establish", "replace", "retract"].includes(value.kind as string)
+  )
+    return false;
+  const commonValid =
+    isNonEmptyString(value.id) &&
+    isNonEmptyString(value.subjectId) &&
+    isStrictProposalAuthor(value.proposedBy) &&
+    isStrictEvidenceComparison(value.evidence);
+  if (!commonValid) return false;
+  if (value.kind === "retract")
+    return (
+      hasExactKeys(value, [
+        "evidence",
+        "id",
+        "kind",
+        "predecessorAssociationId",
+        "proposedBy",
+        "reason",
+        "subjectId",
+      ]) &&
+      isNonEmptyString(value.predecessorAssociationId) &&
+      isNonEmptyString(value.reason)
+    );
+  const required = [
+    "evidence",
+    "id",
+    "kind",
+    "proposedBy",
+    "sourceRecordIds",
+    "subjectId",
+    "successor",
+    ...(value.kind === "replace" ? ["predecessorAssociationId"] : []),
+  ];
+  return (
+    hasExactKeys(value, required) &&
+    isStrictSourceAssociation(value.successor) &&
+    Array.isArray(value.sourceRecordIds) &&
+    value.sourceRecordIds.every(isNonEmptyString) &&
+    new Set(value.sourceRecordIds).size === value.sourceRecordIds.length &&
+    (value.kind !== "replace" ||
+      isNonEmptyString(value.predecessorAssociationId))
+  );
+}
+
+/** 持久化适配器与 readiness 共用的来源关联提议精确解码边界。 */
+export function decodeSourceAssociationChangeProposal(
+  value: unknown,
+):
+  | { readonly valid: true; readonly value: SourceAssociationChangeProposal }
+  | { readonly valid: false; readonly reason: string } {
+  if (!isStrictSourceAssociationProposal(value))
+    return { valid: false, reason: "来源关联提议结构无效" };
+  return {
+    valid: true,
+    value: value as SourceAssociationChangeProposal,
+  };
+}
+
+export function decodeSourceAssociationDecisionCheckpoint(value: unknown):
+  | {
+      readonly valid: true;
+      readonly value: SourceAssociationDecisionCheckpoint;
+    }
+  | { readonly valid: false; readonly reason: string } {
+  if (!isStringRecord(value))
+    return { valid: false, reason: "来源关联决定检查点必须是对象" };
+  if (
+    value.version !== "source-association-decision-checkpoint/1" ||
+    ![
+      "created",
+      "normalizing",
+      "collecting",
+      "interpreting",
+      "awaiting-selection",
+      "awaiting-confirmation",
+      "no-change",
+      "applied",
+      "rejected",
+      "stale",
+      "failed",
+      "cancelled",
+      "interrupted",
+    ].includes(value.state as string) ||
+    !["establish", "replace", "retract"].includes(value.intent as string) ||
+    !isNonEmptyString(value.assetId) ||
+    !Array.isArray(value.candidates) ||
+    !Array.isArray(value.capturedSourceRecordIds) ||
+    value.capturedSourceRecordIds.some((item) => !isNonEmptyString(item)) ||
+    new Set(value.capturedSourceRecordIds).size !==
+      value.capturedSourceRecordIds.length ||
+    !hasExactKeys(
+      value,
+      [
+        "assetId",
+        "candidates",
+        "capturedSourceRecordIds",
+        "intent",
+        "state",
+        "version",
+      ],
+      [
+        "failure",
+        "normalization",
+        "predecessor",
+        "previewId",
+        "proposal",
+        "sourceIdentity",
+      ],
+    )
+  )
+    return { valid: false, reason: "来源关联决定检查点结构无效" };
+  const checkpoint = value as unknown as SourceAssociationDecisionCheckpoint;
+  if (
+    checkpoint.candidates.some(
+      (candidate) =>
+        !isStringRecord(candidate) ||
+        !hasExactKeys(candidate, [
+          "explanation",
+          "interpretation",
+          "nativeAddress",
+          "outcome",
+          "ruleResults",
+          "sourceIdentity",
+          "sourceRecordIds",
+        ]) ||
+        !["accepted", "contradicted"].includes(candidate.outcome as string) ||
+        !isNonEmptyString(candidate.explanation) ||
+        !isNonEmptyString(candidate.nativeAddress) ||
+        !isNonEmptyString(candidate.sourceIdentity) ||
+        !Array.isArray(candidate.sourceRecordIds) ||
+        candidate.sourceRecordIds.some((id) => !isNonEmptyString(id)) ||
+        new Set(candidate.sourceRecordIds).size !==
+          candidate.sourceRecordIds.length ||
+        !Array.isArray(candidate.ruleResults) ||
+        !candidate.ruleResults.every(isStrictRecognitionRuleResult) ||
+        !isStrictSourceInterpretationBatch(candidate.interpretation),
+    ) ||
+    (checkpoint.predecessor !== undefined &&
+      (!isStringRecord(checkpoint.predecessor) ||
+        !hasExactKeys(checkpoint.predecessor, [
+          "id",
+          "nativeAddress",
+          "sourceIdentity",
+          "subjectId",
+        ]) ||
+        !isNonEmptyString(checkpoint.predecessor.id) ||
+        !isNonEmptyString(checkpoint.predecessor.subjectId) ||
+        !isNonEmptyString(checkpoint.predecessor.sourceIdentity) ||
+        !isNonEmptyString(checkpoint.predecessor.nativeAddress))) ||
+    (checkpoint.normalization !== undefined &&
+      !isStrictSourceNormalizationRecord(checkpoint.normalization)) ||
+    [checkpoint.failure, checkpoint.previewId, checkpoint.sourceIdentity].some(
+      (item) => item !== undefined && !isNonEmptyString(item),
+    )
+  )
+    return { valid: false, reason: "来源关联决定检查点内容无效" };
+  const sameStringSet = (left: readonly string[], right: readonly string[]) =>
+    JSON.stringify([...left].toSorted()) ===
+    JSON.stringify([...right].toSorted());
+  const hasNormalization = checkpoint.normalization !== undefined;
+  const hasProposalValue = checkpoint.proposal !== undefined;
+  const hasPreviewId = checkpoint.previewId !== undefined;
+  const captured = new Set(checkpoint.capturedSourceRecordIds);
+  const candidateKeys = checkpoint.candidates.map((candidate) =>
+    JSON.stringify({
+      outcome: candidate.outcome,
+      sourceIdentity: candidate.sourceIdentity,
+      nativeAddress: candidate.nativeAddress,
+      sourceRecordIds: [...candidate.sourceRecordIds].toSorted(),
+      ruleResults: candidate.ruleResults,
+      interpretation: candidate.interpretation,
+      explanation: candidate.explanation,
+    }),
+  );
+  if (
+    !isNonEmptyString(checkpoint.sourceIdentity) ||
+    hasProposalValue !== hasPreviewId ||
+    (checkpoint.predecessor !== undefined &&
+      (checkpoint.predecessor.subjectId !== checkpoint.assetId ||
+        checkpoint.predecessor.sourceIdentity !== checkpoint.sourceIdentity)) ||
+    (checkpoint.normalization !== undefined &&
+      (checkpoint.normalization.evidence.sourceIdentity !==
+        checkpoint.sourceIdentity ||
+        checkpoint.normalization.evidence.sourceAddress === undefined)) ||
+    checkpoint.candidates.some(
+      (candidate) =>
+        candidate.sourceIdentity !== checkpoint.sourceIdentity ||
+        candidate.sourceIdentity !== candidate.interpretation.sourceIdentity ||
+        candidate.nativeAddress !== candidate.interpretation.sourceAddress ||
+        !sameStringSet(
+          candidate.sourceRecordIds,
+          candidate.interpretation.sourceRecordIds,
+        ) ||
+        candidate.sourceRecordIds.some(
+          (sourceRecordId) => !captured.has(sourceRecordId),
+        ),
+    ) ||
+    new Set(candidateKeys).size !== candidateKeys.length
+  )
+    return { valid: false, reason: "来源关联决定检查点坐标不一致" };
+  if (checkpoint.proposal !== undefined) {
+    const proposal = checkpoint.proposal;
+    if (!decodeSourceAssociationChangeProposal(proposal).valid)
+      return { valid: false, reason: "来源关联决定检查点提议结构无效" };
+    try {
+      validateSourceAssociationChange({
+        proposal,
+        ...(checkpoint.predecessor === undefined
+          ? {}
+          : { predecessor: checkpoint.predecessor }),
+      });
+    } catch {
+      return { valid: false, reason: "来源关联决定检查点提议无效" };
+    }
+    if (
+      proposal.subjectId !== checkpoint.assetId ||
+      proposal.kind !== checkpoint.intent ||
+      (checkpoint.state !== "awaiting-confirmation" &&
+        !["applied", "rejected", "stale"].includes(checkpoint.state))
+    )
+      return { valid: false, reason: "来源关联决定检查点提议状态无效" };
+    if (proposal.kind === "retract") {
+      if (
+        proposal.evidence.observed.length !== 0 ||
+        proposal.evidence.manual.length !== 0 ||
+        proposal.evidence.sourceCandidates.length !== 0 ||
+        proposal.evidence.conflicts.length !== 0
+      )
+        return { valid: false, reason: "来源关联撤回提议证据无效" };
+    } else {
+      const selected = checkpoint.candidates.filter(
+        (candidate) =>
+          candidate.sourceIdentity === proposal.successor.sourceIdentity &&
+          candidate.nativeAddress === proposal.successor.nativeAddress &&
+          sameStringSet(candidate.sourceRecordIds, proposal.sourceRecordIds),
+      );
+      if (
+        selected.length !== 1 ||
+        proposal.successor.subjectId !== checkpoint.assetId ||
+        proposal.successor.sourceIdentity !== checkpoint.sourceIdentity ||
+        !sameStringSet(checkpoint.capturedSourceRecordIds, [
+          ...new Set(
+            checkpoint.candidates.flatMap(
+              ({ sourceRecordIds }) => sourceRecordIds,
+            ),
+          ),
+        ]) ||
+        JSON.stringify(proposal.evidence.sourceCandidates) !==
+          JSON.stringify(
+            checkpoint.candidates.map((candidate) => ({
+              ...(proposal.evidence.sourceCandidates.every(
+                (evidenceCandidate) =>
+                  evidenceCandidate.reference !== undefined,
+              )
+                ? {
+                    reference:
+                      publicSourceAssociationCandidate(candidate).reference,
+                  }
+                : {}),
+              outcome: candidate.outcome,
+              sourceIdentity: candidate.sourceIdentity,
+              nativeAddress: candidate.nativeAddress,
+              sourceRecordIds: candidate.sourceRecordIds,
+              ruleResults: candidate.ruleResults,
+              explanation: candidate.explanation,
+            })),
+          ) ||
+        JSON.stringify(proposal.evidence.manual) !==
+          JSON.stringify(
+            checkpoint.normalization === undefined
+              ? []
+              : [checkpoint.normalization.evidence],
+          ) ||
+        proposal.evidence.observed.length !== 0 ||
+        JSON.stringify(proposal.evidence.conflicts) !==
+          JSON.stringify(
+            checkpoint.candidates
+              .filter(({ outcome }) => outcome === "contradicted")
+              .map(({ explanation }) => explanation),
+          )
+      )
+        return { valid: false, reason: "来源关联决定检查点候选提议不一致" };
+    }
+  }
+  if (
+    (checkpoint.state === "awaiting-selection" &&
+      checkpoint.candidates.length < 2) ||
+    (checkpoint.state === "awaiting-confirmation" &&
+      (checkpoint.proposal === undefined || checkpoint.previewId === undefined))
+  )
+    return { valid: false, reason: "来源关联决定检查点状态不完整" };
+  const forbiddenOutsideFailed =
+    checkpoint.failure !== undefined && checkpoint.state !== "failed";
+  const missingFailedReason =
+    checkpoint.state === "failed" && checkpoint.failure === undefined;
+  if (forbiddenOutsideFailed || missingFailedReason)
+    return { valid: false, reason: "来源关联决定检查点终态字段无效" };
+  const hasCandidateInput = hasNormalization;
+  const hasProposal = hasProposalValue && hasPreviewId;
+  const intentInvalid =
+    (checkpoint.intent === "establish" &&
+      checkpoint.predecessor !== undefined) ||
+    (checkpoint.intent !== "establish" &&
+      checkpoint.predecessor === undefined) ||
+    (checkpoint.intent === "retract" &&
+      (checkpoint.normalization !== undefined ||
+        checkpoint.candidates.length > 0 ||
+        checkpoint.capturedSourceRecordIds.length > 0));
+  const stateInvalid =
+    (["created", "normalizing"].includes(checkpoint.state) &&
+      (hasCandidateInput ||
+        checkpoint.candidates.length > 0 ||
+        checkpoint.capturedSourceRecordIds.length > 0 ||
+        hasProposal)) ||
+    (checkpoint.state === "collecting" &&
+      (!hasCandidateInput ||
+        checkpoint.candidates.length > 0 ||
+        checkpoint.capturedSourceRecordIds.length > 0 ||
+        hasProposal)) ||
+    (checkpoint.state === "interpreting" &&
+      (!hasCandidateInput ||
+        checkpoint.capturedSourceRecordIds.length === 0 ||
+        checkpoint.candidates.length > 1 ||
+        hasProposal)) ||
+    (checkpoint.state === "awaiting-selection" &&
+      (!hasCandidateInput || hasProposal)) ||
+    (checkpoint.state === "awaiting-confirmation" && !hasProposal) ||
+    (checkpoint.state === "awaiting-confirmation" &&
+      checkpoint.intent !== "retract" &&
+      checkpoint.candidates.length === 0) ||
+    (["applied", "rejected", "stale"].includes(checkpoint.state) &&
+      !hasProposal) ||
+    (["failed", "cancelled", "interrupted", "no-change"].includes(
+      checkpoint.state,
+    ) &&
+      hasProposal);
+  if (intentInvalid || stateInvalid)
+    return { valid: false, reason: "来源关联决定检查点状态字段组合无效" };
+  return { valid: true, value: checkpoint };
+}
+
+/** 持久执行封装必须把公开意图与私有检查点绑定为同一条因果链。 */
+export function validateSourceAssociationDecisionEnvelope(
+  execution: Pick<
+    WorkflowExecution,
+    | "id"
+    | "workflowInput"
+    | "acceptedAssetId"
+    | "compatibility"
+    | "sourceRecordIds"
+    | "sourceAssociationDecision"
+  >,
+): boolean {
+  const workflowInput = execution.workflowInput;
+  const checkpoint = execution.sourceAssociationDecision;
+  if (checkpoint === undefined)
+    return workflowInput?.version !== "source-association-decision-input/1";
+  if (
+    workflowInput?.version !== "source-association-decision-input/1" ||
+    !decodeSourceAssociationDecisionCheckpoint(checkpoint).valid
+  )
+    return false;
+  const stableInput = (value: Readonly<Record<string, string>> | undefined) =>
+    value === undefined
+      ? undefined
+      : Object.fromEntries(
+          Object.entries(value).toSorted(([left], [right]) =>
+            left.localeCompare(right),
+          ),
+        );
+  return (
+    workflowInput.intent === checkpoint.intent &&
+    workflowInput.assetId === checkpoint.assetId &&
+    execution.acceptedAssetId === checkpoint.assetId &&
+    workflowInput.priorExecutionId !== execution.id &&
+    JSON.stringify([...execution.sourceRecordIds].toSorted()) ===
+      JSON.stringify([...checkpoint.capturedSourceRecordIds].toSorted()) &&
+    workflowInput.sourceIdentity === checkpoint.sourceIdentity &&
+    workflowInput.predecessorAssociationId === checkpoint.predecessor?.id &&
+    (checkpoint.normalization === undefined ||
+      (JSON.stringify(stableInput(workflowInput.sourceInput)) ===
+        JSON.stringify(stableInput(checkpoint.normalization.rawInput)) &&
+        execution.compatibility.capabilityCoordinates.includes(
+          capabilityCoordinate(checkpoint.normalization.capability),
+        ))) &&
+    (checkpoint.predecessor === undefined ||
+      (checkpoint.predecessor.subjectId === workflowInput.assetId &&
+        checkpoint.predecessor.sourceIdentity ===
+          workflowInput.sourceIdentity)) &&
+    (checkpoint.normalization === undefined ||
+      checkpoint.normalization.evidence.sourceIdentity ===
+        workflowInput.sourceIdentity) &&
+    (checkpoint.proposal === undefined ||
+      (checkpoint.proposal.proposedBy.kind === "user" &&
+        checkpoint.proposal.proposedBy.actorId ===
+          workflowInput.initiatedBy)) &&
+    (checkpoint.proposal?.kind !== "retract" ||
+      checkpoint.proposal.reason === workflowInput.reason)
+  );
+}
+
+/** 重试输入只能指向同一冻结动作的一条真实、已终止来源决定执行。 */
+export function validateSourceAssociationDecisionPriorExecution(
+  execution: Pick<WorkflowExecution, "id" | "workflowInput">,
+  prior:
+    | Pick<
+        WorkflowExecution,
+        "id" | "status" | "workflowInput" | "sourceAssociationDecision"
+      >
+    | undefined,
+): boolean {
+  const input = execution.workflowInput;
+  if (input?.version !== "source-association-decision-input/1") return true;
+  if (input.priorExecutionId === undefined) return true;
+  const priorInput = prior?.workflowInput;
+  if (
+    prior === undefined ||
+    prior.id !== input.priorExecutionId ||
+    prior.status === "running" ||
+    prior.sourceAssociationDecision === undefined ||
+    priorInput?.version !== "source-association-decision-input/1"
+  )
+    return false;
+  const checkpointState = prior.sourceAssociationDecision.state;
+  if (
+    (prior.status === "completed" &&
+      !["applied", "rejected", "no-change"].includes(checkpointState)) ||
+    (prior.status === "failed" &&
+      !["failed", "cancelled", "interrupted", "stale"].includes(
+        checkpointState,
+      ))
+  )
+    return false;
+  const stableInput = (value: SourceAssociationDecisionWorkflowInput) => ({
+    version: value.version,
+    trigger: value.trigger,
+    initiatedBy: value.initiatedBy,
+    acceptTrusted: value.acceptTrusted,
+    configurationReferences: [...value.configurationReferences].toSorted(
+      (left, right) => left.localeCompare(right),
+    ),
+    intent: value.intent,
+    assetId: value.assetId,
+    sourceIdentity: value.sourceIdentity,
+    predecessorAssociationId: value.predecessorAssociationId,
+    sourceInput:
+      value.sourceInput === undefined
+        ? undefined
+        : Object.fromEntries(
+            Object.entries(value.sourceInput).toSorted(([left], [right]) =>
+              left.localeCompare(right),
+            ),
+          ),
+    reason: value.reason,
+  });
+  return (
+    JSON.stringify(stableInput(input)) ===
+    JSON.stringify(stableInput(priorInput))
+  );
+}
+
+const isNonEmptyString = (value: unknown): value is string =>
+  typeof value === "string" && value.length > 0;
+
+function isStrictCapabilityCoordinate(value: unknown): boolean {
+  if (!isStringRecord(value)) return false;
+  return (
+    hasExactKeys(
+      value,
+      ["capabilityId", "capabilityVersion", "contractVersion"],
+      [
+        "identity",
+        "implementationVersion",
+        "kind",
+        "interpretationContractVersions",
+      ],
+    ) &&
+    [value.capabilityId, value.capabilityVersion, value.contractVersion].every(
+      isNonEmptyString,
+    ) &&
+    [value.identity, value.implementationVersion, value.kind].every(
+      (item) => item === undefined || isNonEmptyString(item),
+    ) &&
+    (value.interpretationContractVersions === undefined ||
+      (Array.isArray(value.interpretationContractVersions) &&
+        value.interpretationContractVersions.every(isNonEmptyString) &&
+        new Set(value.interpretationContractVersions).size ===
+          value.interpretationContractVersions.length))
+  );
+}
+
+function isStrictRecognitionRuleResult(value: unknown): boolean {
+  return (
+    isStringRecord(value) &&
+    hasExactKeys(
+      value,
+      [
+        "capabilityId",
+        "capabilityVersion",
+        "evidence",
+        "explanation",
+        "outcome",
+        "ruleId",
+        "ruleVersion",
+      ],
+      ["evidenceReferences"],
+    ) &&
+    [
+      value.capabilityId,
+      value.capabilityVersion,
+      value.explanation,
+      value.ruleId,
+      value.ruleVersion,
+    ].every(isNonEmptyString) &&
+    ["satisfied", "contradicted"].includes(value.outcome as string) &&
+    Array.isArray(value.evidence) &&
+    value.evidence.every(isStrictRecognitionEvidence) &&
+    optionalArrayEvery(
+      value.evidenceReferences,
+      (reference) =>
+        isStringRecord(reference) &&
+        hasExactKeys(reference, ["kind", "sourceRecordId"]) &&
+        reference.kind === "source-record" &&
+        isNonEmptyString(reference.sourceRecordId),
+    )
+  );
+}
+
+function isStrictSourceInterpretationBatch(
+  value: unknown,
+): value is SourceInterpretationBatch {
+  if (
+    !isStringRecord(value) ||
+    !hasExactKeys(
+      value,
+      [
+        "id",
+        "metadata",
+        "producer",
+        "sourceAddress",
+        "sourceArtifacts",
+        "sourceIdentity",
+        "sourceRecordIds",
+      ],
+      [
+        "entities",
+        "entityMentions",
+        "entityResolutionDecisions",
+        "recognitionEvidenceReferences",
+        "relationships",
+      ],
+    ) ||
+    !isStrictCapabilityCoordinate(value.producer) ||
+    !Array.isArray(value.sourceRecordIds) ||
+    !Array.isArray(value.metadata) ||
+    !Array.isArray(value.sourceArtifacts) ||
+    !isNonEmptyString(value.id) ||
+    !isNonEmptyString(value.sourceIdentity) ||
+    !isNonEmptyString(value.sourceAddress) ||
+    new Set(value.sourceRecordIds).size !== value.sourceRecordIds.length ||
+    !value.sourceRecordIds.every(isNonEmptyString) ||
+    !value.metadata.every(isStrictMetadataAssertion) ||
+    !value.sourceArtifacts.every(isStrictSourceArtifactCandidate) ||
+    !optionalArrayEvery(value.entities, isStrictSourcedEntity) ||
+    !optionalArrayEvery(value.entityMentions, isStrictEntityMention) ||
+    !optionalArrayEvery(
+      value.entityResolutionDecisions,
+      isStrictEntityResolutionDecision,
+    ) ||
+    !optionalArrayEvery(value.relationships, isStrictProposedRelationship) ||
+    !optionalArrayEvery(
+      value.recognitionEvidenceReferences,
+      (reference) =>
+        isStringRecord(reference) &&
+        hasExactKeys(reference, ["kind", "sourceRecordId"]) &&
+        reference.kind === "source-record" &&
+        isNonEmptyString(reference.sourceRecordId),
+    )
+  )
+    return false;
+  try {
+    validateSourceInterpretationBatch(value as SourceInterpretationBatch);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** readiness 与持久读取共用的 Recognition basis 精确联合解码。 */
+export function decodeRecognitionBasis(
+  value: unknown,
+):
+  | { readonly valid: true; readonly value: RecognitionBasis }
+  | { readonly valid: false; readonly reason: string } {
+  if (!isStringRecord(value))
+    return { valid: false, reason: "Recognition basis 必须是对象" };
+  if (value.kind === "source-interpretation")
+    return hasExactKeys(value, ["interpretation", "kind"]) &&
+      isStrictSourceInterpretationBatch(value.interpretation)
+      ? { valid: true, value: value as unknown as RecognitionBasis }
+      : { valid: false, reason: "来源解释 basis 无效" };
+  if (value.kind === "manual-boundary") {
+    const valid =
+      hasExactKeys(value, [
+        "evidence",
+        "kind",
+        "materialReferences",
+        "metadata",
+        "observationSnapshotId",
+        "proposedBy",
+        "revisesProposalIds",
+      ]) &&
+      isNonEmptyString(value.proposedBy) &&
+      isNonEmptyString(value.observationSnapshotId) &&
+      isStrictStringArray(value.materialReferences) &&
+      isStrictStringArray(value.revisesProposalIds) &&
+      Array.isArray(value.metadata) &&
+      value.metadata.every(
+        (item) =>
+          isStringRecord(item) &&
+          hasExactKeys(item, ["property", "value"]) &&
+          isNonEmptyString(item.property) &&
+          typeof item.value === "string",
+      ) &&
+      Array.isArray(value.evidence) &&
+      value.evidence.every(isStrictRecognitionEvidence);
+    return valid
+      ? { valid: true, value: value as unknown as RecognitionBasis }
+      : { valid: false, reason: "人工边界 basis 无效" };
+  }
+  if (value.kind === "observed-evidence") {
+    const valid =
+      hasExactKeys(value, [
+        "artifactRevisions",
+        "evidence",
+        "kind",
+        "producer",
+      ]) &&
+      isStrictCapabilityCoordinate(value.producer) &&
+      Array.isArray(value.evidence) &&
+      value.evidence.every(isStrictRecognitionEvidence) &&
+      Array.isArray(value.artifactRevisions) &&
+      value.artifactRevisions.every(
+        (item) =>
+          isStringRecord(item) &&
+          hasExactKeys(item, [
+            "blob",
+            "observedArtifactReference",
+            "producer",
+          ]) &&
+          isNonEmptyString(item.observedArtifactReference) &&
+          isStrictBlob(item.blob) &&
+          isStrictCapabilityCoordinate(item.producer),
+      );
+    return valid
+      ? { valid: true, value: value as unknown as RecognitionBasis }
+      : { valid: false, reason: "观察证据 basis 无效" };
+  }
+  return { valid: false, reason: "Recognition basis kind 无效" };
+}
+
+function optionalArrayEvery(
+  value: unknown,
+  predicate: (item: unknown) => boolean,
+): boolean {
+  return (
+    value === undefined || (Array.isArray(value) && value.every(predicate))
+  );
+}
+
+function isStrictStringArray(value: unknown): value is readonly string[] {
+  return (
+    Array.isArray(value) &&
+    value.every(isNonEmptyString) &&
+    new Set(value).size === value.length
+  );
+}
+
+function isStrictQualifiers(value: unknown): boolean {
+  return optionalArrayEvery(
+    value,
+    (item) =>
+      isStringRecord(item) &&
+      hasExactKeys(item, ["key", "value"]) &&
+      isNonEmptyString(item.key) &&
+      isNonEmptyString(item.value),
+  );
+}
+
+function isStrictMetadataAssertion(value: unknown): boolean {
+  return (
+    isStringRecord(value) &&
+    hasExactKeys(
+      value,
+      ["property", "sourceRecordIds", "sourceSlot", "value"],
+      [
+        "authoredBy",
+        "observedArtifactPart",
+        "producer",
+        "qualifiers",
+        "subjectId",
+      ],
+    ) &&
+    [value.property, value.sourceSlot, value.value].every(isNonEmptyString) &&
+    isStrictStringArray(value.sourceRecordIds) &&
+    (value.subjectId === undefined || isNonEmptyString(value.subjectId)) &&
+    (value.producer === undefined ||
+      isStrictCapabilityCoordinate(value.producer)) &&
+    isStrictQualifiers(value.qualifiers) &&
+    (value.authoredBy === undefined ||
+      (isStringRecord(value.authoredBy) &&
+        hasExactKeys(value.authoredBy, ["initiatedBy", "proposalId"]) &&
+        isNonEmptyString(value.authoredBy.initiatedBy) &&
+        isNonEmptyString(value.authoredBy.proposalId))) &&
+    (value.observedArtifactPart === undefined ||
+      (isStringRecord(value.observedArtifactPart) &&
+        hasExactKeys(value.observedArtifactPart, [
+          "artifactId",
+          "locator",
+          "revisionId",
+        ]) &&
+        [
+          value.observedArtifactPart.artifactId,
+          value.observedArtifactPart.locator,
+          value.observedArtifactPart.revisionId,
+        ].every(isNonEmptyString)))
+  );
+}
+
+function isStrictSourceArtifactCandidate(value: unknown): boolean {
+  return (
+    isStringRecord(value) &&
+    hasExactKeys(
+      value,
+      ["acquisitionReference", "id", "mediaType", "role", "sourceRecordId"],
+      ["producer", "selectionEvidence", "subjectId"],
+    ) &&
+    [
+      value.acquisitionReference,
+      value.id,
+      value.mediaType,
+      value.role,
+      value.sourceRecordId,
+    ].every(isNonEmptyString) &&
+    (value.subjectId === undefined || isNonEmptyString(value.subjectId)) &&
+    (value.producer === undefined ||
+      isStrictCapabilityCoordinate(value.producer)) &&
+    (value.selectionEvidence === undefined ||
+      (isStringRecord(value.selectionEvidence) &&
+        hasExactKeys(
+          value.selectionEvidence,
+          [],
+          ["declaredByteLength", "sourceOrdinal", "suggestedFilename"],
+        ) &&
+        (value.selectionEvidence.suggestedFilename === undefined ||
+          isNonEmptyString(value.selectionEvidence.suggestedFilename)) &&
+        [
+          value.selectionEvidence.declaredByteLength,
+          value.selectionEvidence.sourceOrdinal,
+        ].every(
+          (item) =>
+            item === undefined ||
+            (Number.isSafeInteger(item) && (item as number) >= 0),
+        )))
+  );
+}
+
+function isStrictSourcedEntity(value: unknown): boolean {
+  return (
+    isStringRecord(value) &&
+    hasExactKeys(
+      value,
+      [
+        "id",
+        "identityNamespace",
+        "kind",
+        "label",
+        "sourceIdentity",
+        "sourceKey",
+        "sourceRecordIds",
+      ],
+      ["producer"],
+    ) &&
+    ["entity", "person", "persona"].includes(value.kind as string) &&
+    [
+      value.id,
+      value.identityNamespace,
+      value.label,
+      value.sourceIdentity,
+      value.sourceKey,
+    ].every(isNonEmptyString) &&
+    isStrictStringArray(value.sourceRecordIds) &&
+    (value.producer === undefined ||
+      isStrictCapabilityCoordinate(value.producer))
+  );
+}
+
+function isStrictEntityMention(value: unknown): boolean {
+  return (
+    isStringRecord(value) &&
+    hasExactKeys(
+      value,
+      [
+        "field",
+        "id",
+        "identityNamespace",
+        "label",
+        "role",
+        "sourceIdentity",
+        "sourceKey",
+        "sourceRecordIds",
+      ],
+      ["producer"],
+    ) &&
+    [
+      value.field,
+      value.id,
+      value.identityNamespace,
+      value.label,
+      value.role,
+      value.sourceIdentity,
+      value.sourceKey,
+    ].every(isNonEmptyString) &&
+    isStrictStringArray(value.sourceRecordIds) &&
+    (value.producer === undefined ||
+      isStrictCapabilityCoordinate(value.producer))
+  );
+}
+
+function isStrictEntityResolutionDecision(value: unknown): boolean {
+  return (
+    isStringRecord(value) &&
+    hasExactKeys(
+      value,
+      ["entityId", "id", "mentionId", "rule", "sourceRecordIds"],
+      ["producer"],
+    ) &&
+    value.rule === "source-field-role-exact" &&
+    [value.entityId, value.id, value.mentionId].every(isNonEmptyString) &&
+    isStrictStringArray(value.sourceRecordIds) &&
+    (value.producer === undefined ||
+      isStrictCapabilityCoordinate(value.producer))
+  );
+}
+
+function isStrictProposedRelationship(value: unknown): boolean {
+  return (
+    isStringRecord(value) &&
+    hasExactKeys(
+      value,
+      ["participantId", "role", "sourceRecordIds", "sourceSlot", "type"],
+      ["participantMentionIds", "producer", "qualifiers", "subjectId"],
+    ) &&
+    [value.participantId, value.role, value.sourceSlot, value.type].every(
+      isNonEmptyString,
+    ) &&
+    isStrictStringArray(value.sourceRecordIds) &&
+    (value.participantMentionIds === undefined ||
+      isStrictStringArray(value.participantMentionIds)) &&
+    (value.subjectId === undefined || isNonEmptyString(value.subjectId)) &&
+    (value.producer === undefined ||
+      isStrictCapabilityCoordinate(value.producer)) &&
+    isStrictQualifiers(value.qualifiers)
+  );
+}
+
+/** 尚未发布的 02A→02C forward migration 只接受完整、递归精确的旧来源补充权威。 */
+export function isExactLegacySourceEnrichmentAuthorityCheckpoint(
+  value: unknown,
+): boolean {
+  if (
+    !isStringRecord(value) ||
+    !hasExactKeys(
+      value,
+      [
+        "evidence",
+        "fulfilledArtifactRoles",
+        "interpretation",
+        "key",
+        "metadataPolicyIds",
+        "sourceArtifacts",
+        "sourceAssociation",
+        "sourceRecordIds",
+        "stage",
+        "subject",
+        "subjectId",
+      ],
+      ["explicitInput", "managedSourceArtifacts", "sourceArtifactAcquisitions"],
+    ) ||
+    value.stage !== "applied" ||
+    !isNonEmptyString(value.key) ||
+    !isNonEmptyString(value.subjectId) ||
+    !isStrictRecognitionEvidence(value.evidence) ||
+    !isStrictSourceInterpretationBatch(value.interpretation) ||
+    !isStrictStringArray(value.sourceRecordIds) ||
+    !Array.isArray(value.sourceArtifacts) ||
+    !value.sourceArtifacts.every(isStrictSourceArtifactCandidate) ||
+    !Array.isArray(value.fulfilledArtifactRoles) ||
+    new Set(
+      value.fulfilledArtifactRoles.map((item) =>
+        isStringRecord(item) ? item.role : undefined,
+      ),
+    ).size !== value.fulfilledArtifactRoles.length ||
+    !Array.isArray(value.metadataPolicyIds) ||
+    !value.metadataPolicyIds.every(isNonEmptyString) ||
+    new Set(value.metadataPolicyIds).size !== value.metadataPolicyIds.length
+  )
+    return false;
+  const interpretation = value.interpretation as SourceInterpretationBatch;
+  const evidence = value.evidence as RecognitionEvidence;
+  const sourceAssociation = value.sourceAssociation;
+  const associationValid = (candidate: unknown): boolean =>
+    isStringRecord(candidate) &&
+    hasExactKeys(
+      candidate,
+      ["id", "nativeAddress", "sourceIdentity", "subjectId"],
+      ["proposalId"],
+    ) &&
+    [
+      candidate.id,
+      candidate.nativeAddress,
+      candidate.sourceIdentity,
+      candidate.subjectId,
+    ].every(isNonEmptyString) &&
+    (candidate.proposalId === undefined ||
+      isNonEmptyString(candidate.proposalId));
+  if (!associationValid(sourceAssociation)) return false;
+  const association = sourceAssociation as Record<string, unknown>;
+  const subject = value.subject;
+  if (
+    !isStringRecord(subject) ||
+    !hasExactKeys(
+      subject,
+      [
+        "informationRequirement",
+        "metadata",
+        "metadataSourceRecords",
+        "recognitionDecisionId",
+        "sourceAssociations",
+        "subjectId",
+      ],
+      ["recognitionSourceAssociation"],
+    ) ||
+    subject.subjectId !== value.subjectId ||
+    !isNonEmptyString(subject.recognitionDecisionId) ||
+    !Array.isArray(subject.sourceAssociations) ||
+    !subject.sourceAssociations.every(associationValid) ||
+    new Set(
+      subject.sourceAssociations.map((item) =>
+        isStringRecord(item) ? item.id : undefined,
+      ),
+    ).size !== subject.sourceAssociations.length ||
+    (subject.recognitionSourceAssociation !== undefined &&
+      !associationValid(subject.recognitionSourceAssociation)) ||
+    !Array.isArray(subject.metadata) ||
+    !subject.metadata.every(isStrictMetadataAssertion) ||
+    !Array.isArray(subject.metadataSourceRecords) ||
+    new Set(
+      subject.metadataSourceRecords.map((item) =>
+        isStringRecord(item) ? item.id : undefined,
+      ),
+    ).size !== subject.metadataSourceRecords.length ||
+    !subject.metadataSourceRecords.every(
+      (record) =>
+        isStringRecord(record) &&
+        hasExactKeys(record, ["id", "sourceIdentity"], ["nativeAddress"]) &&
+        isNonEmptyString(record.id) &&
+        isNonEmptyString(record.sourceIdentity) &&
+        (record.nativeAddress === undefined ||
+          isNonEmptyString(record.nativeAddress)),
+    )
+  )
+    return false;
+  const requirement = subject.informationRequirement;
+  if (
+    !isStringRecord(requirement) ||
+    !hasExactKeys(requirement, [
+      "artifactRoles",
+      "metadata",
+      "metadataUsageContext",
+      "relationshipTypes",
+    ]) ||
+    !isNonEmptyString(requirement.metadataUsageContext) ||
+    !Array.isArray(requirement.metadata) ||
+    new Set(
+      requirement.metadata.map((item) =>
+        isStringRecord(item) ? item.property : undefined,
+      ),
+    ).size !== requirement.metadata.length ||
+    !requirement.metadata.every(
+      (item) =>
+        isStringRecord(item) &&
+        hasExactKeys(item, ["necessity", "property"]) &&
+        isNonEmptyString(item.property) &&
+        ["required", "optional"].includes(item.necessity as string),
+    ) ||
+    !Array.isArray(requirement.artifactRoles) ||
+    new Set(
+      requirement.artifactRoles.map((item) =>
+        isStringRecord(item) ? item.role : undefined,
+      ),
+    ).size !== requirement.artifactRoles.length ||
+    !requirement.artifactRoles.every(
+      (item) =>
+        isStringRecord(item) &&
+        hasExactKeys(item, ["necessity", "role"], ["maximum"]) &&
+        isNonEmptyString(item.role) &&
+        ["required", "optional"].includes(item.necessity as string) &&
+        (item.maximum === undefined ||
+          (Number.isSafeInteger(item.maximum) && (item.maximum as number) > 0)),
+    ) ||
+    !Array.isArray(requirement.relationshipTypes) ||
+    new Set(
+      requirement.relationshipTypes.map((item) =>
+        isStringRecord(item) ? item.type : undefined,
+      ),
+    ).size !== requirement.relationshipTypes.length ||
+    !requirement.relationshipTypes.every(
+      (item) =>
+        isStringRecord(item) &&
+        hasExactKeys(item, ["necessity", "type"]) &&
+        isNonEmptyString(item.type) &&
+        ["required", "optional"].includes(item.necessity as string),
+    ) ||
+    !value.fulfilledArtifactRoles.every(
+      (item) =>
+        isStringRecord(item) &&
+        hasExactKeys(item, ["count", "role"]) &&
+        isNonEmptyString(item.role) &&
+        Number.isSafeInteger(item.count) &&
+        (item.count as number) >= 0,
+    ) ||
+    (value.explicitInput !== undefined &&
+      (!isStringRecord(value.explicitInput) ||
+        Object.keys(value.explicitInput).length === 0 ||
+        Object.entries(value.explicitInput).some(
+          ([key, item]) => key.trim().length === 0 || typeof item !== "string",
+        ))) ||
+    association.subjectId !== value.subjectId ||
+    association.sourceIdentity !== interpretation.sourceIdentity ||
+    association.nativeAddress !== interpretation.sourceAddress ||
+    evidence.sourceIdentity !== association.sourceIdentity ||
+    evidence.sourceAddress !== association.nativeAddress ||
+    JSON.stringify([...value.sourceRecordIds].toSorted()) !==
+      JSON.stringify([...interpretation.sourceRecordIds].toSorted()) ||
+    JSON.stringify(value.sourceArtifacts) !==
+      JSON.stringify(interpretation.sourceArtifacts)
+  )
+    return false;
+  const exactCoordinate = (candidate: unknown): boolean =>
+    candidate === undefined || isStrictCapabilityCoordinate(candidate);
+  if (
+    !optionalArrayEvery(
+      value.sourceArtifactAcquisitions,
+      (item) =>
+        isStringRecord(item) &&
+        hasExactKeys(
+          item,
+          [
+            "candidateId",
+            "digest",
+            "mediaType",
+            "role",
+            "sourceRecordId",
+            "stagedReference",
+          ],
+          [
+            "acquisitionProducer",
+            "acquisitionReference",
+            "sourceArtifactProducer",
+            "subjectId",
+          ],
+        ) &&
+        [
+          item.candidateId,
+          item.digest,
+          item.mediaType,
+          item.role,
+          item.sourceRecordId,
+          item.stagedReference,
+        ].every(isNonEmptyString) &&
+        [item.acquisitionReference, item.subjectId].every(
+          (field) => field === undefined || isNonEmptyString(field),
+        ) &&
+        exactCoordinate(item.sourceArtifactProducer) &&
+        exactCoordinate(item.acquisitionProducer),
+    )
+  )
+    return false;
+  return optionalArrayEvery(
+    value.managedSourceArtifacts,
+    (item) =>
+      isStringRecord(item) &&
+      hasExactKeys(
+        item,
+        ["blob", "candidateId", "location", "role", "sourceRecordId"],
+        [
+          "acquisitionProducer",
+          "acquisitionReference",
+          "sourceArtifactProducer",
+          "subjectId",
+        ],
+      ) &&
+      [item.candidateId, item.role, item.sourceRecordId].every(
+        isNonEmptyString,
+      ) &&
+      [item.acquisitionReference, item.subjectId].every(
+        (field) => field === undefined || isNonEmptyString(field),
+      ) &&
+      exactCoordinate(item.sourceArtifactProducer) &&
+      exactCoordinate(item.acquisitionProducer) &&
+      isStringRecord(item.blob) &&
+      hasExactKeys(item.blob, ["byteLength", "digest", "mediaType"]) &&
+      isNonEmptyString(item.blob.digest) &&
+      isNonEmptyString(item.blob.mediaType) &&
+      Number.isSafeInteger(item.blob.byteLength) &&
+      (item.blob.byteLength as number) >= 0 &&
+      isStringRecord(item.location) &&
+      hasExactKeys(item.location, ["address"]) &&
+      isNonEmptyString(item.location.address),
+  );
+}
+
+/** 旧来源补充迁移只接收由完整执行封装证明的单条已应用权威。 */
+export function isExactLegacySourceEnrichmentExecutionAuthority(
+  value: unknown,
+): boolean {
+  if (
+    !isStringRecord(value) ||
+    !hasExactKeys(value, [
+      "acceptedAssetId",
+      "authorityCheckpoint",
+      "compatibility",
+      "executionId",
+      "sourceEnrichments",
+      "sourceRecordIds",
+      "workflowInput",
+    ]) ||
+    !isNonEmptyString(value.executionId) ||
+    !isNonEmptyString(value.acceptedAssetId) ||
+    !isStrictStringArray(value.sourceRecordIds) ||
+    !Array.isArray(value.sourceEnrichments) ||
+    value.sourceEnrichments.length === 0 ||
+    !isExactLegacySourceEnrichmentAuthorityCheckpoint(value.authorityCheckpoint)
+  )
+    return false;
+  const input = decodeWorkflowExecutionInput(value.workflowInput);
+  if (
+    !input.valid ||
+    input.input.version !== "asset-refresh-input/1" ||
+    !isStringRecord(value.compatibility) ||
+    !hasExactKeys(value.compatibility, [
+      "capabilityCoordinates",
+      "policyVersion",
+      "workflowVersion",
+    ]) ||
+    value.compatibility.workflowVersion !== "asset-refresh/2" ||
+    !isNonEmptyString(value.compatibility.policyVersion) ||
+    !Array.isArray(value.compatibility.capabilityCoordinates) ||
+    !value.compatibility.capabilityCoordinates.every(
+      isStrictCapabilityCoordinate,
+    )
+  )
+    return false;
+  const checkpoints = value.sourceEnrichments as unknown[];
+  const applied = checkpoints.filter(
+    (checkpoint) =>
+      isStringRecord(checkpoint) && checkpoint.stage === "applied",
+  );
+  if (
+    !applied.every(isExactLegacySourceEnrichmentAuthorityCheckpoint) ||
+    new Set(
+      checkpoints.map((checkpoint) =>
+        isStringRecord(checkpoint) ? checkpoint.key : undefined,
+      ),
+    ).size !== checkpoints.length ||
+    applied.filter(
+      (checkpoint) =>
+        JSON.stringify(checkpoint) ===
+        JSON.stringify(value.authorityCheckpoint),
+    ).length !== 1
+  )
+    return false;
+  const checkpoint = value.authorityCheckpoint as SourceEnrichmentCheckpoint & {
+    readonly stage: "applied";
+    readonly interpretation: SourceInterpretationBatch;
+    readonly sourceRecordIds: readonly string[];
+    readonly subjectId: string;
+  };
+  const coordinates = value.compatibility
+    .capabilityCoordinates as CapabilityCoordinate[];
+  const coordinateKeys = coordinates.map(capabilityCoordinate);
+  return (
+    new Set(coordinateKeys).size === coordinateKeys.length &&
+    checkpoint.subjectId === value.acceptedAssetId &&
+    checkpoint.sourceRecordIds.every((id) =>
+      (value.sourceRecordIds as readonly string[]).includes(id),
+    ) &&
+    coordinateKeys.includes(
+      capabilityCoordinate(checkpoint.interpretation.producer),
+    )
+  );
+}
+
+function isStrictFilesystemObjectIdentity(value: unknown): boolean {
+  if (!isStringRecord(value)) return false;
+  if (
+    value.version !== "filesystem-object-identity/2" ||
+    (value.kind !== "snapshot-local" && value.kind !== "durable") ||
+    typeof value.value !== "string" ||
+    value.value.length === 0
+  )
+    return false;
+  if (value.kind === "snapshot-local")
+    return hasExactKeys(value, ["version", "kind", "value"]);
+  if (
+    !hasExactKeys(value, ["version", "kind", "value", "capability"]) ||
+    !isStringRecord(value.capability)
+  )
+    return false;
+  const capability = value.capability;
+  return (
+    hasExactKeys(
+      capability,
+      ["capabilityId", "capabilityVersion", "contractVersion"],
+      [
+        "identity",
+        "implementationVersion",
+        "kind",
+        "interpretationContractVersions",
+      ],
+    ) && isStrictCapabilityCoordinate(capability)
+  );
+}
+
+function isStrictFilesystemPackageSnapshot(
+  value: unknown,
+): value is FilesystemPackageSnapshot {
+  if (
+    !isStringRecord(value) ||
+    !hasExactKeys(
+      value,
+      ["id", "root", "complete", "files", "excluded", "observedAt"],
+      ["directories", "diagnostics"],
+    ) ||
+    typeof value.id !== "string" ||
+    value.id.length === 0 ||
+    typeof value.root !== "string" ||
+    value.root.length === 0 ||
+    typeof value.complete !== "boolean" ||
+    typeof value.observedAt !== "string" ||
+    !Array.isArray(value.files) ||
+    !Array.isArray(value.excluded)
+  )
+    return false;
+  const filesValid = value.files.every(
+    (file) =>
+      isStringRecord(file) &&
+      hasExactKeys(
+        file,
+        ["relativePath", "size", "modifiedAt"],
+        ["objectIdentity"],
+      ) &&
+      typeof file.relativePath === "string" &&
+      file.relativePath.length > 0 &&
+      Number.isSafeInteger(file.size) &&
+      (file.size as number) >= 0 &&
+      typeof file.modifiedAt === "string" &&
+      (file.objectIdentity === undefined ||
+        isStrictFilesystemObjectIdentity(file.objectIdentity)),
+  );
+  const excludedValid = value.excluded.every(
+    (entry) =>
+      isStringRecord(entry) &&
+      hasExactKeys(entry, ["relativePath", "kind"]) &&
+      typeof entry.relativePath === "string" &&
+      ["symbolic-link", "special", "unavailable"].includes(
+        entry.kind as string,
+      ),
+  );
+  const directoriesValid =
+    value.directories === undefined ||
+    (Array.isArray(value.directories) &&
+      value.directories.every(
+        (entry) =>
+          isStringRecord(entry) &&
+          hasExactKeys(entry, ["relativePath", "modifiedAt"]) &&
+          typeof entry.relativePath === "string" &&
+          typeof entry.modifiedAt === "string",
+      ));
+  const diagnosticsValid =
+    value.diagnostics === undefined ||
+    (Array.isArray(value.diagnostics) &&
+      value.diagnostics.every(
+        (entry) =>
+          isStringRecord(entry) &&
+          hasExactKeys(entry, ["relativePath", "kind"]) &&
+          typeof entry.relativePath === "string" &&
+          [
+            "symbolic-link-not-followed",
+            "directory-link-not-allowed",
+            "link-target-outside-authorized-roots",
+            "broken-symbolic-link",
+            "inaccessible-symbolic-link",
+            "symbolic-link-cycle",
+            "repeated-directory-target",
+            "entry-missing",
+            "entry-inaccessible",
+            "entry-identity-changed",
+          ].includes(entry.kind as string),
+      ));
+  return filesValid && excludedValid && directoriesValid && diagnosticsValid;
+}
+
+function isStrictBlob(value: unknown): boolean {
+  return (
+    isStringRecord(value) &&
+    hasExactKeys(value, ["digest", "mediaType", "byteLength"]) &&
+    isNonEmptyString(value.digest) &&
+    isNonEmptyString(value.mediaType) &&
+    Number.isSafeInteger(value.byteLength) &&
+    (value.byteLength as number) >= 0
+  );
+}
+
+function isStrictRecognitionEvidence(value: unknown): boolean {
+  if (
+    !isStringRecord(value) ||
+    !hasExactKeys(
+      value,
+      ["kind", "explanation", "producer"],
+      ["sourceIdentity", "sourceAddress", "inspection"],
+    ) ||
+    !isNonEmptyString(value.kind) ||
+    !isNonEmptyString(value.explanation) ||
+    !isStrictCapabilityCoordinate(value.producer) ||
+    (value.sourceIdentity !== undefined &&
+      !isNonEmptyString(value.sourceIdentity)) ||
+    (value.sourceAddress !== undefined &&
+      !isNonEmptyString(value.sourceAddress)) ||
+    (value.sourceIdentity === undefined) !== (value.sourceAddress === undefined)
+  )
+    return false;
+  if (value.inspection === undefined) return true;
+  const inspection = value.inspection;
+  return (
+    isStringRecord(inspection) &&
+    hasExactKeys(inspection, [
+      "identifiers",
+      "observedArtifactReference",
+      "revision",
+      "metadata",
+      "parts",
+    ]) &&
+    isNonEmptyString(inspection.observedArtifactReference) &&
+    isStrictBlob(inspection.revision) &&
+    Array.isArray(inspection.identifiers) &&
+    inspection.identifiers.every(
+      (identifier) =>
+        isStringRecord(identifier) &&
+        hasExactKeys(identifier, ["scheme", "value", "locators"]) &&
+        isNonEmptyString(identifier.scheme) &&
+        isNonEmptyString(identifier.value) &&
+        Array.isArray(identifier.locators) &&
+        identifier.locators.length > 0 &&
+        identifier.locators.every(isNonEmptyString) &&
+        new Set(identifier.locators).size === identifier.locators.length,
+    ) &&
+    Array.isArray(inspection.metadata) &&
+    inspection.metadata.every(
+      (metadata) =>
+        isStringRecord(metadata) &&
+        hasExactKeys(metadata, [
+          "property",
+          "sourceSlot",
+          "value",
+          "locator",
+        ]) &&
+        [
+          metadata.property,
+          metadata.sourceSlot,
+          metadata.value,
+          metadata.locator,
+        ].every(isNonEmptyString),
+    ) &&
+    Array.isArray(inspection.parts) &&
+    inspection.parts.every(
+      (part) =>
+        isStringRecord(part) &&
+        hasExactKeys(part, ["role", "locator", "mediaType"]) &&
+        [part.role, part.locator, part.mediaType].every(isNonEmptyString),
+    )
+  );
+}
+
+function hasStrictObservedMaterialSubmissionShape(value: unknown): boolean {
+  if (!isStringRecord(value)) return false;
+  const arrayKeys = [
+    "artifacts",
+    "locations",
+    "blobs",
+    "artifactRevisions",
+    "artifactAssociations",
+    "projections",
+    "supports",
+  ] as const;
+  if (
+    !hasExactKeys(value, ["proposal", "recognitionDecision", ...arrayKeys]) ||
+    arrayKeys.some((key) => !Array.isArray(value[key]))
+  )
+    return false;
+  if (
+    !isStringRecord(value.proposal) ||
+    !hasExactKeys(value.proposal, [
+      "id",
+      "basis",
+      "ruleResults",
+      "observedArtifactAssociations",
+      "observedArtifactRevisions",
+    ]) ||
+    !isStringRecord(value.proposal.basis) ||
+    !hasExactKeys(value.proposal.basis, [
+      "kind",
+      "proposedBy",
+      "observationSnapshotId",
+      "materialReferences",
+      "revisesProposalIds",
+      "metadata",
+      "evidence",
+    ]) ||
+    !isStringRecord(value.recognitionDecision) ||
+    !hasExactKeys(value.recognitionDecision, [
+      "id",
+      "proposalId",
+      "assetId",
+      "acceptedRuleResults",
+    ])
+  )
+    return false;
+  const proposal = value.proposal;
+  const basis = proposal.basis as Record<string, unknown>;
+  if (
+    !isNonEmptyString(proposal.id) ||
+    !isNonEmptyString(basis.proposedBy) ||
+    !isNonEmptyString(basis.observationSnapshotId) ||
+    basis.kind !== "manual-boundary" ||
+    !Array.isArray(basis.materialReferences) ||
+    !Array.isArray(basis.revisesProposalIds) ||
+    !Array.isArray(basis.metadata) ||
+    !Array.isArray(basis.evidence) ||
+    !Array.isArray(proposal.ruleResults) ||
+    !Array.isArray(proposal.observedArtifactAssociations) ||
+    !Array.isArray(proposal.observedArtifactRevisions) ||
+    !basis.materialReferences.every(isNonEmptyString) ||
+    new Set(basis.materialReferences).size !==
+      basis.materialReferences.length ||
+    !basis.revisesProposalIds.every(isNonEmptyString) ||
+    new Set(basis.revisesProposalIds).size !==
+      basis.revisesProposalIds.length ||
+    !basis.metadata.every(
+      (item) =>
+        isStringRecord(item) &&
+        hasExactKeys(item, ["property", "value"]) &&
+        isNonEmptyString(item.property) &&
+        typeof item.value === "string",
+    ) ||
+    !basis.evidence.every(isStrictRecognitionEvidence) ||
+    !proposal.observedArtifactAssociations.every(
+      (item) =>
+        isStringRecord(item) &&
+        hasExactKeys(item, ["observedArtifactReference", "role"]) &&
+        isNonEmptyString(item.observedArtifactReference) &&
+        isNonEmptyString(item.role),
+    ) ||
+    !proposal.observedArtifactRevisions.every(
+      (item) =>
+        isStringRecord(item) &&
+        hasExactKeys(item, ["observedArtifactReference", "blob", "producer"]) &&
+        isNonEmptyString(item.observedArtifactReference) &&
+        isStringRecord(item.blob) &&
+        hasExactKeys(item.blob, ["digest", "mediaType", "byteLength"]) &&
+        isNonEmptyString(item.blob.digest) &&
+        isNonEmptyString(item.blob.mediaType) &&
+        Number.isSafeInteger(item.blob.byteLength) &&
+        (item.blob.byteLength as number) >= 0 &&
+        isStrictCapabilityCoordinate(item.producer),
+    )
+  )
+    return false;
+  const exactArray = (key: (typeof arrayKeys)[number], keys: string[]) =>
+    (value[key] as unknown[]).every(
+      (item) => isStringRecord(item) && hasExactKeys(item, keys),
+    );
+  return (
+    exactArray("artifacts", ["id"]) &&
+    (value.artifacts as Record<string, unknown>[]).every((item) =>
+      isNonEmptyString(item.id),
+    ) &&
+    exactArray("locations", ["id", "artifactId", "address", "kind"]) &&
+    (value.locations as Record<string, unknown>[]).every(
+      (item) =>
+        [item.id, item.artifactId, item.address].every(isNonEmptyString) &&
+        (item.kind === "observed" || item.kind === "managed"),
+    ) &&
+    exactArray("blobs", ["digest", "mediaType", "byteLength"]) &&
+    (value.blobs as Record<string, unknown>[]).every(
+      (item) =>
+        isNonEmptyString(item.digest) &&
+        isNonEmptyString(item.mediaType) &&
+        Number.isSafeInteger(item.byteLength) &&
+        (item.byteLength as number) >= 0,
+    ) &&
+    (value.artifactRevisions as unknown[]).every(
+      (item) =>
+        isStringRecord(item) &&
+        hasExactKeys(item, ["id", "artifactId", "blobDigest"], ["producer"]) &&
+        [item.id, item.artifactId, item.blobDigest].every(isNonEmptyString) &&
+        (item.producer === undefined ||
+          isStrictCapabilityCoordinate(item.producer)),
+    ) &&
+    (value.artifactAssociations as unknown[]).every(
+      (item) =>
+        isStringRecord(item) &&
+        hasExactKeys(
+          item,
+          ["id", "subjectId", "artifactId", "role"],
+          [
+            "sourceRecordIds",
+            "sourceAssociationId",
+            "producer",
+            "observedArtifactPart",
+          ],
+        ) &&
+        [item.id, item.subjectId, item.artifactId, item.role].every(
+          isNonEmptyString,
+        ) &&
+        (item.sourceRecordIds === undefined ||
+          (Array.isArray(item.sourceRecordIds) &&
+            item.sourceRecordIds.every(isNonEmptyString) &&
+            new Set(item.sourceRecordIds).size ===
+              item.sourceRecordIds.length)) &&
+        (item.sourceAssociationId === undefined ||
+          isNonEmptyString(item.sourceAssociationId)) &&
+        (item.producer === undefined ||
+          isStrictCapabilityCoordinate(item.producer)) &&
+        (item.observedArtifactPart === undefined ||
+          (isStringRecord(item.observedArtifactPart) &&
+            hasExactKeys(item.observedArtifactPart, [
+              "artifactId",
+              "revisionId",
+              "locator",
+            ]) &&
+            [
+              item.observedArtifactPart.artifactId,
+              item.observedArtifactPart.revisionId,
+              item.observedArtifactPart.locator,
+            ].every(isNonEmptyString))),
+    ) &&
+    exactArray("projections", [
+      "observedArtifactReference",
+      "artifactId",
+      "locationId",
+      "revisionId",
+      "associationId",
+    ]) &&
+    (value.projections as Record<string, unknown>[]).every((item) =>
+      Object.values(item).every(isNonEmptyString),
+    ) &&
+    exactArray("supports", ["associationId", "recognitionDecisionId"]) &&
+    (value.supports as Record<string, unknown>[]).every((item) =>
+      [item.associationId, item.recognitionDecisionId].every(isNonEmptyString),
+    ) &&
+    [
+      value.recognitionDecision.id,
+      value.recognitionDecision.proposalId,
+      value.recognitionDecision.assetId,
+    ].every(isNonEmptyString) &&
+    Array.isArray(value.recognitionDecision.acceptedRuleResults) &&
+    arrayKeys.every((key) => {
+      const entries = value[key] as Record<string, unknown>[];
+      const identities = entries.map((item) =>
+        key === "blobs"
+          ? item.digest
+          : key === "supports"
+            ? `${String(item.associationId)}\0${String(item.recognitionDecisionId)}`
+            : key === "projections"
+              ? item.observedArtifactReference
+              : item.id,
+      );
+      return new Set(identities).size === identities.length;
+    })
+  );
+}
+
+export function decodeObservedMaterialAssociationCheckpoint(value: unknown):
+  | {
+      readonly valid: true;
+      readonly checkpoint: ObservedMaterialAssociationCheckpoint;
+    }
+  | { readonly valid: false; readonly reason: string } {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return { valid: false, reason: "观察材料关联检查点必须是对象" };
+  const checkpoint = value as Record<string, unknown>;
+  const allowed = new Set([
+    "version",
+    "state",
+    "input",
+    "registrationDisplayName",
+    "snapshot",
+    "identityBaseline",
+    "materialBaseline",
+    "submission",
+    "confirmedBy",
+    "associationIds",
+    "decisionId",
+  ]);
+  const states = new Set([
+    "created",
+    "observing",
+    "inspecting",
+    "awaiting-confirmation",
+    "confirmation-recorded",
+    "revalidating",
+    "accepted",
+    "no-change",
+    "stale",
+    "failed",
+    "interrupted",
+  ]);
+  if (
+    checkpoint.version !== "observed-material-association-checkpoint/1" ||
+    Object.keys(checkpoint).some((key) => !allowed.has(key)) ||
+    !states.has(checkpoint.state as string) ||
+    typeof checkpoint.input !== "object" ||
+    checkpoint.input === null ||
+    Array.isArray(checkpoint.input)
+  )
+    return { valid: false, reason: "观察材料关联检查点版本或字段无效" };
+  const input = checkpoint.input as Record<string, unknown>;
+  const inputAllowed = new Set([
+    "targetAssetId",
+    "registrationId",
+    "registrationVersion",
+    "relativeScope",
+    "relativePaths",
+    "initiatedBy",
+  ]);
+  if (
+    Object.keys(input).some((key) => !inputAllowed.has(key)) ||
+    typeof input.targetAssetId !== "string" ||
+    input.targetAssetId.length === 0 ||
+    typeof input.registrationId !== "string" ||
+    input.registrationId.length === 0 ||
+    (input.registrationVersion !== undefined &&
+      (!Number.isSafeInteger(input.registrationVersion) ||
+        (input.registrationVersion as number) < 1)) ||
+    typeof input.relativeScope !== "string" ||
+    !Array.isArray(input.relativePaths) ||
+    input.relativePaths.length === 0 ||
+    input.relativePaths.some(
+      (item) => typeof item !== "string" || item.length === 0,
+    ) ||
+    new Set(input.relativePaths).size !== input.relativePaths.length ||
+    typeof input.initiatedBy !== "string" ||
+    input.initiatedBy.trim().length === 0
+  )
+    return { valid: false, reason: "观察材料关联检查点输入无效" };
+  const state =
+    checkpoint.state as ObservedMaterialAssociationCheckpoint["state"];
+  const afterObservation = [
+    "inspecting",
+    "awaiting-confirmation",
+    "confirmation-recorded",
+    "revalidating",
+    "accepted",
+    "no-change",
+  ].includes(state);
+  const afterSnapshot = [
+    "inspecting",
+    "awaiting-confirmation",
+    "confirmation-recorded",
+    "revalidating",
+    "accepted",
+    "no-change",
+  ].includes(state);
+  const afterInspection = [
+    "awaiting-confirmation",
+    "confirmation-recorded",
+    "revalidating",
+    "accepted",
+    "no-change",
+  ].includes(state);
+  const afterConfirmation = [
+    "confirmation-recorded",
+    "revalidating",
+    "accepted",
+    "no-change",
+  ].includes(state);
+  if (
+    (afterObservation &&
+      (input.registrationVersion === undefined ||
+        typeof checkpoint.identityBaseline !== "string" ||
+        typeof checkpoint.materialBaseline !== "string")) ||
+    (afterSnapshot &&
+      !isStrictFilesystemPackageSnapshot(checkpoint.snapshot)) ||
+    (afterInspection &&
+      (typeof checkpoint.submission !== "object" ||
+        checkpoint.submission === null)) ||
+    (afterConfirmation &&
+      (typeof checkpoint.confirmedBy !== "string" ||
+        checkpoint.confirmedBy.length === 0 ||
+        typeof checkpoint.decisionId !== "string" ||
+        !Array.isArray(checkpoint.associationIds)))
+  )
+    return { valid: false, reason: "观察材料关联检查点缺少状态所需字段" };
+  if (
+    (checkpoint.snapshot !== undefined &&
+      !isStrictFilesystemPackageSnapshot(checkpoint.snapshot)) ||
+    (checkpoint.registrationDisplayName !== undefined &&
+      typeof checkpoint.registrationDisplayName !== "string") ||
+    (checkpoint.identityBaseline !== undefined &&
+      !isNonEmptyString(checkpoint.identityBaseline)) ||
+    (checkpoint.materialBaseline !== undefined &&
+      !isNonEmptyString(checkpoint.materialBaseline)) ||
+    (checkpoint.confirmedBy !== undefined &&
+      !isNonEmptyString(checkpoint.confirmedBy)) ||
+    (checkpoint.decisionId !== undefined &&
+      !isNonEmptyString(checkpoint.decisionId)) ||
+    (checkpoint.associationIds !== undefined &&
+      (!Array.isArray(checkpoint.associationIds) ||
+        !checkpoint.associationIds.every(isNonEmptyString) ||
+        new Set(checkpoint.associationIds).size !==
+          checkpoint.associationIds.length))
+  )
+    return { valid: false, reason: "观察材料关联检查点可选字段无效" };
+  if (checkpoint.submission !== undefined) {
+    try {
+      if (!hasStrictObservedMaterialSubmissionShape(checkpoint.submission))
+        throw new Error("invalid durable submission shape");
+      validateObservedMaterialAssociationSubmission(
+        checkpoint.submission as ObservedMaterialAssociationSubmission,
+      );
+    } catch {
+      return { valid: false, reason: "观察材料关联检查点领域批次无效" };
+    }
+  }
+  if (afterInspection) {
+    const snapshot = checkpoint.snapshot as FilesystemPackageSnapshot;
+    const submission =
+      checkpoint.submission as ObservedMaterialAssociationSubmission;
+    const inputReferences = [...(input.relativePaths as string[])].toSorted();
+    const snapshotReferences = snapshot.files
+      .map((file) => file.relativePath)
+      .toSorted();
+    const projectionReferences = submission.projections
+      .map((projection) => projection.observedArtifactReference)
+      .toSorted();
+    if (
+      snapshot.complete !== true ||
+      new Set(snapshotReferences).size !== snapshotReferences.length ||
+      JSON.stringify(inputReferences) !== JSON.stringify(snapshotReferences) ||
+      JSON.stringify(inputReferences) !==
+        JSON.stringify(projectionReferences) ||
+      submission.proposal.basis.kind !== "manual-boundary" ||
+      submission.proposal.basis.observationSnapshotId !== snapshot.id ||
+      submission.recognitionDecision.assetId !== input.targetAssetId
+    )
+      return { valid: false, reason: "观察材料关联检查点内部引用不一致" };
+    for (const projection of submission.projections) {
+      const location = submission.locations.find(
+        (item) => item.id === projection.locationId,
+      );
+      const revision = submission.artifactRevisions.find(
+        (item) => item.id === projection.revisionId,
+      );
+      const candidate = submission.proposal.observedArtifactRevisions?.find(
+        (item) =>
+          item.observedArtifactReference ===
+          projection.observedArtifactReference,
+      );
+      if (
+        location?.kind !== "observed" ||
+        location.artifactId !== projection.artifactId ||
+        location.address !==
+          `${snapshot.root}/${projection.observedArtifactReference}` ||
+        revision?.artifactId !== projection.artifactId ||
+        candidate === undefined ||
+        revision.blobDigest !== candidate.blob.digest ||
+        !submission.blobs.some(
+          (blob) =>
+            blob.digest === revision.blobDigest &&
+            blob.mediaType === candidate.blob.mediaType &&
+            blob.byteLength === candidate.blob.byteLength,
+        )
+      )
+        return { valid: false, reason: "观察材料关联检查点材料投影不一致" };
+    }
+  }
+  if (afterConfirmation) {
+    const submission =
+      checkpoint.submission as ObservedMaterialAssociationSubmission;
+    const associationIds = checkpoint.associationIds as unknown[];
+    const expectedAssociationIds = [
+      ...new Set(
+        submission.artifactAssociations.map((association) => association.id),
+      ),
+    ].toSorted((left, right) => left.localeCompare(right));
+    if (
+      associationIds.some((id) => typeof id !== "string" || id.length === 0) ||
+      new Set(associationIds).size !== associationIds.length ||
+      checkpoint.decisionId !== submission.recognitionDecision.id ||
+      JSON.stringify(
+        [...associationIds].toSorted((left, right) =>
+          String(left).localeCompare(String(right)),
+        ),
+      ) !== JSON.stringify(expectedAssociationIds)
+    )
+      return { valid: false, reason: "观察材料关联确认引用不一致" };
+  }
+  return {
+    valid: true,
+    checkpoint: checkpoint as unknown as ObservedMaterialAssociationCheckpoint,
+  };
+}
+
+export type ObservedMaterialAssociationInspection = {
+  readonly executionId: string;
+  readonly status: ObservedMaterialAssociationCheckpoint["state"];
+  readonly failure?:
+    | "invalid-target"
+    | "authority-stale"
+    | "material-stale"
+    | "unavailable"
+    | "interrupted";
+  readonly reason?: string;
+  readonly target: { readonly id: string; readonly title?: string };
+  readonly observedRoot: {
+    readonly id: string;
+    readonly displayName?: string;
+    readonly relativeScope: string;
+  };
+  readonly files: readonly {
+    readonly relativePath: string;
+    readonly byteLength: number;
+    readonly digest: string;
+    readonly mediaType: string;
+    readonly disposition: "new-artifact" | "existing-artifact";
+    readonly formatValid: boolean;
+  }[];
+  readonly proposal: {
+    readonly id: string;
+    readonly proposedBy: string;
+    readonly materials: readonly {
+      readonly relativePath: string;
+      readonly role: "asset.material-delivered";
+    }[];
+  };
+  readonly confirmedBy?: string;
+  readonly decisionId?: string;
+  readonly associationIds?: readonly string[];
+};
+
+export type ObservedMaterialAssociationPersistence = {
+  freezeObservedMaterialAssociationTarget(assetId: string): Promise<{
+    readonly identityBaseline: string;
+    readonly materialBaseline: string;
+  }>;
+  commitObservedMaterialAssociation(input: {
+    readonly expectedExecution: WorkflowExecution;
+    readonly terminalExecutions: {
+      readonly accepted: WorkflowExecution;
+      readonly noChange: WorkflowExecution;
+      readonly stale: WorkflowExecution;
+    };
+    readonly expectedIdentityBaseline: string;
+    readonly expectedMaterialBaseline: string;
+    readonly observedAuthority: {
+      readonly registrationId: string;
+      readonly registrationVersion: number;
+    };
+    readonly submission: ObservedMaterialAssociationSubmission;
+    readonly resumeClaim?: { readonly token: string; readonly now: string };
+  }): Promise<"accepted" | "no-change" | "stale">;
+  auditObservedMaterialAssociations(
+    projections: readonly ObservedMaterialAssociationProjection[],
+  ): Promise<readonly ObservedMaterialAssociationAudit[]>;
 };
 
 /** 对交付层安全的当前来源产物候选；获取引用和能力私有坐标永不公开。 */
@@ -1116,6 +3677,7 @@ export type AssetRefreshInspection = {
     | "proposalId"
     | "dispositions"
     | "workItems"
+    | "sourceAssociationDecision"
   > & {
     readonly dispositions: readonly Omit<
       WorkItemDisposition,
@@ -1137,6 +3699,15 @@ export type AssetRefreshInspection = {
     readonly coverage: SourceRecord["coverage"];
     readonly acquiredAt: string;
     readonly digest: string;
+  }[];
+  readonly sourceEnrichments?: readonly {
+    readonly subjectId: string;
+    readonly sourceIdentity: string;
+    readonly sourceAddress: string;
+    readonly input?: Readonly<Record<string, string>>;
+    readonly status: "running" | "failed" | "completed";
+    readonly reason?: string;
+    readonly canRetry: boolean;
   }[];
   /** 为普通刷新检查投影的领域权威状态。 */
   readonly sourceRefreshRuns?: readonly SourceRefreshRun[];
@@ -1248,6 +3819,7 @@ export const prerequisiteUnavailableFailure = {
 export type SourceCollectionFailure = {
   readonly capability: CapabilityCoordinate;
   readonly reason: string;
+  readonly failureCode?: string;
   /** 类型化操作分类；绝不从诊断字符串推断。 */
   readonly failureClassification?: OperationalFailureClassification;
   /**
@@ -1336,7 +3908,7 @@ export type SourceInterpreter = {
   interpret(input: {
     readonly evidence: readonly import("@digital/domain").RecognitionEvidence[];
     readonly sourceRecords: readonly SourceRecord[];
-  }): SourceInterpretationBatch;
+  }): readonly SourceInterpretationBatch[];
 };
 
 export type Recognizer = {
@@ -1477,7 +4049,151 @@ function retainCollectedRecordProvenance(
         "Source Record",
       ),
     })),
+    failures: collection.failures.map((failure) =>
+      safeSourceCollectionFailure(collector, failure),
+    ),
   };
+}
+
+function safeSourceCollectionFailure(
+  collector: Pick<SourceCollector, "capability">,
+  value: unknown,
+): SourceCollectionFailure {
+  const failure =
+    typeof value === "object" && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : undefined;
+  const topLevelSafe =
+    failure !== undefined &&
+    Object.keys(failure).every((key) =>
+      [
+        "capability",
+        "reason",
+        "failureCode",
+        "failureClassification",
+        "coverage",
+        "affects",
+      ].includes(key),
+    );
+  const declaredCapability = failure?.capability;
+  const capabilitySafe = isCapabilityCoordinate(declaredCapability);
+  const capabilityCodeSafe =
+    capabilitySafe && isCompleteSourceFailureCapability(declaredCapability);
+  const capability = capabilitySafe
+    ? actualProducer(
+        declaredCapability,
+        collector.capability,
+        "Source Collection Failure",
+      )
+    : collector.capability;
+  const classification = safeOperationalFailureClassification(
+    failure?.failureClassification,
+  );
+  const coverage = safeSourceCoverage(failure?.coverage);
+  const affects = safeSourceFailureAffects(failure?.affects);
+  const optionalShapesSafe =
+    (failure?.failureClassification === undefined ||
+      classification !== undefined) &&
+    (failure?.coverage === undefined || coverage !== undefined) &&
+    (failure?.affects === undefined || affects !== undefined);
+  const canRetainCode =
+    topLevelSafe &&
+    capabilityCodeSafe &&
+    typeof failure?.reason === "string" &&
+    optionalShapesSafe;
+  return {
+    capability,
+    reason:
+      typeof failure?.reason === "string"
+        ? failure.reason
+        : "Source collection failed",
+    ...(canRetainCode && typeof failure?.failureCode === "string"
+      ? { failureCode: failure.failureCode }
+      : {}),
+    ...(classification === undefined
+      ? {}
+      : { failureClassification: classification }),
+    ...(coverage === undefined ? {} : { coverage }),
+    ...(affects === undefined ? {} : { affects }),
+  };
+}
+
+function safeOperationalFailureClassification(
+  value: unknown,
+): OperationalFailureClassification | undefined {
+  return hasOnlyKeys(value, ["kind"]) &&
+    (value as Record<string, unknown>).kind === "prerequisite-unavailable"
+    ? prerequisiteUnavailableFailure
+    : undefined;
+}
+
+function safeSourceCoverage(value: unknown): SourceCoverageScope | undefined {
+  if (!hasOnlyKeys(value, ["sourceIdentity", "nativeAddress", "coverageId"]))
+    return undefined;
+  const coverage = value as Record<string, unknown>;
+  return typeof coverage.sourceIdentity === "string" &&
+    typeof coverage.nativeAddress === "string" &&
+    typeof coverage.coverageId === "string"
+    ? {
+        sourceIdentity: coverage.sourceIdentity,
+        nativeAddress: coverage.nativeAddress,
+        coverageId: coverage.coverageId,
+      }
+    : undefined;
+}
+
+function safeSourceFailureAffects(
+  value: unknown,
+): SourceCollectionFailure["affects"] | undefined {
+  if (
+    !hasOnlyKeys(value, [
+      "recognition",
+      "metadataProperties",
+      "artifactRoles",
+      "relationshipTypes",
+    ])
+  )
+    return undefined;
+  const affects = value as Record<string, unknown>;
+  const stringArray = (candidate: unknown): candidate is readonly string[] =>
+    Array.isArray(candidate) &&
+    candidate.every((item) => typeof item === "string");
+  if (
+    (affects.recognition !== undefined &&
+      typeof affects.recognition !== "boolean") ||
+    (affects.metadataProperties !== undefined &&
+      !stringArray(affects.metadataProperties)) ||
+    (affects.artifactRoles !== undefined &&
+      !stringArray(affects.artifactRoles)) ||
+    (affects.relationshipTypes !== undefined &&
+      !stringArray(affects.relationshipTypes))
+  )
+    return undefined;
+  return {
+    ...(affects.recognition === undefined
+      ? {}
+      : { recognition: affects.recognition as boolean }),
+    ...(affects.metadataProperties === undefined
+      ? {}
+      : {
+          metadataProperties: affects.metadataProperties as readonly string[],
+        }),
+    ...(affects.artifactRoles === undefined
+      ? {}
+      : { artifactRoles: affects.artifactRoles as readonly string[] }),
+    ...(affects.relationshipTypes === undefined
+      ? {}
+      : { relationshipTypes: affects.relationshipTypes as readonly string[] }),
+  };
+}
+
+function hasOnlyKeys(value: unknown, allowed: readonly string[]): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value).every((key) => allowed.includes(key))
+  );
 }
 
 function retainInterpretationProvenance(
@@ -1558,6 +4274,71 @@ function retainInterpretationProvenance(
           })),
         }),
   };
+}
+
+/**
+ * 将一次已保留采集的解释结果收拢为可独立消费的来源主体。这里是来源解释端口的
+ * 基数接缝：适配器只负责形成批次，Application 负责把真实生产者、保留记录和批次
+ * 独立性绑定起来；调用者不必各自重做这些校验。
+ */
+async function interpretRetainedSourceRecords(input: {
+  readonly interpreters: readonly SourceInterpreter[];
+  readonly evidence: readonly RecognitionEvidence[];
+  readonly sourceRecords: readonly SourceRecord[];
+  readonly beforeInterpret: (
+    capability: CapabilityCoordinate,
+  ) => void | Promise<void>;
+}): Promise<readonly SourceInterpretationBatch[]> {
+  const retainedRecords = new Map(
+    input.sourceRecords.map((record) => [record.id, record]),
+  );
+  const interpretations: SourceInterpretationBatch[] = [];
+  for (const interpreter of input.interpreters) {
+    if (!interpreter.canInterpret(input)) continue;
+    await input.beforeInterpret(interpreter.capability);
+    const addresses = new Set<string>();
+    for (const raw of interpreter.interpret(input)) {
+      const interpretation = retainInterpretationProvenance(interpreter, raw);
+      validateSourceInterpretationBatch(interpretation);
+      if (
+        interpretation.sourceRecordIds.some(
+          (sourceRecordId) => !retainedRecords.has(sourceRecordId),
+        )
+      )
+        throw new Error("来源解释引用了本次未保留的 Source Record");
+      const productRecord = interpretation.sourceRecordIds
+        .map((sourceRecordId) => retainedRecords.get(sourceRecordId))
+        .find(
+          (record) =>
+            record?.sourceIdentity === interpretation.sourceIdentity &&
+            record.nativeAddress === interpretation.sourceAddress,
+        );
+      if (productRecord === undefined)
+        throw new Error("来源解释必须引用本次已保留的同来源同地址产品记录");
+      const addressKey = `${interpretation.sourceIdentity}\u0000${interpretation.sourceAddress}`;
+      if (addresses.has(addressKey))
+        throw new Error("同一来源解释器不得重复解释同一来源地址");
+      addresses.add(addressKey);
+      interpretations.push(interpretation);
+    }
+  }
+  return interpretations;
+}
+
+function sourceAssociationInterpreterFor(input: {
+  readonly interpreters: readonly SourceAssociationInterpreter[];
+  readonly evidence: RecognitionEvidence;
+  readonly interpretation: SourceInterpretationBatch;
+}): SourceAssociationInterpreter | undefined {
+  const applicable = input.interpreters.filter((candidate) =>
+    candidate.canInterpret({
+      evidence: input.evidence,
+      interpretation: input.interpretation,
+    }),
+  );
+  if (applicable.length > 1)
+    throw new Error("一个来源解释只能由一个来源关联解释能力判定");
+  return applicable[0];
 }
 
 /**
@@ -1790,6 +4571,12 @@ type CataloguePersistenceOperations = {
     readonly sourceRecords: readonly SourceRecord[];
     readonly resumeClaim?: { readonly token: string; readonly now: string };
   }): Promise<void>;
+  commitSourceRefreshCollectionFailure(
+    input: CommitSourceRefreshCollectionFailureInput,
+  ): Promise<{
+    readonly execution: WorkflowExecution;
+    readonly run: SourceRefreshRun;
+  }>;
   finishExecution(
     /** 调用方准备 `execution` 前观察到的完整冻结审计。 */
     expectedExecution: WorkflowExecution,
@@ -1818,6 +4605,17 @@ type CataloguePersistenceOperations = {
     readonly preview: ChangeImpactPreview;
     readonly resumeClaim?: { readonly token: string; readonly now: string };
   }): Promise<void>;
+  finishExecutionWithSourceAssociationPreview(input: {
+    readonly expectedExecution: WorkflowExecution;
+    readonly execution: WorkflowExecution;
+    readonly preview: ChangeImpactPreview;
+    readonly resumeClaim?: { readonly token: string; readonly now: string };
+  }): Promise<void>;
+  finishExecutionWithRecognitionRetractionPreview(input: {
+    readonly expectedExecution: WorkflowExecution;
+    readonly execution: WorkflowExecution;
+    readonly preview: ChangeImpactPreview;
+  }): Promise<void>;
   acceptRecognition(input: {
     /** 调用方准备接受前观察到的完整运行中审计。 */
     readonly expectedExecution: WorkflowExecution;
@@ -1831,6 +4629,8 @@ type CataloguePersistenceOperations = {
     readonly metadataPolicyIds?: readonly string[];
     readonly resumeClaim?: { readonly token: string; readonly now: string };
   }): Promise<void>;
+  freezeObservedMaterialAssociationTarget: ObservedMaterialAssociationPersistence["freezeObservedMaterialAssociationTarget"];
+  commitObservedMaterialAssociation: ObservedMaterialAssociationPersistence["commitObservedMaterialAssociation"];
   inspectExecution(
     executionId: string,
   ): Promise<ExecutionInspection | undefined>;
@@ -1871,6 +4671,23 @@ type CataloguePersistenceOperations = {
       readonly accepted: AcceptedAssetState;
       readonly execution: WorkflowExecution;
     }[]
+  >;
+  findCurrentSourceAssociationByCoordinate(input: {
+    readonly sourceIdentity: string;
+    readonly nativeAddress: string;
+  }): Promise<SourceAssociation | undefined>;
+  inspectSourceAssociationHistory(assetId: string): Promise<
+    | {
+        readonly recognitionState: "recognized" | "unresolved";
+        readonly recognitionDecisionId?: string;
+        readonly current: readonly SourceAssociation[];
+        readonly historical: readonly {
+          readonly association: SourceAssociation;
+          readonly status: "superseded" | "retracted" | "legacy-retired";
+          readonly authorizedBy?: SourceAssociationTerminationAudit;
+        }[];
+      }
+    | undefined
   >;
   /**
    * 只查找精确的当前观察材料关联。调用方传入从可靠观察器证据派生的确定性产物 ID；
@@ -1947,7 +4764,19 @@ type CataloguePersistenceOperations = {
     readonly preview: ChangeImpactPreview;
     readonly plan: RecognitionSupersessionPlan;
   }): Promise<"applied" | "stale">;
-  rejectChangeImpactPreview(previewId: string): Promise<"rejected" | "stale">;
+  applySourceAssociationChangePreview(input: {
+    readonly preview: ChangeImpactPreview;
+    readonly decision: SourceAssociationDecision;
+    readonly confirmedBy: string;
+  }): Promise<"applied" | "stale">;
+  applyRecognitionRetractionPreview(input: {
+    readonly preview: ChangeImpactPreview;
+    readonly confirmedBy: string;
+  }): Promise<"applied" | "stale">;
+  rejectChangeImpactPreview(input: {
+    readonly previewId: string;
+    readonly rejectedBy: string;
+  }): Promise<"rejected" | "stale">;
   /**
    * 在持久化重复配置及其运行时行之前，原子证明预检的注册根闭包仍然活动。
    */
@@ -1977,11 +4806,24 @@ export type WorkflowExecutionCommands = Pick<
   CataloguePersistenceOperations,
   | "createExecution"
   | "retainSourceRecords"
+  | "commitSourceRefreshCollectionFailure"
   | "transitionExecution"
   | "finishExecution"
   | "cancelExecution"
   | "finishExecutionWithProposal"
 >;
+
+export type CommitSourceRefreshCollectionFailureInput = {
+  readonly expectedExecution: WorkflowExecution;
+  readonly runId: string;
+  readonly coverage: SourceCoverageScope;
+  readonly acquisitionAttempt: number;
+  readonly outcome: "failed" | "stale";
+  readonly reason: string;
+  readonly sourceFailureCodes?: readonly SourceFailureCode[];
+  readonly idempotencyKey: string;
+  readonly resumeClaim?: { readonly token: string; readonly now: string };
+};
 
 export type WorkflowExecutionQueries = Pick<
   CataloguePersistenceOperations,
@@ -2003,6 +4845,8 @@ export type AssetRefreshReuseQueries = Pick<
   | "findReusableOrdinaryScan"
   | "findAcceptedForDirectory"
   | "findAcceptedForSubjects"
+  | "findCurrentSourceAssociationByCoordinate"
+  | "inspectSourceAssociationHistory"
   | "findCurrentAcceptedForObservedArtifacts"
   | "findReusableWorkItem"
   | "findAcceptedForWorkItem"
@@ -2184,7 +5028,9 @@ export type RecognitionReevaluationPersistence = Pick<
 
 export type RecognitionChangeImpactPersistence = Pick<
   CataloguePersistenceOperations,
-  "finishExecutionWithChangeImpactPreview"
+  | "finishExecutionWithChangeImpactPreview"
+  | "finishExecutionWithSourceAssociationPreview"
+  | "finishExecutionWithRecognitionRetractionPreview"
 >;
 
 export type MetadataRefreshPersistence = Pick<
@@ -2364,6 +5210,8 @@ export type SourceEnrichmentPersistence = {
     };
     readonly assetId: string;
     readonly sourceAssociation: SourceAssociation;
+    readonly proposal: SourceAssociationChangeProposal;
+    readonly decision: SourceAssociationDecision;
     readonly sourceRecords: readonly SourceRecord[];
     readonly interpretation: SourceInterpretationBatch;
     /**
@@ -2389,6 +5237,8 @@ export type ChangeImpactCommands = Pick<
   CataloguePersistenceOperations,
   | "freezeChangeImpactBaseline"
   | "applyChangeImpactPreview"
+  | "applySourceAssociationChangePreview"
+  | "applyRecognitionRetractionPreview"
   | "rejectChangeImpactPreview"
 >;
 
@@ -2417,6 +5267,7 @@ export type AssetRefreshWorkflowPorts = {
     | "openBoundByteSource"
     | "closeBoundScope"
     | "reportCleanupFailure"
+    | "get"
   >;
   readonly directoryInterpreters: readonly DirectoryInterpreter[];
   readonly filesystemPackageInterpreters?: readonly FilesystemPackageInterpreter[];
@@ -2424,6 +5275,8 @@ export type AssetRefreshWorkflowPorts = {
   readonly formatInspectors?: readonly ArtifactFormatInspector[];
   readonly collectors: readonly SourceCollector[];
   readonly sourceInterpreters: readonly SourceInterpreter[];
+  /** 已部署来源中明确支持用户寻址的窄能力；不是动态插件登记表。 */
+  readonly sourceAddressingCapabilities?: readonly SourceAddressingCapability[];
   /** 在产品明确配置来源补充前可选。 */
   readonly sourceAssociationCandidateInterpreters?: readonly SourceAssociationCandidateInterpreter[];
   readonly sourceAssociationInterpreters?: readonly SourceAssociationInterpreter[];
@@ -2453,6 +5306,7 @@ export type AssetRefreshWorkflowPorts = {
   /** 测试／旧版组合没有可重建待处理权威时可选。 */
   readonly currentAttentionQueries?: CurrentAttentionQueries;
   readonly recognitionAcceptance: RecognitionAcceptancePersistence;
+  readonly observedMaterialAssociationPersistence?: ObservedMaterialAssociationPersistence;
   readonly recognitionReevaluation: RecognitionReevaluationPersistence;
   readonly recognitionChangeImpact: RecognitionChangeImpactPersistence;
   readonly metadataRefreshPersistence: MetadataRefreshPersistence;
@@ -3319,6 +6173,7 @@ function publicInspection(
     sourceEnrichments: _sourceEnrichments,
     reusePlan: _reusePlan,
     compatibility: _compatibility,
+    sourceAssociationDecision: _sourceAssociationDecision,
     proposalId: _proposalId,
     dispositions: internalDispositions,
     workItems: internalWorkItems,
@@ -3367,6 +6222,36 @@ function publicInspection(
       acquiredAt: record.acquiredAt,
       digest: record.digest,
     })),
+    ...(inspection.execution.sourceEnrichments === undefined
+      ? {}
+      : {
+          sourceEnrichments: inspection.execution.sourceEnrichments.map(
+            (item) => {
+              const disposition = inspection.execution.dispositions.find(
+                (candidate) => candidate.key === item.key,
+              );
+              const status =
+                item.stage === "applied"
+                  ? ("completed" as const)
+                  : item.stage === "failed"
+                    ? ("failed" as const)
+                    : ("running" as const);
+              return {
+                subjectId: item.subjectId,
+                sourceIdentity: item.evidence.sourceIdentity!,
+                sourceAddress: item.evidence.sourceAddress!,
+                ...(item.explicitInput === undefined
+                  ? {}
+                  : { input: item.explicitInput }),
+                status,
+                ...(disposition?.reason === undefined
+                  ? {}
+                  : { reason: disposition.reason }),
+                canRetry: status === "failed",
+              };
+            },
+          ),
+        }),
     ...(inspection.sourceRefreshRuns === undefined
       ? {}
       : { sourceRefreshRuns: inspection.sourceRefreshRuns }),
@@ -3434,14 +6319,142 @@ function publicInspection(
   };
 }
 
+function publicRuleResult(
+  result: RecognitionRuleResult,
+): PublicRecognitionRuleResult {
+  return {
+    ruleId: result.ruleId,
+    ruleVersion: result.ruleVersion,
+    outcome: result.outcome,
+    explanation: result.explanation,
+  };
+}
+
+function publicEvidence(
+  evidence: import("@digital/domain").RecognitionEvidence,
+): PublicRecognitionEvidence {
+  return {
+    kind: evidence.kind,
+    explanation: evidence.explanation,
+    ...("sourceIdentity" in evidence &&
+    typeof evidence.sourceIdentity === "string"
+      ? { sourceIdentity: evidence.sourceIdentity }
+      : {}),
+    ...("sourceAddress" in evidence &&
+    typeof evidence.sourceAddress === "string"
+      ? { sourceAddress: evidence.sourceAddress }
+      : {}),
+  };
+}
+
+function publicSourceAssociationCandidate(
+  candidate:
+    | SourceAssociationDecisionCandidate
+    | EvidenceComparison["sourceCandidates"][number],
+): PublicSourceAssociationCandidate {
+  const reference =
+    "reference" in candidate && typeof candidate.reference === "string"
+      ? candidate.reference
+      : createHash("sha256")
+          .update(
+            JSON.stringify({
+              outcome: candidate.outcome,
+              sourceIdentity: candidate.sourceIdentity,
+              nativeAddress: candidate.nativeAddress,
+              sourceRecordIds: [...candidate.sourceRecordIds].toSorted(),
+              ...("interpretation" in candidate
+                ? { interpretation: candidate.interpretation }
+                : {}),
+              ruleResults: candidate.ruleResults,
+              explanation: candidate.explanation,
+            }),
+          )
+          .digest("hex");
+  return {
+    reference,
+    outcome: candidate.outcome,
+    sourceIdentity: candidate.sourceIdentity,
+    nativeAddress: candidate.nativeAddress,
+    explanation: candidate.explanation,
+    ruleResults: candidate.ruleResults.map(publicRuleResult),
+  };
+}
+
+function publicEvidenceComparison(
+  comparison: EvidenceComparison,
+): PublicEvidenceComparison {
+  return {
+    observed: comparison.observed.map(publicEvidence),
+    manual: comparison.manual.map(publicEvidence),
+    sourceCandidates: comparison.sourceCandidates.map(
+      publicSourceAssociationCandidate,
+    ),
+    conflicts: comparison.conflicts,
+  };
+}
+
 function publicChangeImpactPreview(
   preview: ChangeImpactPreview,
 ): ChangeImpactPreviewInspection {
+  const safeProjection = (
+    projection: AssetStateProjection,
+  ): PublicAssetStateProjection => {
+    const withoutPrivateProvenance = <
+      T extends {
+        readonly producer?: unknown;
+        readonly sourceRecordIds?: unknown;
+        readonly authoredBy?: unknown;
+        readonly observedArtifactPart?: unknown;
+      },
+    >(
+      value: T,
+    ): Omit<
+      T,
+      "producer" | "sourceRecordIds" | "authoredBy" | "observedArtifactPart"
+    > => {
+      const {
+        producer: _producer,
+        sourceRecordIds: _sourceRecordIds,
+        authoredBy: _authoredBy,
+        observedArtifactPart: _observedArtifactPart,
+        ...safe
+      } = value;
+      return safe;
+    };
+    return {
+      ...projection,
+      metadata: projection.metadata.map(withoutPrivateProvenance),
+      entities: projection.entities.map(withoutPrivateProvenance),
+      entityMentions: projection.entityMentions.map(withoutPrivateProvenance),
+      entityResolutionDecisions: projection.entityResolutionDecisions.map(
+        withoutPrivateProvenance,
+      ),
+      relationships: projection.relationships.map(withoutPrivateProvenance),
+      artifactRevisions: projection.artifactRevisions.map(
+        withoutPrivateProvenance,
+      ),
+      artifactAssociations: projection.artifactAssociations.map(
+        ({ id, subjectId, artifactId, role, sourceAssociationId }) => ({
+          id,
+          subjectId,
+          artifactId,
+          role,
+          ...(sourceAssociationId === undefined ? {} : { sourceAssociationId }),
+        }),
+      ),
+      locations: projection.locations.map(({ id, artifactId, kind }) => ({
+        id,
+        artifactId,
+        kind,
+      })),
+    };
+  };
   return {
     id: preview.id,
     executionId: preview.executionId,
     assetId: preview.assetId,
     status: preview.status,
+    evidenceComparison: publicEvidenceComparison(preview.evidenceComparison),
     sourceAssociations: preview.projected.sourceAssociations,
     ...(preview.projected.recognitionSourceAssociation === undefined
       ? {}
@@ -3449,8 +6462,8 @@ function publicChangeImpactPreview(
           recognitionSourceAssociation:
             preview.projected.recognitionSourceAssociation,
         }),
-    current: preview.current,
-    projected: preview.projected,
+    current: safeProjection(preview.current),
+    projected: safeProjection(preview.projected),
     metadataCount: preview.projected.metadata.length,
     entityCount: preview.projected.entities.length,
     mentionCount: preview.projected.entityMentions.length,
@@ -3461,6 +6474,245 @@ function publicChangeImpactPreview(
       ? {}
       : { primaryCoverArtifactId: preview.projected.primaryCoverArtifactId }),
     blockingConditions: preview.blockingConditions,
+  };
+}
+
+function assetStateProjection(
+  accepted: AcceptedAssetState,
+): AssetStateProjection {
+  const primaryCoverArtifactId = accepted.artifactAssociations.find(
+    ({ role }) => role === "asset.primary-cover",
+  )?.artifactId;
+  return {
+    recognitionState: "recognized",
+    recognitionDecisionId: accepted.recognitionDecision.id,
+    sourceAssociations: accepted.sourceAssociations.map(
+      ({ sourceIdentity, nativeAddress }) => ({
+        sourceIdentity,
+        nativeAddress,
+      }),
+    ),
+    ...(accepted.recognitionSourceAssociation === undefined
+      ? {}
+      : {
+          recognitionSourceAssociation: {
+            sourceIdentity:
+              accepted.recognitionSourceAssociation.sourceIdentity,
+            nativeAddress: accepted.recognitionSourceAssociation.nativeAddress,
+          },
+        }),
+    metadata: accepted.metadata,
+    entities: accepted.entities ?? [],
+    entityMentions: accepted.entityMentions ?? [],
+    entityResolutionDecisions: accepted.entityResolutionDecisions ?? [],
+    relationships: accepted.relationships ?? [],
+    artifacts: accepted.artifacts,
+    locations: accepted.locations,
+    blobs: accepted.blobs,
+    artifactRevisions: accepted.artifactRevisions,
+    artifactAssociations: accepted.artifactAssociations,
+    ...(primaryCoverArtifactId === undefined ? {} : { primaryCoverArtifactId }),
+  };
+}
+
+function acceptedConcurrencyFingerprint(accepted: AcceptedAssetState): string {
+  const sort = <T>(values: readonly T[]) =>
+    [...values].sort((left, right) =>
+      JSON.stringify(left).localeCompare(JSON.stringify(right)),
+    );
+  return JSON.stringify({
+    projection: assetStateProjection(accepted),
+    sourceAssociations: sort(accepted.sourceAssociations),
+    artifactAssociationRecognitionSupports: sort(
+      accepted.artifactAssociationRecognitionSupports ?? [],
+    ),
+  });
+}
+
+/**
+ * 两条更正路径共用的产物已应用状态投影。一个关联只有在本次结束它的最后一个
+ * 可证明支持时才离开当前图；历史事实本身不在这里删除。
+ */
+function projectSupportedArtifactGraph(input: {
+  readonly current: AcceptedAssetState;
+  readonly endingSourceAssociationId?: string;
+  readonly endingSourceRecordIds?: ReadonlySet<string>;
+  readonly endingRecognitionDecisionId?: string;
+  readonly retainDeliveredMaterials?: boolean;
+  readonly appended?: Pick<
+    AssetStateProjection,
+    | "artifacts"
+    | "locations"
+    | "blobs"
+    | "artifactRevisions"
+    | "artifactAssociations"
+  >;
+}): Pick<
+  AssetStateProjection,
+  | "artifacts"
+  | "locations"
+  | "blobs"
+  | "artifactRevisions"
+  | "artifactAssociations"
+  | "primaryCoverArtifactId"
+> {
+  const supports = input.current.artifactAssociationRecognitionSupports ?? [];
+  const currentSourceAssociationIds = new Set(
+    input.current.sourceAssociations.map(({ id }) => id),
+  );
+  const retained = input.current.artifactAssociations.filter((association) => {
+    if (
+      input.retainDeliveredMaterials === true &&
+      association.role === "asset.material-delivered"
+    )
+      return true;
+    const sourceRecordIds = association.sourceRecordIds ?? [];
+    const associationSupports = supports.filter(
+      ({ associationId }) => associationId === association.id,
+    );
+    const losesSourceSupport =
+      association.sourceAssociationId !== undefined &&
+      association.sourceAssociationId === input.endingSourceAssociationId;
+    const losesSourceRecordSupport =
+      association.role === "asset.primary-cover" &&
+      sourceRecordIds.length > 0 &&
+      sourceRecordIds.every((sourceRecordId) =>
+        input.endingSourceRecordIds?.has(sourceRecordId),
+      );
+    const hasRemainingRecognitionSupport = associationSupports.some(
+      ({ recognitionDecisionId }) =>
+        recognitionDecisionId !== input.endingRecognitionDecisionId,
+    );
+    const hasRemainingSourceSupport =
+      association.sourceAssociationId !== undefined &&
+      currentSourceAssociationIds.has(association.sourceAssociationId) &&
+      !losesSourceSupport;
+    if (
+      association.sourceAssociationId === undefined &&
+      associationSupports.length === 0
+    )
+      return !losesSourceRecordSupport;
+    return hasRemainingRecognitionSupport || hasRemainingSourceSupport;
+  });
+  const artifactAssociations = [
+    ...new Map(
+      [...retained, ...(input.appended?.artifactAssociations ?? [])].map(
+        (association) => [association.id, association],
+      ),
+    ).values(),
+  ];
+  const artifactIds = new Set(
+    artifactAssociations.flatMap((association) => [
+      association.artifactId,
+      ...(association.observedArtifactPart === undefined
+        ? []
+        : [association.observedArtifactPart.artifactId]),
+    ]),
+  );
+  const artifacts = [
+    ...new Map(
+      [...input.current.artifacts, ...(input.appended?.artifacts ?? [])]
+        .filter(({ id: artifactId }) => artifactIds.has(artifactId))
+        .map((artifact) => [artifact.id, artifact]),
+    ).values(),
+  ];
+  const locations = [
+    ...new Map(
+      [...input.current.locations, ...(input.appended?.locations ?? [])]
+        .filter(({ artifactId }) => artifactIds.has(artifactId))
+        .map((location) => [location.id, location]),
+    ).values(),
+  ];
+  const artifactRevisions = [
+    ...new Map(
+      [
+        ...input.current.artifactRevisions,
+        ...(input.appended?.artifactRevisions ?? []),
+      ]
+        .filter(({ artifactId }) => artifactIds.has(artifactId))
+        .map((revision) => [revision.id, revision]),
+    ).values(),
+  ];
+  const blobDigests = new Set(
+    artifactRevisions.map(({ blobDigest }) => blobDigest),
+  );
+  const blobs = [
+    ...new Map(
+      [...input.current.blobs, ...(input.appended?.blobs ?? [])]
+        .filter(({ digest }) => blobDigests.has(digest))
+        .map((blob) => [blob.digest, blob]),
+    ).values(),
+  ];
+  const primaryCoverArtifactId = artifactAssociations.find(
+    ({ role }) => role === "asset.primary-cover",
+  )?.artifactId;
+  return {
+    artifacts,
+    locations,
+    blobs,
+    artifactRevisions,
+    artifactAssociations,
+    ...(primaryCoverArtifactId === undefined ? {} : { primaryCoverArtifactId }),
+  };
+}
+
+function otherLegacyArtifactBlockers(
+  current: AcceptedAssetState,
+  projectedAssociationIds: ReadonlySet<string>,
+  endingSourceRecordIds: ReadonlySet<string>,
+): readonly string[] {
+  const recognized = new Set(
+    (current.artifactAssociationRecognitionSupports ?? []).map(
+      ({ associationId }) => associationId,
+    ),
+  );
+  return current.artifactAssociations.flatMap((association) =>
+    projectedAssociationIds.has(association.id) ||
+    association.sourceAssociationId !== undefined ||
+    recognized.has(association.id) ||
+    (association.role === "asset.primary-cover" &&
+      (association.sourceRecordIds?.length ?? 0) > 0 &&
+      association.sourceRecordIds?.every((sourceRecordId) =>
+        endingSourceRecordIds.has(sourceRecordId),
+      ))
+      ? []
+      : [`产物关联 ${association.id} 缺少可审计支持，不能由本次更正自动终止`],
+  );
+}
+
+function projectSourceInterpretationFacts(
+  interpretation: SourceInterpretationBatch | undefined,
+  assetId: string,
+) {
+  if (interpretation === undefined)
+    return {
+      metadata: [],
+      entities: [],
+      entityMentions: [],
+      entityResolutionDecisions: [],
+      relationships: [],
+    };
+  const withProducer = <T extends { readonly producer?: CapabilityCoordinate }>(
+    value: T,
+  ): T & { readonly producer: CapabilityCoordinate } => ({
+    ...value,
+    producer: value.producer ?? interpretation.producer,
+  });
+  return {
+    metadata: interpretation.metadata.map((assertion) => ({
+      ...withProducer(assertion),
+      subjectId: assertion.subjectId ?? assetId,
+    })),
+    entities: (interpretation.entities ?? []).map(withProducer),
+    entityMentions: (interpretation.entityMentions ?? []).map(withProducer),
+    entityResolutionDecisions: (
+      interpretation.entityResolutionDecisions ?? []
+    ).map(withProducer),
+    relationships: (interpretation.relationships ?? []).map((relationship) => ({
+      ...withProducer(relationship),
+      id: relationshipId(relationship, assetId),
+      subjectId: relationship.subjectId ?? assetId,
+    })),
   };
 }
 
@@ -4206,6 +7458,647 @@ export class AssetRefreshWorkflow {
     );
   }
 
+  async prepareObservedMaterialAssociation(input: {
+    readonly targetAssetId: string;
+    readonly registrationId: string;
+    readonly relativeScope: string;
+    readonly relativePaths: readonly string[];
+    readonly initiatedBy: string;
+    readonly onExecutionStarted?: (execution: WorkflowExecution) => void;
+    readonly onCheckpoint?: (execution: WorkflowExecution) => void;
+    readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
+  }): Promise<ObservedMaterialAssociationInspection> {
+    const persistence = this.ports.observedMaterialAssociationPersistence;
+    if (persistence === undefined)
+      throw new Error("当前产品未装配观察材料关联能力");
+    if (
+      !input.targetAssetId ||
+      !input.registrationId ||
+      !input.initiatedBy.trim() ||
+      input.relativePaths.length === 0 ||
+      new Set(input.relativePaths).size !== input.relativePaths.length ||
+      input.relativePaths.some((relativePath) => !relativePath)
+    )
+      throw new Error("请选择既有内容和不重复的完整文件");
+    const target = (
+      await this.ports.reuseQueries.findAcceptedForSubjects([
+        input.targetAssetId,
+      ])
+    )[0];
+    if (target === undefined) throw new Error("目标内容不存在或尚未确认");
+    const baseline = await persistence.freezeObservedMaterialAssociationTarget(
+      input.targetAssetId,
+    );
+    const initialCheckpoint: ObservedMaterialAssociationCheckpoint = {
+      version: "observed-material-association-checkpoint/1",
+      state: "created",
+      input: {
+        targetAssetId: input.targetAssetId,
+        registrationId: input.registrationId,
+        relativeScope: input.relativeScope,
+        relativePaths: [...input.relativePaths].toSorted(),
+        initiatedBy: input.initiatedBy.trim(),
+      },
+      identityBaseline: baseline.identityBaseline,
+      materialBaseline: baseline.materialBaseline,
+    };
+    let execution: WorkflowExecution = {
+      id: id("execution"),
+      workflowInput: {
+        version: "observed-material-association-input/1",
+        trigger: "interactive",
+        initiatedBy: input.initiatedBy.trim(),
+        acceptTrusted: false,
+        configurationReferences: [],
+        targetAssetId: input.targetAssetId,
+        registrationId: input.registrationId,
+        relativeScope: input.relativeScope,
+        relativePaths: [...input.relativePaths].toSorted(),
+      },
+      selection: {
+        intent: "scan-now",
+        informationRequirement: emptyInformationRequirement,
+      },
+      operationKind: "associate-observed-material",
+      status: "running",
+      stage: "recognition",
+      sourceRecordIds: [],
+      compatibility: this.availableCompatibility(),
+      dispositions: [],
+      materialAssociation: initialCheckpoint,
+    };
+    await this.ports.executionCommands.createExecution(execution);
+    input.onExecutionStarted?.(execution);
+    try {
+      execution = await this.observedRootExecution.invoke(
+        {
+          registrationId: input.registrationId,
+          relativeScope: input.relativeScope,
+          subjects: [
+            {
+              subjectId: input.targetAssetId,
+              explanations: [
+                {
+                  path: ["observed-material-association", input.targetAssetId],
+                },
+              ],
+            },
+          ],
+        },
+        async (bound) => {
+          const registration = await this.ports.observedRootRegistrations.get(
+            input.registrationId,
+          );
+          if (registration === undefined || registration.status !== "active")
+            throw new Error("文件位置已停用");
+          const observing: WorkflowExecution = {
+            ...execution,
+            requestedSelection: bound.requestedSelection,
+            resolvedSelection: bound.resolvedSelection,
+            materialAssociation: {
+              ...initialCheckpoint,
+              state: "observing",
+              registrationDisplayName: registration.displayName,
+              input: {
+                ...initialCheckpoint.input,
+                registrationVersion: registration.configVersion,
+              },
+            },
+          };
+          await this.transition(execution, observing);
+          execution = observing;
+          notifyDurableCheckpoint(input, execution);
+          const snapshot =
+            await this.ports.observedRootRegistrations.observeBoundScope(
+              bound.scope,
+            );
+          if (!snapshot.complete)
+            throw new Error("文件位置观察不完整，请重新检查");
+          const selectedPaths = initialCheckpoint.input.relativePaths;
+          const selectedFiles = selectedPaths.map((relativePath) => {
+            const file = snapshot.files.find(
+              (candidate) => candidate.relativePath === relativePath,
+            );
+            if (file === undefined)
+              throw new Error(`所选完整文件不可用：${relativePath}`);
+            return file;
+          });
+          const selectedSnapshot: FilesystemPackageSnapshot = {
+            ...snapshot,
+            files: selectedFiles,
+          };
+          const inspecting: WorkflowExecution = {
+            ...execution,
+            snapshot: selectedSnapshot,
+            filesystemSnapshots: [selectedSnapshot],
+            materialAssociation: {
+              ...execution.materialAssociation!,
+              state: "inspecting",
+              snapshot: selectedSnapshot,
+            },
+          };
+          await this.transition(execution, inspecting);
+          execution = inspecting;
+          const observed = await this.inspectWholeObservedMaterials(
+            bound.scope,
+            selectedSnapshot,
+            () => notifyDurableCheckpoint(input, execution, false),
+          );
+          const proposal: RecognitionProposal = {
+            id: id("recognition-proposal"),
+            basis: {
+              kind: "manual-boundary",
+              proposedBy: input.initiatedBy.trim(),
+              observationSnapshotId: selectedSnapshot.id,
+              materialReferences: selectedPaths,
+              revisesProposalIds: [],
+              metadata: [],
+              evidence: observed.evidence,
+            },
+            ruleResults: [],
+            observedArtifactAssociations: selectedPaths.map(
+              (observedArtifactReference) => ({
+                observedArtifactReference,
+                role: "asset.material-delivered" as const,
+              }),
+            ),
+            observedArtifactRevisions: observed.revisions,
+          };
+          const accepted = createAcceptedRecognition({
+            proposal,
+            snapshot: selectedSnapshot,
+            managedArtifacts: [],
+            asset: target.accepted.entity,
+            ...(this.ports.observedRootRegistrations.objectIdentityContract ===
+            undefined
+              ? {}
+              : {
+                  objectIdentityContract:
+                    this.ports.observedRootRegistrations.objectIdentityContract,
+                }),
+          });
+          const submission: ObservedMaterialAssociationSubmission = {
+            proposal,
+            recognitionDecision: accepted.recognitionDecision,
+            artifacts: accepted.artifacts,
+            locations: accepted.locations,
+            blobs: uniqueObservedMaterialBlobs(accepted.blobs),
+            artifactRevisions: accepted.artifactRevisions,
+            artifactAssociations: accepted.artifactAssociations,
+            projections: observedMaterialAssociationProjections(
+              proposal,
+              selectedSnapshot,
+              accepted,
+            ),
+            supports: accepted.artifactAssociations.map((association) => ({
+              associationId: association.id,
+              recognitionDecisionId: accepted.recognitionDecision.id,
+            })),
+          };
+          validateObservedMaterialAssociationSubmission(submission);
+          const waiting: WorkflowExecution = {
+            ...execution,
+            materialAssociation: {
+              ...execution.materialAssociation!,
+              state: "awaiting-confirmation",
+              submission,
+            },
+          };
+          await this.transition(execution, waiting);
+          execution = waiting;
+          notifyDurableCheckpoint(input, execution);
+          return execution;
+        },
+      );
+    } catch (error) {
+      rethrowWorkflowLifecycle(error);
+      const latest =
+        (await this.ports.executionQueries.inspectExecution(execution.id))
+          ?.execution ?? execution;
+      if (latest.status === "running") {
+        const failed: WorkflowExecution = {
+          ...latest,
+          status: "failed",
+          stage: "failed",
+          outcome: "failed",
+          reason: errorMessage(error),
+          materialAssociation: {
+            ...latest.materialAssociation!,
+            state: "failed",
+          },
+        };
+        await this.ports.executionCommands.finishExecution(latest, failed);
+      }
+      throw error;
+    }
+    return await this.inspectObservedMaterialAssociation(execution.id);
+  }
+
+  async inspectObservedMaterialAssociation(
+    executionId: string,
+  ): Promise<ObservedMaterialAssociationInspection> {
+    const inspection =
+      await this.ports.executionQueries.inspectExecution(executionId);
+    const execution = inspection?.execution;
+    const checkpoint = execution?.materialAssociation;
+    if (execution === undefined || checkpoint === undefined)
+      throw new Error("未找到观察材料关联记录");
+    const proposal = checkpoint.submission?.proposal;
+    const basis = proposal?.basis;
+    const target = (
+      await this.ports.reuseQueries.findAcceptedForSubjects([
+        checkpoint.input.targetAssetId,
+      ])
+    )[0];
+    if (target === undefined) throw new Error("目标内容不再可用");
+    if (checkpoint.state === "accepted") {
+      const audits =
+        await this.ports.observedMaterialAssociationPersistence!.auditObservedMaterialAssociations(
+          [
+            ...new Map(
+              checkpoint.submission!.projections.map((projection) => [
+                projection.associationId,
+                projection,
+              ]),
+            ).values(),
+          ],
+        );
+      const auditedAssociationIds = audits
+        .map((audit) => audit.association.id)
+        .toSorted();
+      if (
+        proposal === undefined ||
+        checkpoint.decisionId !==
+          checkpoint.submission!.recognitionDecision.id ||
+        checkpoint.submission!.recognitionDecision.proposalId !== proposal.id ||
+        JSON.stringify(auditedAssociationIds) !==
+          JSON.stringify([...(checkpoint.associationIds ?? [])].toSorted()) ||
+        audits.some(
+          (audit) =>
+            !audit.supports.some(
+              (support) =>
+                support.decision.id === checkpoint.decisionId &&
+                support.proposal.id === proposal.id,
+            ),
+        )
+      )
+        throw new Error("观察材料关联的耐久领域审计链不完整");
+    }
+    const title = target.accepted.metadata.find(
+      (metadata) => metadata.property === "asset.title",
+    )?.value;
+    const byReference = new Map(
+      (proposal?.observedArtifactRevisions ?? []).map((revision) => [
+        revision.observedArtifactReference,
+        revision,
+      ]),
+    );
+    const artifactByReference = new Map(
+      (checkpoint.snapshot?.files ?? []).map((file, index) => [
+        file.relativePath,
+        checkpoint.submission?.artifacts[index],
+      ]),
+    );
+    return {
+      executionId,
+      status: checkpoint.state,
+      ...(execution.reason === undefined ? {} : { reason: execution.reason }),
+      ...(checkpoint.state === "stale"
+        ? { failure: "material-stale" as const }
+        : checkpoint.state === "failed"
+          ? { failure: "unavailable" as const }
+          : checkpoint.state === "interrupted"
+            ? { failure: "interrupted" as const }
+            : {}),
+      target: {
+        id: checkpoint.input.targetAssetId,
+        ...(title === undefined ? {} : { title }),
+      },
+      observedRoot: {
+        id: checkpoint.input.registrationId,
+        ...(checkpoint.registrationDisplayName === undefined
+          ? {}
+          : { displayName: checkpoint.registrationDisplayName }),
+        relativeScope: checkpoint.input.relativeScope,
+      },
+      files: checkpoint.input.relativePaths.map((relativePath) => {
+        const revision = byReference.get(relativePath);
+        return {
+          relativePath,
+          byteLength: revision?.blob.byteLength ?? 0,
+          digest: revision?.blob.digest ?? "",
+          mediaType: revision?.blob.mediaType ?? "application/octet-stream",
+          disposition:
+            artifactByReference.get(relativePath) !== undefined &&
+            checkpoint.submission?.artifacts.some((artifact) =>
+              target.accepted.artifacts.some(
+                (current) => current.id === artifact.id,
+              ),
+            )
+              ? ("existing-artifact" as const)
+              : ("new-artifact" as const),
+          formatValid: revision !== undefined,
+        };
+      }),
+      proposal: {
+        id: proposal?.id ?? "",
+        proposedBy:
+          basis?.kind === "manual-boundary"
+            ? basis.proposedBy
+            : checkpoint.input.initiatedBy,
+        materials: checkpoint.input.relativePaths.map((relativePath) => ({
+          relativePath,
+          role: "asset.material-delivered" as const,
+        })),
+      },
+      ...(checkpoint.confirmedBy === undefined
+        ? {}
+        : { confirmedBy: checkpoint.confirmedBy }),
+      ...(checkpoint.decisionId === undefined
+        ? {}
+        : { decisionId: checkpoint.decisionId }),
+      ...(checkpoint.associationIds === undefined
+        ? {}
+        : { associationIds: checkpoint.associationIds }),
+    };
+  }
+
+  async confirmObservedMaterialAssociation(input: {
+    readonly executionId: string;
+    readonly confirmedBy: string;
+    readonly onCheckpoint?: (execution: WorkflowExecution) => void;
+    readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
+  }): Promise<ObservedMaterialAssociationInspection> {
+    return await this.confirmObservedMaterialAssociationWithClaim(input);
+  }
+
+  private async confirmObservedMaterialAssociationWithClaim(
+    input: {
+      readonly executionId: string;
+      readonly confirmedBy: string;
+      readonly onCheckpoint?: (execution: WorkflowExecution) => void;
+      readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
+    },
+    resumeClaim?: { readonly token: string; readonly now: string },
+  ): Promise<ObservedMaterialAssociationInspection> {
+    if (!input.confirmedBy.trim()) throw new Error("确认者不能为空");
+    const inspected = await this.ports.executionQueries.inspectExecution(
+      input.executionId,
+    );
+    let execution = inspected?.execution;
+    let checkpoint = execution?.materialAssociation;
+    if (execution === undefined || checkpoint?.submission === undefined)
+      throw new Error("未找到待确认的观察材料关联");
+    if (execution.status !== "running")
+      return await this.inspectObservedMaterialAssociation(input.executionId);
+    if (
+      checkpoint.state !== "awaiting-confirmation" &&
+      checkpoint.state !== "confirmation-recorded" &&
+      checkpoint.state !== "revalidating"
+    )
+      throw new Error("观察材料关联当前不能确认");
+    if (checkpoint.state === "awaiting-confirmation") {
+      const recorded: WorkflowExecution = {
+        ...execution,
+        materialAssociation: {
+          ...checkpoint,
+          state: "confirmation-recorded",
+          confirmedBy: input.confirmedBy.trim(),
+          decisionId: checkpoint.submission.recognitionDecision.id,
+          associationIds: checkpoint.submission.artifactAssociations.map(
+            (association) => association.id,
+          ),
+        },
+      };
+      await this.transition(execution, recorded, resumeClaim);
+      execution = recorded;
+      checkpoint = recorded.materialAssociation!;
+      notifyDurableCheckpoint(input, execution);
+    } else if (checkpoint.confirmedBy !== input.confirmedBy.trim()) {
+      throw new Error("观察材料关联必须由原确认者继续");
+    }
+    const expected = checkpoint.submission!;
+    try {
+      await this.observedRootExecution.invoke(
+        {
+          registrationId: checkpoint.input.registrationId,
+          relativeScope: checkpoint.input.relativeScope,
+          subjects: [
+            {
+              subjectId: checkpoint.input.targetAssetId,
+              explanations: [
+                {
+                  path: [
+                    "observed-material-association",
+                    checkpoint.input.targetAssetId,
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        async (bound) => {
+          if (
+            bound.resolvedSelection.filesystemScopes[0]?.observedRoot
+              .configVersion !== checkpoint!.input.registrationVersion
+          )
+            throw new ObservedMaterialStaleError("文件位置已变化，请重新准备");
+          const revalidating: WorkflowExecution = {
+            ...execution!,
+            materialAssociation: {
+              ...checkpoint!,
+              state: "revalidating",
+            },
+          };
+          await this.transition(execution!, revalidating, resumeClaim);
+          execution = revalidating;
+          checkpoint = revalidating.materialAssociation!;
+          notifyDurableCheckpoint(input, execution);
+          const snapshot =
+            await this.ports.observedRootRegistrations.observeBoundScope(
+              bound.scope,
+            );
+          if (!snapshot.complete)
+            throw new Error("文件位置观察不完整，无法确认材料关联");
+          const selected: FilesystemPackageSnapshot = {
+            ...snapshot,
+            files: checkpoint.input.relativePaths.map((relativePath) => {
+              const file = snapshot.files.find(
+                (candidate) => candidate.relativePath === relativePath,
+              );
+              if (file === undefined)
+                throw new ObservedMaterialStaleError(
+                  `所选完整文件不可用：${relativePath}`,
+                );
+              return file;
+            }),
+          };
+          if (
+            canonicalObservedMaterialObjectIdentity(
+              selected.files,
+              this.ports.observedRootRegistrations.objectIdentityContract,
+            ) !==
+            canonicalObservedMaterialObjectIdentity(
+              checkpoint.snapshot?.files ?? [],
+              this.ports.observedRootRegistrations.objectIdentityContract,
+            )
+          )
+            throw new ObservedMaterialStaleError(
+              "所选文件对象身份或别名关系已变化，请重新准备",
+            );
+          const observed = await this.inspectWholeObservedMaterials(
+            bound.scope,
+            selected,
+            () => notifyDurableCheckpoint(input, execution!, false),
+          );
+          if (
+            canonicalObservedMaterialRevisions(observed.revisions) !==
+            canonicalObservedMaterialRevisions(
+              expected.proposal.observedArtifactRevisions ?? [],
+            )
+          )
+            throw new ObservedMaterialStaleError("所选文件已变化，请重新准备");
+        },
+      );
+    } catch (error) {
+      rethrowWorkflowLifecycle(error);
+      const isStale = error instanceof ObservedMaterialStaleError;
+      const failed: WorkflowExecution = {
+        ...execution,
+        status: isStale ? "completed" : "failed",
+        stage: isStale ? "completed" : "failed",
+        outcome: isStale ? "no-change" : "failed",
+        reason: errorMessage(error),
+        materialAssociation: {
+          ...checkpoint,
+          state: isStale ? "stale" : "failed",
+        },
+      };
+      await this.ports.executionCommands.finishExecution(
+        execution,
+        failed,
+        resumeClaim,
+      );
+      return await this.inspectObservedMaterialAssociation(input.executionId);
+    }
+    const terminalExecution = (
+      state: "accepted" | "no-change" | "stale",
+    ): WorkflowExecution => ({
+      ...execution!,
+      status: "completed",
+      stage: "completed",
+      outcome: state === "accepted" ? "accepted" : "no-change",
+      ...(state === "accepted" ? { proposalId: expected.proposal.id } : {}),
+      acceptedAssetId: checkpoint!.input.targetAssetId,
+      materialAssociation: { ...checkpoint!, state },
+    });
+    await this.ports.observedMaterialAssociationPersistence!.commitObservedMaterialAssociation(
+      {
+        expectedExecution: execution,
+        terminalExecutions: {
+          accepted: terminalExecution("accepted"),
+          noChange: terminalExecution("no-change"),
+          stale: terminalExecution("stale"),
+        },
+        expectedIdentityBaseline: checkpoint.identityBaseline!,
+        expectedMaterialBaseline: checkpoint.materialBaseline!,
+        observedAuthority: {
+          registrationId: checkpoint.input.registrationId,
+          registrationVersion: checkpoint.input.registrationVersion!,
+        },
+        submission: expected,
+        ...(resumeClaim === undefined ? {} : { resumeClaim }),
+      },
+    );
+    return await this.inspectObservedMaterialAssociation(input.executionId);
+  }
+
+  private async inspectWholeObservedMaterials(
+    scope: BoundObservedScope,
+    snapshot: FilesystemPackageSnapshot,
+    checkpoint: () => void,
+  ): Promise<{
+    readonly evidence: readonly RecognitionEvidence[];
+    readonly revisions: readonly import("@digital/domain").ObservedArtifactRevisionCandidate[];
+  }> {
+    const evidence: RecognitionEvidence[] = [];
+    const revisions: import("@digital/domain").ObservedArtifactRevisionCandidate[] =
+      [];
+    for (const file of snapshot.files) {
+      const source = await this.openObservedByteSource(
+        scope,
+        file.relativePath,
+      );
+      const digest = createHash("sha256");
+      let offset = 0;
+      try {
+        for (;;) {
+          const chunk = await source.readChunk(offset, 1024 * 1024);
+          digest.update(chunk.bytes);
+          offset += chunk.bytes.byteLength;
+          checkpoint();
+          if (chunk.done) break;
+        }
+      } finally {
+        await source.close();
+      }
+      if (offset !== file.size || offset !== source.byteLength)
+        throw new Error(`完整文件在读取期间发生变化：${file.relativePath}`);
+      const inspected: RecognitionEvidence[] = [];
+      for (const inspector of this.ports.formatInspectors ?? []) {
+        const formatSource = await this.openObservedByteSource(
+          scope,
+          file.relativePath,
+        );
+        try {
+          inspected.push(
+            ...bindRecognitionEvidenceOutputToProducer(
+              await inspector.inspect({
+                observedArtifactReference: file.relativePath,
+                byteSource: formatSource,
+              }),
+              inspector.capability,
+            ),
+          );
+        } finally {
+          await formatSource.close();
+        }
+      }
+      const digestValue = digest.digest("hex");
+      const inspectedRevision = inspected
+        .map((item) => item.inspection?.revision)
+        .find(
+          (revision) =>
+            revision?.digest === digestValue && revision.byteLength === offset,
+        );
+      const blob: Blob = {
+        digest: digestValue,
+        mediaType: inspectedRevision?.mediaType ?? "application/octet-stream",
+        byteLength: offset,
+      };
+      const producer = this.ports.observedRootRegistrations.capability;
+      evidence.push({
+        kind: "format.whole-file-observation",
+        explanation: "完整文件字节已复验",
+        producer,
+        inspection: {
+          observedArtifactReference: file.relativePath,
+          revision: blob,
+          identifiers: [],
+          metadata: [],
+          parts: [],
+        },
+      });
+      evidence.push(...inspected);
+      revisions.push({
+        observedArtifactReference: file.relativePath,
+        blob,
+        producer,
+      });
+    }
+    return { evidence, revisions };
+  }
+
   /** 人工选择只修订观察结果的范围，不要求先满足任何自动识别规则。 */
   async prepareLocalContent(input: {
     readonly executionId: string;
@@ -4378,6 +8271,16 @@ export class AssetRefreshWorkflow {
           },
           basis.evidence,
         );
+        const managedObservedParts =
+          await this.materializeObservedArtifactParts(
+            proposal,
+            selected,
+            withObservedMaterialImageRequirement(
+              prepared.execution.selection.informationRequirement ??
+                emptyInformationRequirement,
+            ),
+            bound.scope,
+          );
         const initial = this.localContentExecution(
           prepared.execution,
           requiredFilesystemSnapshot(prepared.execution),
@@ -4387,6 +8290,7 @@ export class AssetRefreshWorkflow {
           proposal,
           snapshot: selected,
           managedArtifacts: [],
+          managedObservedParts,
           asset: {
             id: assetId,
             kind: "digital-asset",
@@ -4627,7 +8531,55 @@ export class AssetRefreshWorkflow {
     readonly registrationId: string;
     readonly relativeScope: string;
     readonly sourceIdentity: string;
+    readonly sourceInput: Readonly<Record<string, string>>;
+    readonly informationRequirement?: InformationRequirement;
+    readonly onExecutionStarted?: (execution: WorkflowExecution) => void;
+    readonly onProgress?: (message: string) => void;
+    readonly onCheckpoint?: (execution: WorkflowExecution) => void;
+    readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
+  }): Promise<AssetRefreshInspection> {
+    const capability = this.requireSourceAddressingCapability(
+      input.sourceIdentity,
+    );
+    const normalized = capability.normalize(input.sourceInput);
+    if (normalized.status === "invalid") throw new Error(normalized.reason);
+    return await this.rescrapeCanonicalObservedScope({
+      ...input,
+      sourceAddress: normalized.evidence.sourceAddress!,
+      sourceProducer: capability.capability,
+    });
+  }
+
+  async rescrapeCurrentObservedScope(input: {
+    readonly subjectId: string;
+    readonly registrationId: string;
+    readonly relativeScope: string;
+    readonly informationRequirement?: InformationRequirement;
+    readonly onExecutionStarted?: (execution: WorkflowExecution) => void;
+    readonly onProgress?: (message: string) => void;
+    readonly onCheckpoint?: (execution: WorkflowExecution) => void;
+    readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
+  }): Promise<AssetRefreshInspection> {
+    const [current] = await this.ports.reuseQueries.findAcceptedForSubjects([
+      input.subjectId,
+    ]);
+    const association = current?.accepted.recognitionSourceAssociation;
+    if (current?.subjectId !== input.subjectId || association === undefined)
+      throw new Error("当前内容没有可重新刮削的识别来源");
+    return await this.rescrapeCanonicalObservedScope({
+      ...input,
+      sourceIdentity: association.sourceIdentity,
+      sourceAddress: association.nativeAddress,
+    });
+  }
+
+  private async rescrapeCanonicalObservedScope(input: {
+    readonly subjectId: string;
+    readonly registrationId: string;
+    readonly relativeScope: string;
+    readonly sourceIdentity: string;
     readonly sourceAddress: string;
+    readonly sourceProducer?: CapabilityCoordinate;
     readonly informationRequirement?: InformationRequirement;
     readonly onExecutionStarted?: (execution: WorkflowExecution) => void;
     readonly onProgress?: (message: string) => void;
@@ -4668,6 +8620,7 @@ export class AssetRefreshWorkflow {
           acceptTrusted: true,
           directedSourceIdentity: input.sourceIdentity,
           directedSourceAddress: input.sourceAddress,
+          directedSourceProducer: input.sourceProducer,
           informationRequirement: input.informationRequirement,
           onExecutionStarted: input.onExecutionStarted,
           onProgress: input.onProgress,
@@ -4679,7 +8632,7 @@ export class AssetRefreshWorkflow {
     );
   }
 
-  async directedRecognitionObservedScope(input: {
+  private async directedRecognitionObservedScope(input: {
     readonly registrationId: string;
     readonly relativeScope: string;
     readonly sourceIdentity: string;
@@ -4687,6 +8640,9 @@ export class AssetRefreshWorkflow {
     readonly informationRequirement?: InformationRequirement;
     readonly onExecutionStarted?: (execution: WorkflowExecution) => void;
     readonly onProgress?: (message: string) => void;
+    readonly onCheckpoint?: (execution: WorkflowExecution) => void;
+    readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
+    readonly sourceProducer?: CapabilityCoordinate;
   }): Promise<AssetRefreshInspection> {
     return await this.observedRootExecution.invoke(input, async (resolved) => {
       if (
@@ -4705,10 +8661,55 @@ export class AssetRefreshWorkflow {
         acceptTrusted: true,
         directedSourceIdentity: input.sourceIdentity,
         directedSourceAddress: input.sourceAddress,
+        directedSourceProducer: input.sourceProducer,
         informationRequirement: input.informationRequirement,
-        onExecutionStarted: input.onExecutionStarted,
+        ...(input.onExecutionStarted === undefined
+          ? {}
+          : { onExecutionStarted: input.onExecutionStarted }),
         onProgress: input.onProgress,
+        onCheckpoint: input.onCheckpoint,
+        onHostCheckpoint: input.onHostCheckpoint,
       });
+    });
+  }
+
+  async directedRecognitionSourceInputObservedScope(input: {
+    readonly registrationId: string;
+    readonly relativeScope: string;
+    readonly sourceIdentity: string;
+    readonly sourceInput: Readonly<Record<string, string>>;
+    readonly informationRequirement?: InformationRequirement;
+    readonly onExecutionStarted?: (execution: WorkflowExecution) => void;
+    readonly onProgress?: (message: string) => void;
+    readonly onCheckpoint?: (execution: WorkflowExecution) => void;
+    readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
+  }): Promise<AssetRefreshInspection> {
+    const capability = this.requireSourceAddressingCapability(
+      input.sourceIdentity,
+    );
+    const normalized = capability.normalize(input.sourceInput);
+    if (normalized.status === "invalid") throw new Error(normalized.reason);
+    return await this.directedRecognitionObservedScope({
+      registrationId: input.registrationId,
+      relativeScope: input.relativeScope,
+      sourceIdentity: input.sourceIdentity,
+      sourceAddress: normalized.evidence.sourceAddress!,
+      sourceProducer: capability.capability,
+      ...(input.informationRequirement === undefined
+        ? {}
+        : { informationRequirement: input.informationRequirement }),
+      ...(input.onExecutionStarted === undefined
+        ? {}
+        : { onExecutionStarted: input.onExecutionStarted }),
+      ...(input.onProgress === undefined
+        ? {}
+        : { onProgress: input.onProgress }),
+      ...(input.onCheckpoint === undefined
+        ? {}
+        : { onCheckpoint: input.onCheckpoint }),
+      ...(input.onHostCheckpoint === undefined
+        ? {}
+        : { onHostCheckpoint: input.onHostCheckpoint }),
     });
   }
 
@@ -4761,6 +8762,1165 @@ export class AssetRefreshWorkflow {
       this.ports.metadataPolicyConfiguration,
       await this.publicSourceArtifactCandidates(current.accepted),
     );
+  }
+
+  /** 精确更正入口即使在身份未决后也可检查稳定资产与来源历史。 */
+  async inspectCorrectionSubject(subjectId: string) {
+    return await this.ports.reuseQueries.inspectSourceAssociationHistory(
+      subjectId,
+    );
+  }
+
+  /** 交付层读取静态产品组合真正支持的来源输入，不推断或解析来源语法。 */
+  sourceInputRequirements(): readonly SourceInputRequirement[] {
+    return (this.ports.sourceAddressingCapabilities ?? []).map(
+      ({ inputRequirement }) => inputRequirement,
+    );
+  }
+
+  private requireSourceAddressingCapability(sourceIdentity: string) {
+    const capabilities = (this.ports.sourceAddressingCapabilities ?? []).filter(
+      (candidate) =>
+        candidate.inputRequirement.sourceIdentity === sourceIdentity,
+    );
+    if (capabilities.length !== 1) throw new Error("所选来源不支持明确寻址");
+    return capabilities[0]!;
+  }
+
+  async prepareConflictedEstablishment(input: {
+    readonly assetId: string;
+    readonly sourceIdentity: string;
+    readonly sourceInput: Readonly<Record<string, string>>;
+    readonly initiatedBy: string;
+    readonly priorExecutionId?: string;
+    readonly onExecutionStarted?: (execution: WorkflowExecution) => void;
+    readonly onCheckpoint?: (execution: WorkflowExecution) => void;
+    readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
+  }): Promise<SourceAssociationDecisionInspection> {
+    return await this.prepareSourceAssociationDecision({
+      ...input,
+      intent: "establish",
+    });
+  }
+
+  async prepareReplacement(input: {
+    readonly assetId: string;
+    readonly predecessorAssociationId: string;
+    readonly sourceInput: Readonly<Record<string, string>>;
+    readonly initiatedBy: string;
+    readonly priorExecutionId?: string;
+    readonly onExecutionStarted?: (execution: WorkflowExecution) => void;
+    readonly onCheckpoint?: (execution: WorkflowExecution) => void;
+    readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
+  }): Promise<SourceAssociationDecisionInspection> {
+    return await this.prepareSourceAssociationDecision({
+      ...input,
+      intent: "replace",
+    });
+  }
+
+  async prepareRetraction(input: {
+    readonly assetId: string;
+    readonly predecessorAssociationId: string;
+    readonly initiatedBy: string;
+    readonly reason: string;
+    readonly priorExecutionId?: string;
+    readonly onExecutionStarted?: (execution: WorkflowExecution) => void;
+    readonly onCheckpoint?: (execution: WorkflowExecution) => void;
+    readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
+  }): Promise<SourceAssociationDecisionInspection> {
+    return await this.prepareSourceAssociationDecision({
+      ...input,
+      intent: "retract",
+    });
+  }
+
+  async prepareRecognitionRetraction(input: {
+    readonly assetId: string;
+    readonly predecessorDecisionId: string;
+    readonly proposedBy: string;
+    readonly reason: string;
+    readonly onExecutionStarted?: (execution: WorkflowExecution) => void;
+  }): Promise<ChangeImpactPreviewInspection> {
+    if (
+      input.proposedBy.trim().length === 0 ||
+      input.reason.trim().length === 0
+    )
+      throw new Error("身份撤回必须包含提议者和原因");
+    const [target] = await this.ports.reuseQueries.findAcceptedForSubjects([
+      input.assetId,
+    ]);
+    if (
+      target === undefined ||
+      target.subjectId !== input.assetId ||
+      target.accepted.recognitionDecision.id !== input.predecessorDecisionId
+    )
+      throw new Error("点名的识别决定不是该内容的当前身份");
+    const initial: WorkflowExecution = {
+      id: id("execution"),
+      workflowInput: {
+        version: "asset-refresh-input/1",
+        trigger: "interactive",
+        initiatedBy: input.proposedBy,
+        acceptTrusted: false,
+        configurationReferences: [],
+      },
+      selection: {
+        intent: "directed-recognition",
+        informationRequirement: emptyInformationRequirement,
+      },
+      operationKind: "rescrape",
+      status: "running",
+      stage: "recognition",
+      sourceRecordIds: [],
+      acceptedAssetId: input.assetId,
+      compatibility: this.compatibility(),
+      dispositions: [],
+    };
+    const started = await this.ports.executionCommands.createExecution(initial);
+    if (started !== "started") throw new AutomationExecutionNotStarted(started);
+    input.onExecutionStarted?.(initial);
+    const current = assetStateProjection(target.accepted);
+    const projectedArtifactGraph = projectSupportedArtifactGraph({
+      current: target.accepted,
+      endingRecognitionDecisionId: input.predecessorDecisionId,
+      ...(target.accepted.recognitionSourceAssociation === undefined
+        ? {}
+        : {
+            endingSourceAssociationId:
+              target.accepted.recognitionSourceAssociation.id,
+          }),
+    });
+    const baseline =
+      await this.ports.changeImpactCommands.freezeChangeImpactBaseline({
+        assetId: input.assetId,
+        recognitionDecisionId: input.predecessorDecisionId,
+        ...(target.accepted.recognitionSourceAssociation === undefined
+          ? {}
+          : {
+              recognitionSourceAssociationId:
+                target.accepted.recognitionSourceAssociation.id,
+            }),
+      });
+    const [afterRetractionBaseline] =
+      await this.ports.reuseQueries.findAcceptedForSubjects([input.assetId]);
+    if (
+      afterRetractionBaseline === undefined ||
+      acceptedConcurrencyFingerprint(afterRetractionBaseline.accepted) !==
+        acceptedConcurrencyFingerprint(target.accepted)
+    ) {
+      await this.transition(
+        initial,
+        terminal(initial, "failed", "形成撤回预演期间当前事实或支持已经变化"),
+      );
+      throw new Error("形成撤回预演期间当前事实或支持已经变化");
+    }
+    const {
+      recognitionDecisionId: _recognitionDecisionId,
+      recognitionSourceAssociation: _recognitionSourceAssociation,
+      ...unresolvedProjection
+    } = current;
+    const preview: ChangeImpactPreview = {
+      version: "change-impact-preview/2",
+      id: id("change-impact-preview"),
+      executionId: initial.id,
+      assetId: input.assetId,
+      change: {
+        kind: "recognition-retraction",
+        intent: {
+          predecessorDecisionId: input.predecessorDecisionId,
+          proposedBy: input.proposedBy,
+          reason: input.reason,
+        },
+      },
+      evidenceComparison: {
+        observed:
+          target.accepted.proposal.basis.kind === "source-interpretation"
+            ? []
+            : target.accepted.proposal.basis.evidence,
+        manual: [],
+        sourceCandidates: [],
+        conflicts: ["撤回当前身份后，内容保持可按精确 ID 检查但身份未解决"],
+      },
+      baselines: [
+        {
+          key: "recognition-decision",
+          value: input.predecessorDecisionId,
+        },
+        { key: "complete-current-projection", value: baseline },
+      ],
+      current,
+      projected: {
+        ...unresolvedProjection,
+        ...projectedArtifactGraph,
+        recognitionState: "unresolved",
+        sourceAssociations: target.accepted.sourceAssociations
+          .filter(
+            ({ id: associationId }) =>
+              associationId !==
+              target.accepted.recognitionSourceAssociation?.id,
+          )
+          .map(({ sourceIdentity, nativeAddress }) => ({
+            sourceIdentity,
+            nativeAddress,
+          })),
+      },
+      blockingConditions: [],
+      status: "awaiting-confirmation",
+    };
+    await this.ports.recognitionChangeImpact.finishExecutionWithRecognitionRetractionPreview(
+      { expectedExecution: initial, execution: initial, preview },
+    );
+    return publicChangeImpactPreview(preview);
+  }
+
+  private async prepareSourceAssociationDecision(
+    input:
+      | {
+          readonly intent: "establish";
+          readonly assetId: string;
+          readonly sourceIdentity: string;
+          readonly sourceInput: Readonly<Record<string, string>>;
+          readonly initiatedBy: string;
+          readonly priorExecutionId?: string;
+          readonly onExecutionStarted?: (execution: WorkflowExecution) => void;
+          readonly onCheckpoint?: (execution: WorkflowExecution) => void;
+          readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
+        }
+      | {
+          readonly intent: "replace";
+          readonly assetId: string;
+          readonly predecessorAssociationId: string;
+          readonly sourceInput: Readonly<Record<string, string>>;
+          readonly initiatedBy: string;
+          readonly priorExecutionId?: string;
+          readonly onExecutionStarted?: (execution: WorkflowExecution) => void;
+          readonly onCheckpoint?: (execution: WorkflowExecution) => void;
+          readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
+        }
+      | {
+          readonly intent: "retract";
+          readonly assetId: string;
+          readonly predecessorAssociationId: string;
+          readonly initiatedBy: string;
+          readonly reason: string;
+          readonly priorExecutionId?: string;
+          readonly onExecutionStarted?: (execution: WorkflowExecution) => void;
+          readonly onCheckpoint?: (execution: WorkflowExecution) => void;
+          readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
+        },
+  ): Promise<SourceAssociationDecisionInspection> {
+    return await atPublicWorkflowBoundary(async () => {
+      if (input.initiatedBy.trim().length === 0)
+        throw new Error("来源关联决定发起者不能为空");
+      const [target] = await this.ports.reuseQueries.findAcceptedForSubjects([
+        input.assetId,
+      ]);
+      if (target === undefined || target.subjectId !== input.assetId)
+        throw new Error("所选内容不存在或尚未确认");
+      const predecessor =
+        input.intent === "establish"
+          ? undefined
+          : target.accepted.sourceAssociations.find(
+              ({ id: associationId }) =>
+                associationId === input.predecessorAssociationId,
+            );
+      if (input.intent !== "establish" && predecessor === undefined)
+        throw new Error("点名的来源关联不存在、非当前或不属于该内容");
+      const sourceIdentity =
+        input.intent === "establish"
+          ? input.sourceIdentity
+          : predecessor!.sourceIdentity;
+      const initialCheckpoint: SourceAssociationDecisionCheckpoint = {
+        version: "source-association-decision-checkpoint/1",
+        state: "created",
+        intent: input.intent,
+        assetId: input.assetId,
+        sourceIdentity,
+        ...(predecessor === undefined ? {} : { predecessor }),
+        candidates: [],
+        capturedSourceRecordIds: [],
+      };
+      const initial: WorkflowExecution = {
+        id: id("execution"),
+        workflowInput: {
+          version: "source-association-decision-input/1",
+          trigger: "interactive",
+          initiatedBy: input.initiatedBy,
+          acceptTrusted: false,
+          configurationReferences: [],
+          intent: input.intent,
+          assetId: input.assetId,
+          sourceIdentity,
+          ...(input.priorExecutionId === undefined
+            ? {}
+            : { priorExecutionId: input.priorExecutionId }),
+          ...(predecessor === undefined
+            ? {}
+            : { predecessorAssociationId: predecessor.id }),
+          ...(input.intent === "retract"
+            ? { reason: input.reason }
+            : { sourceInput: input.sourceInput }),
+        },
+        selection: {
+          intent: "source-enrichment",
+          informationRequirement: emptyInformationRequirement,
+        },
+        status: "running",
+        stage: "recognition",
+        sourceRecordIds: [],
+        acceptedAssetId: input.assetId,
+        compatibility: this.compatibility(),
+        dispositions: [],
+        sourceAssociationDecision: initialCheckpoint,
+      };
+      const started =
+        await this.ports.executionCommands.createExecution(initial);
+      if (started !== "started")
+        throw new AutomationExecutionNotStarted(started);
+      input.onExecutionStarted?.(initial);
+      input.onHostCheckpoint?.(initial);
+      if (input.intent === "retract") {
+        return await this.finalizeSourceAssociationDecisionPreview({
+          execution: initial,
+          accepted: target.accepted,
+          checkpoint: initialCheckpoint,
+          initiatedBy: input.initiatedBy,
+          reason: input.reason,
+        });
+      }
+      const capability = (this.ports.sourceAddressingCapabilities ?? []).find(
+        (candidate) =>
+          candidate.inputRequirement.sourceIdentity === sourceIdentity,
+      );
+      if (capability === undefined)
+        return await this.failSourceAssociationDecision(
+          initial,
+          "所选来源不支持明确寻址",
+        );
+      const normalized = capability.normalize(input.sourceInput);
+      if (
+        normalized.status === "invalid" ||
+        normalized.evidence.sourceIdentity !== sourceIdentity ||
+        normalized.evidence.sourceAddress === undefined
+      )
+        return await this.failSourceAssociationDecision(
+          initial,
+          normalized.status === "invalid"
+            ? normalized.reason
+            : "来源能力返回了无效的规范化地址",
+        );
+      const normalizationContent: SourceNormalizationRecordContent = {
+        version: "source-normalization-record/1",
+        rawInput: { ...input.sourceInput },
+        capability: capability.capability,
+        normalizedInput: normalized.normalizedInput,
+        evidence: normalized.evidence,
+      };
+      const normalization: SourceNormalizationRecord = {
+        ...normalizationContent,
+        integrityFingerprint:
+          sourceNormalizationIntegrityFingerprint(normalizationContent),
+      };
+      let execution = await this.freezeCapabilityParticipation(initial, [
+        capability.capability,
+      ]);
+      if (
+        input.intent === "replace" &&
+        normalized.evidence.sourceAddress === predecessor!.nativeAddress
+      ) {
+        const noChange: WorkflowExecution = {
+          ...execution,
+          status: "completed",
+          stage: "completed",
+          outcome: "no-change",
+          sourceAssociationDecision: {
+            ...initialCheckpoint,
+            state: "no-change",
+            normalization,
+          },
+        };
+        await this.transition(execution, noChange);
+        return this.publicSourceAssociationDecision(noChange);
+      }
+      const collectingCheckpoint: SourceAssociationDecisionCheckpoint = {
+        ...initialCheckpoint,
+        state: "collecting",
+        normalization,
+      };
+      const collecting = {
+        ...execution,
+        sourceAssociationDecision: collectingCheckpoint,
+      };
+      await this.transition(execution, collecting);
+      execution = collecting;
+      input.onCheckpoint?.(execution);
+      input.onHostCheckpoint?.(execution);
+      const collector = this.ports.collectors.find((candidate) =>
+        candidate.canCollect(normalized.evidence),
+      );
+      if (collector === undefined)
+        return await this.failSourceAssociationDecision(
+          execution,
+          "没有采集能力接受该来源地址",
+        );
+      execution = await this.bindCollectorConfiguration(
+        execution,
+        collector,
+        normalized.evidence,
+      );
+      execution = await this.freezeCapabilityParticipation(execution, [
+        collector.capability,
+      ]);
+      let collection: SourceCollectionResult;
+      try {
+        collection = retainCollectedRecordProvenance(
+          collector,
+          await collector.collect(
+            normalized.evidence,
+            this.collectionExecutionContext(execution),
+          ),
+        );
+      } catch (error) {
+        return await this.failSourceAssociationDecision(
+          execution,
+          errorMessage(error),
+        );
+      }
+      input.onHostCheckpoint?.(execution);
+      const retainedCheckpoint: SourceAssociationDecisionCheckpoint = {
+        ...collectingCheckpoint,
+        state: collection.failures.length === 0 ? "interpreting" : "failed",
+        capturedSourceRecordIds: collection.records.map(({ id }) => id),
+        ...(collection.failures.length === 0
+          ? {}
+          : {
+              failure: collection.failures
+                .map(({ reason }) => reason)
+                .join("；"),
+            }),
+      };
+      const retainedExecution: WorkflowExecution = {
+        ...execution,
+        stage: "source-records-retained",
+        sourceRecordIds: collection.records.map(({ id }) => id),
+        sourceAssociationDecision: retainedCheckpoint,
+      };
+      const persistence = this.ports.sourceEnrichmentPersistence;
+      if (persistence === undefined)
+        throw new Error("当前组合无法保存来源关联决定证据");
+      await persistence.checkpointSourceEnrichmentRecords({
+        expectedExecution: execution,
+        execution: retainedExecution,
+        sourceRecords: collection.records,
+      });
+      execution = retainedExecution;
+      input.onCheckpoint?.(execution);
+      input.onHostCheckpoint?.(execution);
+      if (collection.failures.length > 0)
+        return await this.failSourceAssociationDecision(
+          execution,
+          retainedCheckpoint.failure!,
+        );
+      const [currentTarget] =
+        await this.ports.reuseQueries.findAcceptedForSubjects([input.assetId]);
+      if (
+        currentTarget === undefined ||
+        currentTarget.accepted.recognitionDecision.id !==
+          target.accepted.recognitionDecision.id ||
+        (predecessor !== undefined &&
+          !currentTarget.accepted.sourceAssociations.some(
+            ({ id: associationId }) => associationId === predecessor.id,
+          ))
+      )
+        return await this.failSourceAssociationDecision(
+          execution,
+          "采集期间当前身份或来源关联已经变化",
+        );
+      const candidates: SourceAssociationDecisionCandidate[] = [];
+      const interpretations = await interpretRetainedSourceRecords({
+        interpreters: this.ports.sourceInterpreters,
+        evidence: [normalized.evidence],
+        sourceRecords: collection.records,
+        beforeInterpret: async (capability) => {
+          input.onHostCheckpoint?.(execution);
+          execution = await this.freezeCapabilityParticipation(execution, [
+            capability,
+          ]);
+          input.onHostCheckpoint?.(execution);
+        },
+      });
+      for (const interpretation of interpretations) {
+        if (interpretation.sourceIdentity !== sourceIdentity) continue;
+        const associationInterpreter = sourceAssociationInterpreterFor({
+          interpreters: this.ports.sourceAssociationInterpreters ?? [],
+          evidence: normalized.evidence,
+          interpretation,
+        });
+        if (associationInterpreter === undefined) continue;
+        const result = associationInterpreter.interpret({
+          subject: {
+            subjectId: input.assetId,
+            recognitionDecisionId:
+              currentTarget.accepted.recognitionDecision.id,
+            sourceAssociations: currentTarget.accepted.sourceAssociations,
+            metadata: currentTarget.accepted.metadata,
+            metadataSourceRecords:
+              currentTarget.accepted.metadataSourceRecords ?? [],
+            informationRequirement: emptyInformationRequirement,
+            ...(currentTarget.accepted.recognitionSourceAssociation ===
+            undefined
+              ? {}
+              : {
+                  recognitionSourceAssociation:
+                    currentTarget.accepted.recognitionSourceAssociation,
+                }),
+          },
+          evidence: normalized.evidence,
+          interpretation,
+        });
+        if (result === undefined) continue;
+        candidates.push({
+          outcome: result.status,
+          sourceIdentity,
+          nativeAddress: interpretation.sourceAddress,
+          sourceRecordIds: interpretation.sourceRecordIds,
+          // 来源关联候选只携带本次来源判断自身产生的规则；当前解释器契约没有额外规则结果。
+          ruleResults: [],
+          interpretation,
+          explanation: result.explanation,
+        });
+      }
+      if (candidates.length === 0)
+        return await this.failSourceAssociationDecision(
+          execution,
+          "来源记录没有形成可用候选",
+        );
+      const candidateCheckpoint: SourceAssociationDecisionCheckpoint = {
+        ...retainedCheckpoint,
+        state: candidates.length === 1 ? "interpreting" : "awaiting-selection",
+        candidates,
+      };
+      const candidateExecution = {
+        ...execution,
+        sourceAssociationDecision: candidateCheckpoint,
+      };
+      await this.transition(execution, candidateExecution);
+      if (candidates.length > 1)
+        return this.publicSourceAssociationDecision(candidateExecution);
+      return await this.finalizeSourceAssociationDecisionPreview({
+        execution: candidateExecution,
+        accepted: currentTarget.accepted,
+        checkpoint: candidateCheckpoint,
+        initiatedBy: input.initiatedBy,
+        ...(candidates[0] === undefined ? {} : { candidate: candidates[0] }),
+      });
+    });
+  }
+
+  async inspectSourceAssociationDecision(
+    executionId: string,
+  ): Promise<SourceAssociationDecisionInspection | undefined> {
+    const inspection =
+      await this.ports.executionQueries.inspectExecution(executionId);
+    return inspection === undefined ||
+      inspection.execution.sourceAssociationDecision === undefined
+      ? undefined
+      : await this.publicSourceAssociationDecision(inspection.execution);
+  }
+
+  async selectSourceAssociationCandidate(input: {
+    readonly executionId: string;
+    readonly candidateReference: string;
+  }): Promise<SourceAssociationDecisionInspection> {
+    const inspection = await this.ports.executionQueries.inspectExecution(
+      input.executionId,
+    );
+    const execution = inspection?.execution;
+    const checkpoint = execution?.sourceAssociationDecision;
+    if (
+      execution === undefined ||
+      checkpoint === undefined ||
+      execution.status !== "running" ||
+      checkpoint.state !== "awaiting-selection"
+    )
+      throw new Error("该来源关联决定当前不能选择候选");
+    const selected = checkpoint.candidates.filter(
+      (candidate) =>
+        publicSourceAssociationCandidate(candidate).reference ===
+        input.candidateReference,
+    );
+    if (selected.length !== 1) throw new Error("所选候选不属于该执行或不唯一");
+    const [target] = await this.ports.reuseQueries.findAcceptedForSubjects([
+      checkpoint.assetId,
+    ]);
+    if (target === undefined || target.subjectId !== checkpoint.assetId)
+      throw new Error("所选内容不再可用");
+    return await this.finalizeSourceAssociationDecisionPreview({
+      execution,
+      accepted: target.accepted,
+      checkpoint,
+      initiatedBy: execution.workflowInput!.initiatedBy,
+      candidate: selected[0]!,
+    });
+  }
+
+  async retrySourceAssociationDecision(input: {
+    readonly executionId: string;
+    readonly onExecutionStarted?: (execution: WorkflowExecution) => void;
+    readonly onCheckpoint?: (execution: WorkflowExecution) => void;
+    readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
+  }): Promise<SourceAssociationDecisionInspection> {
+    const inspection = await this.ports.executionQueries.inspectExecution(
+      input.executionId,
+    );
+    const execution = inspection?.execution;
+    const workflowInput = execution?.workflowInput;
+    if (
+      execution === undefined ||
+      execution.status === "running" ||
+      workflowInput?.version !== "source-association-decision-input/1"
+    )
+      throw new Error("只有已终止的来源关联决定可以重试");
+    const common = {
+      assetId: workflowInput.assetId,
+      initiatedBy: workflowInput.initiatedBy,
+      priorExecutionId: execution.id,
+      ...(input.onCheckpoint === undefined
+        ? {}
+        : { onCheckpoint: input.onCheckpoint }),
+      ...(input.onHostCheckpoint === undefined
+        ? {}
+        : { onHostCheckpoint: input.onHostCheckpoint }),
+    };
+    if (workflowInput.intent === "establish")
+      return await this.prepareConflictedEstablishment({
+        ...common,
+        sourceIdentity: workflowInput.sourceIdentity!,
+        sourceInput: workflowInput.sourceInput!,
+        ...(input.onExecutionStarted === undefined
+          ? {}
+          : { onExecutionStarted: input.onExecutionStarted }),
+      });
+    if (workflowInput.intent === "replace")
+      return await this.prepareReplacement({
+        ...common,
+        predecessorAssociationId: workflowInput.predecessorAssociationId!,
+        sourceInput: workflowInput.sourceInput!,
+        ...(input.onExecutionStarted === undefined
+          ? {}
+          : { onExecutionStarted: input.onExecutionStarted }),
+      });
+    return await this.prepareRetraction({
+      ...common,
+      predecessorAssociationId: workflowInput.predecessorAssociationId!,
+      reason: workflowInput.reason!,
+      ...(input.onExecutionStarted === undefined
+        ? {}
+        : { onExecutionStarted: input.onExecutionStarted }),
+    });
+  }
+
+  private async failSourceAssociationDecision(
+    execution: WorkflowExecution,
+    reason: string,
+  ): Promise<SourceAssociationDecisionInspection> {
+    const failed: WorkflowExecution = {
+      ...execution,
+      status: "failed",
+      stage: "failed",
+      outcome: "failed",
+      reason,
+      sourceAssociationDecision: {
+        ...(execution.sourceAssociationDecision ?? {
+          version: "source-association-decision-checkpoint/1" as const,
+          intent: "establish" as const,
+          assetId: execution.acceptedAssetId!,
+          candidates: [],
+          capturedSourceRecordIds: [],
+          state: "created" as const,
+        }),
+        state: "failed",
+        failure: reason,
+      },
+    };
+    await this.transition(execution, failed);
+    return await this.publicSourceAssociationDecision(failed);
+  }
+
+  private async finalizeSourceAssociationDecisionPreview(input: {
+    readonly execution: WorkflowExecution;
+    readonly accepted: AcceptedAssetState;
+    readonly checkpoint: SourceAssociationDecisionCheckpoint;
+    readonly initiatedBy: string;
+    readonly candidate?: SourceAssociationDecisionCandidate;
+    readonly reason?: string;
+  }): Promise<SourceAssociationDecisionInspection> {
+    const predecessor = input.checkpoint.predecessor;
+    if (input.checkpoint.intent !== "retract" && input.candidate === undefined)
+      throw new Error("来源关联建立或更换缺少精确候选");
+    const [latest] = await this.ports.reuseQueries.findAcceptedForSubjects([
+      input.checkpoint.assetId,
+    ]);
+    if (
+      latest === undefined ||
+      latest.subjectId !== input.checkpoint.assetId ||
+      latest.accepted.recognitionDecision.id !==
+        input.accepted.recognitionDecision.id ||
+      (predecessor !== undefined &&
+        !latest.accepted.sourceAssociations.some(
+          ({ id: associationId }) => associationId === predecessor.id,
+        ))
+    )
+      return await this.failSourceAssociationDecision(
+        input.execution,
+        "来源关联决定的当前基线已变化",
+      );
+    const accepted = latest.accepted;
+    if (
+      input.checkpoint.intent === "establish" &&
+      accepted.sourceAssociations.some(
+        ({ sourceIdentity, nativeAddress }) =>
+          sourceIdentity === input.candidate!.sourceIdentity &&
+          nativeAddress === input.candidate!.nativeAddress,
+      )
+    ) {
+      const noChange: WorkflowExecution = {
+        ...input.execution,
+        status: "completed",
+        stage: "completed",
+        outcome: "no-change",
+        sourceAssociationDecision: {
+          ...input.checkpoint,
+          state: "no-change",
+        },
+      };
+      await this.transition(input.execution, noChange);
+      return await this.publicSourceAssociationDecision(noChange);
+    }
+    const comparison: EvidenceComparison = {
+      observed: [],
+      manual:
+        input.checkpoint.normalization === undefined
+          ? []
+          : [input.checkpoint.normalization.evidence],
+      sourceCandidates: input.checkpoint.candidates.map((candidate) => ({
+        reference: publicSourceAssociationCandidate(candidate).reference,
+        outcome: candidate.outcome,
+        sourceIdentity: candidate.sourceIdentity,
+        nativeAddress: candidate.nativeAddress,
+        sourceRecordIds: candidate.sourceRecordIds,
+        ruleResults: candidate.ruleResults,
+        explanation: candidate.explanation,
+      })),
+      conflicts: input.checkpoint.candidates
+        .filter(({ outcome }) => outcome === "contradicted")
+        .map(({ explanation }) => explanation),
+    };
+    const proposal: SourceAssociationChangeProposal = (() => {
+      if (input.checkpoint.intent === "retract")
+        return {
+          id: id("source-association-proposal"),
+          kind: "retract" as const,
+          subjectId: input.checkpoint.assetId,
+          predecessorAssociationId: predecessor!.id,
+          proposedBy: { kind: "user" as const, actorId: input.initiatedBy },
+          reason: input.reason!,
+          evidence: comparison,
+        };
+      const successor = {
+        id: id("source-association"),
+        subjectId: input.checkpoint.assetId,
+        sourceIdentity: input.candidate!.sourceIdentity,
+        nativeAddress: input.candidate!.nativeAddress,
+      };
+      if (input.checkpoint.intent === "replace")
+        return {
+          id: id("source-association-proposal"),
+          kind: "replace" as const,
+          subjectId: input.checkpoint.assetId,
+          predecessorAssociationId: predecessor!.id,
+          successor,
+          sourceRecordIds: input.candidate!.sourceRecordIds,
+          proposedBy: { kind: "user" as const, actorId: input.initiatedBy },
+          evidence: comparison,
+        };
+      return {
+        id: id("source-association-proposal"),
+        kind: "establish" as const,
+        subjectId: input.checkpoint.assetId,
+        successor,
+        sourceRecordIds: input.candidate!.sourceRecordIds,
+        proposedBy: { kind: "user" as const, actorId: input.initiatedBy },
+        evidence: comparison,
+      };
+    })();
+    validateSourceAssociationChange({
+      proposal,
+      ...(predecessor ? { predecessor } : {}),
+    });
+    const baseline =
+      await this.ports.changeImpactCommands.freezeChangeImpactBaseline({
+        assetId: input.checkpoint.assetId,
+        recognitionDecisionId: accepted.recognitionDecision.id,
+        ...(accepted.recognitionSourceAssociation === undefined
+          ? {}
+          : {
+              recognitionSourceAssociationId:
+                accepted.recognitionSourceAssociation.id,
+            }),
+      });
+    const coordinateOwner =
+      proposal.kind === "retract"
+        ? undefined
+        : await this.ports.reuseQueries.findCurrentSourceAssociationByCoordinate(
+            {
+              sourceIdentity: proposal.successor.sourceIdentity,
+              nativeAddress: proposal.successor.nativeAddress,
+            },
+          );
+    const [afterBaseline] =
+      await this.ports.reuseQueries.findAcceptedForSubjects([
+        input.checkpoint.assetId,
+      ]);
+    if (
+      afterBaseline === undefined ||
+      acceptedConcurrencyFingerprint(afterBaseline.accepted) !==
+        acceptedConcurrencyFingerprint(accepted)
+    )
+      return await this.failSourceAssociationDecision(
+        input.execution,
+        "形成预演期间当前事实或支持已经变化",
+      );
+    const blockingConditions =
+      coordinateOwner === undefined ||
+      (proposal.kind !== "establish" &&
+        coordinateOwner.id === proposal.predecessorAssociationId)
+        ? []
+        : coordinateOwner.subjectId === proposal.subjectId
+          ? [
+              "目标来源地址已由该内容的另一条当前关联持有；请显式撤回 predecessor",
+            ]
+          : ["目标来源地址已由另一内容持有；请进入身份／边界更正"];
+    const current = assetStateProjection(accepted);
+    const predecessorRecordIds = new Set(
+      predecessor === undefined
+        ? []
+        : (accepted.metadataSourceRecords ?? [])
+            .filter(
+              (record) =>
+                record.sourceIdentity === predecessor.sourceIdentity &&
+                record.nativeAddress === predecessor.nativeAddress,
+            )
+            .map(({ id: sourceRecordId }) => sourceRecordId),
+    );
+    const retainedBySourceChange = <
+      T extends { sourceRecordIds: readonly string[] },
+    >(
+      values: readonly T[],
+    ) =>
+      values.filter(
+        ({ sourceRecordIds }) =>
+          !sourceRecordIds.some((sourceRecordId) =>
+            predecessorRecordIds.has(sourceRecordId),
+          ),
+      );
+    const interpretation = input.candidate?.interpretation;
+    const interpretedFacts = projectSourceInterpretationFacts(
+      interpretation,
+      accepted.entity.id,
+    );
+    const projectedSourceAssociations =
+      proposal.kind === "establish"
+        ? [...accepted.sourceAssociations, proposal.successor]
+        : proposal.kind === "replace"
+          ? [
+              ...accepted.sourceAssociations.filter(
+                ({ id: associationId }) =>
+                  associationId !== proposal.predecessorAssociationId,
+              ),
+              proposal.successor,
+            ]
+          : accepted.sourceAssociations.filter(
+              ({ id: associationId }) =>
+                associationId !== proposal.predecessorAssociationId,
+            );
+    const projectedArtifactGraph = projectSupportedArtifactGraph({
+      current: accepted,
+      ...(predecessor === undefined
+        ? {}
+        : { endingSourceAssociationId: predecessor.id }),
+    });
+    const preview: ChangeImpactPreview = {
+      version: "change-impact-preview/2",
+      id: id("change-impact-preview"),
+      executionId: input.execution.id,
+      assetId: input.checkpoint.assetId,
+      change: { kind: "source-association", proposal },
+      evidenceComparison: comparison,
+      baselines: [
+        { key: "complete-current-projection", value: baseline },
+        ...(predecessor === undefined
+          ? []
+          : [{ key: "source-association", value: predecessor.id }]),
+      ],
+      current,
+      projected: {
+        ...current,
+        ...projectedArtifactGraph,
+        sourceAssociations: projectedSourceAssociations.map(
+          ({ sourceIdentity, nativeAddress }) => ({
+            sourceIdentity,
+            nativeAddress,
+          }),
+        ),
+        metadata: [
+          ...retainedBySourceChange(accepted.metadata),
+          ...interpretedFacts.metadata,
+        ],
+        entities: [
+          ...retainedBySourceChange(accepted.entities ?? []),
+          ...interpretedFacts.entities,
+        ],
+        entityMentions: [
+          ...retainedBySourceChange(accepted.entityMentions ?? []),
+          ...interpretedFacts.entityMentions,
+        ],
+        entityResolutionDecisions: [
+          ...retainedBySourceChange(accepted.entityResolutionDecisions ?? []),
+          ...interpretedFacts.entityResolutionDecisions,
+        ],
+        relationships: [
+          ...retainedBySourceChange(accepted.relationships ?? []),
+          ...interpretedFacts.relationships,
+        ],
+      },
+      blockingConditions,
+      status: "awaiting-confirmation",
+    };
+    const awaiting: WorkflowExecution = {
+      ...input.execution,
+      sourceAssociationDecision: {
+        ...input.checkpoint,
+        state: "awaiting-confirmation",
+        proposal,
+        previewId: preview.id,
+      },
+    };
+    await this.ports.recognitionChangeImpact.finishExecutionWithSourceAssociationPreview(
+      {
+        expectedExecution: input.execution,
+        execution: awaiting,
+        preview,
+      },
+    );
+    return await this.publicSourceAssociationDecision(awaiting, preview);
+  }
+
+  private async publicSourceAssociationDecision(
+    execution: WorkflowExecution,
+    knownPreview?: ChangeImpactPreview,
+  ): Promise<SourceAssociationDecisionInspection> {
+    const checkpoint = execution.sourceAssociationDecision!;
+    const preview =
+      knownPreview ??
+      (checkpoint.previewId === undefined
+        ? undefined
+        : await this.ports.changeImpactQueries.inspectChangeImpactPreview(
+            checkpoint.previewId,
+          ));
+    const actions: SourceAssociationDecisionInspection["availableActions"] =
+      checkpoint.state === "awaiting-selection"
+        ? ["select", "cancel"]
+        : checkpoint.state === "awaiting-confirmation"
+          ? ["apply", "reject"]
+          : execution.status === "failed"
+            ? ["retry"]
+            : [];
+    const history =
+      await this.ports.reuseQueries.inspectSourceAssociationHistory(
+        checkpoint.assetId,
+      );
+    return {
+      executionId: execution.id,
+      status: execution.status,
+      state: checkpoint.state,
+      assetId: checkpoint.assetId,
+      intent: checkpoint.intent,
+      ...(checkpoint.predecessor === undefined
+        ? {}
+        : { predecessor: checkpoint.predecessor }),
+      currentAssociations: history?.current ?? [],
+      historicalAssociations: history?.historical ?? [],
+      inputRequirements: this.sourceInputRequirements().filter(
+        ({ sourceIdentity }) => sourceIdentity === checkpoint.sourceIdentity,
+      ),
+      candidates: checkpoint.candidates.map(publicSourceAssociationCandidate),
+      ...(checkpoint.proposal === undefined
+        ? {}
+        : {
+            evidenceComparison: publicEvidenceComparison(
+              checkpoint.proposal.evidence,
+            ),
+          }),
+      ...(checkpoint.failure === undefined
+        ? {}
+        : { failure: checkpoint.failure }),
+      ...(preview === undefined
+        ? {}
+        : { preview: publicChangeImpactPreview(preview) }),
+      availableActions: actions,
+    };
+  }
+
+  /**
+   * 给一个已接受主体显式补充新来源。它建立独立的耐久执行，并复用普通来源采集、解释、
+   * 来源产物和 SourceEnrichmentPersistence 提交路径。
+   */
+  async enrichSource(
+    input: ExplicitSourceEnrichmentInput,
+  ): Promise<AssetRefreshInspection> {
+    return await atPublicWorkflowBoundary(async () => {
+      const capabilities = (
+        this.ports.sourceAddressingCapabilities ?? []
+      ).filter(
+        (candidate) =>
+          candidate.inputRequirement.sourceIdentity === input.sourceIdentity,
+      );
+      if (capabilities.length !== 1)
+        throw new Error("所选来源不支持明确来源补充");
+      const capability = capabilities[0]!;
+      const normalized = capability.normalize(input.sourceInput);
+      if (normalized.status === "invalid") throw new Error(normalized.reason);
+      if (
+        normalized.evidence.sourceIdentity !== input.sourceIdentity ||
+        normalized.evidence.sourceAddress === undefined
+      )
+        throw new Error("来源能力返回了无效的规范化地址");
+
+      const [target] = await this.ports.reuseQueries.findAcceptedForSubjects([
+        input.subjectId,
+      ]);
+      if (target === undefined || target.subjectId !== input.subjectId)
+        throw new Error("所选内容不存在或尚未确认");
+      const sameSource = target.accepted.sourceAssociations.filter(
+        (association) => association.sourceIdentity === input.sourceIdentity,
+      );
+      const exactAssociation = sameSource.find(
+        (association) =>
+          association.nativeAddress === normalized.evidence.sourceAddress,
+      );
+
+      const requirement =
+        input.informationRequirement ?? emptyInformationRequirement;
+      const resolvedSelection = await freezeAssetRefreshSelection({
+        version: "asset-refresh-selection/1",
+        subjects: [
+          {
+            subjectId: input.subjectId,
+            explanations: [{ path: ["source-enrichment", input.subjectId] }],
+          },
+        ],
+        filesystemScopes: [],
+      });
+      const initial: WorkflowExecution = {
+        id: id("execution"),
+        workflowInput: {
+          version: "asset-refresh-input/1",
+          trigger: "interactive",
+          initiatedBy: input.initiatedBy ?? "interactive",
+          acceptTrusted: false,
+          configurationReferences: [],
+        },
+        selection: {
+          intent: "source-enrichment",
+          informationRequirement: requirement,
+        },
+        operationKind: "refresh-metadata",
+        requestedSelection: {
+          version: "asset-refresh-selection/1",
+          subjects: [
+            {
+              subjectId: input.subjectId,
+              explanations: [{ path: ["source-enrichment", input.subjectId] }],
+            },
+          ],
+          filesystemScopes: [],
+        },
+        resolvedSelection,
+        filesystemSnapshots: [],
+        targetDispositions: [
+          {
+            key: `subject:${input.subjectId}`,
+            target: { kind: "subject", subjectId: input.subjectId },
+            status: "running",
+          },
+        ],
+        status: "running",
+        stage: "recognition",
+        sourceRecordIds: [],
+        acceptedAssetId: input.subjectId,
+        compatibility: this.compatibility(),
+        dispositions: [],
+      };
+      const start = await this.ports.executionCommands.createExecution(initial);
+      if (start !== "started") throw new AutomationExecutionNotStarted(start);
+      input.onExecutionStarted?.(initial);
+      if (exactAssociation !== undefined) {
+        const finished: WorkflowExecution = {
+          ...initial,
+          status: "completed",
+          stage: "completed",
+          outcome: "no-change",
+          targetDispositions: initial.targetDispositions!.map((item) => ({
+            ...item,
+            status: "no-change" as const,
+          })),
+        };
+        await this.transition(initial, finished);
+        return await this.inspectPublic(finished.id);
+      }
+      let execution = await this.freezeCapabilityParticipation(initial, [
+        capability.capability,
+      ]);
+      const enrichment = await this.enrichAcceptedSubjectsInExecution({
+        execution,
+        selection: resolvedSelection,
+        informationRequirement: requirement,
+        explicitEvidence: [
+          {
+            subjectId: input.subjectId,
+            evidence: normalized.evidence,
+            normalizedInput: normalized.normalizedInput,
+          },
+        ],
+        onProgress: input.onProgress,
+        onCheckpoint: input.onCheckpoint,
+        onHostCheckpoint: input.onHostCheckpoint,
+      });
+      execution = enrichment.execution;
+      const finished: WorkflowExecution = {
+        ...execution,
+        status: enrichment.failed === 0 ? "completed" : "failed",
+        stage: enrichment.failed === 0 ? "completed" : "failed",
+        outcome: enrichment.failed === 0 ? "accepted" : "failed",
+        ...(enrichment.failed === 0
+          ? {}
+          : { reason: "明确来源补充未完成；已确认内容保持有效" }),
+        targetDispositions: execution.targetDispositions!.map((item) => ({
+          ...item,
+          status:
+            enrichment.failed === 0
+              ? ("completed" as const)
+              : ("failed" as const),
+          ...(enrichment.failed === 0
+            ? {}
+            : { reason: "明确来源补充未完成；可以稍后重试" }),
+        })),
+      };
+      await this.transition(execution, finished);
+      return await this.inspectPublic(finished.id);
+    });
   }
 
   async refreshMetadata(
@@ -5089,6 +10249,11 @@ export class AssetRefreshWorkflow {
     readonly resumeClaim?:
       | { readonly token: string; readonly now: string }
       | undefined;
+    readonly explicitEvidence?: readonly {
+      readonly subjectId: string;
+      readonly evidence: RecognitionEvidence;
+      readonly normalizedInput: Readonly<Record<string, string>>;
+    }[];
   }): Promise<{
     readonly execution: WorkflowExecution;
     readonly failed: number;
@@ -5099,7 +10264,8 @@ export class AssetRefreshWorkflow {
       this.ports.sourceAssociationInterpreters ?? [];
     const persistence = this.ports.sourceEnrichmentPersistence;
     if (
-      candidateInterpreters.length === 0 ||
+      (candidateInterpreters.length === 0 &&
+        input.explicitEvidence === undefined) ||
       associationInterpreters.length === 0 ||
       persistence === undefined
     )
@@ -5116,6 +10282,7 @@ export class AssetRefreshWorkflow {
       readonly evidence: NonNullable<
         ReturnType<(typeof candidateInterpreters)[number]["interpret"]>
       >;
+      readonly explicitInput?: Readonly<Record<string, string>>;
     }[] = [];
     for (const target of acceptedTargets) {
       const state: SourceEnrichmentInput = {
@@ -5132,6 +10299,24 @@ export class AssetRefreshWorkflow {
         metadataSourceRecords: target.accepted.metadataSourceRecords ?? [],
         informationRequirement: input.informationRequirement,
       };
+      const explicit = input.explicitEvidence?.filter(
+        (item) => item.subjectId === target.subjectId,
+      );
+      if (explicit !== undefined) {
+        for (const item of explicit) {
+          planned.push({
+            target,
+            state,
+            candidateInterpreter: {
+              capability: item.evidence.producer,
+              interpret: () => item.evidence,
+            },
+            evidence: item.evidence,
+            explicitInput: item.normalizedInput,
+          });
+        }
+        continue;
+      }
       for (const candidateInterpreter of candidateInterpreters) {
         execution = await this.freezeCapabilityParticipation(
           execution,
@@ -5166,6 +10351,7 @@ export class AssetRefreshWorkflow {
         state,
         candidateInterpreter,
         evidence,
+        explicitInput,
       }): CandidateSourceEnrichmentCheckpoint => {
         const roleCounts = countArtifactRoles(
           target.accepted.artifactAssociations,
@@ -5176,6 +10362,7 @@ export class AssetRefreshWorkflow {
           stage: "candidate-interpreted",
           subject: state,
           evidence,
+          ...(explicitInput === undefined ? {} : { explicitInput }),
           fulfilledArtifactRoles: [...roleCounts].map(([role, count]) => ({
             role,
             count,
@@ -5244,12 +10431,20 @@ export class AssetRefreshWorkflow {
             this.collectionExecutionContext(execution),
           ),
         );
+        const durableFailures = durableSourceCollectionFailures(
+          collection.failures,
+        );
+        const collectionCodes = sourceFailureCodes(collection.failures);
         const retainedCheckpoint: RetainedSourceEnrichmentCheckpoint = {
           ...initial,
           stage: "source-records-retained",
           sourceRecordIds: collection.records.map((record) => record.id),
-          collectionFailures: collection.failures,
+          collectionFailures: durableFailures,
         };
+        const checkpoint =
+          collection.failures.length === 0
+            ? retainedCheckpoint
+            : { ...retainedCheckpoint, stage: "failed" as const };
         const retainedExecution = upsertSourceEnrichmentCheckpoint(
           {
             ...execution,
@@ -5260,8 +10455,22 @@ export class AssetRefreshWorkflow {
                 ...collection.records.map((record) => record.id),
               ]),
             ],
+            dispositions: execution.dispositions.map((item) =>
+              item.key === key && collection.failures.length > 0
+                ? {
+                    ...item,
+                    status: "failed" as const,
+                    reason: collection.failures
+                      .map((failure) => failure.reason)
+                      .join("；"),
+                    ...(collectionCodes === undefined
+                      ? {}
+                      : { sourceFailureCodes: collectionCodes }),
+                  }
+                : item,
+            ),
           },
-          retainedCheckpoint,
+          checkpoint,
         );
         await persistence.checkpointSourceEnrichmentRecords({
           expectedExecution: execution,
@@ -5275,29 +10484,6 @@ export class AssetRefreshWorkflow {
         notifyDurableCheckpoint(input, execution);
         if (collection.failures.length > 0) {
           failed += 1;
-          const failedExecution = upsertSourceEnrichmentCheckpoint(
-            {
-              ...execution,
-              dispositions: execution.dispositions.map((item) =>
-                item.key === key
-                  ? {
-                      ...item,
-                      status: "failed" as const,
-                      reason: collection.failures
-                        .map((failure) => failure.reason)
-                        .join("；"),
-                    }
-                  : item,
-              ),
-            },
-            {
-              ...retainedCheckpoint,
-              stage: "failed",
-            },
-          );
-          await this.transition(execution, failedExecution, input.resumeClaim);
-          execution = failedExecution;
-          notifyDurableCheckpoint(input, execution);
           continue;
         }
         const interpreted = await this.interpretRetainedSourceEnrichment(
@@ -5378,6 +10564,10 @@ export class AssetRefreshWorkflow {
             item.key === key ? { ...item, status: "completed" as const } : item,
           ),
         };
+        const enrichmentDecision = sourceEnrichmentDecision(
+          interpretedCheckpoint,
+          execution.workflowInput?.initiatedBy ?? "interactive",
+        );
         await persistence.applySourceEnrichment({
           expectedExecution: execution,
           execution: appliedExecution,
@@ -5395,6 +10585,7 @@ export class AssetRefreshWorkflow {
           },
           assetId: interpretedCheckpoint.subjectId,
           sourceAssociation: interpretedCheckpoint.sourceAssociation,
+          ...enrichmentDecision,
           sourceRecords: collection.records,
           interpretation: interpretedCheckpoint.interpretation,
           ...(projectedManagedArtifacts === undefined
@@ -5447,36 +10638,24 @@ export class AssetRefreshWorkflow {
   }> {
     if (checkpoint.collectionFailures.length > 0)
       throw new Error("失败的来源补充采集不得进入解释");
-    const interpreter = this.ports.sourceInterpreters.find((candidate) =>
-      candidate.canInterpret({
-        evidence: [checkpoint.evidence],
-        sourceRecords: records,
-      }),
+    const interpretations = await interpretRetainedSourceRecords({
+      interpreters: this.ports.sourceInterpreters,
+      evidence: [checkpoint.evidence],
+      sourceRecords: records,
+      beforeInterpret,
+    });
+    const matches = interpretations.filter(
+      (interpretation) =>
+        interpretation.sourceIdentity === checkpoint.evidence.sourceIdentity,
     );
-    if (interpreter === undefined)
-      throw new Error("没有解释能力接受补充来源记录");
-    await beforeInterpret(interpreter.capability);
-    const interpretation = retainInterpretationProvenance(
-      interpreter,
-      interpreter.interpret({
-        evidence: [checkpoint.evidence],
-        sourceRecords: records,
-      }),
-    );
-    validateSourceInterpretationBatch(interpretation);
-    if (
-      interpretation.sourceIdentity !== checkpoint.evidence.sourceIdentity ||
-      interpretation.sourceAddress !== checkpoint.evidence.sourceAddress
-    )
-      throw new Error("来源补充解释与候选来源关联不一致");
-    const associationInterpreter = (
-      this.ports.sourceAssociationInterpreters ?? []
-    ).find((candidate) =>
-      candidate.canInterpret({
-        evidence: checkpoint.evidence,
-        interpretation,
-      }),
-    );
+    if (matches.length !== 1)
+      throw new Error("来源补充未形成当前关联的唯一完整解释");
+    const interpretation = matches[0]!;
+    const associationInterpreter = sourceAssociationInterpreterFor({
+      interpreters: this.ports.sourceAssociationInterpreters ?? [],
+      evidence: checkpoint.evidence,
+      interpretation,
+    });
     if (associationInterpreter === undefined)
       throw new Error("没有来源关联解释能力接受补充来源");
     await beforeInterpret(associationInterpreter.capability);
@@ -5508,7 +10687,6 @@ export class AssetRefreshWorkflow {
           subjectId: checkpoint.subjectId,
           sourceIdentity: interpretation.sourceIdentity,
           nativeAddress: interpretation.sourceAddress,
-          proposalId: `source-enrichment:${executionId}:${associationInterpreter.capability.capabilityId}`,
         },
         interpretation,
         sourceRecordIds: interpretation.sourceRecordIds,
@@ -5560,12 +10738,26 @@ export class AssetRefreshWorkflow {
             this.collectionExecutionContext(execution),
           ),
         );
-        checkpoint = {
+        const durableFailures = durableSourceCollectionFailures(
+          collection.failures,
+        );
+        const collectionCodes = sourceFailureCodes(collection.failures);
+        const collectedCheckpoint:
+          | RetainedSourceEnrichmentCheckpoint
+          | (SourceEnrichmentCheckpointBase & {
+              readonly stage: "failed";
+              readonly sourceRecordIds: readonly string[];
+              readonly collectionFailures: readonly DurableSourceCollectionFailure[];
+            }) = {
           ...checkpoint,
-          stage: "source-records-retained",
+          stage:
+            collection.failures.length === 0
+              ? "source-records-retained"
+              : "failed",
           sourceRecordIds: collection.records.map((record) => record.id),
-          collectionFailures: collection.failures,
+          collectionFailures: durableFailures,
         };
+        checkpoint = collectedCheckpoint;
         const next = upsertSourceEnrichmentCheckpoint(
           {
             ...execution,
@@ -5576,6 +10768,20 @@ export class AssetRefreshWorkflow {
                 ...collection.records.map((record) => record.id),
               ]),
             ],
+            dispositions: execution.dispositions.map((item) =>
+              item.key === checkpoint.key && collection.failures.length > 0
+                ? {
+                    ...item,
+                    status: "failed" as const,
+                    reason: collection.failures
+                      .map((failure) => failure.reason)
+                      .join("；"),
+                    ...(collectionCodes === undefined
+                      ? {}
+                      : { sourceFailureCodes: collectionCodes }),
+                  }
+                : item,
+            ),
           },
           checkpoint,
         );
@@ -5620,6 +10826,7 @@ export class AssetRefreshWorkflow {
         notifyDurableCheckpoint(input, execution, false);
         continue;
       }
+      if (checkpoint.stage === "failed") continue;
       let activeCheckpoint: InterpretedSourceEnrichmentCheckpoint;
       if (checkpoint.stage === "source-records-retained") {
         const interpreted = await this.interpretRetainedSourceEnrichment(
@@ -5753,6 +10960,10 @@ export class AssetRefreshWorkflow {
         ),
       };
       try {
+        const enrichmentDecision = sourceEnrichmentDecision(
+          activeCheckpoint,
+          execution.workflowInput?.initiatedBy ?? "interactive",
+        );
         await persistence.applySourceEnrichment({
           expectedExecution: execution,
           execution: completed,
@@ -5769,6 +10980,7 @@ export class AssetRefreshWorkflow {
           },
           assetId: activeCheckpoint.subjectId,
           sourceAssociation: activeCheckpoint.sourceAssociation,
+          ...enrichmentDecision,
           sourceRecords: records,
           interpretation: activeCheckpoint.interpretation,
           ...(projected === undefined ? {} : { managedArtifacts: projected }),
@@ -5809,6 +11021,7 @@ export class AssetRefreshWorkflow {
     readonly intent?: "scan-now" | "metadata-refresh" | undefined;
     readonly directedSourceAddress?: string | undefined;
     readonly directedSourceIdentity?: string | undefined;
+    readonly directedSourceProducer?: CapabilityCoordinate | undefined;
     readonly executionId?: string | undefined;
     readonly automationIntentId?: string | undefined;
     readonly trigger?: WorkflowExecutionTrigger | undefined;
@@ -6120,7 +11333,10 @@ export class AssetRefreshWorkflow {
       if (input.directedSourceAddress !== undefined) {
         planningExecution = await this.freezeCapabilityParticipation(
           planningExecution,
-          [directedRecognitionEvidenceCapability],
+          [
+            input.directedSourceProducer ??
+              directedRecognitionEvidenceCapability,
+          ],
         );
       }
     } catch (error) {
@@ -6170,7 +11386,9 @@ export class AssetRefreshWorkflow {
                     })(),
                   sourceAddress: input.directedSourceAddress,
                   explanation: "用户指定精确来源地址",
-                  producer: directedRecognitionEvidenceCapability,
+                  producer:
+                    input.directedSourceProducer ??
+                    directedRecognitionEvidenceCapability,
                 },
               ],
             },
@@ -6393,18 +11611,6 @@ export class AssetRefreshWorkflow {
           );
           sourceRecords.push(...collected.records);
           collectionFailures.push(...collected.failures);
-          if (collected.records.length > 0) {
-            const retainedExecution = executionWithRetainedSourceRecords(
-              collectionExecution,
-              collected.records,
-            );
-            await this.ports.executionCommands.retainSourceRecords({
-              expectedExecution: collectionExecution,
-              execution: retainedExecution,
-              sourceRecords: collected.records,
-            });
-            collectionExecution = retainedExecution;
-          }
         } catch (error) {
           collectionFailures.push({
             capability: collector.capability,
@@ -6426,10 +11632,15 @@ export class AssetRefreshWorkflow {
         : blockingCollectionFailures.length > 0
           ? "当前信息需求所需的官方来源工作项未完成"
           : partialCollectionReason(collectionFailures);
+    const retainedCollectionExecution = executionWithRetainedSourceRecords(
+      collectionExecution,
+      sourceRecords,
+    );
+    const codes = sourceFailureCodes(collectionFailures);
     const sourced: WorkflowExecution = {
-      ...collectionExecution,
+      ...retainedCollectionExecution,
       stage: "source-records-retained",
-      sourceRecordIds: collectionExecution.sourceRecordIds,
+      sourceRecordIds: retainedCollectionExecution.sourceRecordIds,
       dispositions: [
         ...initial.dispositions.filter(
           (item) => item.materialReferences !== undefined,
@@ -6447,6 +11658,7 @@ export class AssetRefreshWorkflow {
           )
             ? { failureClassification: prerequisiteUnavailableFailure }
             : {}),
+          ...(codes === undefined ? {} : { sourceFailureCodes: codes }),
         },
       ],
     };
@@ -6456,28 +11668,37 @@ export class AssetRefreshWorkflow {
         "failed",
         blockingCollectionFailures.map((failure) => failure.reason).join("；"),
       );
-      await this.transition(collectionExecution, failed);
+      if (sourceRecords.length > 0)
+        await this.ports.executionCommands.retainSourceRecords({
+          expectedExecution: collectionExecution,
+          execution: failed,
+          sourceRecords,
+        });
+      else await this.transition(collectionExecution, failed);
       return await this.inspectPublic(failed.id);
     }
-    await this.transition(collectionExecution, sourced);
+    if (sourceRecords.length > 0)
+      await this.ports.executionCommands.retainSourceRecords({
+        expectedExecution: collectionExecution,
+        execution: sourced,
+        sourceRecords,
+      });
+    else await this.transition(collectionExecution, sourced);
     notifyDurableCheckpoint(input, sourced);
 
     try {
       let recognitionExecution = sourced;
-      const batches: SourceInterpretationBatch[] = [];
-      for (const interpreter of this.ports.sourceInterpreters) {
-        if (!interpreter.canInterpret({ evidence, sourceRecords })) continue;
-        recognitionExecution = await this.freezeCapabilityParticipation(
-          recognitionExecution,
-          [interpreter.capability],
-        );
-        batches.push(
-          retainInterpretationProvenance(
-            interpreter,
-            interpreter.interpret({ evidence, sourceRecords }),
-          ),
-        );
-      }
+      const batches = await interpretRetainedSourceRecords({
+        interpreters: this.ports.sourceInterpreters,
+        evidence,
+        sourceRecords,
+        beforeInterpret: async (capability) => {
+          recognitionExecution = await this.freezeCapabilityParticipation(
+            recognitionExecution,
+            [capability],
+          );
+        },
+      });
       const proposals: RecognitionProposal[] = [];
       const candidateContexts = recognitionCandidateContexts({
         evidence,
@@ -6561,7 +11782,23 @@ export class AssetRefreshWorkflow {
       }
       const sameIdentity =
         current !== undefined &&
-        sameRecognitionIdentity(current.accepted, proposal);
+        sameRecognitionIdentity(
+          current.accepted,
+          proposal,
+          current.execution.snapshot?.files ?? snapshot.files,
+          snapshot.files,
+          input.directedSourceAddress !== undefined,
+        );
+      if (
+        current !== undefined &&
+        recognitionChangesOnlySourceAddress(
+          current.accepted,
+          proposal,
+          current.execution.snapshot?.files ?? snapshot.files,
+          snapshot.files,
+        )
+      )
+        throw new Error("仅更改来源地址必须使用来源关联更换流程");
       // 复用可能只因能力或请求信息坐标推进而未命中。只有普通观察或证据基线改变时，才把
       // 原本稳定的身份转为重新求值；定向识别保留自己的无变化路径。
       const ordinaryObservationOrEvidenceChanged =
@@ -6942,18 +12179,91 @@ export class AssetRefreshWorkflow {
   ): Promise<AssetRefreshInspection> {
     const requirement =
       input.informationRequirement ?? emptyInformationRequirement;
+    const persisted = await this.ports.executionQueries.inspectExecution(
+      initial.id,
+    );
+    const durableOnlyCollectionPlans = new Map<
+      string,
+      readonly SourceRecord[]
+    >();
+    let guardedInitial = initial;
+    if (resumeClaim !== undefined) {
+      const frozenInvocations = plans.flatMap((plan) =>
+        plan.evidence.flatMap((evidence) =>
+          this.ports.collectors.flatMap((collector) => {
+            if (!collector.canCollect(evidence)) return [];
+            const shareKey = sourceCollectionShareKey(collector, evidence);
+            return [{ planKey: plan.key, collector, evidence, shareKey }];
+          }),
+        ),
+      );
+      for (const plan of plans) {
+        const prior = guardedInitial.workItems?.find(
+          (item) => item.key === plan.key,
+        );
+        if (
+          prior === undefined ||
+          prior.outcome !== undefined ||
+          prior.sourceRecordIds.length > 0
+        )
+          continue;
+        const applicable = frozenInvocations.filter(
+          (invocation) => invocation.planKey === plan.key,
+        );
+        const durableRecords = applicable.map(({ collector, shareKey }) =>
+          shareKey === undefined
+            ? []
+            : persistedSharedCollectionRecordsForPlanKeys(
+                persisted,
+                frozenInvocations
+                  .filter(
+                    (invocation) =>
+                      invocation.collector === collector &&
+                      invocation.shareKey === shareKey,
+                  )
+                  .map((invocation) => invocation.planKey),
+              ),
+        );
+        const pureDurableShared =
+          applicable.length > 0 &&
+          durableRecords.every((records) => records.length > 0);
+        if (pureDurableShared) {
+          durableOnlyCollectionPlans.set(plan.key, [
+            ...new Map(
+              durableRecords
+                .flat()
+                .map((record) => [record.id, record] as const),
+            ).values(),
+          ]);
+          continue;
+        }
+        guardedInitial = completeWorkItem(guardedInitial, plan.key, {
+          sourceRecordIds: [],
+          outcome: "failed",
+          reason: "官方来源完整采集批次尚未提交，当前工作项不能安全继续",
+        });
+      }
+      if (guardedInitial !== initial) {
+        await this.transition(initial, guardedInitial, resumeClaim);
+        notifyDurableCheckpoint(input, guardedInitial, false);
+      }
+    }
     let execution: WorkflowExecution = {
-      ...initial,
+      ...guardedInitial,
       dispositions: [
-        ...initial.dispositions.filter(
+        ...guardedInitial.dispositions.filter(
           (item) => item.materialReferences !== undefined,
         ),
         { key: "directory-interpretation", status: "completed" },
         ...plans.map((item) => {
-          const prior = initial.workItems?.find(
+          const prior = guardedInitial.workItems?.find(
             (current) => current.key === item.key,
           );
+          const durable = guardedInitial.dispositions.find(
+            (current) => current.key === `work-item:${item.key}`,
+          );
           return {
+            ...durable,
             key: `work-item:${item.key}`,
             status:
               prior?.outcome === "failed"
@@ -6980,10 +12290,7 @@ export class AssetRefreshWorkflow {
       string,
       Promise<SourceCollectionResult>
     >();
-    await this.transition(initial, execution, resumeClaim);
-    const persisted = await this.ports.executionQueries.inspectExecution(
-      initial.id,
-    );
+    await this.transition(guardedInitial, execution, resumeClaim);
     const freezeWorkItemCapability = async (
       key: string,
       capability: CapabilityCoordinate,
@@ -7125,7 +12432,21 @@ export class AssetRefreshWorkflow {
               file.size !== previous.size ||
               file.modifiedAt !== previous.modifiedAt
             );
-          });
+          }) ||
+          observedPartAssociationsRequireReconciliation(
+            attachObservedFormatFacts(
+              {
+                ...retained.accepted.proposal,
+                basis: {
+                  ...retained.accepted.proposal.basis,
+                  evidence: plan.evidence,
+                  materialReferences: plan.relativePaths,
+                },
+              },
+              plan.evidence,
+            ),
+            retained.accepted,
+          );
         if (changed) {
           const snapshot = requiredFilesystemSnapshot(initial);
           const proposal = attachObservedFormatFacts(
@@ -7142,15 +12463,24 @@ export class AssetRefreshWorkflow {
             },
             plan.evidence,
           );
+          const selectedSnapshot = {
+            ...snapshot,
+            files: snapshot.files.filter((file) =>
+              plan.relativePaths.includes(file.relativePath),
+            ),
+          };
+          const managedObservedParts =
+            await this.materializeObservedArtifactParts(
+              proposal,
+              selectedSnapshot,
+              withObservedMaterialImageRequirement(requirement),
+              input.scope,
+            );
           const accepted = createAcceptedRecognition({
             proposal,
-            snapshot: {
-              ...snapshot,
-              files: snapshot.files.filter((file) =>
-                plan.relativePaths.includes(file.relativePath),
-              ),
-            },
+            snapshot: selectedSnapshot,
             managedArtifacts: [],
+            managedObservedParts,
             current: retained.accepted,
             ...(this.ports.observedRootRegistrations.objectIdentityContract ===
             undefined
@@ -7235,96 +12565,104 @@ export class AssetRefreshWorkflow {
         (item) => item.workItem.key === plan.key,
       );
       const records: SourceRecord[] =
-        prior?.proposalId === undefined
+        prior === undefined || prior.sourceRecordIds.length === 0
           ? []
           : (persisted?.sourceRecords.filter((record) =>
               prior.sourceRecordIds.includes(record.id),
             ) ?? []);
       const failures: SourceCollectionFailure[] = [];
-      if (prior?.proposalId === undefined) {
-        for (const evidence of plan.evidence) {
-          for (const collector of this.ports.collectors.filter((candidate) =>
-            candidate.canCollect(evidence),
-          )) {
-            try {
-              input.onProgress?.("正在获取官方来源");
-              const sharedKey = sourceCollectionShareKey(collector, evidence);
-              const durablyShared =
-                sharedKey === undefined
-                  ? []
-                  : persistedSharedCollectionRecords(
-                      persisted,
-                      plans,
-                      collector,
-                      sharedKey,
-                    );
-              if (durablyShared.length > 0) {
-                records.push(...durablyShared);
-                continue;
+      const consumedSharedKeys = new Set<string>();
+      let usedDurablySharedRecords = false;
+      if (prior === undefined || prior.sourceRecordIds.length === 0) {
+        const durableOnlyRecords = durableOnlyCollectionPlans.get(plan.key);
+        if (durableOnlyRecords !== undefined) {
+          records.push(...durableOnlyRecords);
+          usedDurablySharedRecords = true;
+        } else
+          for (const evidence of plan.evidence) {
+            for (const collector of this.ports.collectors.filter((candidate) =>
+              candidate.canCollect(evidence),
+            )) {
+              try {
+                input.onProgress?.("正在获取官方来源");
+                const sharedKey = sourceCollectionShareKey(collector, evidence);
+                if (
+                  sharedKey !== undefined &&
+                  consumedSharedKeys.has(sharedKey)
+                )
+                  continue;
+                if (sharedKey !== undefined) consumedSharedKeys.add(sharedKey);
+                const durablyShared =
+                  sharedKey === undefined
+                    ? []
+                    : persistedSharedCollectionRecords(
+                        persisted,
+                        plans,
+                        collector,
+                        sharedKey,
+                      );
+                if (durablyShared.length > 0) {
+                  records.push(...durablyShared);
+                  usedDurablySharedRecords = true;
+                  continue;
+                }
+                execution = await this.bindCollectorConfiguration(
+                  execution,
+                  collector,
+                  evidence,
+                  resumeClaim,
+                );
+                await freezeWorkItemCapability(plan.key, collector.capability);
+                const collectionContext =
+                  this.collectionExecutionContext(execution);
+                const collected = retainCollectedRecordProvenance(
+                  collector,
+                  sharedKey === undefined
+                    ? await collector.collect(evidence, collectionContext)
+                    : await (sharedSourceCollections.get(sharedKey) ??
+                        (() => {
+                          const scopedEvidence = plans
+                            .flatMap((plan) => plan.evidence)
+                            .filter(
+                              (candidate) =>
+                                collector.canCollect(candidate) &&
+                                sourceCollectionShareKey(
+                                  collector,
+                                  candidate,
+                                ) === sharedKey,
+                            );
+                          const pending =
+                            collector.collectShared?.(
+                              scopedEvidence,
+                              collectionContext,
+                            ) ?? collector.collect(evidence, collectionContext);
+                          sharedSourceCollections.set(sharedKey, pending);
+                          return pending;
+                        })()),
+                );
+                records.push(...collected.records);
+                failures.push(...collected.failures);
+              } catch (error) {
+                rethrowWorkflowLifecycle(error);
+                failures.push({
+                  capability: collector.capability,
+                  reason: errorMessage(error),
+                });
               }
-              execution = await this.bindCollectorConfiguration(
-                execution,
-                collector,
-                evidence,
-                resumeClaim,
-              );
-              await freezeWorkItemCapability(plan.key, collector.capability);
-              const collectionContext =
-                this.collectionExecutionContext(execution);
-              const collected = retainCollectedRecordProvenance(
-                collector,
-                sharedKey === undefined
-                  ? await collector.collect(evidence, collectionContext)
-                  : await (sharedSourceCollections.get(sharedKey) ??
-                      (() => {
-                        const scopedEvidence = plans
-                          .flatMap((plan) => plan.evidence)
-                          .filter(
-                            (candidate) =>
-                              collector.canCollect(candidate) &&
-                              sourceCollectionShareKey(collector, candidate) ===
-                                sharedKey,
-                          );
-                        const pending =
-                          collector.collectShared?.(
-                            scopedEvidence,
-                            collectionContext,
-                          ) ?? collector.collect(evidence, collectionContext);
-                        sharedSourceCollections.set(sharedKey, pending);
-                        return pending;
-                      })()),
-              );
-              records.push(...collected.records);
-              failures.push(...collected.failures);
-            } catch (error) {
-              rethrowWorkflowLifecycle(error);
-              failures.push({
-                capability: collector.capability,
-                reason: errorMessage(error),
-              });
             }
           }
-        }
-        if (records.length > 0) {
-          const retainedExecution = executionWithRetainedSourceRecords(
-            execution,
-            records,
-          );
-          await this.ports.executionCommands.retainSourceRecords({
-            expectedExecution: execution,
-            execution: retainedExecution,
-            sourceRecords: records,
-            ...(resumeClaim === undefined ? {} : { resumeClaim }),
-          });
-          execution = retainedExecution;
-          notifyDurableCheckpoint(input, execution, false);
-        }
       }
+      const normalizedRecords = normalizeSourceRecordBatch(records);
+      records.splice(0, records.length, ...normalizedRecords);
       const recordIds = records.map((record) => record.id);
       const blocking = failures.filter((failure) =>
         collectionFailureBlocks(failure, requirement),
       );
+      const codes = usedDurablySharedRecords
+        ? undefined
+        : sourceFailureCodes(failures);
       if (blocking.length > 0) {
+        const expectedExecution = execution;
         execution = completeWorkItem(execution, plan.key, {
           sourceRecordIds: recordIds,
           outcome: "failed",
@@ -7333,9 +12671,38 @@ export class AssetRefreshWorkflow {
             ? { failureClassification: prerequisiteUnavailableFailure }
             : {}),
         });
-        await this.transitionAfterWorkItem(execution, resumeClaim);
+        execution = executionWithDispositionSourceFailureCodes(
+          execution,
+          `work-item:${plan.key}`,
+          codes,
+        );
+        if (records.length > 0)
+          await this.ports.executionCommands.retainSourceRecords({
+            expectedExecution,
+            execution,
+            sourceRecords: records,
+            ...(resumeClaim === undefined ? {} : { resumeClaim }),
+          });
+        else await this.transitionAfterWorkItem(execution, resumeClaim);
         notifyDurableCheckpoint(input, execution, false);
         continue;
+      }
+      if (records.length > 0 && (prior?.sourceRecordIds.length ?? 0) === 0) {
+        const retainedExecution = executionWithDispositionSourceFailureCodes(
+          checkpointWorkItem(execution, plan.key, {
+            sourceRecordIds: recordIds,
+          }),
+          `work-item:${plan.key}`,
+          codes,
+        );
+        await this.ports.executionCommands.retainSourceRecords({
+          expectedExecution: execution,
+          execution: retainedExecution,
+          sourceRecords: records,
+          ...(resumeClaim === undefined ? {} : { resumeClaim }),
+        });
+        execution = retainedExecution;
+        notifyDurableCheckpoint(input, execution, false);
       }
       try {
         const proposals: readonly RecognitionProposal[] =
@@ -7449,7 +12816,31 @@ export class AssetRefreshWorkflow {
           const sameIdentity = sameRecognitionIdentity(
             currentAccepted.accepted,
             proposal,
+            (
+              currentAccepted.execution.snapshot?.files ?? itemSnapshot.files
+            ).filter(({ relativePath }) =>
+              plan.relativePaths.includes(relativePath),
+            ),
+            itemSnapshot.files.filter(({ relativePath }) =>
+              plan.relativePaths.includes(relativePath),
+            ),
+            false,
           );
+          if (
+            recognitionChangesOnlySourceAddress(
+              currentAccepted.accepted,
+              proposal,
+              (
+                currentAccepted.execution.snapshot?.files ?? itemSnapshot.files
+              ).filter(({ relativePath }) =>
+                plan.relativePaths.includes(relativePath),
+              ),
+              itemSnapshot.files.filter(({ relativePath }) =>
+                plan.relativePaths.includes(relativePath),
+              ),
+            )
+          )
+            throw new Error("仅更改来源地址必须使用来源关联更换流程");
           if (!sameIdentity) {
             const change = await this.changeImpactPreview({
               execution,
@@ -7836,26 +13227,12 @@ export class AssetRefreshWorkflow {
     ) => void | Promise<void>;
   }): Promise<readonly RecognitionProposal[]> {
     const proposals: RecognitionProposal[] = [];
-    const interpretations: SourceInterpretationBatch[] = [];
-    for (const interpreter of this.ports.sourceInterpreters) {
-      if (
-        !interpreter.canInterpret({
-          evidence: input.evidence,
-          sourceRecords: input.sourceRecords,
-        })
-      )
-        continue;
-      await input.beforeInterpret(interpreter.capability);
-      interpretations.push(
-        retainInterpretationProvenance(
-          interpreter,
-          interpreter.interpret({
-            evidence: input.evidence,
-            sourceRecords: input.sourceRecords,
-          }),
-        ),
-      );
-    }
+    const interpretations = await interpretRetainedSourceRecords({
+      interpreters: this.ports.sourceInterpreters,
+      evidence: input.evidence,
+      sourceRecords: input.sourceRecords,
+      beforeInterpret: input.beforeInterpret,
+    });
     const candidateContexts = recognitionCandidateContexts({
       evidence: input.evidence,
       interpretations,
@@ -8064,7 +13441,18 @@ export class AssetRefreshWorkflow {
       ...(input.reason === undefined ? {} : { reason: input.reason }),
     };
     const cancelled = terminal(
-      { ...current.execution, cancellation },
+      {
+        ...current.execution,
+        cancellation,
+        ...(current.execution.sourceAssociationDecision === undefined
+          ? {}
+          : {
+              sourceAssociationDecision: {
+                ...current.execution.sourceAssociationDecision,
+                state: "cancelled" as const,
+              },
+            }),
+      },
       "cancelled",
       input.reason,
     );
@@ -8511,28 +13899,27 @@ export class AssetRefreshWorkflow {
     await this.transition(collectionExecution, sourced);
     try {
       let interpretationExecution = sourced;
-      const interpretations: SourceInterpretationBatch[] = [];
-      for (const interpreter of this.ports.sourceInterpreters) {
-        if (!interpreter.canInterpret({ evidence, sourceRecords })) continue;
-        interpretationExecution = await this.freezeCapabilityParticipation(
-          interpretationExecution,
-          [interpreter.capability],
-        );
-        interpretations.push(
-          retainInterpretationProvenance(
-            interpreter,
-            interpreter.interpret({ evidence, sourceRecords }),
-          ),
-        );
-      }
-      if (interpretations.length !== 1) {
-        throw new Error("已关联来源未形成唯一完整的元数据解释");
-      }
-      const [interpretation] = interpretations;
-      if (interpretation === undefined) {
+      const interpretations = await interpretRetainedSourceRecords({
+        interpreters: this.ports.sourceInterpreters,
+        evidence,
+        sourceRecords,
+        beforeInterpret: async (capability) => {
+          interpretationExecution = await this.freezeCapabilityParticipation(
+            interpretationExecution,
+            [capability],
+          );
+        },
+      });
+      const currentInterpretations = interpretations.filter(
+        (interpretation) =>
+          interpretation.sourceIdentity === sourceAssociation.sourceIdentity &&
+          interpretation.sourceAddress === sourceAssociation.nativeAddress,
+      );
+      if (currentInterpretations.length !== 1)
+        throw new Error("已关联来源未形成当前关联的唯一完整元数据解释");
+      const [interpretation] = currentInterpretations;
+      if (interpretation === undefined)
         throw new Error("唯一来源解释在校验后不可读取");
-      }
-      validateSourceInterpretationBatch(interpretation);
       if (
         interpretation.sourceIdentity !== sourceAssociation.sourceIdentity ||
         interpretation.sourceAddress !== sourceAssociation.nativeAddress
@@ -8737,11 +14124,14 @@ export class AssetRefreshWorkflow {
     };
 
     const sourceRecords: SourceRecord[] = [];
-    const failedCoverageReasons = new Map<string, string[]>();
-    const recordFailure = (coverageIds: readonly string[], reason: string) => {
+    const failedCoverageReasons = new Map<string, SourceCollectionFailure[]>();
+    const recordFailure = (
+      coverageIds: readonly string[],
+      failure: SourceCollectionFailure,
+    ) => {
       for (const coverageId of coverageIds) {
         const reasons = failedCoverageReasons.get(coverageId) ?? [];
-        failedCoverageReasons.set(coverageId, [...reasons, reason]);
+        failedCoverageReasons.set(coverageId, [...reasons, failure]);
       }
     };
     const successfulCoverageIds = (
@@ -8823,16 +14213,16 @@ export class AssetRefreshWorkflow {
         sourceRecords.push(...collectedForRun);
         const succeeded = successfulCoverageIds(item, collectedForRun);
         for (const failure of collected.failures) {
-          recordFailure(
-            failureTargets(item, failure, succeeded),
-            failure.reason,
-          );
+          recordFailure(failureTargets(item, failure, succeeded), failure);
         }
       } catch (error) {
         rethrowWorkflowLifecycle(error);
         if (await stopIfCancelled())
           return await this.inspectPublic(initial.id);
-        recordFailure(item.coverageIds, errorMessage(error));
+        recordFailure(item.coverageIds, {
+          capability: item.collector.capability,
+          reason: errorMessage(error),
+        });
       }
     }
     if (await stopIfCancelled()) return await this.inspectPublic(initial.id);
@@ -8861,6 +14251,41 @@ export class AssetRefreshWorkflow {
           scope.coverage.nativeAddress === sourceAssociation.nativeAddress &&
           scope.coverage.coverageId === coverageId,
       );
+    const failCollectionScope = async (
+      coverageId: string,
+      failures: readonly SourceCollectionFailure[],
+    ) => {
+      if (await stopIfCancelled()) return false;
+      const scope = scopeForCoverage(coverageId);
+      if (scope === undefined || scope.state === "terminal") return true;
+      const current = await this.ports.executionQueries.inspectExecution(
+        initial.id,
+      );
+      if (current === undefined) throw new Error("刷新记录在提交后不可读取");
+      const idempotencyKey = `source-refresh-failure:${run.id}:${coverageId}:${scope.acquisitionAttempt}`;
+      const codes = sourceFailureCodes(failures);
+      const committed =
+        await this.ports.executionCommands.commitSourceRefreshCollectionFailure(
+          {
+            expectedExecution: current.execution,
+            runId: run.id,
+            coverage: scope.coverage,
+            acquisitionAttempt: scope.acquisitionAttempt,
+            outcome: "failed",
+            reason: failures.map((failure) => failure.reason).join("；"),
+            ...(codes === undefined ? {} : { sourceFailureCodes: codes }),
+            idempotencyKey,
+          },
+        );
+      run = committed.run;
+      notifyDurableCheckpoint(input, initial);
+      return true;
+    };
+    for (const [coverageId, failures] of failedCoverageReasons) {
+      if (!(await failCollectionScope(coverageId, failures)))
+        return await this.inspectPublic(initial.id);
+    }
+
     const failScope = async (coverageId: string, reason: string) => {
       if (await stopIfCancelled()) return false;
       const scope = scopeForCoverage(coverageId);
@@ -8874,10 +14299,6 @@ export class AssetRefreshWorkflow {
       notifyDurableCheckpoint(input, initial);
       return true;
     };
-    for (const [coverageId, reasons] of failedCoverageReasons) {
-      if (!(await failScope(coverageId, reasons.join("；"))))
-        return await this.inspectPublic(initial.id);
-    }
 
     const candidateForScope = (scope: SourceRefreshRun["scopes"][number]) =>
       sourceRecords.filter(
@@ -8904,25 +14325,23 @@ export class AssetRefreshWorkflow {
 
     if (run.scopes.some((scope) => scope.state === "acquiring")) {
       try {
-        const interpretations: SourceInterpretationBatch[] = [];
-        for (const interpreter of this.ports.sourceInterpreters) {
-          if (!interpreter.canInterpret({ evidence, sourceRecords })) continue;
-          await retainParticipation(interpreter.capability);
-          interpretations.push(
-            retainInterpretationProvenance(
-              interpreter,
-              interpreter.interpret({ evidence, sourceRecords }),
-            ),
-          );
-        }
-        if (interpretations.length !== 1) {
-          throw new Error("已关联来源未形成唯一完整的元数据解释");
-        }
-        const [interpretation] = interpretations;
-        if (interpretation === undefined) {
+        const interpretations = await interpretRetainedSourceRecords({
+          interpreters: this.ports.sourceInterpreters,
+          evidence,
+          sourceRecords,
+          beforeInterpret: retainParticipation,
+        });
+        const currentInterpretations = interpretations.filter(
+          (interpretation) =>
+            interpretation.sourceIdentity ===
+              sourceAssociation.sourceIdentity &&
+            interpretation.sourceAddress === sourceAssociation.nativeAddress,
+        );
+        if (currentInterpretations.length !== 1)
+          throw new Error("已关联来源未形成当前关联的唯一完整元数据解释");
+        const [interpretation] = currentInterpretations;
+        if (interpretation === undefined)
           throw new Error("唯一来源刷新解释在校验后不可读取");
-        }
-        validateSourceInterpretationBatch(interpretation);
         if (
           interpretation.sourceIdentity !== sourceAssociation.sourceIdentity ||
           interpretation.sourceAddress !== sourceAssociation.nativeAddress
@@ -9218,25 +14637,69 @@ export class AssetRefreshWorkflow {
   }
 
   /** 确认刻意与获取和预览分离。 */
-  async applyChangeImpactPreview(
-    previewId: string,
-  ): Promise<ChangeImpactPreview> {
+  async applyChangeImpactPreview(input: {
+    readonly previewId: string;
+    readonly confirmedBy: string;
+  }): Promise<ChangeImpactPreview> {
+    if (input.confirmedBy.trim().length === 0)
+      throw new Error("确认者不能为空");
     const preview =
       await this.ports.changeImpactQueries.inspectChangeImpactPreview(
-        previewId,
+        input.previewId,
       );
     if (preview === undefined) throw new Error("未找到变更影响预演");
     if (preview.status !== "awaiting-confirmation") {
-      throw new Error("该变更影响预演不能再次应用");
+      return preview;
     }
     if (preview.blockingConditions.length > 0) {
       throw new Error("存在阻塞条件，不能应用变更影响预演");
     }
+    if (preview.version !== "change-impact-preview/2")
+      throw new Error("旧版变更影响预演只能审计，不能应用");
+    if (preview.change.kind === "source-association") {
+      const decisionExecution =
+        await this.ports.executionQueries.inspectExecution(preview.executionId);
+      if (
+        decisionExecution === undefined ||
+        !validateSourceAssociationDecisionEnvelope(
+          decisionExecution.execution,
+        ) ||
+        decisionExecution.execution.sourceAssociationDecision?.previewId !==
+          preview.id ||
+        JSON.stringify(
+          decisionExecution.execution.sourceAssociationDecision.proposal,
+        ) !== JSON.stringify(preview.change.proposal)
+      )
+        throw new Error("来源关联决定的持久因果记录无效");
+      await this.ports.changeImpactCommands.applySourceAssociationChangePreview(
+        {
+          preview,
+          confirmedBy: input.confirmedBy,
+          decision: {
+            id: id("source-association-decision"),
+            proposalId: preview.change.proposal.id,
+            subjectId: preview.assetId,
+            decidedBy: { kind: "user", actorId: input.confirmedBy },
+          },
+        },
+      );
+      return await this.requireDurableChangeImpactPreview(preview.id);
+    }
+    if (preview.change.kind === "recognition-retraction") {
+      await this.ports.changeImpactCommands.applyRecognitionRetractionPreview({
+        preview,
+        confirmedBy: input.confirmedBy,
+      });
+      return await this.requireDurableChangeImpactPreview(preview.id);
+    }
+    const proposal = preview.change.proposal;
+    if (preview.projected.recognitionDecisionId === undefined)
+      throw new Error("身份更正预演缺少后继识别决策");
     const successorDecision: RecognitionDecision = {
-      id: id("recognition-decision"),
-      proposalId: preview.proposal.id,
+      id: preview.projected.recognitionDecisionId,
+      proposalId: proposal.id,
       assetId: preview.assetId,
-      acceptedRuleResults: preview.proposal.ruleResults,
+      acceptedRuleResults: proposal.ruleResults,
     };
     const projectedRecognitionSourceAssociation =
       preview.projected.recognitionSourceAssociation;
@@ -9262,37 +14725,46 @@ export class AssetRefreshWorkflow {
                 projectedRecognitionSourceAssociation.sourceIdentity,
               nativeAddress:
                 projectedRecognitionSourceAssociation.nativeAddress,
-              proposalId: preview.proposal.id,
             },
           }),
     };
-    const result =
-      await this.ports.changeImpactCommands.applyChangeImpactPreview({
-        preview,
-        plan,
-      });
-    return {
-      ...preview,
-      status: result === "applied" ? "applied" : "stale",
-    };
+    await this.ports.changeImpactCommands.applyChangeImpactPreview({
+      preview,
+      plan,
+    });
+    return await this.requireDurableChangeImpactPreview(preview.id);
   }
 
-  async rejectChangeImpactPreview(
-    previewId: string,
-  ): Promise<ChangeImpactPreviewInspection> {
-    const result =
-      await this.ports.changeImpactCommands.rejectChangeImpactPreview(
-        previewId,
+  async rejectChangeImpactPreview(input: {
+    readonly previewId: string;
+    readonly rejectedBy: string;
+  }): Promise<ChangeImpactPreviewInspection> {
+    if (input.rejectedBy.trim().length === 0) throw new Error("拒绝者不能为空");
+    const current =
+      await this.ports.changeImpactQueries.inspectChangeImpactPreview(
+        input.previewId,
       );
+    if (current === undefined) throw new Error("未找到变更影响预演");
+    if (current.status !== "awaiting-confirmation")
+      return publicChangeImpactPreview(current);
+    await this.ports.changeImpactCommands.rejectChangeImpactPreview(input);
     const preview =
+      await this.ports.changeImpactQueries.inspectChangeImpactPreview(
+        input.previewId,
+      );
+    if (preview === undefined) throw new Error("未找到变更影响预演");
+    return publicChangeImpactPreview(preview);
+  }
+
+  private async requireDurableChangeImpactPreview(
+    previewId: string,
+  ): Promise<ChangeImpactPreview> {
+    const durable =
       await this.ports.changeImpactQueries.inspectChangeImpactPreview(
         previewId,
       );
-    if (preview === undefined) throw new Error("未找到变更影响预演");
-    return publicChangeImpactPreview({
-      ...preview,
-      status: result === "rejected" ? "rejected" : "stale",
-    });
+    if (durable === undefined) throw new Error("未找到变更影响预演");
+    return durable;
   }
 
   private async changeImpactPreview(input: {
@@ -9307,6 +14779,7 @@ export class AssetRefreshWorkflow {
     let execution = input.execution;
     const currentRecognitionAssociation =
       input.current.recognitionSourceAssociation;
+    const successorRecognitionDecisionId = id("recognition-decision");
     const currentInterpretation = recognitionSourceInterpretation(
       input.current.proposal,
     );
@@ -9323,107 +14796,36 @@ export class AssetRefreshWorkflow {
             }),
         recognitionDecisionId: input.current.recognitionDecision.id,
       });
+    const [afterBaseline] =
+      await this.ports.reuseQueries.findAcceptedForSubjects([
+        input.current.entity.id,
+      ]);
+    if (
+      afterBaseline === undefined ||
+      acceptedConcurrencyFingerprint(afterBaseline.accepted) !==
+        acceptedConcurrencyFingerprint(input.current)
+    )
+      throw new Error("形成身份更正预演期间当前事实或支持已经变化");
     const blockingConditions: string[] = [];
-    const currentSourceIdentities = new Set(
-      input.current.sourceAssociations.map(
-        (association) => association.sourceIdentity,
-      ),
-    );
+    // 身份更正只结束前序识别提议的解释；独立补充的记录仍通过各自当前来源关联保持适用。
     const currentSourceRecordIds = new Set([
       ...(currentInterpretation?.sourceRecordIds ?? []),
       ...(input.current.metadataSourceRecords ?? [])
-        .filter((record) => currentSourceIdentities.has(record.sourceIdentity))
-        .map((record) => record.id),
+        .filter(
+          (record) =>
+            currentRecognitionAssociation !== undefined &&
+            record.sourceIdentity ===
+              currentRecognitionAssociation.sourceIdentity &&
+            record.nativeAddress ===
+              currentRecognitionAssociation.nativeAddress,
+        )
+        .map(({ id: sourceRecordId }) => sourceRecordId),
     ]);
     const isOwnedByCurrentAssociation = (ids: readonly string[] | undefined) =>
       ids !== undefined &&
       ids.length > 0 &&
       ids.every((sourceRecordId) => currentSourceRecordIds.has(sourceRecordId));
-    const requirement =
-      input.execution.selection.informationRequirement ??
-      emptyInformationRequirement;
-    const requestedArtifactRoles = new Set(
-      requirement.artifactRoles.map((item) => item.role),
-    );
-    const retainedAssociations = input.current.artifactAssociations.filter(
-      (association) =>
-        !isOwnedByCurrentAssociation(association.sourceRecordIds) &&
-        !(
-          (association.sourceRecordIds === undefined ||
-            association.sourceRecordIds.length === 0) &&
-          requestedArtifactRoles.has(association.role)
-        ),
-    );
-    const retainedArtifactIds = new Set(
-      retainedAssociations.map((association) => association.artifactId),
-    );
-    const retainedArtifacts = input.current.artifacts.filter((artifact) =>
-      retainedArtifactIds.has(artifact.id),
-    );
-    const retainedLocations = input.current.locations.filter((location) =>
-      retainedArtifactIds.has(location.artifactId),
-    );
-    const retainedRevisions = input.current.artifactRevisions.filter(
-      (revision) => retainedArtifactIds.has(revision.artifactId),
-    );
-    const retainedBlobDigests = new Set(
-      retainedRevisions.map((revision) => revision.blobDigest),
-    );
-    const retainedBlobs = input.current.blobs.filter((blob) =>
-      retainedBlobDigests.has(blob.digest),
-    );
-    const previewManagedArtifacts: ManagedSourceArtifactCheckpoint[] = [];
-    try {
-      for (const candidate of selectSourceArtifacts(
-        input.proposal,
-        requirement,
-      )) {
-        previewManagedArtifacts.push(
-          await this.sourceArtifactWork.materializeDirect({
-            candidate,
-            proposal: input.proposal,
-            sourceRecords: input.sourceRecords,
-            beforeAcquire: async (capability) => {
-              execution = await this.freezeCapabilityParticipation(execution, [
-                capability,
-              ]);
-            },
-          }),
-        );
-      }
-    } catch (error) {
-      blockingConditions.push(`信息需求未满足：${errorMessage(error)}`);
-    }
-    const projected = projectManagedSourceArtifacts(
-      previewManagedArtifacts,
-      input.current.entity.id,
-      {
-        freshId: id,
-        forceFallbackSubject: true,
-      },
-    );
-    const projectedArtifacts = projected.artifacts.map((artifact, index) => {
-      const location = projected.locations[index];
-      const blob = projected.blobs[index];
-      const revision = projected.revisions[index];
-      const association = projected.associations[index];
-      if (
-        location === undefined ||
-        blob === undefined ||
-        revision === undefined ||
-        association === undefined
-      ) {
-        throw new Error("来源产物投影未保持平行事实集合");
-      }
-      return { artifact, location, blob, revision, association };
-    });
-    if (
-      !input.proposal.ruleResults.some(
-        (result) => result.outcome === "satisfied",
-      )
-    ) {
-      blockingConditions.push("识别规则没有形成满足结果");
-    }
+    // 预演可以投影已保留证据，但绝不获取或物化候选产物；履行仍属于后续工作流。
     const retainedMetadata = input.current.metadata.filter(
       (assertion) => !isOwnedByCurrentAssociation(assertion.sourceRecordIds),
     );
@@ -9442,6 +14844,63 @@ export class AssetRefreshWorkflow {
       (relationship) =>
         !isOwnedByCurrentAssociation(relationship.sourceRecordIds),
     );
+    if (input.execution.snapshot === undefined)
+      throw new Error("身份更正预演缺少冻结观察快照");
+    const projectedRecognition = createAcceptedRecognition({
+      proposal: input.proposal,
+      snapshot: input.execution.snapshot,
+      managedArtifacts: [],
+      current: input.current,
+      ...(this.ports.observedRootRegistrations.objectIdentityContract ===
+      undefined
+        ? {}
+        : {
+            objectIdentityContract:
+              this.ports.observedRootRegistrations.objectIdentityContract,
+          }),
+    });
+    const projectedRecognitionFacts =
+      proposedInterpretation === undefined
+        ? {
+            metadata: projectedRecognition.metadata,
+            entities: projectedRecognition.entities ?? [],
+            entityMentions: projectedRecognition.entityMentions ?? [],
+            entityResolutionDecisions:
+              projectedRecognition.entityResolutionDecisions ?? [],
+            relationships: projectedRecognition.relationships ?? [],
+          }
+        : projectSourceInterpretationFacts(
+            proposedInterpretation,
+            input.current.entity.id,
+          );
+    const projectedArtifactGraph = projectSupportedArtifactGraph({
+      current: input.current,
+      endingRecognitionDecisionId: input.current.recognitionDecision.id,
+      endingSourceRecordIds: currentSourceRecordIds,
+      retainDeliveredMaterials: true,
+      ...(currentRecognitionAssociation === undefined
+        ? {}
+        : { endingSourceAssociationId: currentRecognitionAssociation.id }),
+    });
+    blockingConditions.push(
+      ...otherLegacyArtifactBlockers(
+        input.current,
+        new Set(
+          projectedArtifactGraph.artifactAssociations.map(
+            ({ id: associationId }) => associationId,
+          ),
+        ),
+        currentSourceRecordIds,
+      ),
+    );
+    if (
+      projectedArtifactGraph.artifactAssociations.filter(
+        ({ role }) => role === "asset.primary-cover",
+      ).length > 1
+    )
+      blockingConditions.push(
+        "现有主封面仍有独立有效支持，不能由本次身份更正隐式替换",
+      );
     const currentPrimaryCoverArtifactId =
       input.current.artifactAssociations.find(
         (association) => association.role === "asset.primary-cover",
@@ -9449,10 +14908,39 @@ export class AssetRefreshWorkflow {
     return {
       execution,
       preview: {
+        version: "change-impact-preview/2",
         id: id("change-impact-preview"),
         executionId: execution.id,
         assetId: input.current.entity.id,
         proposal: input.proposal,
+        change: {
+          kind: "recognition-supersession",
+          proposal: input.proposal,
+        },
+        evidenceComparison: {
+          observed:
+            input.proposal.basis.kind === "source-interpretation"
+              ? []
+              : input.proposal.basis.evidence,
+          manual:
+            input.proposal.basis.kind === "manual-boundary"
+              ? input.proposal.basis.evidence
+              : [],
+          sourceCandidates:
+            proposedInterpretation === undefined
+              ? []
+              : [
+                  {
+                    outcome: "accepted",
+                    sourceIdentity: proposedInterpretation.sourceIdentity,
+                    nativeAddress: proposedInterpretation.sourceAddress,
+                    sourceRecordIds: proposedInterpretation.sourceRecordIds,
+                    ruleResults: input.proposal.ruleResults,
+                    explanation: "识别提议中的来源解释",
+                  },
+                ],
+          conflicts: [],
+        },
         baselines: [
           ...(currentRecognitionAssociation === undefined
             ? []
@@ -9475,6 +14963,8 @@ export class AssetRefreshWorkflow {
           { key: "complete-current-projection", value: fullBaseline },
         ],
         current: {
+          recognitionState: "recognized",
+          recognitionDecisionId: input.current.recognitionDecision.id,
           sourceAssociations: input.current.sourceAssociations.map(
             ({ sourceIdentity, nativeAddress }) => ({
               sourceIdentity,
@@ -9505,10 +14995,29 @@ export class AssetRefreshWorkflow {
             : { primaryCoverArtifactId: currentPrimaryCoverArtifactId }),
         },
         projected: {
+          recognitionState: "recognized",
+          recognitionDecisionId: successorRecognitionDecisionId,
           sourceAssociations:
             proposedInterpretation === undefined
-              ? []
+              ? input.current.sourceAssociations
+                  .filter(
+                    (association) =>
+                      association.id !== currentRecognitionAssociation?.id,
+                  )
+                  .map(({ sourceIdentity, nativeAddress }) => ({
+                    sourceIdentity,
+                    nativeAddress,
+                  }))
               : [
+                  ...input.current.sourceAssociations
+                    .filter(
+                      (association) =>
+                        association.id !== currentRecognitionAssociation?.id,
+                    )
+                    .map(({ sourceIdentity, nativeAddress }) => ({
+                      sourceIdentity,
+                      nativeAddress,
+                    })),
                   {
                     sourceIdentity: proposedInterpretation.sourceIdentity,
                     nativeAddress: proposedInterpretation.sourceAddress,
@@ -9524,68 +15033,25 @@ export class AssetRefreshWorkflow {
               }),
           metadata: [
             ...retainedMetadata,
-            ...(proposedInterpretation?.metadata ?? []),
+            ...projectedRecognitionFacts.metadata,
           ],
           entities: [
             ...retainedEntities,
-            ...(proposedInterpretation?.entities ?? []),
+            ...projectedRecognitionFacts.entities,
           ],
           entityMentions: [
             ...retainedMentions,
-            ...(proposedInterpretation?.entityMentions ?? []),
+            ...projectedRecognitionFacts.entityMentions,
           ],
           entityResolutionDecisions: [
             ...retainedResolutions,
-            ...(proposedInterpretation?.entityResolutionDecisions ?? []),
+            ...projectedRecognitionFacts.entityResolutionDecisions,
           ],
           relationships: [
             ...retainedRelationships,
-            ...(proposedInterpretation?.relationships ?? []).map(
-              (relationship) => ({
-                id: relationshipId(relationship, input.current.entity.id),
-                subjectId: relationship.subjectId ?? input.current.entity.id,
-                participantId: relationship.participantId,
-                type: relationship.type,
-                role: relationship.role,
-                sourceSlot: relationship.sourceSlot,
-                sourceRecordIds: relationship.sourceRecordIds,
-                ...(relationship.producer === undefined
-                  ? {}
-                  : { producer: relationship.producer }),
-                ...(relationship.qualifiers === undefined
-                  ? {}
-                  : { qualifiers: relationship.qualifiers }),
-              }),
-            ),
+            ...projectedRecognitionFacts.relationships,
           ],
-          artifacts: [
-            ...retainedArtifacts,
-            ...projectedArtifacts.map((item) => item.artifact),
-          ],
-          locations: [
-            ...retainedLocations,
-            ...projectedArtifacts.map((item) => item.location),
-          ],
-          blobs: [
-            ...retainedBlobs,
-            ...projectedArtifacts.map((item) => item.blob),
-          ],
-          artifactRevisions: [
-            ...retainedRevisions,
-            ...projectedArtifacts.map((item) => item.revision),
-          ],
-          artifactAssociations: [
-            ...retainedAssociations,
-            ...projectedArtifacts.map((item) => item.association),
-          ],
-          ...(() => {
-            const primaryCover = projectedArtifacts.find(
-              (item) => item.association.role === "asset.primary-cover",
-            );
-            return primaryCover === undefined
-              ? {}
-              : { primaryCoverArtifactId: primaryCover.artifact.id };
-          })(),
+          ...projectedArtifactGraph,
         },
         blockingConditions,
         status: "awaiting-confirmation",
@@ -9610,6 +15076,26 @@ export class AssetRefreshWorkflow {
     if (inspection === undefined) throw new Error("未找到刷新记录");
     if (inspection.execution.status !== "running") {
       throw new Error("只有未完成的刷新记录可以继续");
+    }
+    const confirmationPreview =
+      await this.ports.changeImpactQueries.inspectChangeImpactPreviewForExecution(
+        inspection.execution.id,
+      );
+    if (
+      confirmationPreview?.version === "change-impact-preview/2" &&
+      confirmationPreview.status === "awaiting-confirmation"
+    ) {
+      // 所有 V2 确认等待都不持有外部资源；重启只恢复同一耐久等待，不能把执行改写为中断。
+      return await this.inspectResumedPublic(inspection.execution.id);
+    }
+    if (
+      inspection.execution.workflowInput?.version ===
+        "source-association-decision-input/1" &&
+      inspection.execution.sourceAssociationDecision?.state ===
+        "awaiting-selection"
+    ) {
+      // 等待态不持有外部资源；重新打开只保留耐久用户决定，不重放或终结它。
+      return await this.inspectPublic(inspection.execution.id);
     }
     const decodedInput =
       inspection.execution.workflowInputInvalid !== undefined
@@ -9751,6 +15237,24 @@ export class AssetRefreshWorkflow {
           return await this.interruptRecovery(
             inspection.execution,
             interruptionReason,
+            mutationClaim,
+          );
+        }
+        if (
+          !hasExplicitWorkItems &&
+          decodedInput.valid &&
+          decodedInput.input.operation === undefined &&
+          inspection.execution.acceptedAssetId === undefined &&
+          (inspection.execution.stage === "recognition" ||
+            inspection.execution.stage === "source-records-retained") &&
+          (inspection.execution.stage !== "source-records-retained" ||
+            !inspection.execution.dispositions.some(
+              (item) => item.key === "official-collection",
+            ))
+        ) {
+          return await this.interruptRecovery(
+            inspection.execution,
+            "官方来源完整采集批次尚未提交，当前执行不能安全继续",
             mutationClaim,
           );
         }
@@ -9926,26 +15430,14 @@ export class AssetRefreshWorkflow {
           );
         }
         const evidence = plannedWorkItems.flatMap((item) => item.evidence);
-        const batches: SourceInterpretationBatch[] = [];
-        for (const interpreter of this.ports.sourceInterpreters) {
-          if (
-            !interpreter.canInterpret({
-              evidence,
-              sourceRecords: inspection.sourceRecords,
-            })
-          )
-            continue;
-          await retainResumedCapabilities([interpreter.capability]);
-          batches.push(
-            retainInterpretationProvenance(
-              interpreter,
-              interpreter.interpret({
-                evidence,
-                sourceRecords: inspection.sourceRecords,
-              }),
-            ),
-          );
-        }
+        const batches = await interpretRetainedSourceRecords({
+          interpreters: this.ports.sourceInterpreters,
+          evidence,
+          sourceRecords: inspection.sourceRecords,
+          beforeInterpret: async (capability) => {
+            await retainResumedCapabilities([capability]);
+          },
+        });
         const proposals: RecognitionProposal[] = [];
         const candidateContexts = recognitionCandidateContexts({
           evidence,
@@ -10427,6 +15919,227 @@ export class AssetRefreshWorkflow {
     );
   }
 
+  private async recoverObservedMaterialAssociation(
+    original: WorkflowExecution,
+    onHostCheckpoint?: () => void,
+  ): Promise<AssetRefreshInspection | undefined> {
+    const checkpoint = original.materialAssociation;
+    if (checkpoint === undefined) return undefined;
+    if (checkpoint.state === "awaiting-confirmation") return undefined;
+    const token = randomUUID();
+    const now = this.resumeClock.now().toISOString();
+    const claim = { token, now };
+    const disposition = await this.ports.recoveryLease.claimResumeExecution({
+      executionId: original.id,
+      token,
+      now,
+      expiresAt: new Date(
+        this.resumeClock.now().getTime() + 30_000,
+      ).toISOString(),
+    });
+    if (disposition === "busy") throw new ResumeExecutionBusyError();
+    if (disposition === "terminal") return undefined;
+    try {
+      if (
+        (checkpoint.state === "confirmation-recorded" ||
+          checkpoint.state === "revalidating") &&
+        checkpoint.confirmedBy !== undefined
+      ) {
+        await this.confirmObservedMaterialAssociationWithClaim(
+          {
+            executionId: original.id,
+            confirmedBy: checkpoint.confirmedBy,
+            onHostCheckpoint: () => onHostCheckpoint?.(),
+          },
+          claim,
+        );
+        return await this.inspectResumedPublic(original.id);
+      }
+      if (
+        checkpoint.state !== "created" &&
+        checkpoint.state !== "observing" &&
+        checkpoint.state !== "inspecting"
+      )
+        return undefined;
+      const target = (
+        await this.ports.reuseQueries.findAcceptedForSubjects([
+          checkpoint.input.targetAssetId,
+        ])
+      )[0];
+      if (target === undefined)
+        return await this.interruptRecovery(
+          original,
+          "目标内容不再可用，无法继续材料准备",
+          () => claim,
+        );
+      let execution = original;
+      await this.observedRootExecution.invoke(
+        {
+          registrationId: checkpoint.input.registrationId,
+          relativeScope: checkpoint.input.relativeScope,
+          subjects: [
+            {
+              subjectId: checkpoint.input.targetAssetId,
+              explanations: [
+                {
+                  path: [
+                    "observed-material-association",
+                    checkpoint.input.targetAssetId,
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        async (bound) => {
+          const registration = await this.ports.observedRootRegistrations.get(
+            checkpoint.input.registrationId,
+          );
+          if (
+            registration === undefined ||
+            registration.status !== "active" ||
+            (checkpoint.input.registrationVersion !== undefined &&
+              checkpoint.input.registrationVersion !==
+                registration.configVersion)
+          )
+            throw new Error("文件位置已变化，无法继续材料准备");
+          const observing: WorkflowExecution = {
+            ...execution,
+            requestedSelection: bound.requestedSelection,
+            resolvedSelection: bound.resolvedSelection,
+            materialAssociation: {
+              ...checkpoint,
+              state: "observing",
+              registrationDisplayName: registration.displayName,
+              input: {
+                ...checkpoint.input,
+                registrationVersion: registration.configVersion,
+              },
+            },
+          };
+          await this.transition(execution, observing, claim);
+          execution = observing;
+          onHostCheckpoint?.();
+          const snapshot =
+            await this.ports.observedRootRegistrations.observeBoundScope(
+              bound.scope,
+            );
+          if (!snapshot.complete)
+            throw new Error("文件位置观察不完整，无法继续材料准备");
+          const selectedSnapshot: FilesystemPackageSnapshot = {
+            ...snapshot,
+            files: checkpoint.input.relativePaths.map((relativePath) => {
+              const file = snapshot.files.find(
+                (candidate) => candidate.relativePath === relativePath,
+              );
+              if (file === undefined)
+                throw new Error(`所选完整文件不可用：${relativePath}`);
+              return file;
+            }),
+          };
+          const inspecting: WorkflowExecution = {
+            ...execution,
+            snapshot: selectedSnapshot,
+            filesystemSnapshots: [selectedSnapshot],
+            materialAssociation: {
+              ...execution.materialAssociation!,
+              state: "inspecting",
+              snapshot: selectedSnapshot,
+            },
+          };
+          await this.transition(execution, inspecting, claim);
+          execution = inspecting;
+          const observed = await this.inspectWholeObservedMaterials(
+            bound.scope,
+            selectedSnapshot,
+            () => onHostCheckpoint?.(),
+          );
+          const proposal: RecognitionProposal = {
+            id: id("recognition-proposal"),
+            basis: {
+              kind: "manual-boundary",
+              proposedBy: checkpoint.input.initiatedBy,
+              observationSnapshotId: selectedSnapshot.id,
+              materialReferences: checkpoint.input.relativePaths,
+              revisesProposalIds: [],
+              metadata: [],
+              evidence: observed.evidence,
+            },
+            ruleResults: [],
+            observedArtifactAssociations: checkpoint.input.relativePaths.map(
+              (observedArtifactReference) => ({
+                observedArtifactReference,
+                role: "asset.material-delivered" as const,
+              }),
+            ),
+            observedArtifactRevisions: observed.revisions,
+          };
+          const accepted = createAcceptedRecognition({
+            proposal,
+            snapshot: selectedSnapshot,
+            managedArtifacts: [],
+            asset: target.accepted.entity,
+            ...(this.ports.observedRootRegistrations.objectIdentityContract ===
+            undefined
+              ? {}
+              : {
+                  objectIdentityContract:
+                    this.ports.observedRootRegistrations.objectIdentityContract,
+                }),
+          });
+          const submission: ObservedMaterialAssociationSubmission = {
+            proposal,
+            recognitionDecision: accepted.recognitionDecision,
+            artifacts: accepted.artifacts,
+            locations: accepted.locations,
+            blobs: uniqueObservedMaterialBlobs(accepted.blobs),
+            artifactRevisions: accepted.artifactRevisions,
+            artifactAssociations: accepted.artifactAssociations,
+            projections: observedMaterialAssociationProjections(
+              proposal,
+              selectedSnapshot,
+              accepted,
+            ),
+            supports: accepted.artifactAssociations.map((association) => ({
+              associationId: association.id,
+              recognitionDecisionId: accepted.recognitionDecision.id,
+            })),
+          };
+          validateObservedMaterialAssociationSubmission(submission);
+          const waiting: WorkflowExecution = {
+            ...execution,
+            materialAssociation: {
+              ...execution.materialAssociation!,
+              state: "awaiting-confirmation",
+              submission,
+            },
+          };
+          await this.transition(execution, waiting, claim);
+          execution = waiting;
+          onHostCheckpoint?.();
+        },
+      );
+      return await this.inspectResumedPublic(original.id);
+    } catch (error) {
+      if (error instanceof WorkflowCheckpointInterruption) throw error.cause;
+      const current = await this.ports.executionQueries.inspectExecution(
+        original.id,
+      );
+      if (current?.execution.status !== "running")
+        return await this.inspectResumedPublic(original.id);
+      return await this.interruptRecovery(
+        current.execution,
+        errorMessage(error),
+        () => claim,
+      );
+    } finally {
+      await this.ports.recoveryLease.releaseResumeExecutionClaim({
+        executionId: original.id,
+        token,
+      });
+    }
+  }
+
   /**
    * 进程启动后协调每个耐久非终态执行。版本化持久输入封装是唯一重放权威。
    */
@@ -10442,6 +16155,19 @@ export class AssetRefreshWorkflow {
       )
         continue;
       lifecycle?.onCheckpoint?.();
+      const material = execution.materialAssociation;
+      if (material?.state === "awaiting-confirmation") {
+        lifecycle?.onWaitingExecution?.(execution.id);
+        continue;
+      }
+      if (material !== undefined) {
+        const inspection = await this.recoverObservedMaterialAssociation(
+          execution,
+          lifecycle?.onCheckpoint,
+        );
+        if (inspection !== undefined) recovered.push(inspection);
+        continue;
+      }
       try {
         recovered.push(
           await this.resume({
@@ -11851,12 +17577,82 @@ function selectObservedArtifactParts(
   proposal: RecognitionProposal,
   requirement: InformationRequirement,
 ): readonly ObservedArtifactPartCandidate[] {
-  return requirement.artifactRoles.flatMap(
-    (requested) =>
-      proposal.observedArtifactParts
-        ?.filter((candidate) => candidate.role === requested.role)
-        .slice(0, requested.maximum ?? 1) ?? [],
-  );
+  return requirement.artifactRoles.flatMap((requested) => {
+    const candidates =
+      proposal.observedArtifactParts?.filter(
+        (candidate) =>
+          observedArtifactPartAssociationRole(proposal, candidate) ===
+          requested.role,
+      ) ?? [];
+    return candidates.slice(
+      0,
+      requested.maximum ??
+        (requested.role === "asset.material-image" ? candidates.length : 1),
+    );
+  });
+}
+
+function withObservedMaterialImageRequirement(
+  requirement: InformationRequirement,
+): InformationRequirement {
+  if (
+    requirement.artifactRoles.some(
+      (requested) => requested.role === "asset.material-image",
+    )
+  )
+    return requirement;
+  return {
+    ...requirement,
+    artifactRoles: [
+      ...requirement.artifactRoles,
+      { role: "asset.material-image", necessity: "optional" },
+    ],
+  };
+}
+
+function observedArtifactPartAssociationRole(
+  proposal: RecognitionProposal,
+  candidate: ObservedArtifactPartCandidate,
+): string {
+  if (candidate.role !== "asset.material-image") return candidate.role;
+  const isExplicitSingleMaterial =
+    proposal.basis.kind === "manual-boundary" &&
+    proposal.basis.materialReferences.length === 1 &&
+    proposal.basis.materialReferences[0] ===
+      candidate.observedArtifactReference;
+  const isRecognizedSingleRevision =
+    proposal.basis.kind === "observed-evidence" &&
+    recognitionSourceInterpretation(proposal) === undefined &&
+    proposal.basis.artifactRevisions.length === 1 &&
+    proposal.basis.artifactRevisions[0]?.observedArtifactReference ===
+      candidate.observedArtifactReference;
+  return isExplicitSingleMaterial || isRecognizedSingleRevision
+    ? "asset.primary-cover"
+    : candidate.role;
+}
+
+function observedPartAssociationsRequireReconciliation(
+  proposal: RecognitionProposal,
+  current: AcceptedRecognition,
+): boolean {
+  const expected = (proposal.observedArtifactParts ?? [])
+    .map((candidate) =>
+      JSON.stringify([
+        observedArtifactPartAssociationRole(proposal, candidate),
+        candidate.locator,
+      ]),
+    )
+    .toSorted();
+  const actual = current.artifactAssociations
+    .filter((association) => association.observedArtifactPart !== undefined)
+    .map((association) =>
+      JSON.stringify([
+        association.role,
+        association.observedArtifactPart!.locator,
+      ]),
+    )
+    .toSorted();
+  return JSON.stringify(expected) !== JSON.stringify(actual);
 }
 
 /** 候选 ID 只在完整服务语义中唯一。 */
@@ -12034,14 +17830,163 @@ function assertInterpretationSatisfiesInformationRequirement(
 function sameRecognitionIdentity(
   current: AcceptedRecognition,
   proposal: RecognitionProposal,
+  currentObservedFiles: readonly Pick<
+    FilesystemPackageSnapshot["files"][number],
+    "modifiedAt" | "relativePath" | "size"
+  >[],
+  observedFiles: readonly Pick<
+    FilesystemPackageSnapshot["files"][number],
+    "modifiedAt" | "relativePath" | "size"
+  >[],
+  compareSourceFacts: boolean,
 ): boolean {
-  const interpretation = recognitionSourceInterpretation(proposal);
-  const association = current.recognitionSourceAssociation;
-  if (interpretation === undefined) return association === undefined;
   return (
-    association?.sourceIdentity === interpretation.sourceIdentity &&
-    association.nativeAddress === interpretation.sourceAddress
+    recognitionSourceCoordinate(current.proposal) ===
+      recognitionSourceCoordinate(proposal) &&
+    recognitionMaterialBoundary(
+      current.proposal,
+      currentObservedFiles,
+      compareSourceFacts,
+    ) ===
+      recognitionMaterialBoundary(proposal, observedFiles, compareSourceFacts)
   );
+}
+
+function recognitionChangesOnlySourceAddress(
+  current: AcceptedRecognition,
+  proposal: RecognitionProposal,
+  currentObservedFiles: readonly Pick<
+    FilesystemPackageSnapshot["files"][number],
+    "modifiedAt" | "relativePath" | "size"
+  >[],
+  observedFiles: readonly Pick<
+    FilesystemPackageSnapshot["files"][number],
+    "modifiedAt" | "relativePath" | "size"
+  >[],
+): boolean {
+  const before = recognitionSourceInterpretation(current.proposal);
+  const after = recognitionSourceInterpretation(proposal);
+  return (
+    before !== undefined &&
+    after !== undefined &&
+    before.sourceIdentity === after.sourceIdentity &&
+    before.sourceAddress !== after.sourceAddress &&
+    recognitionMaterialBoundary(
+      current.proposal,
+      currentObservedFiles,
+      true,
+    ) === recognitionMaterialBoundary(proposal, observedFiles, true)
+  );
+}
+
+function recognitionSourceCoordinate(proposal: RecognitionProposal): string {
+  const interpretation = recognitionSourceInterpretation(proposal);
+  return interpretation === undefined
+    ? proposal.basis.kind
+    : JSON.stringify([
+        interpretation.sourceIdentity,
+        interpretation.sourceAddress,
+      ]);
+}
+
+function recognitionMaterialBoundary(
+  proposal: RecognitionProposal,
+  observedFiles: readonly Pick<
+    FilesystemPackageSnapshot["files"][number],
+    "modifiedAt" | "relativePath" | "size"
+  >[],
+  compareSourceFacts: boolean,
+): string {
+  const withoutCapabilityProvenance = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(withoutCapabilityProvenance);
+    if (value === null || typeof value !== "object") return value;
+    return Object.fromEntries(
+      Object.entries(value).flatMap(([key, child]) =>
+        key === "producer" ? [] : [[key, withoutCapabilityProvenance(child)]],
+      ),
+    );
+  };
+  const interpretation = recognitionSourceInterpretation(proposal);
+  const sourceMaterial =
+    interpretation === undefined || !compareSourceFacts
+      ? undefined
+      : {
+          metadata: interpretation.metadata.map(
+            ({ producer: _producer, sourceRecordIds: _records, ...item }) =>
+              item,
+          ),
+          entities: (interpretation.entities ?? []).map(
+            ({ producer: _producer, sourceRecordIds: _records, ...item }) =>
+              item,
+          ),
+          entityMentions: (interpretation.entityMentions ?? []).map(
+            ({ producer: _producer, sourceRecordIds: _records, ...item }) =>
+              item,
+          ),
+          entityResolutionDecisions: (
+            interpretation.entityResolutionDecisions ?? []
+          ).map(
+            ({ producer: _producer, sourceRecordIds: _records, ...item }) =>
+              item,
+          ),
+          relationships: (interpretation.relationships ?? []).map(
+            ({ producer: _producer, sourceRecordIds: _records, ...item }) =>
+              item,
+          ),
+          sourceArtifacts: interpretation.sourceArtifacts.map(
+            ({
+              producer: _producer,
+              sourceRecordId: _record,
+              id: _id,
+              ...item
+            }) => item,
+          ),
+        };
+  return JSON.stringify({
+    observedFiles:
+      proposal.basis.kind === "source-interpretation" ? [] : observedFiles,
+    basis:
+      proposal.basis.kind === "source-interpretation"
+        ? { kind: proposal.basis.kind, sourceMaterial }
+        : proposal.basis.kind === "manual-boundary"
+          ? {
+              kind: proposal.basis.kind,
+              materialReferences: proposal.basis.materialReferences,
+              metadata: proposal.basis.metadata,
+              evidence: withoutCapabilityProvenance(proposal.basis.evidence),
+            }
+          : {
+              kind: proposal.basis.kind,
+              evidence: withoutCapabilityProvenance(proposal.basis.evidence),
+              artifactRevisions: withoutCapabilityProvenance(
+                proposal.basis.artifactRevisions,
+              ),
+            },
+    observedArtifactParts:
+      proposal.basis.kind === "source-interpretation" && !compareSourceFacts
+        ? []
+        : (proposal.observedArtifactParts ?? []).map(
+            ({ id: _id, producer: _producer, ...item }) => item,
+          ),
+    observedMetadata:
+      proposal.basis.kind === "source-interpretation" && !compareSourceFacts
+        ? []
+        : (proposal.observedMetadata ?? []).map(
+            ({ producer: _producer, ...item }) => item,
+          ),
+    observedArtifactRevisions:
+      proposal.basis.kind === "source-interpretation" && !compareSourceFacts
+        ? []
+        : (proposal.observedArtifactRevisions ?? []).map(
+            ({ producer: _producer, ...item }) => item,
+          ),
+    observedArtifactAssociations:
+      proposal.observedArtifactAssociations ??
+      observedFiles.map(({ relativePath: observedArtifactReference }) => ({
+        observedArtifactReference,
+        role: "asset.material-delivered",
+      })),
+  });
 }
 
 function inspectedRevisionCoordinates(
@@ -12068,6 +18013,111 @@ function inspectedRevisionCoordinates(
   );
 }
 
+function canonicalObservedMaterialRevisions(
+  revisions: readonly import("@digital/domain").ObservedArtifactRevisionCandidate[],
+): string {
+  return JSON.stringify(
+    revisions
+      .map((revision) => ({
+        reference: revision.observedArtifactReference,
+        digest: revision.blob.digest,
+        byteLength: revision.blob.byteLength,
+        mediaType: revision.blob.mediaType,
+      }))
+      .toSorted((left, right) => left.reference.localeCompare(right.reference)),
+  );
+}
+
+function observedMaterialAssociationProjections(
+  proposal: RecognitionProposal,
+  snapshot: FilesystemPackageSnapshot,
+  accepted: AcceptedRecognition,
+): ObservedMaterialAssociationSubmission["projections"] {
+  const revisions = new Map(
+    (proposal.observedArtifactRevisions ?? []).map((revision) => [
+      revision.observedArtifactReference,
+      revision,
+    ]),
+  );
+  return (proposal.observedArtifactAssociations ?? []).map((candidate) => {
+    const location = accepted.locations.find(
+      (item) =>
+        item.kind === "observed" &&
+        item.address ===
+          `${snapshot.root}/${candidate.observedArtifactReference}`,
+    );
+    const revisionCandidate = revisions.get(
+      candidate.observedArtifactReference,
+    );
+    const revision = accepted.artifactRevisions.find(
+      (item) =>
+        item.artifactId === location?.artifactId &&
+        item.blobDigest === revisionCandidate?.blob.digest,
+    );
+    const association = accepted.artifactAssociations.find(
+      (item) =>
+        item.subjectId === accepted.entity.id &&
+        item.artifactId === location?.artifactId &&
+        item.role === candidate.role,
+    );
+    if (
+      location === undefined ||
+      revision === undefined ||
+      association === undefined
+    )
+      throw new Error("Observed material projection is incomplete");
+    return {
+      observedArtifactReference: candidate.observedArtifactReference,
+      artifactId: location.artifactId,
+      locationId: location.id,
+      revisionId: revision.id,
+      associationId: association.id,
+    };
+  });
+}
+
+function uniqueObservedMaterialBlobs(blobs: readonly Blob[]): readonly Blob[] {
+  return [...new Map(blobs.map((blob) => [blob.digest, blob])).values()];
+}
+
+class ObservedMaterialStaleError extends Error {}
+
+function canonicalObservedMaterialObjectIdentity(
+  files: readonly FileObservation[],
+  contract: FilesystemObjectIdentityContract | undefined,
+): string {
+  const selected = [...files].toSorted((left, right) =>
+    left.relativePath.localeCompare(right.relativePath),
+  );
+  const localGroups = new Map<string, string[]>();
+  for (const file of selected) {
+    if (file.objectIdentity?.kind !== "snapshot-local") continue;
+    const key = observedObjectIdentityKey(file, contract);
+    localGroups.set(key!, [
+      ...(localGroups.get(key!) ?? []),
+      file.relativePath,
+    ]);
+  }
+  const aliasClasses = [...localGroups.values()]
+    .map((members) => members.toSorted())
+    .filter((members) => members.length > 1)
+    .toSorted((left, right) =>
+      JSON.stringify(left).localeCompare(JSON.stringify(right)),
+    );
+  return JSON.stringify({
+    files: selected.map((file) => ({
+      relativePath: file.relativePath,
+      size: file.size,
+      modifiedAt: file.modifiedAt,
+      durableIdentity:
+        file.objectIdentity?.kind === "durable"
+          ? observedObjectIdentityKey(file, contract)
+          : undefined,
+    })),
+    aliasClasses,
+  });
+}
+
 function createAcceptedRecognition(options: {
   readonly proposal: RecognitionProposal;
   readonly snapshot: FilesystemPackageSnapshot;
@@ -12080,7 +18130,18 @@ function createAcceptedRecognition(options: {
   readonly observedArtifactBoundary?: "filesystem-package";
   readonly objectIdentityContract?: FilesystemObjectIdentityContract;
 }): AcceptedRecognition {
-  const interpretation = recognitionSourceInterpretation(options.proposal);
+  const proposal: RecognitionProposal = {
+    ...options.proposal,
+    ...(options.proposal.observedArtifactAssociations !== undefined
+      ? {}
+      : {
+          observedArtifactAssociations: options.snapshot.files.map((file) => ({
+            observedArtifactReference: file.relativePath,
+            role: "asset.material-delivered" as const,
+          })),
+        }),
+  };
+  const interpretation = recognitionSourceInterpretation(proposal);
   const asset: DigitalAsset = options.current?.entity ??
     options.asset ?? {
       id: id("entity"),
@@ -12186,7 +18247,7 @@ function createAcceptedRecognition(options: {
     string,
     { readonly blob: Blob; readonly revision: ArtifactRevision }
   >();
-  for (const candidate of options.proposal.observedArtifactRevisions ?? []) {
+  for (const candidate of proposal.observedArtifactRevisions ?? []) {
     const observedArtifact = observedByRelativePath.get(
       candidate.observedArtifactReference,
     );
@@ -12265,11 +18326,15 @@ function createAcceptedRecognition(options: {
       throw new Error(
         "Observed Artifact Part requires a progressively hashed parent Artifact Revision",
       );
+    const associationRole = observedArtifactPartAssociationRole(
+      proposal,
+      part.candidate,
+    );
     const materializationKey = createHash("sha256")
       .update(
         JSON.stringify({
           digest: part.blob.digest,
-          role: part.candidate.role,
+          role: associationRole,
           origin: origin.id,
           locator: part.candidate.locator,
         }),
@@ -12296,7 +18361,7 @@ function createAcceptedRecognition(options: {
         id: `artifact-association_${materializationKey}`,
         subjectId: asset.id,
         artifactId: artifact.id,
-        role: part.candidate.role,
+        role: associationRole,
         producer: part.producer,
         observedArtifactPart: {
           artifactId: origin.id,
@@ -12307,7 +18372,7 @@ function createAcceptedRecognition(options: {
     };
   });
   const observedMetadata: MetadataAssertion[] = (
-    options.proposal.observedMetadata ?? []
+    proposal.observedMetadata ?? []
   ).map((candidate) => {
     const parent = observedRevisionByReference.get(
       candidate.observedArtifactReference,
@@ -12338,7 +18403,6 @@ function createAcceptedRecognition(options: {
           subjectId: asset.id,
           sourceIdentity: interpretation.sourceIdentity,
           nativeAddress: interpretation.sourceAddress,
-          proposalId: options.proposal.id,
         });
   const sourceAssociations =
     options.current?.sourceAssociations ??
@@ -12346,7 +18410,7 @@ function createAcceptedRecognition(options: {
       ? []
       : [recognitionSourceAssociation]);
   return {
-    proposal: options.proposal,
+    proposal,
     entity: asset,
     sourceAssociations,
     ...(recognitionSourceAssociation === undefined
@@ -12355,11 +18419,11 @@ function createAcceptedRecognition(options: {
     recognitionDecision: {
       id: options.current?.recognitionDecision.id ?? id("recognition-decision"),
       proposalId:
-        options.current?.recognitionDecision.proposalId ?? options.proposal.id,
+        options.current?.recognitionDecision.proposalId ?? proposal.id,
       assetId: asset.id,
       acceptedRuleResults:
         options.current?.recognitionDecision.acceptedRuleResults ??
-        options.proposal.ruleResults,
+        proposal.ruleResults,
     },
     artifacts: [
       ...localArtifacts,
@@ -12389,18 +18453,18 @@ function createAcceptedRecognition(options: {
     metadata: [
       ...(interpretation?.metadata ?? []),
       ...observedMetadata,
-      ...(options.proposal.basis.kind !== "manual-boundary"
+      ...(proposal.basis.kind !== "manual-boundary"
         ? []
-        : options.proposal.basis.metadata.map((assertion) => ({
+        : proposal.basis.metadata.map((assertion) => ({
             ...assertion,
             sourceSlot: assertion.property,
             sourceRecordIds: [],
             authoredBy: {
               initiatedBy:
-                options.proposal.basis.kind === "manual-boundary"
-                  ? options.proposal.basis.proposedBy
+                proposal.basis.kind === "manual-boundary"
+                  ? proposal.basis.proposedBy
                   : "",
-              proposalId: options.proposal.id,
+              proposalId: proposal.id,
             },
           }))),
     ],
@@ -12633,12 +18697,186 @@ function persistedSharedCollectionRecords(
   return inspection.sourceRecords.filter((record) => ids.has(record.id));
 }
 
+function persistedSharedCollectionRecordsForPlanKeys(
+  inspection: ExecutionInspection | undefined,
+  eligiblePlanKeys: readonly string[],
+): readonly SourceRecord[] {
+  if (inspection === undefined) return [];
+  const eligible = new Set(eligiblePlanKeys);
+  const ids = new Set<string>();
+  for (const item of inspection.execution.workItems ?? []) {
+    if (!eligible.has(item.key)) continue;
+    for (const id of item.sourceRecordIds) ids.add(id);
+  }
+  return inspection.sourceRecords.filter((record) => ids.has(record.id));
+}
+
+function normalizeSourceRecordBatch(
+  records: readonly SourceRecord[],
+): readonly SourceRecord[] {
+  const byId = new Map<string, SourceRecord>();
+  for (const record of records) {
+    const retained = byId.get(record.id);
+    if (retained === undefined) {
+      byId.set(record.id, record);
+      continue;
+    }
+    if (!sameSourceRecord(retained, record))
+      throw new Error("同一来源记录标识对应冲突的不可变记录");
+  }
+  return [...byId.values()];
+}
+
+function sameSourceRecord(left: SourceRecord, right: SourceRecord): boolean {
+  return (
+    left.id === right.id &&
+    left.sourceIdentity === right.sourceIdentity &&
+    left.nativeAddress === right.nativeAddress &&
+    left.mediaType === right.mediaType &&
+    left.acquiredAt === right.acquiredAt &&
+    left.acquisition.requestedAddress === right.acquisition.requestedAddress &&
+    left.acquisition.method === right.acquisition.method &&
+    left.acquisition.authorized === right.acquisition.authorized &&
+    left.coverage.id === right.coverage.id &&
+    left.coverage.completeness === right.coverage.completeness &&
+    left.coverage.authority === right.coverage.authority &&
+    left.digest === right.digest &&
+    left.body === right.body &&
+    sameOptionalCompleteCapability(left.producer, right.producer)
+  );
+}
+
+function sameOptionalCompleteCapability(
+  left: CapabilityCoordinate | undefined,
+  right: CapabilityCoordinate | undefined,
+): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  const leftInterpretationVersions = left.interpretationContractVersions;
+  const rightInterpretationVersions = right.interpretationContractVersions;
+  const sameInterpretationVersions =
+    leftInterpretationVersions === undefined ||
+    rightInterpretationVersions === undefined
+      ? leftInterpretationVersions === rightInterpretationVersions
+      : leftInterpretationVersions.length ===
+          rightInterpretationVersions.length &&
+        leftInterpretationVersions.every(
+          (version, index) => version === rightInterpretationVersions[index],
+        );
+  return (
+    left.capabilityId === right.capabilityId &&
+    left.capabilityVersion === right.capabilityVersion &&
+    left.contractVersion === right.contractVersion &&
+    left.identity === right.identity &&
+    left.implementationVersion === right.implementationVersion &&
+    left.kind === right.kind &&
+    sameInterpretationVersions
+  );
+}
+
 function partialCollectionReason(
   failures: readonly SourceCollectionFailure[],
 ): string {
   return `已保留可用官方记录；未请求的信息仍不可用：${failures
     .map((failure) => failure.reason)
     .join("；")}`;
+}
+
+function sourceFailureCodes(
+  failures: readonly SourceCollectionFailure[],
+): readonly SourceFailureCode[] | undefined {
+  if (failures.length === 0 || failures.length > 16) return undefined;
+  const codes: SourceFailureCode[] = [];
+  for (const failure of failures) {
+    if (
+      !isCompleteSourceFailureCapability(failure.capability) ||
+      typeof failure.failureCode !== "string" ||
+      failure.failureCode.length === 0 ||
+      new TextEncoder().encode(failure.failureCode).byteLength > 128
+    )
+      return undefined;
+    codes.push({
+      capability: failure.capability,
+      code: failure.failureCode,
+    });
+  }
+  return codes;
+}
+
+function isCompleteSourceFailureCapability(
+  capability: CapabilityCoordinate,
+): boolean {
+  return (
+    hasExactCapabilityCoordinateShape(capability) &&
+    isCapabilityCoordinate(capability) &&
+    typeof capability.identity === "string" &&
+    capability.identity.trim().length > 0 &&
+    capability.identity.length <= 240 &&
+    typeof capability.implementationVersion === "string" &&
+    capability.implementationVersion.trim().length > 0 &&
+    capability.implementationVersion.length <= 240 &&
+    typeof capability.kind === "string" &&
+    capability.kind.trim().length > 0 &&
+    capability.kind.length <= 240 &&
+    Array.isArray(capability.interpretationContractVersions) &&
+    capability.interpretationContractVersions.length > 0 &&
+    capability.interpretationContractVersions.every(
+      (value) =>
+        typeof value === "string" &&
+        value.trim().length > 0 &&
+        value.length <= 240,
+    )
+  );
+}
+
+function hasExactCapabilityCoordinateShape(
+  capability: CapabilityCoordinate,
+): boolean {
+  const actual = Object.keys(capability).toSorted();
+  const expected = [
+    "capabilityId",
+    "capabilityVersion",
+    "contractVersion",
+    "identity",
+    "implementationVersion",
+    "interpretationContractVersions",
+    "kind",
+  ];
+  return (
+    actual.length === expected.length &&
+    actual.every((key, index) => key === expected[index])
+  );
+}
+
+function durableSourceCollectionFailures(
+  failures: readonly SourceCollectionFailure[],
+): readonly DurableSourceCollectionFailure[] {
+  return failures.map((failure) => ({
+    capability: failure.capability,
+    reason: failure.reason,
+    ...(failure.failureClassification === undefined
+      ? {}
+      : { failureClassification: failure.failureClassification }),
+    ...(failure.coverage === undefined ? {} : { coverage: failure.coverage }),
+    ...(failure.affects === undefined ? {} : { affects: failure.affects }),
+  }));
+}
+
+function executionWithDispositionSourceFailureCodes(
+  execution: WorkflowExecution,
+  key: string,
+  codes: readonly SourceFailureCode[] | undefined,
+): WorkflowExecution {
+  return {
+    ...execution,
+    dispositions: execution.dispositions.map((disposition) =>
+      disposition.key === key
+        ? {
+            ...disposition,
+            ...(codes === undefined ? {} : { sourceFailureCodes: codes }),
+          }
+        : disposition,
+    ),
+  };
 }
 
 /**

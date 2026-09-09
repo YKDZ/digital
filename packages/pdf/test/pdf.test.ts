@@ -40,7 +40,7 @@ describe("PDF 本地格式能力", () => {
       ],
       parts: [
         {
-          role: "asset.primary-cover",
+          role: "asset.material-image",
           locator: "pdf:page[1]",
           mediaType: "image/png",
         },
@@ -185,9 +185,9 @@ describe("PDF 本地格式能力", () => {
     expect(recognizer.recognize(context).ruleResults).toMatchObject([
       {
         capabilityId: "pdf.local-publication-recognizer",
-        capabilityVersion: "1",
+        capabilityVersion: "2",
         ruleId: "pdf.valid-single-publication-revision",
-        ruleVersion: "1",
+        ruleVersion: "2",
         outcome: "satisfied",
       },
     ]);
@@ -473,9 +473,9 @@ function byteSource(bytes: Uint8Array, logicalLocation: string) {
 function trustedRuleCoordinate() {
   return {
     capabilityId: "pdf.local-publication-recognizer",
-    capabilityVersion: "1",
+    capabilityVersion: "2",
     ruleId: "pdf.valid-single-publication-revision",
-    ruleVersion: "1",
+    ruleVersion: "2",
   } as const;
 }
 

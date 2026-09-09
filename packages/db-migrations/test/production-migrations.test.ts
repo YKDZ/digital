@@ -87,6 +87,256 @@ describe("production catalogue preparation", () => {
     }
   });
 
+  it("migrates only a source enrichment whose execution, checkpoint, captured record, interpretation, and frozen authority agree", async () => {
+    const valid = await temporaryProductData();
+    const corrupt = await temporaryProductData();
+    try {
+      await prepareLegacySourceEnrichmentCatalogue(valid, false);
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory: valid }),
+      ).resolves.toEqual({ applied: 2 });
+      await expect(
+        inspectProductionCatalogueReadiness({ productDataDirectory: valid }),
+      ).resolves.toMatchObject({ state: "ready" });
+      const migrated = new DatabaseSync(path.join(valid, "catalogue.sqlite"), {
+        readOnly: true,
+      });
+      expect(
+        migrated
+          .prepare(
+            `SELECT decided_by_kind, decided_by_coordinate
+             FROM source_association_decisions`,
+          )
+          .get(),
+      ).toMatchObject({
+        decided_by_kind: "user",
+        decided_by_coordinate: "operator",
+      });
+      migrated.close();
+
+      await prepareLegacySourceEnrichmentCatalogue(corrupt, true);
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory: corrupt }),
+      ).rejects.toThrow("生产迁移");
+    } finally {
+      await rm(valid, { recursive: true, force: true });
+      await rm(corrupt, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects missing, duplicated, or wrong-coordinate legacy source authority", async () => {
+    const roots = await Promise.all([
+      temporaryProductData(),
+      temporaryProductData(),
+      temporaryProductData(),
+    ]);
+    try {
+      for (const root of roots)
+        await prepareLegacySourceEnrichmentCatalogue(root, false);
+      const missing = new DatabaseSync(
+        path.join(roots[0]!, "catalogue.sqlite"),
+      );
+      missing.exec("UPDATE workflow_executions SET workflow_input_json = NULL");
+      missing.close();
+      const duplicated = new DatabaseSync(
+        path.join(roots[1]!, "catalogue.sqlite"),
+      );
+      duplicated.exec(
+        "UPDATE workflow_executions SET source_enrichments_json = json_array(json_extract(source_enrichments_json, '$[0]'), json_extract(source_enrichments_json, '$[0]'))",
+      );
+      duplicated.close();
+      const wrongCoordinate = new DatabaseSync(
+        path.join(roots[2]!, "catalogue.sqlite"),
+      );
+      wrongCoordinate.exec(
+        "UPDATE workflow_executions SET compatibility_json = json_set(compatibility_json, '$.capabilityCoordinates[0].capabilityVersion', '2')",
+      );
+      wrongCoordinate.close();
+
+      for (const root of roots)
+        await expect(
+          prepareProductionCatalogue({ productDataDirectory: root }),
+        ).rejects.toThrow("生产迁移");
+    } finally {
+      await Promise.all(
+        roots.map(
+          async (root) => await rm(root, { recursive: true, force: true }),
+        ),
+      );
+    }
+  });
+
+  it("rejects recursively malformed legacy workflow and authority evidence atomically", async () => {
+    const mutations = [
+      "UPDATE workflow_executions SET workflow_input_json = json_remove(workflow_input_json, '$.version')",
+      "UPDATE workflow_executions SET workflow_input_json = json_remove(workflow_input_json, '$.acceptTrusted')",
+      "UPDATE workflow_executions SET workflow_input_json = json_remove(workflow_input_json, '$.configurationReferences')",
+      "UPDATE workflow_executions SET workflow_input_json = json_set(workflow_input_json, '$.observedRoots', 17)",
+      "UPDATE workflow_executions SET workflow_input_json = json_set(workflow_input_json, '$.trigger', 'information-fulfillment')",
+      "UPDATE workflow_executions SET workflow_input_json = json_set(workflow_input_json, '$.configurationReferences', json_array('config', 'config'))",
+      "UPDATE workflow_executions SET workflow_input_json = json_set(workflow_input_json, '$.configurationReferences', json_array(''))",
+      "UPDATE workflow_executions SET source_enrichments_json = json_set(source_enrichments_json, '$[0].explicitInput', json('{}'))",
+      "UPDATE workflow_executions SET source_enrichments_json = json_remove(source_enrichments_json, '$[0].evidence.kind')",
+      "UPDATE workflow_executions SET source_enrichments_json = json_remove(source_enrichments_json, '$[0].evidence.explanation')",
+      "UPDATE workflow_executions SET workflow_input_json = json_set(workflow_input_json, '$.observedRoots', json_array(json_object('version','observed-root-snapshot/1','id','root','configVersion',1,'containerPath','relative','canonicalPath','relative','readOnly',json('true'),'symlinkMode','do-not-follow','allowedTargetRootIds',json_array())))",
+      "UPDATE workflow_executions SET source_enrichments_json = json_set(source_enrichments_json, '$[0].interpretation.privateCoordinate', 'leak')",
+      "UPDATE workflow_executions SET source_enrichments_json = json_set(source_enrichments_json, '$[0].interpretation.sourceArtifacts', json_array(json_object('id','cover','sourceRecordId','record','sourceIdentity','source','role',17,'mediaType','image/jpeg','acquisitionReference','opaque:cover')))",
+      "UPDATE workflow_executions SET source_enrichments_json = json_set(source_enrichments_json, '$[0].interpretation.metadata', json_array(json_object('private','accepted')))",
+      "UPDATE workflow_executions SET source_enrichments_json = json_remove(source_enrichments_json, '$[0].subject.recognitionDecisionId')",
+      "UPDATE workflow_executions SET source_enrichments_json = json_set(source_enrichments_json, '$[0].fulfilledArtifactRoles', json_array(json_object('role','asset.primary-cover','count',1), json_object('role','asset.primary-cover','count',1)))",
+    ] as const;
+    const roots = await Promise.all(
+      mutations.map(() => temporaryProductData()),
+    );
+    try {
+      for (const [index, root] of roots.entries()) {
+        await prepareLegacySourceEnrichmentCatalogue(root, false);
+        const database = new DatabaseSync(path.join(root, "catalogue.sqlite"));
+        database.exec(mutations[index]!);
+        database.close();
+        let rejection: unknown;
+        try {
+          await prepareProductionCatalogue({ productDataDirectory: root });
+        } catch (error) {
+          rejection = error;
+        }
+        expect(rejection, `递归迁移反例 ${String(index + 1)}`).toEqual(
+          expect.objectContaining({
+            message: expect.stringContaining("生产迁移"),
+          }),
+        );
+        const unchanged = new DatabaseSync(
+          path.join(root, "catalogue.sqlite"),
+          {
+            readOnly: true,
+          },
+        );
+        expect(
+          unchanged
+            .prepare(
+              "SELECT 1 AS present FROM __digital_catalogue_migrations WHERE id = '20260906010000_source_identity_correction'",
+            )
+            .get(),
+        ).toBeUndefined();
+        unchanged.close();
+      }
+    } finally {
+      await Promise.all(
+        roots.map(
+          async (root) => await rm(root, { recursive: true, force: true }),
+        ),
+      );
+    }
+  }, 30_000);
+
+  it("rejects a readiness chain whose source decision no longer projects its association", async () => {
+    const root = await temporaryProductData();
+    try {
+      await prepareLegacySourceEnrichmentCatalogue(root, false);
+      await prepareProductionCatalogue({ productDataDirectory: root });
+      const database = new DatabaseSync(path.join(root, "catalogue.sqlite"));
+      database.exec(
+        "UPDATE source_association_change_proposals SET payload_json = json_set(payload_json, '$.successor.id', 'other-association')",
+      );
+      database.close();
+
+      await expect(
+        inspectProductionCatalogueReadiness({ productDataDirectory: root }),
+      ).resolves.toMatchObject({ state: "catalogue-integrity-failed" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects NULL holes in a source decision establishment chain", async () => {
+    const roots = await Promise.all([
+      temporaryProductData(),
+      temporaryProductData(),
+    ]);
+    try {
+      for (const root of roots) {
+        await prepareLegacySourceEnrichmentCatalogue(root, false);
+        await prepareProductionCatalogue({ productDataDirectory: root });
+      }
+      for (const [index, pathToRemove] of [
+        "$.successor.id",
+        "$.successor.subjectId",
+      ].entries()) {
+        const database = new DatabaseSync(
+          path.join(roots[index]!, "catalogue.sqlite"),
+        );
+        database
+          .prepare(
+            "UPDATE source_association_change_proposals SET payload_json = json_remove(payload_json, ?)",
+          )
+          .run(pathToRemove);
+        database.close();
+      }
+
+      for (const root of roots)
+        await expect(
+          inspectProductionCatalogueReadiness({ productDataDirectory: root }),
+        ).resolves.toMatchObject({ state: "catalogue-integrity-failed" });
+    } finally {
+      await Promise.all(
+        roots.map(
+          async (root) => await rm(root, { recursive: true, force: true }),
+        ),
+      );
+    }
+  });
+
+  it("replays every declared initial material while distinguishing terminated and ambiguous object history", async () => {
+    const partial = await temporaryProductData();
+    const terminated = await temporaryProductData();
+    const ambiguous = await temporaryProductData();
+    try {
+      await prepareLegacyObservedMaterialCatalogue(partial, {
+        materialReferences: ["one.txt", "missing.txt"],
+        evidenceReferences: ["one.txt"],
+        associationCount: 1,
+      });
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory: partial }),
+      ).rejects.toThrow();
+
+      await prepareLegacyObservedMaterialCatalogue(terminated, {
+        materialReferences: ["one.txt"],
+        evidenceReferences: ["one.txt"],
+        associationCount: 1,
+        terminated: true,
+      });
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory: terminated }),
+      ).resolves.toEqual({ applied: 3 });
+      const terminatedDatabase = new DatabaseSync(
+        path.join(terminated, "catalogue.sqlite"),
+        { readOnly: true },
+      );
+      expect(
+        terminatedDatabase
+          .prepare(
+            "SELECT COUNT(*) AS count FROM artifact_association_recognition_supports",
+          )
+          .get(),
+      ).toEqual({ count: 0 });
+      terminatedDatabase.close();
+
+      await prepareLegacyObservedMaterialCatalogue(ambiguous, {
+        materialReferences: ["one.txt"],
+        evidenceReferences: ["one.txt"],
+        associationCount: 2,
+      });
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory: ambiguous }),
+      ).rejects.toThrow();
+    } finally {
+      await rm(partial, { recursive: true, force: true });
+      await rm(terminated, { recursive: true, force: true });
+      await rm(ambiguous, { recursive: true, force: true });
+    }
+  });
+
   it("migrates an existing source recognition into the unified basis and recognition head", async () => {
     const productDataDirectory = await temporaryProductData();
     await mkdir(path.join(productDataDirectory, "managed-artifacts"), {
@@ -171,7 +421,7 @@ describe("production catalogue preparation", () => {
     try {
       await expect(
         prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 2 });
+      ).resolves.toEqual({ applied: 5 });
       const reopened = SqliteCatalogue.forProductData(productDataDirectory);
       await expect(reopened.listCurrentCatalogue()).resolves.toMatchObject([
         {
@@ -438,6 +688,285 @@ async function temporaryProductData(): Promise<string> {
   return await mkdtemp(
     path.join(tmpdir(), "digital-disposable-production-migrations-"),
   );
+}
+
+async function prepareLegacySourceEnrichmentCatalogue(
+  productDataDirectory: string,
+  corruptRecord: boolean,
+): Promise<void> {
+  await mkdir(productDataDirectory, { recursive: true });
+  await mkdir(path.join(productDataDirectory, "managed-artifacts"), {
+    recursive: true,
+  });
+  const database = new DatabaseSync(
+    path.join(productDataDirectory, "catalogue.sqlite"),
+  );
+  try {
+    database.exec(`
+      CREATE TABLE __digital_catalogue_migrations (
+        id TEXT PRIMARY KEY NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL
+      );
+      CREATE TABLE __digital_catalogue_migration_failures (
+        id TEXT PRIMARY KEY NOT NULL, message TEXT NOT NULL, occurred_at TEXT NOT NULL
+      );
+    `);
+    for (const artifact of productionMigrationArtifacts) {
+      if (artifact.id === "20260906010000_source_identity_correction") break;
+      database.exec(
+        await readFile(
+          new URL(
+            `../migrations/${artifact.id}/migration.sql`,
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+      );
+      database
+        .prepare(
+          "INSERT INTO __digital_catalogue_migrations (id, checksum, applied_at) VALUES (?, ?, ?)",
+        )
+        .run(artifact.id, artifact.checksum, "2026-09-06T00:00:00.000Z");
+    }
+    const coordinate = {
+      capabilityId: "association-interpreter",
+      capabilityVersion: "1",
+      contractVersion: "1",
+    };
+    const evidenceProducer = {
+      capabilityId: "addressing",
+      capabilityVersion: "1",
+      contractVersion: "1",
+    };
+    const checkpoint = {
+      key: "source-enrichment:asset:addressing",
+      subjectId: "asset",
+      stage: "applied",
+      subject: {
+        subjectId: "asset",
+        recognitionDecisionId: "recognition-decision",
+        sourceAssociations: [],
+        metadata: [],
+        metadataSourceRecords: [],
+        informationRequirement: {
+          metadataUsageContext: "asset.ordinary",
+          metadata: [],
+          artifactRoles: [],
+          relationshipTypes: [],
+        },
+      },
+      evidence: {
+        kind: "directed-source-address",
+        producer: evidenceProducer,
+        sourceIdentity: "source",
+        sourceAddress: "source:work",
+        explanation: "人工指定来源地址",
+      },
+      explicitInput: { id: "work" },
+      fulfilledArtifactRoles: [],
+      metadataPolicyIds: [],
+      sourceAssociation: {
+        id: "association",
+        subjectId: "asset",
+        sourceIdentity: "source",
+        nativeAddress: "source:work",
+        proposalId: "source-enrichment:execution:association-interpreter",
+      },
+      interpretation: {
+        id: "interpretation",
+        producer: coordinate,
+        sourceRecordIds: ["record"],
+        sourceIdentity: "source",
+        sourceAddress: "source:work",
+        metadata: [],
+        sourceArtifacts: [],
+      },
+      sourceRecordIds: ["record"],
+      sourceArtifacts: [],
+    };
+    database
+      .prepare(
+        `INSERT INTO workflow_executions (
+          id, status, stage, outcome, source_record_ids_json,
+          compatibility_json, information_requirement_json,
+          workflow_input_json, source_enrichments_json, accepted_asset_id
+        ) VALUES (?, 'completed', 'completed', 'accepted', ?, ?, ?, ?, ?, 'asset')`,
+      )
+      .run(
+        "execution",
+        JSON.stringify(["record"]),
+        JSON.stringify({
+          workflowVersion: "asset-refresh/2",
+          policyVersion: "policy/1",
+          capabilityCoordinates: [coordinate],
+        }),
+        JSON.stringify({
+          metadataUsageContext: "asset.ordinary",
+          metadata: [],
+          artifactRoles: [],
+          relationshipTypes: [],
+        }),
+        JSON.stringify({
+          version: "asset-refresh-input/1",
+          trigger: "interactive",
+          initiatedBy: "operator",
+          acceptTrusted: false,
+          configurationReferences: [],
+        }),
+        JSON.stringify([checkpoint]),
+      );
+    database.exec(`
+      INSERT INTO entities(id, kind) VALUES ('asset', 'digital-asset');
+      INSERT INTO recognition_proposals(id, execution_id, basis_json, rule_results_json)
+        VALUES ('recognition-proposal', 'execution', '{"kind":"manual-boundary","proposedBy":"operator","observationSnapshotId":"snapshot","materialReferences":[],"revisesProposalIds":[],"metadata":[],"evidence":[]}', '[]');
+      INSERT INTO recognition_decisions(id, proposal_id, asset_id, accepted_rule_results_json)
+        VALUES ('recognition-decision', 'recognition-proposal', 'asset', '[]');
+      INSERT INTO recognition_heads(subject_id, recognition_decision_id)
+        VALUES ('asset', 'recognition-decision');
+      INSERT INTO source_associations(id, subject_id, source_identity, native_address, proposal_id, is_current)
+        VALUES ('association', 'asset', 'source', 'source:work', 'source-enrichment:execution:association-interpreter', 1);
+      INSERT INTO current_source_associations(subject_id, association_id)
+        VALUES ('asset', 'association');
+    `);
+    database
+      .prepare(
+        `INSERT INTO source_records(
+          id, execution_id, source_identity, native_address, media_type,
+          acquired_at, acquisition_json, coverage_json, digest, body, producer_json
+        ) VALUES ('record', 'execution', 'source', ?, 'application/json',
+          '2026-09-06T00:00:00.000Z', '{}', '{"id":"complete","completeness":"complete","authority":"official"}',
+          ?, '{}', ?)`,
+      )
+      .run(
+        corruptRecord ? "source:other" : "source:work",
+        "a".repeat(64),
+        JSON.stringify(evidenceProducer),
+      );
+  } finally {
+    database.close();
+  }
+}
+
+async function prepareLegacyObservedMaterialCatalogue(
+  productDataDirectory: string,
+  options: {
+    readonly materialReferences: readonly string[];
+    readonly evidenceReferences: readonly string[];
+    readonly associationCount: number;
+    readonly terminated?: boolean;
+  },
+): Promise<void> {
+  await mkdir(productDataDirectory, { recursive: true });
+  const database = new DatabaseSync(
+    path.join(productDataDirectory, "catalogue.sqlite"),
+  );
+  try {
+    database.exec(`
+      CREATE TABLE __digital_catalogue_migrations (
+        id TEXT PRIMARY KEY NOT NULL,
+        checksum TEXT NOT NULL,
+        applied_at TEXT NOT NULL
+      );
+      CREATE TABLE __digital_catalogue_migration_failures (
+        id TEXT PRIMARY KEY NOT NULL,
+        message TEXT NOT NULL,
+        occurred_at TEXT NOT NULL
+      );
+    `);
+    for (const artifact of productionMigrationArtifacts) {
+      if (artifact.id === "20260906000000_observed_material_association") break;
+      database.exec(
+        await readFile(
+          new URL(
+            `../migrations/${artifact.id}/migration.sql`,
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+      );
+      database
+        .prepare(
+          "INSERT INTO __digital_catalogue_migrations (id, checksum, applied_at) VALUES (?, ?, ?)",
+        )
+        .run(artifact.id, artifact.checksum, "2026-09-06T00:00:00.000Z");
+    }
+    const digest = "a".repeat(64);
+    database
+      .prepare(
+        `INSERT INTO workflow_executions (
+          id, status, stage, outcome, source_record_ids_json,
+          compatibility_json, information_requirement_json, snapshot_json,
+          accepted_asset_id
+        ) VALUES (?, 'completed', 'accepted', 'accepted', '[]', '{}', '{}', ?, ?)`,
+      )
+      .run("execution", JSON.stringify({ root: "/observed" }), "asset");
+    database
+      .prepare(
+        "INSERT INTO entities (id, kind) VALUES ('asset', 'digital-asset')",
+      )
+      .run();
+    database
+      .prepare(
+        "INSERT INTO recognition_proposals (id, execution_id, basis_json, rule_results_json) VALUES (?, ?, ?, '[]')",
+      )
+      .run(
+        "proposal",
+        "execution",
+        JSON.stringify({
+          kind: "manual-boundary",
+          materialReferences: options.materialReferences,
+          evidence: options.evidenceReferences.map((reference) => ({
+            inspection: {
+              observedArtifactReference: reference,
+              revision: { digest },
+            },
+          })),
+        }),
+      );
+    database
+      .prepare(
+        "INSERT INTO recognition_decisions (id, proposal_id, asset_id, accepted_rule_results_json) VALUES ('decision', 'proposal', 'asset', '[]')",
+      )
+      .run();
+    database
+      .prepare(
+        "INSERT INTO recognition_heads (subject_id, recognition_decision_id) VALUES ('asset', 'decision')",
+      )
+      .run();
+    database
+      .prepare(
+        "INSERT INTO blobs (digest, media_type, byte_length) VALUES (?, 'application/octet-stream', 1)",
+      )
+      .run(digest);
+    for (let index = 0; index < options.associationCount; index += 1) {
+      const suffix = String(index);
+      database
+        .prepare("INSERT INTO artifacts (id) VALUES (?)")
+        .run(`artifact-${suffix}`);
+      database
+        .prepare(
+          "INSERT INTO artifact_revisions (id, artifact_id, blob_digest) VALUES (?, ?, ?)",
+        )
+        .run(`revision-${suffix}`, `artifact-${suffix}`, digest);
+      database
+        .prepare(
+          "INSERT INTO locations (id, artifact_id, address, kind) VALUES (?, ?, '/observed/one.txt', 'observed')",
+        )
+        .run(`location-${suffix}`, `artifact-${suffix}`);
+      database
+        .prepare(
+          "INSERT INTO artifact_associations (id, subject_id, artifact_id, role, source_record_ids_json) VALUES (?, 'asset', ?, 'asset.material-delivered', '[]')",
+        )
+        .run(`association-${suffix}`, `artifact-${suffix}`);
+    }
+    if (options.terminated)
+      database
+        .prepare(
+          "INSERT INTO artifact_association_retractions (id, association_id, recognition_decision_id, source_record_ids_json) VALUES ('retraction', 'association-0', 'decision', '[]')",
+        )
+        .run();
+  } finally {
+    database.close();
+  }
 }
 
 async function runFormalCli(productDataDirectory: string): Promise<number> {

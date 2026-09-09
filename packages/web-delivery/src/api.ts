@@ -2,14 +2,10 @@ import { Hono } from "hono";
 import type { Hono as HonoType } from "hono";
 
 import {
-  intakeSnapshot,
-  updateIntake,
-  inspectIntakeContent,
-  updateSettingsRoot,
-  catalogueSubject,
   beginBangumiAuthorization,
   catalogueSurface,
   catalogueSnapshot,
+  catalogueSubject,
   completeBangumiAuthorizationCallback,
   artifactDownloadResponse,
   artifactDeliveryErrorResponse,
@@ -21,6 +17,24 @@ import {
   startRefresh,
   updateAutomation,
   updatePreview,
+  settingsSnapshot,
+  updateSettingsRoot,
+  updateSettingsConnection,
+  intakeSnapshot,
+  updateIntake,
+  inspectIntakeContent,
+  sourceInputRequirements,
+  startSourceEnrichment,
+  inspectSourceEnrichment,
+  startSourceAssociationDecision,
+  inspectSourceAssociationDecision,
+  inspectCorrectionSubject,
+  selectSourceAssociationDecisionCandidate,
+  retrySourceAssociationDecision,
+  startRecognitionRetraction,
+  startObservedMaterialAssociation,
+  inspectObservedMaterialAssociation,
+  confirmObservedMaterialAssociation,
 } from "./web-delivery.ts";
 
 type ApiCommands = {
@@ -28,6 +42,13 @@ type ApiCommands = {
   readonly beginBangumiAuthorization: typeof beginBangumiAuthorization;
   readonly completeBangumiAuthorizationCallback: typeof completeBangumiAuthorizationCallback;
   readonly revokeBangumiAuthorization: typeof revokeBangumiAuthorization;
+  readonly startSourceAssociationDecision: typeof startSourceAssociationDecision;
+  readonly inspectSourceAssociationDecision: typeof inspectSourceAssociationDecision;
+  readonly inspectCorrectionSubject: typeof inspectCorrectionSubject;
+  readonly selectSourceAssociationDecisionCandidate: typeof selectSourceAssociationDecisionCandidate;
+  readonly retrySourceAssociationDecision: typeof retrySourceAssociationDecision;
+  readonly startRecognitionRetraction: typeof startRecognitionRetraction;
+  readonly updatePreview: typeof updatePreview;
 };
 
 const defaultCommands: ApiCommands = {
@@ -35,6 +56,13 @@ const defaultCommands: ApiCommands = {
   beginBangumiAuthorization,
   completeBangumiAuthorizationCallback,
   revokeBangumiAuthorization,
+  startSourceAssociationDecision,
+  inspectSourceAssociationDecision,
+  inspectCorrectionSubject,
+  selectSourceAssociationDecisionCandidate,
+  retrySourceAssociationDecision,
+  startRecognitionRetraction,
+  updatePreview,
 };
 
 export function createApi(
@@ -72,6 +100,23 @@ export function createApi(
         return c.json({ error: errorMessage(error) }, 400);
       }
     })
+    .post("/settings/connections", async (c) => {
+      try {
+        return c.json(await updateSettingsConnection(await c.req.json()));
+      } catch {
+        return c.json(
+          { error: "来源操作未完成，请检查连接信息或刷新后重试" },
+          400,
+        );
+      }
+    })
+    .get("/settings", async (c) => {
+      try {
+        return c.json(await settingsSnapshot());
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
     .post("/settings/roots", async (c) => {
       try {
         return c.json(await updateSettingsRoot(await c.req.json()));
@@ -103,6 +148,9 @@ export function createApi(
                 c.req.query("surface"),
                 c.req.query("cursor"),
                 c.req.query("limit"),
+                c.req.query("q"),
+                c.req.query("category"),
+                c.req.query("sort"),
               ),
         );
       } catch (error) {
@@ -186,6 +234,125 @@ export function createApi(
         return c.json({ error: errorMessage(error) }, 400);
       }
     })
+    .get("/source-inputs", (c) => c.json(sourceInputRequirements()))
+    .get("/source-enrichments/:id", async (c) => {
+      try {
+        const result = await inspectSourceEnrichment(c.req.param("id"));
+        return result === undefined
+          ? c.json({ error: "未找到来源补充记录" }, 404)
+          : c.json(result);
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
+    .post("/source-enrichments", async (c) => {
+      try {
+        return c.json(await startSourceEnrichment(await c.req.json()), 201);
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
+    .post("/source-association-decisions", async (c) => {
+      try {
+        return c.json(
+          await commands.startSourceAssociationDecision(await c.req.json()),
+          202,
+        );
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
+    .get("/correction-subjects/:id", async (c) => {
+      try {
+        const result = await commands.inspectCorrectionSubject(
+          c.req.param("id"),
+        );
+        return result === undefined
+          ? c.json({ error: "未找到可更正内容" }, 404)
+          : c.json(result);
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
+    .get("/source-association-decisions/:id", async (c) => {
+      try {
+        const result = await commands.inspectSourceAssociationDecision(
+          c.req.param("id"),
+        );
+        return result === undefined
+          ? c.json({ error: "未找到来源关联决定" }, 404)
+          : c.json(result);
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
+    .post("/source-association-decisions/:id/select", async (c) => {
+      try {
+        return c.json(
+          await commands.selectSourceAssociationDecisionCandidate(
+            c.req.param("id"),
+            await c.req.json(),
+          ),
+        );
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
+    .post("/source-association-decisions/:id/retry", async (c) => {
+      try {
+        return c.json(
+          await commands.retrySourceAssociationDecision(c.req.param("id")),
+          202,
+        );
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
+    .post("/recognition-retractions", async (c) => {
+      try {
+        return c.json(
+          await commands.startRecognitionRetraction(await c.req.json()),
+          202,
+        );
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
+    .post("/observed-material-associations", async (c) => {
+      try {
+        return c.json(
+          await startObservedMaterialAssociation(await c.req.json()),
+          202,
+        );
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
+    .get("/observed-material-associations/:id", async (c) => {
+      try {
+        return c.json(
+          await inspectObservedMaterialAssociation(c.req.param("id")),
+        );
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 404);
+      }
+    })
+    .post("/observed-material-associations/:id/confirm", async (c) => {
+      try {
+        const body = await c.req.json();
+        if (body === null || typeof body !== "object" || Array.isArray(body))
+          throw new Error("观察材料确认请求无效");
+        return c.json(
+          await confirmObservedMaterialAssociation({
+            ...body,
+            executionId: c.req.param("id"),
+          }),
+          202,
+        );
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
     .post("/source-connections/bangumi/authorize", (c) => {
       try {
         return c.json(commands.beginBangumiAuthorization(), 201);
@@ -195,10 +362,15 @@ export function createApi(
     })
     .get("/source-connections/bangumi/callback", async (c) => {
       try {
-        return c.json(
-          await commands.completeBangumiAuthorizationCallback(c.req.url),
+        const connection = await commands.completeBangumiAuthorizationCallback(
+          c.req.url,
         );
+        if (c.req.header("accept")?.includes("text/html"))
+          return c.redirect("/settings/automation?authorization=complete");
+        return c.json(connection);
       } catch (error) {
+        if (c.req.header("accept")?.includes("text/html"))
+          return c.redirect("/settings/automation?authorization=failed");
         return c.json({ error: errorMessage(error) }, 400);
       }
     })
@@ -221,7 +393,31 @@ export function createApi(
     })
     .post("/preview", async (c) => {
       try {
-        return c.json(await updatePreview(await c.req.json()));
+        const body: unknown = await c.req.json();
+        if (
+          typeof body !== "object" ||
+          body === null ||
+          Array.isArray(body) ||
+          JSON.stringify(Object.keys(body).toSorted()) !==
+            JSON.stringify(["action", "actorId", "previewId"]) ||
+          !["apply", "reject"].includes(
+            (body as { action?: unknown }).action as string,
+          ) ||
+          typeof (body as { actorId?: unknown }).actorId !== "string" ||
+          (body as { actorId: string }).actorId.trim().length === 0 ||
+          typeof (body as { previewId?: unknown }).previewId !== "string" ||
+          (body as { previewId: string }).previewId.trim().length === 0
+        )
+          throw new Error("变更影响预演操作无效");
+        return c.json(
+          await commands.updatePreview(
+            body as {
+              action: "apply" | "reject";
+              actorId: string;
+              previewId: string;
+            },
+          ),
+        );
       } catch (error) {
         return c.json({ error: errorMessage(error) }, 400);
       }
@@ -244,8 +440,27 @@ function catalogueSurfaceRequest(
   surface: string | undefined,
   cursor: string | undefined,
   limit: string | undefined,
+  text: string | undefined,
+  category: string | undefined,
+  sort: string | undefined,
 ) {
   if (surface === "automation") return catalogueSurface({ surface });
+  if (
+    surface === "current-catalogue" &&
+    (text !== undefined || category !== undefined || sort !== undefined)
+  ) {
+    if (sort !== undefined && sort !== "recent" && sort !== "name")
+      throw new Error("排序方式无效");
+    return catalogueSurface({
+      surface,
+      page: cataloguePageRequest(cursor, limit),
+      query: {
+        ...(text === undefined ? {} : { text }),
+        ...(category === undefined ? {} : { category }),
+        sort: sort ?? "recent",
+      },
+    });
+  }
   if (
     surface === "current-catalogue" ||
     surface === "workflow-history" ||

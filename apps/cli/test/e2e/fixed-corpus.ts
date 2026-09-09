@@ -412,7 +412,8 @@ const dedicatedIntegrationOwnershipContracts: readonly DedicatedIntegrationOwner
     },
     {
       ownerTicket: "v1-live-acceptance/issues/04-pdf-series-live-gate.md",
-      status: "pending",
+      journey: "pdf-publication-live",
+      status: "implemented",
       rootCount: 1,
     },
     {

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   NbinetCollector,
+  NbinetSourceAddressing,
+  NbinetSourceAssociationInterpreter,
   NbinetExactIsbnRecognizer,
   NbinetSourceInterpreter,
 } from "../src/index.ts";
@@ -12,12 +14,12 @@ const evidence = [
     explanation: "本地格式检查发现有效 ISBN-13",
     producer: {
       capabilityId: "epub.publication-inspection",
-      capabilityVersion: "1",
-      contractVersion: "1",
+      capabilityVersion: "2",
+      contractVersion: "2",
       identity: "epub.publication-inspection",
-      implementationVersion: "1",
+      implementationVersion: "2",
       kind: "artifact-format-inspector",
-      interpretationContractVersions: ["1"],
+      interpretationContractVersions: ["2"],
     },
     inspection: {
       identifiers: [
@@ -43,7 +45,7 @@ const evidence = [
       ],
       parts: [
         {
-          role: "asset.primary-cover",
+          role: "asset.material-image",
           locator: "epub:cover",
           mediaType: "image/jpeg",
         },
@@ -53,6 +55,46 @@ const evidence = [
 ];
 
 describe("NBINet exact ISBN source", () => {
+  it("declares and normalizes explicit ISBN input without EPUB evidence", () => {
+    const addressing = new NbinetSourceAddressing();
+
+    expect(addressing.inputRequirement).toEqual({
+      sourceIdentity: "nbinet",
+      displayName: "国家图书馆书目",
+      fields: [
+        expect.objectContaining({
+          key: "isbn",
+          required: true,
+          acceptedInput: "ISBN-13 编号或国家图书馆完整书目地址",
+        }),
+      ],
+    });
+    const normalized = addressing.normalize({ isbn: "ISBN 978-986-473-828-1" });
+    expect(normalized.status).toBe("accepted");
+    if (normalized.status !== "accepted") throw new Error(normalized.reason);
+    expect(normalized.evidence).toMatchObject({
+      kind: "directed-source-address",
+      sourceIdentity: "nbinet",
+      sourceAddress: expect.stringContaining("isbn%2Cexact%2C9789864738281"),
+    });
+    expect(
+      addressing.normalize({
+        isbn: normalized.evidence.sourceAddress!,
+      }),
+    ).toMatchObject({
+      status: "accepted",
+      normalizedInput: { isbn: "9789864738281" },
+      evidence: { sourceAddress: normalized.evidence.sourceAddress },
+    });
+    expect(
+      addressing.normalize({ isbn: "https://example.com/9789864738281" }),
+    ).toEqual({ status: "invalid", reason: expect.any(String) });
+    expect(addressing.normalize({})).toEqual({
+      status: "invalid",
+      reason: expect.any(String),
+    });
+  });
+
   it("requests only one unique valid ISBN and does not request conflicts", async () => {
     const requested: string[] = [];
     const collector = new NbinetCollector(async (address) => {
@@ -91,6 +133,60 @@ describe("NBINet exact ISBN source", () => {
         /^https:\/\/nbinet\.primo\.exlibrisgroup\.com\/primaws\/rest\/pub\/pnxs\?.*q=isbn%2Cexact%2C9789864738281/u,
       ),
     ]);
+  });
+
+  it("rejects explicit enrichment when the accepted subject carries a different ISBN", () => {
+    const addressing = new NbinetSourceAddressing().normalize({
+      isbn: "9789864738281",
+    });
+    if (addressing.status !== "accepted") throw new Error(addressing.reason);
+    const association = new NbinetSourceAssociationInterpreter();
+    const interpretation = {
+      id: "interpretation",
+      producer: new NbinetSourceInterpreter().capability,
+      sourceRecordIds: ["record"],
+      sourceIdentity: "nbinet",
+      sourceAddress: addressing.evidence.sourceAddress!,
+      metadata: [],
+      sourceArtifacts: [],
+    };
+    const subject = {
+      subjectId: "asset",
+      recognitionDecisionId: "decision",
+      sourceAssociations: [],
+      metadataSourceRecords: [],
+      informationRequirement: {
+        metadataUsageContext: "asset.ordinary",
+        metadata: [],
+        artifactRoles: [],
+        relationshipTypes: [],
+      },
+      metadata: [
+        {
+          property: "book.isbn-13",
+          value: "9786264151726",
+          sourceRecordIds: ["local-record"],
+        },
+      ],
+    };
+
+    expect(
+      association.interpret({
+        subject,
+        evidence: addressing.evidence,
+        interpretation,
+      }),
+    ).toEqual({
+      status: "contradicted",
+      explanation: expect.stringContaining("矛盾"),
+    });
+    expect(
+      association.interpret({
+        subject: { ...subject, metadata: [] },
+        evidence: addressing.evidence,
+        interpretation,
+      }),
+    ).toMatchObject({ status: "accepted" });
   });
 
   it("keeps a matching identifier boundary separate from another local inspection", () => {
@@ -152,7 +248,7 @@ describe("NBINet exact ISBN source", () => {
     );
     const official = await collector.collect(evidence[0]);
     const interpreter = new NbinetSourceInterpreter();
-    const batch = interpreter.interpret({
+    const [batch] = interpreter.interpret({
       evidence,
       sourceRecords: official.records,
     });
@@ -291,7 +387,10 @@ describe("NBINet exact ISBN source", () => {
       }),
     ).toBe(false);
 
-    const batch = interpreter.interpret({ evidence, sourceRecords: [record] });
+    const [batch] = interpreter.interpret({
+      evidence,
+      sourceRecords: [record],
+    });
     const recognizer = new NbinetExactIsbnRecognizer();
     const forgedInterpretation = {
       ...batch,

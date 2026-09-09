@@ -15,6 +15,7 @@ import type {
   ChangeImpactPreview,
   RecognitionSupersessionPlan,
   ChangeImpactQueries,
+  CommitSourceRefreshCollectionFailureInput,
   CurrentAttentionItem,
   CurrentAttentionPage,
   CurrentAttentionPageRequest,
@@ -40,6 +41,7 @@ import type {
   ArtifactContentProofCommands,
   ObservedFileConfirmationFacts,
   ObservedFileConfirmationQueries,
+  ObservedMaterialAssociationPersistence,
   ObservedRevisionConfirmationCommands,
   ObservedArtifactReuseMatch,
   OrdinaryScanReusePlan,
@@ -53,6 +55,7 @@ import type {
   SourceRefreshRunPersistence,
   StageSourceRefreshChangeSetInput,
   SourceEnrichmentPersistence,
+  SourceAssociationTerminationAudit,
   WorkflowExecutionCommands,
   WorkflowExecutionQueries,
   WorkflowRecoveryLease,
@@ -80,6 +83,9 @@ import type {
   EntityRelationship,
   Location,
   MetadataAssertion,
+  ObservedMaterialAssociationSubmission,
+  ObservedMaterialAssociationProjection,
+  ObservedMaterialAssociationAudit,
   RecognitionDecision,
   RecognitionProposal,
   SourceRecord,
@@ -87,6 +93,11 @@ import type {
   SourceRefreshRun,
   SourceCoverageScope,
   SourceInterpretationBatch,
+  SourceAssociation,
+  SourceAssociationChangeProposal,
+  SourceAssociationDecision,
+  SourceAssociationEstablishmentSupport,
+  SourceAssociationRetraction,
   SourcedEntity,
 } from "@digital/domain";
 import {
@@ -100,9 +111,13 @@ import {
   reviewSourceRefreshChangeSet as reviewDomainSourceRefreshChangeSet,
   stageSourceRefreshChangeSet as stageDomainSourceRefreshChangeSet,
   validateAcceptedRecognition,
+  validateObservedMaterialAssociationSubmission,
+  validateObservedMaterialAssociationAudit,
   validateArtifactAssociationRetraction,
   validateReevaluatedRecognition,
   validateSourceInterpretationBatch,
+  validateRecognitionSupersessionSourceRetraction,
+  validateSourceAssociationChange,
   recognitionSourceInterpretation,
 } from "@digital/domain";
 import {
@@ -125,6 +140,7 @@ import { drizzle } from "drizzle-orm/node-sqlite";
 
 import { enableCatalogueWal } from "./connection.ts";
 import {
+  assertExactLegacySourceEnrichmentAuthority,
   assertProductionCatalogueReady,
   inspectProductionCatalogueReadiness,
   productionCatalogueMigrationPlan,
@@ -132,6 +148,7 @@ import {
 import { matchesReviewedCatalogueSchema } from "./schema-contract.ts";
 import {
   artifactAssociationRetractions,
+  artifactAssociationRecognitionSupports,
   artifactAssociationSupersessions,
   artifactAssociations,
   artifactRevisions,
@@ -142,6 +159,7 @@ import {
   blobs,
   changeImpactPreviews,
   currentFileObservations,
+  currentFileObservationSupports,
   currentSourceArtifactCandidateLineages,
   currentSourceAssociations,
   entities,
@@ -165,6 +183,13 @@ import {
   relationshipSources,
   recognitionHeads,
   sourceAssociations,
+  sourceAssociationChangeProposals,
+  sourceAssociationDecisions,
+  sourceAssociationEstablishmentSupports,
+  sourceAssociationSupersessions,
+  sourceAssociationRetractions,
+  sourceAssociationLegacyRetirements,
+  recognitionDecisionRetractions,
   sourceRefreshChanges,
   sourceRefreshChangeSets,
   sourceRefreshRuns,
@@ -340,6 +365,8 @@ type CurrentCatalogueHydrationRows = {
   readonly artifactAssociations: readonly (typeof artifactAssociations.$inferSelect)[];
   readonly artifactSupersessions: readonly (typeof artifactAssociationSupersessions.$inferSelect)[];
   readonly artifactRetractions: readonly (typeof artifactAssociationRetractions.$inferSelect)[];
+  readonly artifactRecognitionSupports: readonly (typeof artifactAssociationRecognitionSupports.$inferSelect)[];
+  readonly endedRecognitionDecisionIds: ReadonlySet<string>;
   readonly metadata: readonly (typeof metadataAssertions.$inferSelect)[];
   readonly metadataLifecycles: readonly (typeof metadataAssertionLifecycles.$inferSelect)[];
   readonly metadataRetractions: readonly (typeof metadataAssertionRetractions.$inferSelect)[];
@@ -418,6 +445,72 @@ type ChangeImpactAttentionRow = {
   readonly sequence: number;
 };
 
+/**
+ * 只有曾由登记位置成功观察支持、且没有任何仍适用支持的材料才退出当前资料库。
+ * 来源型和托管型内容继续由既有识别头进入投影。
+ */
+function currentObservedMaterialPredicate(): SQL {
+  return sql`(
+    NOT EXISTS (
+      SELECT 1
+      FROM ${artifactAssociations}
+      INNER JOIN ${locations}
+        ON ${locations.artifactId} = ${artifactAssociations.artifactId}
+      WHERE ${artifactAssociations.subjectId} = ${recognitionHeads.subjectId}
+        AND ${locations.kind} = 'observed'
+        AND EXISTS (
+          SELECT 1 FROM ${currentFileObservationSupports}
+          WHERE ${currentFileObservationSupports.locationId} = ${locations.id}
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM ${artifactAssociationSupersessions}
+          WHERE ${artifactAssociationSupersessions.predecessorAssociationId} = ${artifactAssociations.id}
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM ${artifactAssociationRetractions}
+          WHERE ${artifactAssociationRetractions.associationId} = ${artifactAssociations.id}
+        )
+    )
+    OR EXISTS (
+    SELECT 1
+    FROM ${artifactAssociations}
+    INNER JOIN ${locations}
+      ON ${locations.artifactId} = ${artifactAssociations.artifactId}
+    INNER JOIN ${currentFileObservations}
+      ON ${currentFileObservations.locationId} = ${locations.id}
+    INNER JOIN ${currentFileObservationSupports}
+      ON ${currentFileObservationSupports.locationId} = ${locations.id}
+    INNER JOIN ${observedRootRegistrations}
+     ON ${observedRootRegistrations.id} = ${currentFileObservationSupports.observedRootId}
+     AND ${observedRootRegistrations.configVersion} = ${currentFileObservationSupports.observedRootVersion}
+     AND ${observedRootRegistrations.status} = 'active'
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM json_each(${currentFileObservationSupports.authorizedTargetsJson}) AS frozen_target
+      LEFT JOIN ${observedRootRegistrations} AS current_target
+        ON current_target.id = json_extract(frozen_target.value, '$.id')
+       AND current_target.config_version = json_extract(frozen_target.value, '$.configVersion')
+       AND current_target.status = 'active'
+      WHERE current_target.id IS NULL
+    )
+      AND ${artifactAssociations.subjectId} = ${recognitionHeads.subjectId}
+      AND ${locations.kind} = 'observed'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM ${artifactAssociationSupersessions}
+        WHERE ${artifactAssociationSupersessions.predecessorAssociationId} = ${artifactAssociations.id}
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM ${artifactAssociationRetractions}
+        WHERE ${artifactAssociationRetractions.associationId} = ${artifactAssociations.id}
+      )
+    )
+  )`;
+}
+
 function currentCataloguePageLimit(
   input: CurrentCataloguePageRequest | undefined,
 ): number {
@@ -463,6 +556,14 @@ function currentCatalogueCursor(
     throw new Error("Current Catalogue cursor is invalid");
   }
   return (parsed as CurrentCatalogueCursor).anchor;
+}
+
+function pathIsWithin(root: string, candidate: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return (
+    relative === "" ||
+    (relative !== ".." && !relative.startsWith(`..${path.sep}`))
+  );
 }
 
 function encodeCurrentCatalogueCursor(anchor: string): string {
@@ -1114,6 +1215,12 @@ export class SqliteCatalogue
     return matchesReviewedCatalogueSchema(database);
   }
 
+  static assertExactLegacySourceEnrichmentAuthority(
+    database: DatabaseSync,
+  ): void {
+    assertExactLegacySourceEnrichmentAuthority(database);
+  }
+
   /**
    * 在该适配器的组合生命周期结束时释放其 SQLite 连接。之后持久化能力仍可用，
    * 并会在下一次操作时惰性打开新连接。
@@ -1333,7 +1440,7 @@ export class SqliteCatalogue
             );
           }
           const association = transaction
-            .select({ proposalId: sourceAssociations.proposalId })
+            .select({ id: sourceAssociations.id })
             .from(sourceAssociations)
             .where(
               and(
@@ -1367,7 +1474,6 @@ export class SqliteCatalogue
                 subjectId: run.requestedSelection.subjectId,
                 sourceIdentity: record.sourceIdentity,
                 nativeAddress: record.nativeAddress,
-                proposalId: association.proposalId,
               },
               sourceRecords: [record],
               interpretation,
@@ -1831,6 +1937,188 @@ export class SqliteCatalogue
     );
   }
 
+  async commitSourceRefreshCollectionFailure(
+    input: CommitSourceRefreshCollectionFailureInput,
+  ): Promise<{
+    readonly execution: WorkflowExecution;
+    readonly run: SourceRefreshRun;
+  }> {
+    if (
+      input.sourceFailureCodes !== undefined &&
+      (!Array.isArray(input.sourceFailureCodes) ||
+        input.sourceFailureCodes.length > 16 ||
+        input.sourceFailureCodes.some(
+          (item) =>
+            typeof item !== "object" ||
+            item === null ||
+            !hasExactObjectKeys(item, ["capability", "code"]) ||
+            typeof item.capability !== "object" ||
+            item.capability === null ||
+            !hasExactObjectKeys(item.capability, [
+              "capabilityId",
+              "capabilityVersion",
+              "contractVersion",
+              "identity",
+              "implementationVersion",
+              "kind",
+              "interpretationContractVersions",
+            ]) ||
+            typeof item.code !== "string" ||
+            item.code.length === 0 ||
+            new TextEncoder().encode(item.code).byteLength > 128 ||
+            ![
+              item.capability.capabilityId,
+              item.capability.capabilityVersion,
+              item.capability.contractVersion,
+              item.capability.identity,
+              item.capability.implementationVersion,
+              item.capability.kind,
+            ].every(
+              (value) =>
+                typeof value === "string" &&
+                value.trim().length > 0 &&
+                value.length <= 240,
+            ) ||
+            !Array.isArray(item.capability.interpretationContractVersions) ||
+            item.capability.interpretationContractVersions.length === 0 ||
+            !item.capability.interpretationContractVersions.every(
+              (value: unknown) =>
+                typeof value === "string" &&
+                value.trim().length > 0 &&
+                value.length <= 240,
+            ),
+        ))
+    )
+      throw new Error("Source Refresh collection failure codes are malformed");
+    const database = await this.ensure();
+    let committed:
+      | {
+          readonly execution: WorkflowExecution;
+          readonly run: SourceRefreshRun;
+        }
+      | undefined;
+    const query = drizzle({ client: database });
+    query.transaction(
+      (transaction) => {
+        const run = this.requiredSourceRefreshRunWithDrizzle(
+          transaction,
+          input.runId,
+        );
+        const runRow = this.requiredSourceRefreshRunRowWithDrizzle(
+          transaction,
+          input.runId,
+        );
+        if (runRow.workflowExecutionId !== input.expectedExecution.id)
+          throw new Error(
+            "Source Refresh collection failure belongs to another execution",
+          );
+        const scope = run.scopes.find(
+          (candidate) =>
+            candidate.coverage.sourceIdentity ===
+              input.coverage.sourceIdentity &&
+            candidate.coverage.nativeAddress === input.coverage.nativeAddress &&
+            candidate.coverage.coverageId === input.coverage.coverageId,
+        );
+        const expectedKey = `source-refresh-failure:${run.id}:${input.coverage.coverageId}:${input.acquisitionAttempt}`;
+        if (input.idempotencyKey !== expectedKey)
+          throw new Error("Source Refresh collection failure key is invalid");
+        const storedExecution =
+          this.workflowExecutionPersistence.readExecutionWithAuditWithDrizzle(
+            transaction,
+            input.expectedExecution.id,
+          )?.execution;
+        if (
+          storedExecution !== undefined &&
+          !sourceRefreshFailureDispositionsAreConsistent(run, storedExecution)
+        )
+          throw new Error("Source Refresh collection failure split state");
+        if (
+          scope?.state !== "terminal" &&
+          storedExecution?.dispositions.some(
+            (item) => item.key === expectedKey,
+          ) === true
+        )
+          throw new Error("Source Refresh collection failure split state");
+        if (scope?.state === "terminal") {
+          this.assertResumeMutationClaim(
+            transaction,
+            input.expectedExecution.id,
+            input.resumeClaim,
+          );
+          const existing = storedExecution;
+          const disposition = existing?.dispositions.find(
+            (item) => item.key === expectedKey,
+          );
+          if (
+            scope.acquisitionAttempt === input.acquisitionAttempt &&
+            scope.outcome === input.outcome &&
+            scope.reason === input.reason &&
+            disposition?.status === "failed" &&
+            disposition.reason === input.reason &&
+            JSON.stringify(disposition.sourceFailureCodes) ===
+              JSON.stringify(input.sourceFailureCodes)
+          ) {
+            committed = { execution: existing!, run };
+            return;
+          }
+          throw new Error("Source Refresh collection failure replay conflicts");
+        }
+        if (
+          scope === undefined ||
+          scope.state !== "acquiring" ||
+          scope.acquisitionAttempt !== input.acquisitionAttempt ||
+          !input.expectedExecution.sourceRefreshRunIds?.includes(run.id)
+        )
+          throw new Error(
+            "Source Refresh collection failure baseline is stale",
+          );
+        const nextRun = failDomainSourceRefreshScope(run, {
+          coverage: input.coverage,
+          outcome: input.outcome,
+          reason: input.reason,
+        });
+        const nextExecution: WorkflowExecution = {
+          ...input.expectedExecution,
+          dispositions: [
+            ...input.expectedExecution.dispositions.filter(
+              (item) => item.key !== expectedKey,
+            ),
+            {
+              key: expectedKey,
+              status: "failed",
+              reason: input.reason,
+              ...(input.sourceFailureCodes === undefined
+                ? {}
+                : { sourceFailureCodes: input.sourceFailureCodes }),
+            },
+          ],
+        };
+        const baseline =
+          this.workflowExecutionPersistence.runningExecutionBaseline(
+            transaction,
+            input.expectedExecution,
+            nextExecution,
+          );
+        this.assertResumeMutationClaim(
+          transaction,
+          input.expectedExecution.id,
+          input.resumeClaim,
+        );
+        this.replaceSourceRefreshRunStateWithDrizzle(transaction, nextRun);
+        this.workflowExecutionPersistence.replaceExecutionWithDrizzle(
+          transaction,
+          nextExecution,
+          { auditJson: baseline.auditJson },
+        );
+        committed = { execution: nextExecution, run: nextRun };
+      },
+      { behavior: "immediate" },
+    );
+    if (committed === undefined)
+      throw new Error("Source Refresh collection failure was not committed");
+    return committed;
+  }
+
   private insertSourceRecordsWithDrizzle(
     transaction: DrizzleWriteTransaction,
     executionId: string,
@@ -1910,6 +2198,7 @@ export class SqliteCatalogue
             auditJson: baseline.auditJson,
           },
         );
+        this.projectCompletedFilesystemScanWithDrizzle(transaction, execution);
       },
       { behavior: "immediate" },
     );
@@ -1952,6 +2241,29 @@ export class SqliteCatalogue
             auditJson: baseline.auditJson,
           },
         );
+        const waitingPreviews = transaction
+          .select({
+            id: changeImpactPreviews.id,
+            previewJson: changeImpactPreviews.previewJson,
+          })
+          .from(changeImpactPreviews)
+          .where(eq(changeImpactPreviews.executionId, input.execution.id))
+          .all();
+        for (const row of waitingPreviews) {
+          const preview = JSON.parse(row.previewJson) as ChangeImpactPreview;
+          if (preview.status !== "awaiting-confirmation") continue;
+          transaction
+            .update(changeImpactPreviews)
+            .set({
+              previewJson: JSON.stringify({
+                ...preview,
+                status: "rejected",
+                rejectedBy: cancellation.requestedBy,
+              }),
+            })
+            .where(eq(changeImpactPreviews.id, row.id))
+            .run();
+        }
       },
       { behavior: "immediate" },
     );
@@ -1980,6 +2292,7 @@ export class SqliteCatalogue
             auditJson: baseline.auditJson,
           },
         );
+        this.projectCompletedFilesystemScanWithDrizzle(transaction, next);
       },
       { behavior: "immediate" },
     );
@@ -2032,7 +2345,8 @@ export class SqliteCatalogue
   }): Promise<void> {
     if (
       input.preview.executionId !== input.execution.id ||
-      input.preview.proposal.id !== input.proposal.id
+      input.preview.change.kind !== "recognition-supersession" ||
+      input.preview.change.proposal.id !== input.proposal.id
     )
       throw new Error(
         "Change Impact Preview must describe the terminal proposal execution",
@@ -2071,7 +2385,12 @@ export class SqliteCatalogue
               id: input.preview.id,
               executionId: input.preview.executionId,
               assetId: input.preview.assetId,
-              previewJson: JSON.stringify(input.preview),
+              previewJson: JSON.stringify(
+                this.withOtherLegacyArtifactDeltaBlocked(
+                  transaction,
+                  input.preview,
+                ),
+              ),
             })
             .run();
         },
@@ -2080,6 +2399,103 @@ export class SqliteCatalogue
     } catch (error) {
       throw originalPersistenceError(error);
     }
+  }
+
+  async finishExecutionWithSourceAssociationPreview(input: {
+    readonly expectedExecution: WorkflowExecution;
+    readonly execution: WorkflowExecution;
+    readonly preview: ChangeImpactPreview;
+    readonly resumeClaim?: { readonly token: string; readonly now: string };
+  }): Promise<void> {
+    if (
+      input.preview.version !== "change-impact-preview/2" ||
+      input.preview.change?.kind !== "source-association" ||
+      input.preview.executionId !== input.execution.id
+    )
+      throw new Error(
+        "Source Association Decision requires an exact V2 preview",
+      );
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    query.transaction(
+      (transaction) => {
+        const baseline =
+          this.workflowExecutionPersistence.runningExecutionBaseline(
+            transaction,
+            input.expectedExecution,
+            input.execution,
+          );
+        this.assertResumeMutationClaim(
+          transaction,
+          input.execution.id,
+          input.resumeClaim,
+        );
+        this.workflowExecutionPersistence.replaceExecutionWithDrizzle(
+          transaction,
+          input.execution,
+          { auditJson: baseline.auditJson },
+        );
+        transaction
+          .insert(changeImpactPreviews)
+          .values({
+            id: input.preview.id,
+            executionId: input.preview.executionId,
+            assetId: input.preview.assetId,
+            previewJson: JSON.stringify(
+              this.withOtherLegacyArtifactDeltaBlocked(
+                transaction,
+                input.preview,
+              ),
+            ),
+          })
+          .run();
+      },
+      { behavior: "immediate" },
+    );
+  }
+
+  async finishExecutionWithRecognitionRetractionPreview(input: {
+    readonly expectedExecution: WorkflowExecution;
+    readonly execution: WorkflowExecution;
+    readonly preview: ChangeImpactPreview;
+  }): Promise<void> {
+    if (
+      input.preview.version !== "change-impact-preview/2" ||
+      input.preview.change.kind !== "recognition-retraction" ||
+      input.preview.executionId !== input.execution.id
+    )
+      throw new Error("Recognition retraction requires an exact V2 preview");
+    const database = await this.ensure();
+    drizzle({ client: database }).transaction(
+      (transaction) => {
+        const baseline =
+          this.workflowExecutionPersistence.runningExecutionBaseline(
+            transaction,
+            input.expectedExecution,
+            input.execution,
+          );
+        this.workflowExecutionPersistence.replaceExecutionWithDrizzle(
+          transaction,
+          input.execution,
+          { auditJson: baseline.auditJson },
+        );
+        transaction
+          .insert(changeImpactPreviews)
+          .values({
+            id: input.preview.id,
+            executionId: input.preview.executionId,
+            assetId: input.preview.assetId,
+            previewJson: JSON.stringify(
+              this.withOtherLegacyArtifactDeltaBlocked(
+                transaction,
+                input.preview,
+              ),
+            ),
+          })
+          .run();
+      },
+      { behavior: "immediate" },
+    );
   }
 
   async acceptRecognition(input: {
@@ -2210,6 +2626,455 @@ export class SqliteCatalogue
       // 同时仍由 Drizzle 拥有事务和查询构造。
       throw originalPersistenceError(error);
     }
+  }
+
+  async freezeObservedMaterialAssociationTarget(
+    assetId: string,
+  ): ReturnType<
+    ObservedMaterialAssociationPersistence["freezeObservedMaterialAssociationTarget"]
+  > {
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    const identityBaseline = this.observedMaterialIdentityBaselineWithDrizzle(
+      query,
+      assetId,
+    );
+    if (identityBaseline === undefined)
+      throw new Error("目标内容不存在或尚未确认");
+    return {
+      identityBaseline,
+      materialBaseline: this.observedMaterialBaselineWithDrizzle(
+        query,
+        assetId,
+      ),
+    };
+  }
+
+  async commitObservedMaterialAssociation(
+    input: Parameters<
+      ObservedMaterialAssociationPersistence["commitObservedMaterialAssociation"]
+    >[0],
+  ): ReturnType<
+    ObservedMaterialAssociationPersistence["commitObservedMaterialAssociation"]
+  > {
+    validateObservedMaterialAssociationSubmission(input.submission);
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    try {
+      return query.transaction(
+        (transaction) => {
+          this.assertResumeMutationClaim(
+            transaction,
+            input.expectedExecution.id,
+            input.resumeClaim,
+          );
+          const identityBaseline =
+            this.observedMaterialIdentityBaselineWithDrizzle(
+              transaction,
+              input.submission.recognitionDecision.assetId,
+            );
+          const materialBaseline = this.observedMaterialBaselineWithDrizzle(
+            transaction,
+            input.submission.recognitionDecision.assetId,
+          );
+          const authority = transaction
+            .select({
+              status: observedRootRegistrations.status,
+              configVersion: observedRootRegistrations.configVersion,
+            })
+            .from(observedRootRegistrations)
+            .where(
+              eq(
+                observedRootRegistrations.id,
+                input.observedAuthority.registrationId,
+              ),
+            )
+            .get();
+          const complete =
+            this.observedMaterialSubmissionExistsWithDrizzle(
+              transaction,
+              input.submission,
+            ) ||
+            this.observedMaterialProjectionAlreadySupportedWithDrizzle(
+              transaction,
+              input.submission,
+            );
+          let outcome: "accepted" | "no-change" | "stale";
+          if (
+            identityBaseline !== input.expectedIdentityBaseline ||
+            authority?.status !== "active" ||
+            authority.configVersion !==
+              input.observedAuthority.registrationVersion
+          ) {
+            outcome = "stale";
+          } else if (materialBaseline !== input.expectedMaterialBaseline) {
+            outcome = complete ? "no-change" : "stale";
+          } else if (complete) {
+            outcome = "no-change";
+          } else {
+            this.insertProposalWithDrizzle(
+              transaction,
+              input.expectedExecution.id,
+              input.submission.proposal,
+            );
+            transaction
+              .insert(recognitionDecisions)
+              .values({
+                id: input.submission.recognitionDecision.id,
+                proposalId: input.submission.recognitionDecision.proposalId,
+                assetId: input.submission.recognitionDecision.assetId,
+                acceptedRuleResultsJson: JSON.stringify(
+                  input.submission.recognitionDecision.acceptedRuleResults,
+                ),
+              })
+              .run();
+            this.insertOrVerifyArtifactFactsWithDrizzle(
+              transaction,
+              input.submission,
+            );
+            this.projectCurrentFileObservationsWithDrizzle(
+              transaction,
+              input.expectedExecution,
+              input.submission.locations,
+            );
+            for (const support of input.submission.supports)
+              transaction
+                .insert(artifactAssociationRecognitionSupports)
+                .values(support)
+                .onConflictDoNothing()
+                .run();
+            outcome = "accepted";
+          }
+          const next =
+            outcome === "accepted"
+              ? input.terminalExecutions.accepted
+              : outcome === "no-change"
+                ? input.terminalExecutions.noChange
+                : input.terminalExecutions.stale;
+          const baseline =
+            this.workflowExecutionPersistence.runningExecutionBaseline(
+              transaction,
+              input.expectedExecution,
+              next,
+            );
+          this.workflowExecutionPersistence.replaceExecutionWithDrizzle(
+            transaction,
+            next,
+            { auditJson: baseline.auditJson },
+          );
+          return outcome;
+        },
+        { behavior: "immediate" },
+      );
+    } catch (error) {
+      throw originalPersistenceError(error);
+    }
+  }
+
+  async auditObservedMaterialAssociations(
+    projections: readonly ObservedMaterialAssociationProjection[],
+  ): Promise<readonly ObservedMaterialAssociationAudit[]> {
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    const uniqueProjections = [
+      ...new Map(
+        projections.map((projection) => [projection.associationId, projection]),
+      ).values(),
+    ];
+    return uniqueProjections.map((requestedProjection) => {
+      const associationRow = query
+        .select()
+        .from(artifactAssociations)
+        .where(eq(artifactAssociations.id, requestedProjection.associationId))
+        .get();
+      if (associationRow === undefined)
+        throw new Error("观察材料关联审计引用不存在");
+      const association: ArtifactAssociation = {
+        id: associationRow.id,
+        subjectId: associationRow.subjectId,
+        artifactId: associationRow.artifactId,
+        role: associationRow.role as ArtifactAssociation["role"],
+        sourceRecordIds: JSON.parse(
+          associationRow.sourceRecordIdsJson,
+        ) as string[],
+        ...(associationRow.sourceAssociationId === null
+          ? {}
+          : { sourceAssociationId: associationRow.sourceAssociationId }),
+        ...(associationRow.producerJson === null
+          ? {}
+          : { producer: JSON.parse(associationRow.producerJson) }),
+        ...(associationRow.observedArtifactPartJson === null
+          ? {}
+          : {
+              observedArtifactPart: JSON.parse(
+                associationRow.observedArtifactPartJson,
+              ),
+            }),
+      };
+      const supportRows = query
+        .select()
+        .from(artifactAssociationRecognitionSupports)
+        .where(
+          eq(
+            artifactAssociationRecognitionSupports.associationId,
+            association.id,
+          ),
+        )
+        .all();
+      const audit: ObservedMaterialAssociationAudit = {
+        association,
+        supports: supportRows.map((support) => {
+          const decisionRow = query
+            .select()
+            .from(recognitionDecisions)
+            .where(eq(recognitionDecisions.id, support.recognitionDecisionId))
+            .get();
+          if (decisionRow === undefined)
+            throw new Error("观察材料关联审计决定不存在");
+          const proposal = this.readProposalWithDrizzle(
+            query,
+            decisionRow.proposalId,
+          );
+          if (proposal === undefined)
+            throw new Error("观察材料关联审计提案不存在");
+          const proposalRow = query
+            .select({ executionId: recognitionProposals.executionId })
+            .from(recognitionProposals)
+            .where(eq(recognitionProposals.id, proposal.id))
+            .get();
+          const execution =
+            proposalRow === undefined
+              ? undefined
+              : this.workflowExecutionPersistence.readExecutionWithDrizzle(
+                  query,
+                  proposalRow.executionId,
+                );
+          if (execution === undefined)
+            throw new Error("观察材料关联审计执行不存在");
+          if (execution.materialAssociationInvalid !== undefined)
+            throw new Error("观察材料关联审计检查点无效");
+          const checkpointProjections =
+            execution.materialAssociation?.submission?.projections.filter(
+              (item) => item.associationId === association.id,
+            ) ?? [];
+          const candidateReferences = new Set(
+            (proposal.observedArtifactAssociations ?? [])
+              .filter((candidate) => candidate.role === association.role)
+              .map((candidate) => candidate.observedArtifactReference),
+          );
+          const revisionCandidates = [
+            ...(proposal.observedArtifactRevisions ?? []),
+            ...(proposal.basis.kind === "observed-evidence"
+              ? proposal.basis.artifactRevisions
+              : []),
+            ...(proposal.basis.kind === "manual-boundary"
+              ? proposal.basis.evidence.flatMap((evidence) =>
+                  evidence.inspection === undefined
+                    ? []
+                    : [
+                        {
+                          observedArtifactReference:
+                            evidence.inspection.observedArtifactReference,
+                          blob: evidence.inspection.revision,
+                        },
+                      ],
+                )
+              : []),
+          ];
+          const durableProjections = revisionCandidates.flatMap((candidate) => {
+            if (!candidateReferences.has(candidate.observedArtifactReference))
+              return [];
+            const location = query
+              .select()
+              .from(locations)
+              .where(
+                and(
+                  eq(locations.artifactId, association.artifactId),
+                  eq(locations.kind, "observed"),
+                  eq(
+                    locations.address,
+                    `${execution.snapshot?.root}/${candidate.observedArtifactReference}`,
+                  ),
+                ),
+              )
+              .get();
+            const revision = query
+              .select()
+              .from(artifactRevisions)
+              .where(
+                and(
+                  eq(artifactRevisions.artifactId, association.artifactId),
+                  eq(artifactRevisions.blobDigest, candidate.blob.digest),
+                ),
+              )
+              .get();
+            return location === undefined || revision === undefined
+              ? []
+              : [
+                  {
+                    observedArtifactReference:
+                      candidate.observedArtifactReference,
+                    artifactId: association.artifactId,
+                    locationId: location.id,
+                    revisionId: revision.id,
+                    associationId: association.id,
+                  },
+                ];
+          });
+          const projection = (
+            execution.materialAssociation === undefined
+              ? durableProjections
+              : checkpointProjections
+          )
+            .filter(
+              (item) =>
+                item.associationId === association.id &&
+                item.artifactId === association.artifactId &&
+                candidateReferences.has(item.observedArtifactReference),
+            )
+            .toSorted((left, right) =>
+              left.observedArtifactReference.localeCompare(
+                right.observedArtifactReference,
+              ),
+            )[0];
+          if (projection === undefined)
+            throw new Error("观察材料关联审计投影不存在");
+          const location = query
+            .select()
+            .from(locations)
+            .where(eq(locations.id, projection.locationId))
+            .get();
+          const revision = query
+            .select()
+            .from(artifactRevisions)
+            .where(eq(artifactRevisions.id, projection.revisionId))
+            .get();
+          const blob =
+            revision === undefined
+              ? undefined
+              : query
+                  .select()
+                  .from(blobs)
+                  .where(eq(blobs.digest, revision.blobDigest))
+                  .get();
+          if (
+            location === undefined ||
+            revision === undefined ||
+            blob === undefined ||
+            location.artifactId !== association.artifactId ||
+            location.kind !== "observed" ||
+            revision.artifactId !== association.artifactId ||
+            (execution.materialAssociation !== undefined &&
+              (location.address !==
+                `${execution.materialAssociation.snapshot?.root}/${projection.observedArtifactReference}` ||
+                execution.materialAssociation.submission?.proposal.id !==
+                  proposal.id ||
+                execution.materialAssociation.submission?.proposal.basis
+                  .kind !== "manual-boundary" ||
+                execution.materialAssociation.submission?.proposal.basis
+                  .observationSnapshotId !==
+                  execution.materialAssociation.snapshot?.id ||
+                !execution.materialAssociation.submission?.proposal.basis.materialReferences.includes(
+                  projection.observedArtifactReference,
+                ) ||
+                !execution.materialAssociation.submission?.proposal.observedArtifactAssociations?.some(
+                  (item) =>
+                    item.observedArtifactReference ===
+                      projection.observedArtifactReference &&
+                    item.role === association.role,
+                ) ||
+                !execution.materialAssociation.submission?.proposal.observedArtifactRevisions?.some(
+                  (item) =>
+                    item.observedArtifactReference ===
+                      projection.observedArtifactReference &&
+                    item.blob.digest === revision.blobDigest &&
+                    item.blob.mediaType === blob.mediaType &&
+                    item.blob.byteLength === blob.byteLength,
+                ) ||
+                !proposal.observedArtifactRevisions?.some(
+                  (item) =>
+                    item.observedArtifactReference ===
+                      projection.observedArtifactReference &&
+                    item.blob.digest === blob.digest &&
+                    item.blob.mediaType === blob.mediaType &&
+                    item.blob.byteLength === blob.byteLength,
+                ) ||
+                !execution.materialAssociation.submission?.locations.some(
+                  (item) =>
+                    item.id === projection.locationId &&
+                    item.artifactId === projection.artifactId &&
+                    item.kind === "observed" &&
+                    item.address === location.address,
+                ) ||
+                !execution.materialAssociation.submission?.artifacts.some(
+                  (item) => item.id === projection.artifactId,
+                ) ||
+                !execution.materialAssociation.submission?.artifactAssociations.some(
+                  (item) =>
+                    item.id === association.id &&
+                    item.artifactId === association.artifactId &&
+                    item.subjectId === association.subjectId &&
+                    item.role === association.role,
+                ) ||
+                !execution.materialAssociation.submission?.supports.some(
+                  (item) =>
+                    item.associationId === association.id &&
+                    item.recognitionDecisionId === decisionRow.id,
+                ) ||
+                !execution.materialAssociation.submission?.artifactRevisions.some(
+                  (item) =>
+                    item.id === projection.revisionId &&
+                    item.artifactId === projection.artifactId &&
+                    item.blobDigest === revision.blobDigest,
+                ) ||
+                !execution.materialAssociation.submission?.blobs.some(
+                  (item) =>
+                    item.digest === blob.digest &&
+                    item.mediaType === blob.mediaType &&
+                    item.byteLength === blob.byteLength,
+                ))) ||
+            !revisionCandidates.some(
+              (candidate) =>
+                candidate.observedArtifactReference ===
+                  projection.observedArtifactReference &&
+                candidate.blob.digest === revision.blobDigest &&
+                candidate.blob.mediaType === blob.mediaType &&
+                candidate.blob.byteLength === blob.byteLength,
+            )
+          )
+            throw new Error("观察材料关联审计材料事实不存在");
+          return {
+            support,
+            decision: {
+              id: decisionRow.id,
+              proposalId: decisionRow.proposalId,
+              assetId: decisionRow.assetId,
+              acceptedRuleResults: JSON.parse(
+                decisionRow.acceptedRuleResultsJson,
+              ) as RecognitionDecision["acceptedRuleResults"],
+            },
+            proposal,
+            projection,
+            location: {
+              id: location.id,
+              artifactId: location.artifactId,
+              address: location.address,
+              kind: location.kind as Location["kind"],
+            },
+            revision: {
+              id: revision.id,
+              artifactId: revision.artifactId,
+              blobDigest: revision.blobDigest,
+              ...(revision.producerJson === null
+                ? {}
+                : { producer: JSON.parse(revision.producerJson) }),
+            },
+            blob,
+          };
+        }),
+      };
+      return validateObservedMaterialAssociationAudit(audit);
+    });
   }
 
   async inspectExecution(
@@ -2386,11 +3251,25 @@ export class SqliteCatalogue
         : query
             .select({
               id: sourceAssociations.id,
-              proposalId: sourceAssociations.proposalId,
+              proposalId: recognitionDecisions.proposalId,
               subjectId: sourceAssociations.subjectId,
             })
             .from(sourceAssociations)
-            .where(inArray(sourceAssociations.proposalId, proposalIds))
+            .innerJoin(
+              sourceAssociationEstablishmentSupports,
+              eq(
+                sourceAssociationEstablishmentSupports.associationId,
+                sourceAssociations.id,
+              ),
+            )
+            .innerJoin(
+              recognitionDecisions,
+              eq(
+                recognitionDecisions.id,
+                sourceAssociationEstablishmentSupports.recognitionDecisionId,
+              ),
+            )
+            .where(inArray(recognitionDecisions.proposalId, proposalIds))
             .all(),
       executionIds.length === 0
         ? []
@@ -2911,6 +3790,7 @@ export class SqliteCatalogue
       )
       .where(
         and(
+          currentObservedMaterialPredicate(),
           anchor === undefined
             ? undefined
             : gt(recognitionHeads.subjectId, anchor),
@@ -2951,6 +3831,7 @@ export class SqliteCatalogue
         additionOrder: sql<number>`${recognitionHeads}.rowid`,
       })
       .from(recognitionHeads)
+      .where(currentObservedMaterialPredicate())
       .orderBy(asc(recognitionHeads.subjectId));
     const result: CurrentCatalogueIndexFacts[] = [];
     // 只投影轻量检索事实；完整文件图仍只为最终选中的页面装配。
@@ -3005,6 +3886,7 @@ export class SqliteCatalogue
           eq(entities.kind, "digital-asset"),
         ),
       )
+      .where(currentObservedMaterialPredicate())
       .orderBy(asc(recognitionHeads.subjectId));
     const assetIds = [
       ...new Set(currentHeads.map((current) => current.assetId)),
@@ -3122,7 +4004,8 @@ export class SqliteCatalogue
     | undefined
   > {
     const database = await this.ensure();
-    const rows = drizzle({ client: database })
+    const query = drizzle({ client: database });
+    const rows = query
       .select({ id: workflowExecutions.id })
       .from(workflowExecutions)
       .where(
@@ -3139,18 +4022,28 @@ export class SqliteCatalogue
     for (const row of rows) {
       const inspection = await this.inspectExecution(row.id);
       if (inspection?.accepted !== undefined) {
+        const current = await this.readCurrentAcceptedWithDrizzle(
+          query,
+          inspection.accepted.entity.id,
+        );
+        if (current === undefined) continue;
         return {
           execution: inspection.execution,
-          accepted: inspection.accepted,
+          accepted: current,
         };
       }
       const itemAccepted = inspection?.workItemInspections?.find(
         (item) => item.accepted !== undefined,
       )?.accepted;
       if (itemAccepted !== undefined) {
+        const current = await this.readCurrentAcceptedWithDrizzle(
+          query,
+          itemAccepted.entity.id,
+        );
+        if (current === undefined) continue;
         return {
           execution: inspection!.execution,
-          accepted: itemAccepted,
+          accepted: current,
         };
       }
     }
@@ -3205,6 +4098,187 @@ export class SqliteCatalogue
       });
     }
     return found;
+  }
+
+  async findCurrentSourceAssociationByCoordinate(input: {
+    readonly sourceIdentity: string;
+    readonly nativeAddress: string;
+  }): Promise<SourceAssociation | undefined> {
+    const database = await this.ensure();
+    const row = drizzle({ client: database })
+      .select({ association: sourceAssociations })
+      .from(currentSourceAssociations)
+      .innerJoin(
+        sourceAssociations,
+        eq(sourceAssociations.id, currentSourceAssociations.associationId),
+      )
+      .where(
+        and(
+          eq(sourceAssociations.sourceIdentity, input.sourceIdentity),
+          eq(sourceAssociations.nativeAddress, input.nativeAddress),
+        ),
+      )
+      .get();
+    return row?.association;
+  }
+
+  async inspectSourceAssociationHistory(assetId: string): Promise<
+    | {
+        readonly recognitionState: "recognized" | "unresolved";
+        readonly recognitionDecisionId?: string;
+        readonly current: readonly SourceAssociation[];
+        readonly historical: readonly {
+          readonly association: SourceAssociation;
+          readonly status: "superseded" | "retracted" | "legacy-retired";
+          readonly authorizedBy?: SourceAssociationTerminationAudit;
+        }[];
+      }
+    | undefined
+  > {
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    const entity = query
+      .select({ id: entities.id })
+      .from(entities)
+      .where(and(eq(entities.id, assetId), eq(entities.kind, "digital-asset")))
+      .get();
+    if (entity === undefined) return undefined;
+    const head = query
+      .select({ decisionId: recognitionHeads.recognitionDecisionId })
+      .from(recognitionHeads)
+      .where(eq(recognitionHeads.subjectId, assetId))
+      .get();
+    if (head === undefined) return undefined;
+    const all = query
+      .select()
+      .from(sourceAssociations)
+      .where(eq(sourceAssociations.subjectId, assetId))
+      .orderBy(asc(sql<number>`${sourceAssociations}.rowid`))
+      .all();
+    const currentIds = new Set(
+      query
+        .select({ id: currentSourceAssociations.associationId })
+        .from(currentSourceAssociations)
+        .where(eq(currentSourceAssociations.subjectId, assetId))
+        .all()
+        .map(({ id: associationId }) => associationId),
+    );
+    const superseded = new Set(
+      query
+        .select({ id: sourceAssociationSupersessions.predecessorAssociationId })
+        .from(sourceAssociationSupersessions)
+        .all()
+        .map(({ id: associationId }) => associationId),
+    );
+    const retracted = new Set(
+      query
+        .select({ id: sourceAssociationRetractions.associationId })
+        .from(sourceAssociationRetractions)
+        .all()
+        .map(({ id: associationId }) => associationId),
+    );
+    const retired = new Set(
+      query
+        .select({ id: sourceAssociationLegacyRetirements.associationId })
+        .from(sourceAssociationLegacyRetirements)
+        .all()
+        .map(({ id: associationId }) => associationId),
+    );
+    const retractionAuthority = new Map<
+      string,
+      SourceAssociationTerminationAudit
+    >();
+    for (const retraction of query
+      .select()
+      .from(sourceAssociationRetractions)
+      .all()) {
+      if (retraction.recognitionDecisionSupersessionId !== null) {
+        const supersession = query
+          .select()
+          .from(recognitionDecisionSupersessions)
+          .where(
+            eq(
+              recognitionDecisionSupersessions.id,
+              retraction.recognitionDecisionSupersessionId,
+            ),
+          )
+          .get();
+        const predecessor =
+          supersession === undefined
+            ? undefined
+            : query
+                .select({ proposalId: recognitionDecisions.proposalId })
+                .from(recognitionDecisions)
+                .where(
+                  eq(
+                    recognitionDecisions.id,
+                    supersession.predecessorDecisionId,
+                  ),
+                )
+                .get();
+        const successor =
+          supersession === undefined
+            ? undefined
+            : query
+                .select({ proposalId: recognitionDecisions.proposalId })
+                .from(recognitionDecisions)
+                .where(
+                  eq(recognitionDecisions.id, supersession.successorDecisionId),
+                )
+                .get();
+        if (
+          supersession !== undefined &&
+          predecessor !== undefined &&
+          successor !== undefined
+        )
+          retractionAuthority.set(retraction.associationId, {
+            kind: "recognition-decision-supersession",
+            supersessionId: supersession.id,
+            predecessorDecisionId: supersession.predecessorDecisionId,
+            predecessorProposalId: predecessor.proposalId,
+            successorDecisionId: supersession.successorDecisionId,
+            successorProposalId: successor.proposalId,
+          });
+      } else if (retraction.sourceAssociationDecisionId !== null) {
+        retractionAuthority.set(retraction.associationId, {
+          kind: "source-association-decision",
+          decisionId: retraction.sourceAssociationDecisionId,
+        });
+      } else if (retraction.recognitionDecisionRetractionId !== null) {
+        retractionAuthority.set(retraction.associationId, {
+          kind: "recognition-decision-retraction",
+          retractionId: retraction.recognitionDecisionRetractionId,
+        });
+      }
+    }
+    return {
+      recognitionState: head.decisionId === null ? "unresolved" : "recognized",
+      ...(head.decisionId === null
+        ? {}
+        : { recognitionDecisionId: head.decisionId }),
+      current: all.filter(({ id: associationId }) =>
+        currentIds.has(associationId),
+      ),
+      historical: all.flatMap((association) => {
+        const status = superseded.has(association.id)
+          ? ("superseded" as const)
+          : retracted.has(association.id)
+            ? ("retracted" as const)
+            : retired.has(association.id)
+              ? ("legacy-retired" as const)
+              : undefined;
+        const authorizedBy = retractionAuthority.get(association.id);
+        return status === undefined
+          ? []
+          : [
+              {
+                association,
+                status,
+                ...(authorizedBy === undefined ? {} : { authorizedBy }),
+              },
+            ];
+      }),
+    };
   }
 
   /**
@@ -3484,7 +4558,6 @@ export class SqliteCatalogue
         subjectId: sourceAssociations.subjectId,
         sourceIdentity: sourceAssociations.sourceIdentity,
         nativeAddress: sourceAssociations.nativeAddress,
-        proposalId: sourceAssociations.proposalId,
         recognitionDecisionId: recognitionHeads.recognitionDecisionId,
       })
       .from(recognitionHeads)
@@ -3508,6 +4581,7 @@ export class SqliteCatalogue
       .orderBy(asc(sql<number>`${sourceAssociations}.rowid`))
       .get();
     if (identity === undefined) return undefined;
+    if (identity.recognitionDecisionId === null) return undefined;
 
     const rows = query
       .select({
@@ -3621,7 +4695,6 @@ export class SqliteCatalogue
         subjectId: identity.subjectId,
         sourceIdentity: identity.sourceIdentity,
         nativeAddress: identity.nativeAddress,
-        proposalId: identity.proposalId,
       },
       recognitionIdentity: {
         recognitionDecisionId: identity.recognitionDecisionId,
@@ -3669,10 +4742,7 @@ export class SqliteCatalogue
             input.execution.id,
             input.resumeClaim,
           );
-          const association = this.assertManagedSourceArtifactCommitInputs(
-            transaction,
-            input,
-          );
+          this.assertManagedSourceArtifactCommitInputs(transaction, input);
           this.insertOrVerifyArtifactFactsWithDrizzle(transaction, {
             artifacts: input.managedArtifacts.artifacts,
             locations: input.managedArtifacts.locations,
@@ -3696,7 +4766,7 @@ export class SqliteCatalogue
             subjectId: input.expectedIdentity.subjectId,
             sourceAssociationId: input.expectedIdentity.sourceAssociationId,
             sourceRecordIds: input.sourceRecordIds,
-            proposalId: association.proposalId,
+            proposalId: input.expectedIdentity.sourceAssociationId,
             transitionId: input.execution.id,
             submittedAssociations,
           });
@@ -3728,7 +4798,6 @@ export class SqliteCatalogue
   ): {
     readonly sourceIdentity: string;
     readonly nativeAddress: string;
-    readonly proposalId: string;
   } {
     if (input.execution.id !== input.expectedExecution.id) {
       throw new Error(
@@ -3769,6 +4838,7 @@ export class SqliteCatalogue
       )
       .get();
     if (
+      identity?.recognitionDecisionId === null ||
       identity?.recognitionDecisionId !==
         input.expectedIdentity.recognitionDecisionId ||
       identity.associationId !== input.expectedIdentity.sourceAssociationId
@@ -3781,7 +4851,6 @@ export class SqliteCatalogue
       .select({
         sourceIdentity: sourceAssociations.sourceIdentity,
         nativeAddress: sourceAssociations.nativeAddress,
-        proposalId: sourceAssociations.proposalId,
       })
       .from(sourceAssociations)
       .where(
@@ -4494,6 +5563,8 @@ export class SqliteCatalogue
     };
     readonly assetId: string;
     readonly sourceAssociation: import("@digital/domain").SourceAssociation;
+    readonly proposal: SourceAssociationChangeProposal;
+    readonly decision: SourceAssociationDecision;
     readonly sourceRecords: readonly SourceRecord[];
     readonly interpretation: import("@digital/domain").SourceInterpretationBatch;
     readonly managedArtifacts?: {
@@ -4505,6 +5576,9 @@ export class SqliteCatalogue
     };
     readonly resumeClaim?: { readonly token: string; readonly now: string };
   }): Promise<void> {
+    if (input.proposal.kind !== "establish")
+      throw new Error("Source Enrichment requires an establishment proposal");
+    const proposal = input.proposal;
     const database = await this.ensure();
     const query = drizzle({ client: database });
     try {
@@ -4533,7 +5607,6 @@ export class SqliteCatalogue
               sourceAssociation: {
                 ...input.sourceAssociation,
                 id: association.id,
-                proposalId: association.proposalId,
               },
               sourceRecords: input.sourceRecords,
               interpretation: input.interpretation,
@@ -4552,7 +5625,23 @@ export class SqliteCatalogue
                 subjectId: input.assetId,
                 sourceIdentity: input.sourceAssociation.sourceIdentity,
                 nativeAddress: input.sourceAssociation.nativeAddress,
-                proposalId: association.proposalId,
+              })
+              .run();
+            this.insertSourceAssociationDecisionWithDrizzle(transaction, {
+              proposal: {
+                ...proposal,
+                successor: {
+                  ...proposal.successor,
+                  id: association.id,
+                },
+              },
+              decision: input.decision,
+            });
+            transaction
+              .insert(sourceAssociationEstablishmentSupports)
+              .values({
+                associationId: association.id,
+                sourceAssociationDecisionId: input.decision.id,
               })
               .run();
           }
@@ -4592,7 +5681,7 @@ export class SqliteCatalogue
                 subjectId: input.assetId,
                 sourceAssociationId: association.id,
                 sourceRecordIds: input.interpretation.sourceRecordIds,
-                proposalId: association.proposalId,
+                proposalId: input.proposal.id,
                 transitionId: input.execution.id,
                 submittedAssociations,
               },
@@ -4613,6 +5702,42 @@ export class SqliteCatalogue
     }
   }
 
+  private insertSourceAssociationDecisionWithDrizzle(
+    transaction: DrizzleWriteTransaction,
+    input: {
+      readonly proposal: SourceAssociationChangeProposal;
+      readonly decision: SourceAssociationDecision;
+      readonly predecessor?: SourceAssociation;
+    },
+  ): void {
+    validateSourceAssociationChange(input);
+    const { proposal, decision } = input;
+    transaction
+      .insert(sourceAssociationChangeProposals)
+      .values({
+        id: proposal.id,
+        subjectId: proposal.subjectId,
+        kind: proposal.kind,
+        payloadJson: JSON.stringify(proposal),
+        proposedByJson: JSON.stringify(proposal.proposedBy),
+        evidenceJson: JSON.stringify(proposal.evidence),
+      })
+      .run();
+    transaction
+      .insert(sourceAssociationDecisions)
+      .values({
+        id: decision.id,
+        proposalId: decision.proposalId,
+        subjectId: decision.subjectId,
+        decidedByKind: decision.decidedBy.kind,
+        decidedByCoordinate:
+          decision.decidedBy.kind === "user"
+            ? decision.decidedBy.actorId
+            : decision.decidedBy.policyCoordinate,
+      })
+      .run();
+  }
+
   /**
    * 在丰富操作能够创建可选来源关联之前拒绝无效请求。应用层已经要求存在已接受的关联解释；
    * 此持久化边界会在第一条 DML 语句之前，重新检查冻结的识别头、保留证据和精确来源坐标。
@@ -4622,7 +5747,6 @@ export class SqliteCatalogue
     input: Parameters<SqliteCatalogue["applySourceEnrichment"]>[0],
   ): {
     readonly id: string;
-    readonly proposalId: string;
     readonly shouldInsert: boolean;
     readonly metadataRefreshPreflight: MetadataRefreshPreflight;
   } {
@@ -4651,6 +5775,10 @@ export class SqliteCatalogue
       );
     }
     validateSourceInterpretationBatch(input.interpretation);
+    validateSourceAssociationChange({
+      proposal: input.proposal,
+      decision: input.decision,
+    });
     if (
       input.sourceAssociation.subjectId !== input.assetId ||
       input.interpretation.sourceIdentity !==
@@ -4762,7 +5890,6 @@ export class SqliteCatalogue
     const existing = query
       .select({
         id: sourceAssociations.id,
-        proposalId: sourceAssociations.proposalId,
       })
       .from(sourceAssociations)
       .where(
@@ -4784,7 +5911,6 @@ export class SqliteCatalogue
         subjectId: sourceAssociations.subjectId,
         sourceIdentity: sourceAssociations.sourceIdentity,
         nativeAddress: sourceAssociations.nativeAddress,
-        proposalId: sourceAssociations.proposalId,
       })
       .from(sourceAssociations)
       .where(eq(sourceAssociations.id, input.sourceAssociation.id))
@@ -4827,14 +5953,12 @@ export class SqliteCatalogue
     if (existing !== undefined) {
       return {
         id: existing.id,
-        proposalId: existing.proposalId,
         shouldInsert: false,
         metadataRefreshPreflight,
       };
     }
     return {
       id: input.sourceAssociation.id,
-      proposalId: input.sourceAssociation.proposalId,
       shouldInsert: true,
       metadataRefreshPreflight,
     };
@@ -4950,7 +6074,6 @@ export class SqliteCatalogue
           associationSubjectId: sourceAssociations.subjectId,
           sourceIdentity: sourceAssociations.sourceIdentity,
           nativeAddress: sourceAssociations.nativeAddress,
-          proposalId: sourceAssociations.proposalId,
         })
         .from(currentSourceAssociations)
         .innerJoin(
@@ -4980,9 +6103,7 @@ export class SqliteCatalogue
         associationCurrent.sourceIdentity !==
           input.submission.sourceAssociation.sourceIdentity ||
         associationCurrent.nativeAddress !==
-          input.submission.sourceAssociation.nativeAddress ||
-        associationCurrent.proposalId !==
-          input.submission.sourceAssociation.proposalId
+          input.submission.sourceAssociation.nativeAddress
       ) {
         throw new Error(
           "Metadata refresh Source Association conflicts with durable current association",
@@ -5192,15 +6313,56 @@ export class SqliteCatalogue
     });
   }
 
+  private finishChangeImpactExecutionWithDrizzle(
+    transaction: DrizzleWriteTransaction,
+    execution: WorkflowExecution,
+    state: "applied" | "rejected" | "stale",
+  ): void {
+    const terminalExecution: WorkflowExecution = {
+      ...execution,
+      status: state === "stale" ? "failed" : "completed",
+      stage: state === "stale" ? "failed" : "completed",
+      outcome:
+        state === "applied"
+          ? "accepted"
+          : state === "rejected"
+            ? "cancelled"
+            : "failed",
+      ...(state === "stale"
+        ? { reason: "变更影响预演的当前基线已经变化" }
+        : {}),
+      ...(execution.sourceAssociationDecision === undefined
+        ? {}
+        : {
+            sourceAssociationDecision: {
+              ...execution.sourceAssociationDecision,
+              state,
+            },
+          }),
+    };
+    const baseline = this.workflowExecutionPersistence.runningExecutionBaseline(
+      transaction,
+      execution,
+      terminalExecution,
+    );
+    this.workflowExecutionPersistence.replaceExecutionWithDrizzle(
+      transaction,
+      terminalExecution,
+      { auditJson: baseline.auditJson },
+    );
+  }
+
   async saveChangeImpactPreview(preview: ChangeImpactPreview): Promise<void> {
     const database = await this.ensure();
-    drizzle({ client: database })
+    const query = drizzle({ client: database });
+    const guarded = this.withOtherLegacyArtifactDeltaBlocked(query, preview);
+    query
       .insert(changeImpactPreviews)
       .values({
         id: preview.id,
         executionId: preview.executionId,
         assetId: preview.assetId,
-        previewJson: JSON.stringify(preview),
+        previewJson: JSON.stringify(guarded),
       })
       .run();
   }
@@ -5259,9 +6421,10 @@ export class SqliteCatalogue
     return this.currentChangeImpactBaselineWithDrizzle(query, input.assetId);
   }
 
-  async rejectChangeImpactPreview(
-    previewId: string,
-  ): Promise<"rejected" | "stale"> {
+  async rejectChangeImpactPreview(input: {
+    readonly previewId: string;
+    readonly rejectedBy: string;
+  }): Promise<"rejected" | "stale"> {
     const database = await this.ensure();
     let result: "rejected" | "stale" = "stale";
     drizzle({ client: database }).transaction(
@@ -5269,17 +6432,45 @@ export class SqliteCatalogue
         const stored = transaction
           .select({ previewJson: changeImpactPreviews.previewJson })
           .from(changeImpactPreviews)
-          .where(eq(changeImpactPreviews.id, previewId))
+          .where(eq(changeImpactPreviews.id, input.previewId))
           .get();
         if (stored === undefined) return;
         const preview = JSON.parse(stored.previewJson) as ChangeImpactPreview;
         if (preview.status !== "awaiting-confirmation") return;
+        const execution =
+          this.workflowExecutionPersistence.readExecutionWithDrizzle(
+            transaction,
+            preview.executionId,
+          );
+        if (
+          execution?.status !== "running" &&
+          execution?.sourceAssociationDecision !== undefined
+        ) {
+          transaction
+            .update(changeImpactPreviews)
+            .set({
+              previewJson: JSON.stringify({ ...preview, status: "stale" }),
+            })
+            .where(eq(changeImpactPreviews.id, input.previewId))
+            .run();
+          return;
+        }
+        if (execution?.status === "running")
+          this.finishChangeImpactExecutionWithDrizzle(
+            transaction,
+            execution,
+            "rejected",
+          );
         transaction
           .update(changeImpactPreviews)
           .set({
-            previewJson: JSON.stringify({ ...preview, status: "rejected" }),
+            previewJson: JSON.stringify({
+              ...preview,
+              status: "rejected",
+              rejectedBy: input.rejectedBy,
+            }),
           })
-          .where(eq(changeImpactPreviews.id, previewId))
+          .where(eq(changeImpactPreviews.id, input.previewId))
           .run();
         result = "rejected";
       },
@@ -5308,6 +6499,19 @@ export class SqliteCatalogue
           stored.previewJson,
         ) as ChangeImpactPreview;
         if (currentPreview.status !== "awaiting-confirmation") return;
+        if (
+          currentPreview.version !== "change-impact-preview/2" ||
+          currentPreview.change.kind !== "recognition-supersession"
+        )
+          return;
+        const waitingExecution =
+          this.workflowExecutionPersistence.readExecutionWithDrizzle(
+            transaction,
+            currentPreview.executionId,
+          );
+        if (currentPreview.blockingConditions.length > 0)
+          throw new Error("Change Impact Preview has blocking conditions");
+        const replacementProposal = currentPreview.change.proposal;
         const currentHead = transaction
           .select({
             associationId: recognitionHeads.recognitionSourceAssociationId,
@@ -5338,7 +6542,8 @@ export class SqliteCatalogue
           (baseline) => baseline.key === "complete-current-projection",
         )?.value;
         const currentDecision =
-          currentHead === undefined
+          currentHead === undefined ||
+          currentHead.recognitionDecisionId === null
             ? undefined
             : transaction
                 .select({
@@ -5379,9 +6584,8 @@ export class SqliteCatalogue
           throw new Error(
             "Change Impact Preview predecessor basis is inconsistent with its recognition head",
           );
-        const projectedInterpretation = recognitionSourceInterpretation(
-          currentPreview.proposal,
-        );
+        const projectedInterpretation =
+          recognitionSourceInterpretation(replacementProposal);
         const projectedSourceAssociation =
           currentPreview.projected.recognitionSourceAssociation;
         const currentSourceRecords =
@@ -5394,8 +6598,6 @@ export class SqliteCatalogue
             : projectedSourceAssociation !== undefined &&
               plan.recognitionSourceAssociation?.subjectId ===
                 currentPreview.assetId &&
-              plan.recognitionSourceAssociation.proposalId ===
-                currentPreview.proposal.id &&
               plan.recognitionSourceAssociation.sourceIdentity ===
                 projectedInterpretation.sourceIdentity &&
               plan.recognitionSourceAssociation.nativeAddress ===
@@ -5405,10 +6607,10 @@ export class SqliteCatalogue
               projectedSourceAssociation.nativeAddress ===
                 projectedInterpretation.sourceAddress;
         if (
-          plan.successorDecision.proposalId !== currentPreview.proposal.id ||
+          plan.successorDecision.proposalId !== replacementProposal.id ||
           plan.successorDecision.assetId !== currentPreview.assetId ||
           JSON.stringify(plan.successorDecision.acceptedRuleResults) !==
-            JSON.stringify(currentPreview.proposal.ruleResults) ||
+            JSON.stringify(replacementProposal.ruleResults) ||
           plan.supersession.predecessorDecisionId !== expectedDecision ||
           plan.supersession.successorDecisionId !== plan.successorDecision.id ||
           !projectedCoordinatesMatch
@@ -5426,6 +6628,12 @@ export class SqliteCatalogue
             currentPreview.assetId,
           ) !== expectedCompleteProjection
         ) {
+          if (waitingExecution?.status === "running")
+            this.finishChangeImpactExecutionWithDrizzle(
+              transaction,
+              waitingExecution,
+              "stale",
+            );
           transaction
             .update(changeImpactPreviews)
             .set({
@@ -5479,7 +6687,6 @@ export class SqliteCatalogue
             .insert(sourceAssociations)
             .values({
               ...plan.recognitionSourceAssociation,
-              isCurrent: 1,
             })
             .run();
         transaction
@@ -5499,6 +6706,14 @@ export class SqliteCatalogue
             ...plan.supersession,
           })
           .run();
+        if (associationId !== undefined)
+          transaction
+            .insert(sourceAssociationEstablishmentSupports)
+            .values({
+              associationId,
+              recognitionDecisionId: decisionId,
+            })
+            .run();
         const advanced = transaction
           .update(recognitionHeads)
           .set({
@@ -5534,14 +6749,114 @@ export class SqliteCatalogue
             .run();
           return;
         }
-        // 识别更正会使所有独立丰富的关联失效，直到常规丰富路径依据新身份重新验证它们。
-        // 不可变来源记录和事实仍保留为历史。
-        transaction
-          .delete(currentSourceAssociations)
-          .where(
-            eq(currentSourceAssociations.subjectId, currentPreview.assetId),
-          )
-          .run();
+        // 识别只拥有前序决定建立的关联；独立补充或更正的关联仍保持当前。
+        if (currentAssociationId !== undefined && associationId !== undefined) {
+          transaction
+            .insert(sourceAssociationSupersessions)
+            .values({
+              id: `source-association-supersession:${plan.supersession.id}`,
+              predecessorAssociationId: currentAssociationId,
+              successorAssociationId: associationId,
+              recognitionDecisionId: decisionId,
+            })
+            .run();
+          transaction
+            .delete(currentSourceAssociations)
+            .where(
+              and(
+                eq(currentSourceAssociations.subjectId, currentPreview.assetId),
+                eq(
+                  currentSourceAssociations.associationId,
+                  currentAssociationId,
+                ),
+              ),
+            )
+            .run();
+        }
+        if (currentAssociationId !== undefined && associationId === undefined) {
+          const establishment = transaction
+            .select()
+            .from(sourceAssociationEstablishmentSupports)
+            .where(
+              eq(
+                sourceAssociationEstablishmentSupports.associationId,
+                currentAssociationId,
+              ),
+            )
+            .get();
+          if (establishment === undefined)
+            throw new Error(
+              "Recognition source Association lacks establishment support",
+            );
+          const association: SourceAssociation = {
+            id: currentAssociationId,
+            subjectId: currentPreview.assetId,
+            sourceIdentity: currentHead.sourceIdentity!,
+            nativeAddress: currentHead.nativeAddress!,
+          };
+          const establishmentSupport: SourceAssociationEstablishmentSupport = {
+            associationId: currentAssociationId,
+            establishedBy:
+              establishment.recognitionDecisionId === null
+                ? {
+                    kind: "source-association-decision",
+                    decisionId: establishment.sourceAssociationDecisionId!,
+                  }
+                : {
+                    kind: "recognition-decision",
+                    decisionId: establishment.recognitionDecisionId,
+                  },
+          };
+          const retraction: SourceAssociationRetraction = {
+            id: `source-association-retraction:${plan.supersession.id}`,
+            associationId: currentAssociationId,
+            authorizedBy: {
+              kind: "recognition-decision-supersession",
+              supersessionId: plan.supersession.id,
+            },
+          };
+          validateRecognitionSupersessionSourceRetraction({
+            retraction,
+            association,
+            establishmentSupport,
+            supersession: plan.supersession,
+            predecessorDecision: {
+              id: currentHead.recognitionDecisionId,
+              proposalId: currentDecision!.proposalId,
+              assetId: currentPreview.assetId,
+              acceptedRuleResults: JSON.parse(
+                currentDecision!.acceptedRuleResultsJson,
+              ) as RecognitionDecision["acceptedRuleResults"],
+            },
+            successorDecision: plan.successorDecision,
+            successorProposal: replacementProposal,
+          });
+          transaction
+            .insert(sourceAssociationRetractions)
+            .values({
+              id: retraction.id,
+              associationId: currentAssociationId,
+              recognitionDecisionSupersessionId: plan.supersession.id,
+            })
+            .run();
+          transaction
+            .delete(currentSourceAssociations)
+            .where(
+              and(
+                eq(currentSourceAssociations.subjectId, currentPreview.assetId),
+                eq(
+                  currentSourceAssociations.associationId,
+                  currentAssociationId,
+                ),
+              ),
+            )
+            .run();
+          this.retractArtifactsLosingLastSupportWithDrizzle(
+            transaction,
+            currentAssociationId,
+            replacementProposal.id,
+          );
+        }
         if (associationId !== undefined)
           transaction
             .insert(currentSourceAssociations)
@@ -5597,7 +6912,7 @@ export class SqliteCatalogue
             artifactAssociations: currentPreview.current.artifactAssociations,
           };
           const nextAccepted: AcceptedRecognition = {
-            proposal: currentPreview.proposal,
+            proposal: replacementProposal,
             entity: { id: currentPreview.assetId, kind: "digital-asset" },
             sourceAssociations: [],
             recognitionDecision: plan.successorDecision,
@@ -5621,6 +6936,12 @@ export class SqliteCatalogue
           this.invalidateStaleChangeImpactPreviewsWithDrizzle(transaction, [
             currentPreview.assetId,
           ]);
+          if (waitingExecution?.status === "running")
+            this.finishChangeImpactExecutionWithDrizzle(
+              transaction,
+              waitingExecution,
+              "applied",
+            );
           transaction
             .update(changeImpactPreviews)
             .set({
@@ -5642,21 +6963,6 @@ export class SqliteCatalogue
           throw new Error(
             "Source recognition replacement requires exact source coordinates",
           );
-        if (currentInterpretation !== undefined) {
-          if (
-            currentHead.sourceIdentity === null ||
-            currentHead.nativeAddress === null
-          )
-            throw new Error(
-              "Source recognition predecessor requires exact source coordinates",
-            );
-          this.retractIdentityFactsWithDrizzle(transaction, {
-            assetId: currentPreview.assetId,
-            sourceIdentity: currentHead.sourceIdentity,
-            nativeAddress: currentHead.nativeAddress,
-            sourceRecordId: replacementSourceRecordId,
-          });
-        }
         const submission: MetadataRefreshSubmission = {
           assetId: currentPreview.assetId,
           sourceAssociation,
@@ -5699,19 +7005,25 @@ export class SqliteCatalogue
           );
         }
         this.insertRefreshMetadataWithDrizzle(transaction, submission);
-        this.insertProjectedRelationshipsAndMentionsWithDrizzle(
-          transaction,
-          currentPreview,
-        );
+        this.insertProjectedRelationshipsAndMentionsWithDrizzle(transaction, {
+          ...currentPreview,
+          proposal: replacementProposal,
+        });
         this.applyProjectedArtifactsWithDrizzle(
           transaction,
-          currentPreview,
+          { ...currentPreview, proposal: replacementProposal },
           currentHead.recognitionDecisionId,
           decisionId,
         );
         this.invalidateStaleChangeImpactPreviewsWithDrizzle(transaction, [
           currentPreview.assetId,
         ]);
+        if (waitingExecution?.status === "running")
+          this.finishChangeImpactExecutionWithDrizzle(
+            transaction,
+            waitingExecution,
+            "applied",
+          );
         transaction
           .update(changeImpactPreviews)
           .set({
@@ -5721,6 +7033,532 @@ export class SqliteCatalogue
             }),
           })
           .where(eq(changeImpactPreviews.id, currentPreview.id))
+          .run();
+        result = "applied";
+      },
+      { behavior: "immediate" },
+    );
+    return result;
+  }
+
+  async applySourceAssociationChangePreview(input: {
+    readonly preview: ChangeImpactPreview;
+    readonly decision: SourceAssociationDecision;
+    readonly confirmedBy: string;
+  }): Promise<"applied" | "stale"> {
+    const database = await this.ensure();
+    let result: "applied" | "stale" = "stale";
+    drizzle({ client: database }).transaction(
+      (transaction) => {
+        const row = transaction
+          .select({ previewJson: changeImpactPreviews.previewJson })
+          .from(changeImpactPreviews)
+          .where(eq(changeImpactPreviews.id, input.preview.id))
+          .get();
+        if (row === undefined) return;
+        const preview = JSON.parse(row.previewJson) as ChangeImpactPreview;
+        if (preview.status !== "awaiting-confirmation") return;
+        if (
+          preview.version !== "change-impact-preview/2" ||
+          preview.change?.kind !== "source-association" ||
+          preview.blockingConditions.length > 0
+        )
+          throw new Error("Source Association preview is not applicable");
+        const proposal = preview.change.proposal;
+        const execution =
+          this.workflowExecutionPersistence.readExecutionWithDrizzle(
+            transaction,
+            preview.executionId,
+          );
+        if (
+          execution?.status !== "running" &&
+          execution?.sourceAssociationDecision !== undefined
+        ) {
+          transaction
+            .update(changeImpactPreviews)
+            .set({
+              previewJson: JSON.stringify({ ...preview, status: "stale" }),
+            })
+            .where(eq(changeImpactPreviews.id, preview.id))
+            .run();
+          return;
+        }
+        const predecessor =
+          proposal.kind === "establish"
+            ? undefined
+            : transaction
+                .select()
+                .from(sourceAssociations)
+                .where(
+                  eq(sourceAssociations.id, proposal.predecessorAssociationId),
+                )
+                .get();
+        if (proposal.kind !== "establish") {
+          const isCurrent = transaction
+            .select({ associationId: currentSourceAssociations.associationId })
+            .from(currentSourceAssociations)
+            .where(
+              and(
+                eq(currentSourceAssociations.subjectId, proposal.subjectId),
+                eq(
+                  currentSourceAssociations.associationId,
+                  proposal.predecessorAssociationId,
+                ),
+              ),
+            )
+            .get();
+          const alreadySuperseded = transaction
+            .select({ id: sourceAssociationSupersessions.id })
+            .from(sourceAssociationSupersessions)
+            .where(
+              eq(
+                sourceAssociationSupersessions.predecessorAssociationId,
+                proposal.predecessorAssociationId,
+              ),
+            )
+            .get();
+          const alreadyRetracted = transaction
+            .select({ id: sourceAssociationRetractions.id })
+            .from(sourceAssociationRetractions)
+            .where(
+              eq(
+                sourceAssociationRetractions.associationId,
+                proposal.predecessorAssociationId,
+              ),
+            )
+            .get();
+          if (
+            predecessor === undefined ||
+            predecessor.subjectId !== proposal.subjectId ||
+            isCurrent === undefined ||
+            alreadySuperseded !== undefined ||
+            alreadyRetracted !== undefined
+          ) {
+            if (execution?.status === "running")
+              this.finishChangeImpactExecutionWithDrizzle(
+                transaction,
+                execution,
+                "stale",
+              );
+            transaction
+              .update(changeImpactPreviews)
+              .set({
+                previewJson: JSON.stringify({ ...preview, status: "stale" }),
+              })
+              .where(eq(changeImpactPreviews.id, preview.id))
+              .run();
+            return;
+          }
+        }
+        validateSourceAssociationChange({
+          proposal,
+          decision: input.decision,
+          ...(predecessor === undefined ? {} : { predecessor }),
+        });
+        const selectedCandidate =
+          proposal.kind === "retract"
+            ? undefined
+            : execution?.sourceAssociationDecision?.candidates.find(
+                (candidate) =>
+                  candidate.sourceIdentity ===
+                    proposal.successor.sourceIdentity &&
+                  candidate.nativeAddress ===
+                    proposal.successor.nativeAddress &&
+                  JSON.stringify(candidate.sourceRecordIds.toSorted()) ===
+                    JSON.stringify(proposal.sourceRecordIds.toSorted()),
+              );
+        if (
+          proposal.kind !== "retract" &&
+          (selectedCandidate === undefined ||
+            selectedCandidate.interpretation.sourceIdentity !==
+              proposal.successor.sourceIdentity ||
+            selectedCandidate.interpretation.sourceAddress !==
+              proposal.successor.nativeAddress)
+        )
+          throw new Error("Source Association preview lost its interpretation");
+        const expectedProjection = preview.baselines.find(
+          ({ key }) => key === "complete-current-projection",
+        )?.value;
+        if (
+          expectedProjection === undefined ||
+          this.currentChangeImpactBaselineWithDrizzle(
+            transaction,
+            preview.assetId,
+          ) !== expectedProjection
+        ) {
+          if (execution?.status === "running")
+            this.finishChangeImpactExecutionWithDrizzle(
+              transaction,
+              execution,
+              "stale",
+            );
+          transaction
+            .update(changeImpactPreviews)
+            .set({
+              previewJson: JSON.stringify({ ...preview, status: "stale" }),
+            })
+            .where(eq(changeImpactPreviews.id, preview.id))
+            .run();
+          return;
+        }
+        const successor =
+          proposal.kind === "retract" ? undefined : proposal.successor;
+        if (successor !== undefined) {
+          const collision = transaction
+            .select({
+              subjectId: currentSourceAssociations.subjectId,
+              associationId: sourceAssociations.id,
+            })
+            .from(currentSourceAssociations)
+            .innerJoin(
+              sourceAssociations,
+              eq(
+                sourceAssociations.id,
+                currentSourceAssociations.associationId,
+              ),
+            )
+            .where(
+              and(
+                eq(sourceAssociations.sourceIdentity, successor.sourceIdentity),
+                eq(sourceAssociations.nativeAddress, successor.nativeAddress),
+              ),
+            )
+            .get();
+          if (collision !== undefined) {
+            if (execution?.status === "running")
+              this.finishChangeImpactExecutionWithDrizzle(
+                transaction,
+                execution,
+                "stale",
+              );
+            transaction
+              .update(changeImpactPreviews)
+              .set({
+                previewJson: JSON.stringify({ ...preview, status: "stale" }),
+              })
+              .where(eq(changeImpactPreviews.id, preview.id))
+              .run();
+            return;
+          }
+        }
+        this.insertSourceAssociationDecisionWithDrizzle(transaction, {
+          proposal,
+          decision: input.decision,
+          ...(predecessor === undefined ? {} : { predecessor }),
+        });
+        if (successor !== undefined) {
+          transaction.insert(sourceAssociations).values(successor).run();
+          transaction
+            .insert(sourceAssociationEstablishmentSupports)
+            .values({
+              associationId: successor.id,
+              sourceAssociationDecisionId: input.decision.id,
+            })
+            .run();
+          transaction
+            .insert(currentSourceAssociations)
+            .values({
+              subjectId: proposal.subjectId,
+              associationId: successor.id,
+            })
+            .run();
+          for (const sourceRecordId of selectedCandidate!.sourceRecordIds) {
+            const record = this.sourceRecordWithDrizzle(
+              transaction,
+              sourceRecordId,
+            );
+            transaction
+              .insert(sourceLineageHeads)
+              .values({
+                subjectId: proposal.subjectId,
+                sourceIdentity: record.sourceIdentity,
+                nativeAddress: record.nativeAddress,
+                coverageId: record.coverage.id,
+                sourceRecordId,
+              })
+              .onConflictDoUpdate({
+                target: [
+                  sourceLineageHeads.subjectId,
+                  sourceLineageHeads.sourceIdentity,
+                  sourceLineageHeads.nativeAddress,
+                  sourceLineageHeads.coverageId,
+                ],
+                set: { sourceRecordId },
+              })
+              .run();
+          }
+          const submission: MetadataRefreshSubmission = {
+            assetId: proposal.subjectId,
+            sourceAssociation: successor,
+            sourceRecords: [],
+            expectedLineageHeads: [],
+            interpretation: selectedCandidate!.interpretation,
+          };
+          this.insertRefreshMetadataWithDrizzle(transaction, submission);
+          this.insertRefreshRelationshipsWithDrizzle(transaction, submission);
+          this.insertRefreshMentionsWithDrizzle(transaction, submission);
+        }
+        if (proposal.kind === "replace") {
+          transaction
+            .insert(sourceAssociationSupersessions)
+            .values({
+              id: `source-association-supersession:${input.decision.id}`,
+              predecessorAssociationId: proposal.predecessorAssociationId,
+              successorAssociationId: proposal.successor.id,
+              sourceAssociationDecisionId: input.decision.id,
+            })
+            .run();
+        } else if (proposal.kind === "retract") {
+          transaction
+            .insert(sourceAssociationRetractions)
+            .values({
+              id: `source-association-retraction:${input.decision.id}`,
+              associationId: proposal.predecessorAssociationId,
+              sourceAssociationDecisionId: input.decision.id,
+            })
+            .run();
+        }
+        if (proposal.kind !== "establish") {
+          transaction
+            .delete(currentSourceAssociations)
+            .where(
+              and(
+                eq(currentSourceAssociations.subjectId, proposal.subjectId),
+                eq(
+                  currentSourceAssociations.associationId,
+                  proposal.predecessorAssociationId,
+                ),
+              ),
+            )
+            .run();
+          this.retractArtifactsLosingLastSupportWithDrizzle(
+            transaction,
+            proposal.predecessorAssociationId,
+            proposal.id,
+          );
+        }
+        if (execution?.status === "running")
+          this.finishChangeImpactExecutionWithDrizzle(
+            transaction,
+            execution,
+            "applied",
+          );
+        transaction
+          .update(changeImpactPreviews)
+          .set({
+            previewJson: JSON.stringify({ ...preview, status: "applied" }),
+          })
+          .where(eq(changeImpactPreviews.id, preview.id))
+          .run();
+        result = "applied";
+      },
+      { behavior: "immediate" },
+    );
+    return result;
+  }
+
+  private retractArtifactsLosingLastSupportWithDrizzle(
+    transaction: DrizzleWriteTransaction,
+    sourceAssociationId: string,
+    proposalId: string,
+  ): void {
+    const associations = transaction
+      .select({
+        id: artifactAssociations.id,
+        sourceRecordIdsJson: artifactAssociations.sourceRecordIdsJson,
+      })
+      .from(artifactAssociations)
+      .where(eq(artifactAssociations.sourceAssociationId, sourceAssociationId))
+      .all();
+    for (const association of associations) {
+      const hasRecognitionSupport = transaction
+        .select({
+          id: artifactAssociationRecognitionSupports.recognitionDecisionId,
+        })
+        .from(artifactAssociationRecognitionSupports)
+        .where(
+          eq(
+            artifactAssociationRecognitionSupports.associationId,
+            association.id,
+          ),
+        )
+        .all()
+        .some(
+          ({ id: decisionId }) =>
+            transaction
+              .select({
+                id: recognitionDecisionSupersessions.predecessorDecisionId,
+              })
+              .from(recognitionDecisionSupersessions)
+              .where(
+                eq(
+                  recognitionDecisionSupersessions.predecessorDecisionId,
+                  decisionId,
+                ),
+              )
+              .get() === undefined &&
+            transaction
+              .select({
+                id: recognitionDecisionRetractions.predecessorDecisionId,
+              })
+              .from(recognitionDecisionRetractions)
+              .where(
+                eq(
+                  recognitionDecisionRetractions.predecessorDecisionId,
+                  decisionId,
+                ),
+              )
+              .get() === undefined,
+        );
+      if (hasRecognitionSupport) continue;
+      transaction
+        .insert(artifactAssociationRetractions)
+        .values({
+          id: `artifact-association-retraction:${proposalId}:${association.id}`,
+          associationId: association.id,
+          proposalId,
+          sourceRecordIdsJson: association.sourceRecordIdsJson,
+        })
+        .onConflictDoNothing()
+        .run();
+    }
+  }
+
+  async applyRecognitionRetractionPreview(input: {
+    readonly preview: ChangeImpactPreview;
+    readonly confirmedBy: string;
+  }): Promise<"applied" | "stale"> {
+    const database = await this.ensure();
+    let result: "applied" | "stale" = "stale";
+    drizzle({ client: database }).transaction(
+      (transaction) => {
+        const row = transaction
+          .select({ previewJson: changeImpactPreviews.previewJson })
+          .from(changeImpactPreviews)
+          .where(eq(changeImpactPreviews.id, input.preview.id))
+          .get();
+        if (row === undefined) return;
+        const preview = JSON.parse(row.previewJson) as ChangeImpactPreview;
+        if (preview.status !== "awaiting-confirmation") return;
+        if (
+          preview.version !== "change-impact-preview/2" ||
+          preview.change?.kind !== "recognition-retraction" ||
+          preview.blockingConditions.length > 0
+        )
+          throw new Error("Recognition retraction preview is not applicable");
+        const intent = preview.change.intent;
+        const waitingExecution =
+          this.workflowExecutionPersistence.readExecutionWithDrizzle(
+            transaction,
+            preview.executionId,
+          );
+        const expectedProjection = preview.baselines.find(
+          ({ key }) => key === "complete-current-projection",
+        )?.value;
+        const head = transaction
+          .select()
+          .from(recognitionHeads)
+          .where(eq(recognitionHeads.subjectId, preview.assetId))
+          .get();
+        if (
+          head?.recognitionDecisionId !== intent.predecessorDecisionId ||
+          expectedProjection === undefined ||
+          this.currentChangeImpactBaselineWithDrizzle(
+            transaction,
+            preview.assetId,
+          ) !== expectedProjection
+        ) {
+          if (waitingExecution?.status === "running")
+            this.finishChangeImpactExecutionWithDrizzle(
+              transaction,
+              waitingExecution,
+              "stale",
+            );
+          transaction
+            .update(changeImpactPreviews)
+            .set({
+              previewJson: JSON.stringify({ ...preview, status: "stale" }),
+            })
+            .where(eq(changeImpactPreviews.id, preview.id))
+            .run();
+          return;
+        }
+        const retractionId = `recognition-decision-retraction:${preview.id}`;
+        transaction
+          .insert(recognitionDecisionRetractions)
+          .values({
+            id: retractionId,
+            predecessorDecisionId: intent.predecessorDecisionId,
+            proposedBy: intent.proposedBy,
+            decidedBy: input.confirmedBy,
+            reason: intent.reason,
+          })
+          .run();
+        if (head.recognitionSourceAssociationId !== null) {
+          const established = transaction
+            .select()
+            .from(sourceAssociationEstablishmentSupports)
+            .where(
+              and(
+                eq(
+                  sourceAssociationEstablishmentSupports.associationId,
+                  head.recognitionSourceAssociationId,
+                ),
+                eq(
+                  sourceAssociationEstablishmentSupports.recognitionDecisionId,
+                  intent.predecessorDecisionId,
+                ),
+              ),
+            )
+            .get();
+          if (established !== undefined) {
+            transaction
+              .insert(sourceAssociationRetractions)
+              .values({
+                id: `source-association-retraction:${retractionId}`,
+                associationId: head.recognitionSourceAssociationId,
+                recognitionDecisionRetractionId: retractionId,
+              })
+              .run();
+            transaction
+              .delete(currentSourceAssociations)
+              .where(
+                and(
+                  eq(currentSourceAssociations.subjectId, preview.assetId),
+                  eq(
+                    currentSourceAssociations.associationId,
+                    head.recognitionSourceAssociationId,
+                  ),
+                ),
+              )
+              .run();
+            this.retractArtifactsLosingLastSupportWithDrizzle(
+              transaction,
+              head.recognitionSourceAssociationId,
+              preview.id,
+            );
+          }
+        }
+        transaction
+          .update(recognitionHeads)
+          .set({
+            recognitionDecisionId: null,
+            recognitionSourceAssociationId: null,
+          })
+          .where(eq(recognitionHeads.subjectId, preview.assetId))
+          .run();
+        if (waitingExecution?.status === "running")
+          this.finishChangeImpactExecutionWithDrizzle(
+            transaction,
+            waitingExecution,
+            "applied",
+          );
+        transaction
+          .update(changeImpactPreviews)
+          .set({
+            previewJson: JSON.stringify({ ...preview, status: "applied" }),
+          })
+          .where(eq(changeImpactPreviews.id, preview.id))
           .run();
         result = "applied";
       },
@@ -5903,6 +7741,58 @@ export class SqliteCatalogue
           )
           .run();
         if (replaced.changes !== 1) return;
+
+        const activeSupportLocationIds = new Set(
+          transaction
+            .select({ locationId: currentFileObservationSupports.locationId })
+            .from(currentFileObservationSupports)
+            .innerJoin(
+              observedRootRegistrations,
+              and(
+                eq(
+                  observedRootRegistrations.id,
+                  currentFileObservationSupports.observedRootId,
+                ),
+                eq(
+                  observedRootRegistrations.configVersion,
+                  currentFileObservationSupports.observedRootVersion,
+                ),
+                eq(observedRootRegistrations.status, "active"),
+              ),
+            )
+            .all()
+            .map(({ locationId }) => locationId),
+        );
+        // 最终投影只依据持久化的成功扫描支持撤销当前位置。
+        const unavailableLocationIds = transaction
+          .select({ locationId: currentFileObservationSupports.locationId })
+          .from(currentFileObservationSupports)
+          .where(
+            and(
+              eq(
+                currentFileObservationSupports.observedRootId,
+                input.registration.id,
+              ),
+              eq(
+                currentFileObservationSupports.observedRootVersion,
+                input.expectedVersion,
+              ),
+            ),
+          )
+          .all()
+          .flatMap(({ locationId }) =>
+            activeSupportLocationIds.has(locationId) ? [] : [locationId],
+          );
+        if (unavailableLocationIds.length > 0)
+          transaction
+            .delete(currentFileObservations)
+            .where(
+              inArray(
+                currentFileObservations.locationId,
+                sqliteTextSet(unavailableLocationIds),
+              ),
+            )
+            .run();
 
         const authorityIndex = createObservedRootAuthorityIndex(
           transaction
@@ -6756,6 +8646,8 @@ export class SqliteCatalogue
         .select({
           id: artifactAssociations.id,
           subjectId: artifactAssociations.subjectId,
+          sourceAssociationId: artifactAssociations.sourceAssociationId,
+          sourceRecordIdsJson: artifactAssociations.sourceRecordIdsJson,
         })
         .from(artifactAssociations)
         .where(inArray(artifactAssociations.subjectId, sqliteTextSet(assetIds)))
@@ -6763,7 +8655,9 @@ export class SqliteCatalogue
         .all(),
     ];
     const decisionIds = uniqueStrings(
-      heads.map((head) => head.recognitionDecisionId),
+      heads.flatMap((head) =>
+        head.recognitionDecisionId === null ? [] : [head.recognitionDecisionId],
+      ),
     );
     const metadataIds = metadataRows.map((row) => row.id);
     const relationshipIds = relationshipRows.map((row) => row.id);
@@ -6912,6 +8806,76 @@ export class SqliteCatalogue
     const retractedArtifacts = new Set(
       artifactRetractionsRows.map((row) => row.associationId),
     );
+    const recognitionSupportRows =
+      artifactIds.length === 0
+        ? []
+        : query
+            .select({
+              associationId:
+                artifactAssociationRecognitionSupports.associationId,
+              recognitionDecisionId:
+                artifactAssociationRecognitionSupports.recognitionDecisionId,
+            })
+            .from(artifactAssociationRecognitionSupports)
+            .where(
+              inArray(
+                artifactAssociationRecognitionSupports.associationId,
+                sqliteTextSet(artifactIds),
+              ),
+            )
+            .all();
+    const supportDecisionIds = uniqueStrings(
+      recognitionSupportRows.map(
+        ({ recognitionDecisionId }) => recognitionDecisionId,
+      ),
+    );
+    const endedRecognitionDecisions = new Set([
+      ...(supportDecisionIds.length === 0
+        ? []
+        : query
+            .select({
+              id: recognitionDecisionSupersessions.predecessorDecisionId,
+            })
+            .from(recognitionDecisionSupersessions)
+            .where(
+              inArray(
+                recognitionDecisionSupersessions.predecessorDecisionId,
+                sqliteTextSet(supportDecisionIds),
+              ),
+            )
+            .all()
+            .map(({ id: decisionId }) => decisionId)),
+      ...(supportDecisionIds.length === 0
+        ? []
+        : query
+            .select({
+              id: recognitionDecisionRetractions.predecessorDecisionId,
+            })
+            .from(recognitionDecisionRetractions)
+            .where(
+              inArray(
+                recognitionDecisionRetractions.predecessorDecisionId,
+                sqliteTextSet(supportDecisionIds),
+              ),
+            )
+            .all()
+            .map(({ id: decisionId }) => decisionId)),
+    ]);
+    const currentSourceIdsByAsset = new Map<string, Set<string>>();
+    for (const row of query
+      .select({
+        subjectId: currentSourceAssociations.subjectId,
+        associationId: currentSourceAssociations.associationId,
+      })
+      .from(currentSourceAssociations)
+      .where(
+        inArray(currentSourceAssociations.subjectId, sqliteTextSet(assetIds)),
+      )
+      .all()) {
+      const ids = currentSourceIdsByAsset.get(row.subjectId) ?? new Set();
+      ids.add(row.associationId);
+      currentSourceIdsByAsset.set(row.subjectId, ids);
+    }
     const fingerprintByAsset = new Map(
       assetIds.map((assetId) => [
         assetId,
@@ -6946,7 +8910,29 @@ export class SqliteCatalogue
             row.subjectId === assetId &&
             !supersededArtifacts.has(row.id) &&
             !retractedArtifacts.has(row.id)
-              ? [{ id: row.id }]
+              ? [
+                  {
+                    id: row.id,
+                    recognitionDecisionIds: recognitionSupportRows
+                      .flatMap((support) =>
+                        support.associationId === row.id &&
+                        !endedRecognitionDecisions.has(
+                          support.recognitionDecisionId,
+                        )
+                          ? [support.recognitionDecisionId]
+                          : [],
+                      )
+                      .toSorted(),
+                    ...(row.sourceAssociationId !== null &&
+                    currentSourceIdsByAsset
+                      .get(assetId)
+                      ?.has(row.sourceAssociationId) === true &&
+                    (JSON.parse(row.sourceRecordIdsJson) as readonly string[])
+                      .length > 0
+                      ? { sourceAssociationId: row.sourceAssociationId }
+                      : {}),
+                  },
+                ]
               : [],
           ),
         }),
@@ -6956,7 +8942,7 @@ export class SqliteCatalogue
     for (const { previewId, preview } of previews) {
       const head = headByAsset.get(preview.assetId);
       const decision =
-        head === undefined
+        head === undefined || head.recognitionDecisionId === null
           ? undefined
           : decisionById.get(head.recognitionDecisionId);
       const proposal =
@@ -7122,7 +9108,11 @@ export class SqliteCatalogue
     );
 
     const artifactRows = query
-      .select({ id: artifactAssociations.id })
+      .select({
+        id: artifactAssociations.id,
+        sourceAssociationId: artifactAssociations.sourceAssociationId,
+        sourceRecordIdsJson: artifactAssociations.sourceRecordIdsJson,
+      })
       .from(artifactAssociations)
       .where(eq(artifactAssociations.subjectId, assetId))
       .orderBy(asc(artifactAssociations.id))
@@ -7144,11 +9134,134 @@ export class SqliteCatalogue
         .all()
         .map((row) => row.associationId),
     );
-    const artifacts = artifactRows.filter(
-      (row) =>
-        !supersededArtifacts.has(row.id) && !retractedArtifacts.has(row.id),
+    const endedRecognitionDecisions = new Set([
+      ...query
+        .select({ id: recognitionDecisionSupersessions.predecessorDecisionId })
+        .from(recognitionDecisionSupersessions)
+        .all()
+        .map(({ id: decisionId }) => decisionId),
+      ...query
+        .select({ id: recognitionDecisionRetractions.predecessorDecisionId })
+        .from(recognitionDecisionRetractions)
+        .all()
+        .map(({ id: decisionId }) => decisionId),
+    ]);
+    const currentSourceIds = new Set(
+      query
+        .select({ id: currentSourceAssociations.associationId })
+        .from(currentSourceAssociations)
+        .where(eq(currentSourceAssociations.subjectId, assetId))
+        .all()
+        .map(({ id: associationId }) => associationId),
     );
+    const artifacts = artifactRows
+      .filter(
+        (row) =>
+          !supersededArtifacts.has(row.id) && !retractedArtifacts.has(row.id),
+      )
+      .map((row) => ({
+        id: row.id,
+        recognitionDecisionIds: query
+          .select({
+            id: artifactAssociationRecognitionSupports.recognitionDecisionId,
+          })
+          .from(artifactAssociationRecognitionSupports)
+          .where(
+            eq(artifactAssociationRecognitionSupports.associationId, row.id),
+          )
+          .all()
+          .map(({ id: decisionId }) => decisionId)
+          .filter((decisionId) => !endedRecognitionDecisions.has(decisionId))
+          .toSorted(),
+        ...(row.sourceAssociationId !== null &&
+        currentSourceIds.has(row.sourceAssociationId) &&
+        (JSON.parse(row.sourceRecordIdsJson) as readonly string[]).length > 0
+          ? { sourceAssociationId: row.sourceAssociationId }
+          : {}),
+      }));
     return JSON.stringify({ lineage, metadata, relationships, artifacts });
+  }
+
+  /**
+   * 02B 无法证明支持的存量关联只能原样保留。只有本次叠加投影改变其
+   * 精确 ID/内容/当前性时才阻塞；仅与它同处一个完整投影不构成触及。
+   */
+  private withOtherLegacyArtifactDeltaBlocked(
+    query: DrizzleReadQuery,
+    preview: ChangeImpactPreview,
+  ): ChangeImpactPreview {
+    const projected = new Map(
+      preview.projected.artifactAssociations.map((association) => [
+        association.id,
+        association,
+      ]),
+    );
+    const touchedIds = preview.current.artifactAssociations.flatMap(
+      (association) => {
+        const successor = projected.get(association.id);
+        return successor !== undefined &&
+          successor.subjectId === association.subjectId &&
+          successor.artifactId === association.artifactId &&
+          successor.role === association.role
+          ? []
+          : [association.id];
+      },
+    );
+    if (touchedIds.length === 0) return preview;
+    const currentIds = new Set(
+      query
+        .select({ id: artifactAssociations.id })
+        .from(artifactAssociations)
+        .where(
+          and(
+            eq(artifactAssociations.subjectId, preview.assetId),
+            inArray(artifactAssociations.id, sqliteTextSet(touchedIds)),
+          ),
+        )
+        .all()
+        .map(({ id: associationId }) => associationId),
+    );
+    const recognitionSupported = new Set(
+      query
+        .select({ id: artifactAssociationRecognitionSupports.associationId })
+        .from(artifactAssociationRecognitionSupports)
+        .where(
+          inArray(
+            artifactAssociationRecognitionSupports.associationId,
+            sqliteTextSet(touchedIds),
+          ),
+        )
+        .all()
+        .map(({ id: associationId }) => associationId),
+    );
+    const sourceSupported = new Set(
+      query
+        .select({ id: artifactAssociations.id })
+        .from(artifactAssociations)
+        .where(
+          and(
+            inArray(artifactAssociations.id, sqliteTextSet(touchedIds)),
+            sql`${artifactAssociations.sourceAssociationId} IS NOT NULL`,
+          ),
+        )
+        .all()
+        .map(({ id: associationId }) => associationId),
+    );
+    const touchesOtherLegacy = touchedIds.some(
+      (associationId) =>
+        currentIds.has(associationId) &&
+        !recognitionSupported.has(associationId) &&
+        !sourceSupported.has(associationId),
+    );
+    if (!touchesOtherLegacy) return preview;
+    const condition =
+      "变更会触及无法证明支持的存量产物关联；请先完成独立数据修复";
+    return preview.blockingConditions.includes(condition)
+      ? preview
+      : {
+          ...preview,
+          blockingConditions: [...preview.blockingConditions, condition],
+        };
   }
 
   private insertProposalWithDrizzle(
@@ -7163,11 +9276,22 @@ export class SqliteCatalogue
     );
     const basis = JSON.stringify(proposal.basis);
     const ruleResults = JSON.stringify(proposal.ruleResults);
+    const observedMaterialInterpretation =
+      proposal.observedArtifactAssociations === undefined &&
+      proposal.observedArtifactRevisions === undefined
+        ? null
+        : JSON.stringify({
+            observedArtifactAssociations:
+              proposal.observedArtifactAssociations ?? [],
+            observedArtifactRevisions: proposal.observedArtifactRevisions ?? [],
+          });
     const existing = transaction
       .select({
         executionId: recognitionProposals.executionId,
         basisJson: recognitionProposals.basisJson,
         ruleResultsJson: recognitionProposals.ruleResultsJson,
+        observedMaterialInterpretationJson:
+          recognitionProposals.observedMaterialInterpretationJson,
       })
       .from(recognitionProposals)
       .where(eq(recognitionProposals.id, proposal.id))
@@ -7176,7 +9300,9 @@ export class SqliteCatalogue
       if (
         existing.executionId !== executionId ||
         existing.basisJson !== basis ||
-        existing.ruleResultsJson !== ruleResults
+        existing.ruleResultsJson !== ruleResults ||
+        existing.observedMaterialInterpretationJson !==
+          observedMaterialInterpretation
       ) {
         throw new Error(
           `Recognition Proposal ${proposal.id} conflicts with durable history`,
@@ -7191,6 +9317,7 @@ export class SqliteCatalogue
         executionId,
         basisJson: basis,
         ruleResultsJson: ruleResults,
+        observedMaterialInterpretationJson: observedMaterialInterpretation,
       })
       .run();
   }
@@ -7244,7 +9371,265 @@ export class SqliteCatalogue
           ruleResults: JSON.parse(
             row.ruleResultsJson,
           ) as RecognitionProposal["ruleResults"],
+          ...(row.observedMaterialInterpretationJson === null
+            ? {}
+            : (JSON.parse(row.observedMaterialInterpretationJson) as Pick<
+                RecognitionProposal,
+                "observedArtifactAssociations" | "observedArtifactRevisions"
+              >)),
         };
+  }
+
+  private observedMaterialIdentityBaselineWithDrizzle(
+    query: DrizzleReadQuery,
+    assetId: string,
+  ): string | undefined {
+    const head = query
+      .select({
+        subjectId: recognitionHeads.subjectId,
+        recognitionDecisionId: recognitionHeads.recognitionDecisionId,
+        recognitionSourceAssociationId:
+          recognitionHeads.recognitionSourceAssociationId,
+      })
+      .from(recognitionHeads)
+      .innerJoin(entities, eq(entities.id, recognitionHeads.subjectId))
+      .where(
+        and(
+          eq(recognitionHeads.subjectId, assetId),
+          eq(entities.kind, "digital-asset"),
+        ),
+      )
+      .get();
+    return head === undefined
+      ? undefined
+      : createHash("sha256").update(canonicalJson(head)).digest("hex");
+  }
+
+  private observedMaterialBaselineWithDrizzle(
+    query: DrizzleReadQuery,
+    assetId: string,
+  ): string {
+    const rows = query
+      .select({
+        id: artifactAssociations.id,
+        artifactId: artifactAssociations.artifactId,
+        role: artifactAssociations.role,
+        sourceRecordIdsJson: artifactAssociations.sourceRecordIdsJson,
+        sourceAssociationId: artifactAssociations.sourceAssociationId,
+      })
+      .from(artifactAssociations)
+      .where(eq(artifactAssociations.subjectId, assetId))
+      .orderBy(asc(artifactAssociations.id))
+      .all();
+    const current = rows.filter((row) => {
+      const retracted = query
+        .select({ id: artifactAssociationRetractions.associationId })
+        .from(artifactAssociationRetractions)
+        .where(eq(artifactAssociationRetractions.associationId, row.id))
+        .get();
+      const superseded = query
+        .select({
+          id: artifactAssociationSupersessions.predecessorAssociationId,
+        })
+        .from(artifactAssociationSupersessions)
+        .where(
+          eq(artifactAssociationSupersessions.predecessorAssociationId, row.id),
+        )
+        .get();
+      return retracted === undefined && superseded === undefined;
+    });
+    const materialArtifacts = [
+      ...new Set(current.map((row) => row.artifactId)),
+    ];
+    const materialFacts = materialArtifacts.map((artifactId) => {
+      const materialLocations = query
+        .select({
+          id: locations.id,
+          address: locations.address,
+          kind: locations.kind,
+        })
+        .from(locations)
+        .where(eq(locations.artifactId, artifactId))
+        .orderBy(asc(locations.id))
+        .all();
+      const revisions = query
+        .select({
+          id: artifactRevisions.id,
+          blobDigest: artifactRevisions.blobDigest,
+          producerJson: artifactRevisions.producerJson,
+        })
+        .from(artifactRevisions)
+        .where(eq(artifactRevisions.artifactId, artifactId))
+        .orderBy(asc(artifactRevisions.id))
+        .all();
+      const materialBlobs = revisions.map((revision) => ({
+        revision,
+        blob: query
+          .select()
+          .from(blobs)
+          .where(eq(blobs.digest, revision.blobDigest))
+          .get(),
+      }));
+      return {
+        artifactId,
+        locations: materialLocations,
+        revisions: materialBlobs,
+      };
+    });
+    return createHash("sha256")
+      .update(canonicalJson({ associations: current, facts: materialFacts }))
+      .digest("hex");
+  }
+
+  private observedMaterialSubmissionExistsWithDrizzle(
+    query: DrizzleReadQuery,
+    submission: ObservedMaterialAssociationSubmission,
+  ): boolean {
+    for (const association of submission.artifactAssociations) {
+      const row = query
+        .select()
+        .from(artifactAssociations)
+        .where(eq(artifactAssociations.id, association.id))
+        .get();
+      if (
+        row === undefined ||
+        row.subjectId !== association.subjectId ||
+        row.artifactId !== association.artifactId ||
+        row.role !== association.role
+      )
+        return false;
+      const hasDecisionSupport =
+        this.hasValidObservedMaterialSupportWithDrizzle(query, association);
+      const independentlySourced =
+        JSON.parse(row.sourceRecordIdsJson).length > 0 ||
+        row.sourceAssociationId !== null;
+      if (!hasDecisionSupport && !independentlySourced) return false;
+    }
+    for (const location of submission.locations) {
+      const row = query
+        .select()
+        .from(locations)
+        .where(eq(locations.id, location.id))
+        .get();
+      if (
+        row === undefined ||
+        row.artifactId !== location.artifactId ||
+        row.address !== location.address ||
+        row.kind !== location.kind
+      )
+        return false;
+    }
+    for (const revision of submission.artifactRevisions) {
+      const row = query
+        .select()
+        .from(artifactRevisions)
+        .where(eq(artifactRevisions.id, revision.id))
+        .get();
+      if (
+        row === undefined ||
+        row.artifactId !== revision.artifactId ||
+        row.blobDigest !== revision.blobDigest
+      )
+        return false;
+    }
+    return true;
+  }
+
+  private observedMaterialProjectionAlreadySupportedWithDrizzle(
+    query: DrizzleReadQuery,
+    submission: ObservedMaterialAssociationSubmission,
+  ): boolean {
+    const targetAssetId = submission.recognitionDecision.assetId;
+    for (const proposedLocation of submission.locations) {
+      const submittedRevision = submission.artifactRevisions.find(
+        (revision) => revision.artifactId === proposedLocation.artifactId,
+      );
+      const submittedBlob = submission.blobs.find(
+        (blob) => blob.digest === submittedRevision?.blobDigest,
+      );
+      if (submittedRevision === undefined || submittedBlob === undefined)
+        return false;
+      const matchingLocations = query
+        .select({ artifactId: locations.artifactId })
+        .from(locations)
+        .where(
+          and(
+            eq(locations.address, proposedLocation.address),
+            eq(locations.kind, proposedLocation.kind),
+          ),
+        )
+        .all();
+      const supported = matchingLocations.some(({ artifactId }) => {
+        const association = query
+          .select()
+          .from(artifactAssociations)
+          .where(
+            and(
+              eq(artifactAssociations.subjectId, targetAssetId),
+              eq(artifactAssociations.artifactId, artifactId),
+              eq(artifactAssociations.role, "asset.material-delivered"),
+            ),
+          )
+          .get();
+        if (association === undefined) return false;
+        if (
+          query
+            .select({ id: artifactAssociationRetractions.associationId })
+            .from(artifactAssociationRetractions)
+            .where(
+              eq(artifactAssociationRetractions.associationId, association.id),
+            )
+            .get() !== undefined ||
+          query
+            .select({
+              id: artifactAssociationSupersessions.predecessorAssociationId,
+            })
+            .from(artifactAssociationSupersessions)
+            .where(
+              eq(
+                artifactAssociationSupersessions.predecessorAssociationId,
+                association.id,
+              ),
+            )
+            .get() !== undefined
+        )
+          return false;
+        const support = this.hasValidObservedMaterialSupportWithDrizzle(query, {
+          id: association.id,
+          subjectId: association.subjectId,
+          artifactId: association.artifactId,
+          role: association.role as ArtifactAssociation["role"],
+        });
+        if (
+          !support &&
+          JSON.parse(association.sourceRecordIdsJson).length === 0 &&
+          association.sourceAssociationId === null
+        )
+          return false;
+        const revision = query
+          .select({ blobDigest: artifactRevisions.blobDigest })
+          .from(artifactRevisions)
+          .where(
+            and(
+              eq(artifactRevisions.artifactId, artifactId),
+              eq(artifactRevisions.blobDigest, submittedRevision.blobDigest),
+            ),
+          )
+          .get();
+        if (revision === undefined) return false;
+        const blob = query
+          .select()
+          .from(blobs)
+          .where(eq(blobs.digest, revision.blobDigest))
+          .get();
+        return (
+          blob?.mediaType === submittedBlob.mediaType &&
+          blob.byteLength === submittedBlob.byteLength
+        );
+      });
+      if (!supported) return false;
+    }
+    return submission.locations.length > 0;
   }
 
   private insertAcceptedFactsWithDrizzle(
@@ -7267,7 +9652,6 @@ export class SqliteCatalogue
           subjectId: recognitionSourceAssociation.subjectId,
           sourceIdentity: recognitionSourceAssociation.sourceIdentity,
           nativeAddress: recognitionSourceAssociation.nativeAddress,
-          proposalId: recognitionSourceAssociation.proposalId,
         })
         .run();
     transaction
@@ -7281,6 +9665,14 @@ export class SqliteCatalogue
         ),
       })
       .run();
+    if (recognitionSourceAssociation !== undefined)
+      transaction
+        .insert(sourceAssociationEstablishmentSupports)
+        .values({
+          associationId: recognitionSourceAssociation.id,
+          recognitionDecisionId: accepted.recognitionDecision.id,
+        })
+        .run();
     transaction
       .insert(recognitionHeads)
       .values({
@@ -7350,6 +9742,89 @@ export class SqliteCatalogue
     }
 
     this.insertOrVerifyArtifactFactsWithDrizzle(transaction, accepted);
+    if ((accepted.proposal.observedArtifactAssociations?.length ?? 0) > 0) {
+      const proposalRow = transaction
+        .select({ executionId: recognitionProposals.executionId })
+        .from(recognitionProposals)
+        .where(eq(recognitionProposals.id, accepted.proposal.id))
+        .get();
+      const execution =
+        proposalRow === undefined
+          ? undefined
+          : this.workflowExecutionPersistence.readExecutionWithDrizzle(
+              transaction,
+              proposalRow.executionId,
+            );
+      const declaredRevisions = [
+        ...(accepted.proposal.observedArtifactRevisions ?? []),
+        ...(accepted.proposal.basis.kind === "observed-evidence"
+          ? accepted.proposal.basis.artifactRevisions
+          : []),
+        ...(accepted.proposal.basis.kind === "manual-boundary"
+          ? accepted.proposal.basis.evidence.flatMap((evidence) =>
+              evidence.inspection === undefined
+                ? []
+                : [
+                    {
+                      observedArtifactReference:
+                        evidence.inspection.observedArtifactReference,
+                      blob: evidence.inspection.revision,
+                    },
+                  ],
+            )
+          : []),
+      ];
+      for (const association of accepted.artifactAssociations) {
+        if (
+          (association.sourceRecordIds?.length ?? 0) > 0 ||
+          association.sourceAssociationId !== undefined ||
+          association.role !== "asset.material-delivered"
+        )
+          continue;
+        const projections = (
+          accepted.proposal.observedArtifactAssociations ?? []
+        ).flatMap((candidate) => {
+          if (candidate.role !== association.role) return [];
+          const digests = [
+            ...new Set(
+              declaredRevisions
+                .filter(
+                  (revision) =>
+                    revision.observedArtifactReference ===
+                    candidate.observedArtifactReference,
+                )
+                .map((revision) => revision.blob.digest),
+            ),
+          ];
+          if (digests.length !== 1 || execution?.snapshot === undefined)
+            return [];
+          const location = accepted.locations.find(
+            (item) =>
+              item.artifactId === association.artifactId &&
+              item.kind === "observed" &&
+              item.address ===
+                `${execution.snapshot!.root}/${candidate.observedArtifactReference}`,
+          );
+          const revision = accepted.artifactRevisions.find(
+            (item) =>
+              item.artifactId === association.artifactId &&
+              item.blobDigest === digests[0],
+          );
+          return location === undefined || revision === undefined
+            ? []
+            : [{ location, revision }];
+        });
+        if (projections.length === 0) continue;
+        transaction
+          .insert(artifactAssociationRecognitionSupports)
+          .values({
+            associationId: association.id,
+            recognitionDecisionId: accepted.recognitionDecision.id,
+          })
+          .onConflictDoNothing()
+          .run();
+      }
+    }
     this.attachAcceptedSourceArtifactAssociationProvenanceWithDrizzle(
       transaction,
       accepted,
@@ -7633,6 +10108,10 @@ export class SqliteCatalogue
     const removed = current.artifactAssociations.filter(
       (association) =>
         !retainedIds.has(association.id) &&
+        !this.hasValidObservedMaterialSupportWithDrizzle(
+          transaction,
+          association,
+        ) &&
         (ownedBy(association, currentSourceRecordIds) ||
           association.observedArtifactPart !== undefined ||
           (current.proposal.basis.kind === "manual-boundary" &&
@@ -7740,6 +10219,95 @@ export class SqliteCatalogue
           .run();
       }
     }
+  }
+
+  private hasValidObservedMaterialSupportWithDrizzle(
+    query: DrizzleReadQuery,
+    association: ArtifactAssociation,
+  ): boolean {
+    const result =
+      query
+        .select({ id: artifactAssociationRecognitionSupports.associationId })
+        .from(artifactAssociationRecognitionSupports)
+        .innerJoin(
+          recognitionDecisions,
+          eq(
+            recognitionDecisions.id,
+            artifactAssociationRecognitionSupports.recognitionDecisionId,
+          ),
+        )
+        .innerJoin(
+          recognitionProposals,
+          eq(recognitionProposals.id, recognitionDecisions.proposalId),
+        )
+        .innerJoin(
+          workflowExecutions,
+          eq(workflowExecutions.id, recognitionProposals.executionId),
+        )
+        .where(
+          and(
+            eq(
+              artifactAssociationRecognitionSupports.associationId,
+              association.id,
+            ),
+            eq(recognitionDecisions.assetId, association.subjectId),
+            sql`(
+              EXISTS (
+                SELECT 1 FROM json_each(json_extract(${workflowExecutions.materialAssociationJson}, '$.submission.projections')) AS projection
+                JOIN json_each(json_extract(${recognitionProposals.observedMaterialInterpretationJson}, '$.observedArtifactAssociations')) AS candidate
+                  ON json_extract(candidate.value, '$.observedArtifactReference') = json_extract(projection.value, '$.observedArtifactReference')
+                 AND json_extract(candidate.value, '$.role') = ${association.role}
+                WHERE json_extract(projection.value, '$.associationId') = ${association.id}
+                  AND json_extract(projection.value, '$.artifactId') = ${association.artifactId}
+              )
+              OR EXISTS (
+                SELECT 1
+                FROM json_each(json_extract(${recognitionProposals.observedMaterialInterpretationJson}, '$.observedArtifactAssociations')) AS projected_candidate
+                JOIN json_each(json_extract(${recognitionProposals.observedMaterialInterpretationJson}, '$.observedArtifactRevisions')) AS projected_revision
+                  ON json_extract(projected_revision.value, '$.observedArtifactReference') =
+                     json_extract(projected_candidate.value, '$.observedArtifactReference')
+                JOIN locations AS projected_location
+                  ON projected_location.artifact_id = ${association.artifactId}
+                 AND projected_location.kind = 'observed'
+                 AND projected_location.address = json_extract(${workflowExecutions.snapshotJson}, '$.root') || '/' ||
+                     json_extract(projected_candidate.value, '$.observedArtifactReference')
+                JOIN artifact_revisions AS durable_revision
+                  ON durable_revision.artifact_id = ${association.artifactId}
+                 AND durable_revision.blob_digest = json_extract(projected_revision.value, '$.blob.digest')
+                WHERE json_extract(projected_candidate.value, '$.role') = ${association.role}
+              )
+              OR EXISTS (
+                SELECT 1
+                FROM locations AS legacy_location
+                JOIN artifact_revisions AS legacy_revision
+                  ON legacy_revision.artifact_id = ${association.artifactId}
+                WHERE legacy_location.artifact_id = ${association.artifactId}
+                  AND legacy_location.kind = 'observed'
+                  AND (
+                    (json_extract(${recognitionProposals.basisJson}, '$.kind') = 'observed-evidence'
+                     AND EXISTS (
+                       SELECT 1 FROM json_each(json_extract(${recognitionProposals.basisJson}, '$.artifactRevisions')) AS material
+                       WHERE legacy_location.address = json_extract(${workflowExecutions.snapshotJson}, '$.root') || '/' ||
+                         json_extract(material.value, '$.observedArtifactReference')
+                         AND legacy_revision.blob_digest = json_extract(material.value, '$.blob.digest')
+                     ))
+                    OR
+                    (json_extract(${recognitionProposals.basisJson}, '$.kind') = 'manual-boundary'
+                     AND EXISTS (
+                       SELECT 1
+                       FROM json_each(json_extract(${recognitionProposals.basisJson}, '$.materialReferences')) AS material
+                       JOIN json_each(json_extract(${recognitionProposals.basisJson}, '$.evidence')) AS evidence
+                         ON json_extract(evidence.value, '$.inspection.observedArtifactReference') = material.value
+                       WHERE legacy_location.address = json_extract(${workflowExecutions.snapshotJson}, '$.root') || '/' || material.value
+                         AND legacy_revision.blob_digest = json_extract(evidence.value, '$.inspection.revision.digest')
+                     ))
+                  )
+              )
+            )`,
+          ),
+        )
+        .get() !== undefined;
+    return result;
   }
 
   /** 本地格式事实拥有自己的修订谱系，绝不属于外部来源谱系。 */
@@ -8159,6 +10727,242 @@ export class SqliteCatalogue
           },
         })
         .run();
+      this.recordCurrentFileObservationSupportsWithDrizzle(
+        transaction,
+        execution,
+        location.id,
+      );
+    }
+    // 同一登记以等价容器拼写重连时，旧 Location 事实保留其原地址；以该登记此前
+    // 的成功支持路径换算相对地址，才能由新成功扫描重新建立支持。
+    for (const root of execution.workflowInput?.observedRoots ?? []) {
+      const aliases = transaction
+        .select({
+          locationId: locations.id,
+          artifactId: locations.artifactId,
+          address: locations.address,
+          priorPath: currentFileObservationSupports.observedRootPath,
+        })
+        .from(currentFileObservationSupports)
+        .innerJoin(
+          locations,
+          eq(locations.id, currentFileObservationSupports.locationId),
+        )
+        .where(
+          and(
+            eq(currentFileObservationSupports.observedRootId, root.id),
+            eq(locations.kind, "observed"),
+          ),
+        )
+        .all();
+      for (const snapshot of snapshots) {
+        if (!pathIsWithin(root.containerPath, snapshot.root)) continue;
+        for (const file of snapshot.files) {
+          const scopedRelativePath = path.join(
+            path.relative(root.containerPath, snapshot.root),
+            file.relativePath,
+          );
+          for (const alias of aliases) {
+            if (
+              path.relative(alias.priorPath, alias.address) !==
+              scopedRelativePath
+            )
+              continue;
+            const conditionalBaseline = currentObservationConditionalBaseline(
+              transaction,
+              {
+                artifactId: alias.artifactId,
+                locationId: alias.locationId,
+                snapshotId: snapshot.id,
+                observedAt: snapshot.observedAt,
+                size: file.size,
+                modifiedAt: file.modifiedAt,
+              },
+            );
+            transaction
+              .insert(currentFileObservations)
+              .values({
+                locationId: alias.locationId,
+                snapshotId: snapshot.id,
+                observedAt: snapshot.observedAt,
+                size: file.size,
+                modifiedAt: file.modifiedAt,
+                conditionalBaseline,
+              })
+              .onConflictDoUpdate({
+                target: currentFileObservations.locationId,
+                set: {
+                  snapshotId: snapshot.id,
+                  observedAt: snapshot.observedAt,
+                  size: file.size,
+                  modifiedAt: file.modifiedAt,
+                  conditionalBaseline,
+                },
+              })
+              .run();
+            this.recordCurrentFileObservationSupportsWithDrizzle(
+              transaction,
+              execution,
+              alias.locationId,
+            );
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * 只有 Application 已把正式文件系统扫描写成完成终态后，才以其完整快照更新当前
+   * 观察投影。失败、取消及不完整覆盖绝不触碰先前成员资格。
+   */
+  private projectCompletedFilesystemScanWithDrizzle(
+    transaction: DrizzleWriteTransaction,
+    execution: WorkflowExecution,
+  ): void {
+    if (
+      execution.operationKind !== "scan-filesystem" ||
+      execution.status !== "completed"
+    )
+      return;
+    const snapshots = (execution.filesystemSnapshots ?? []).filter(
+      (snapshot) => snapshot.complete,
+    );
+    if (snapshots.length === 0) return;
+    const observedLocations = transaction
+      .select()
+      .from(locations)
+      .where(eq(locations.kind, "observed"))
+      .all();
+    for (const location of observedLocations) {
+      const matches = snapshots.flatMap((snapshot) =>
+        !pathIsWithin(snapshot.root, location.address)
+          ? []
+          : snapshot.files
+              .filter(
+                (file) =>
+                  path.resolve(snapshot.root, file.relativePath) ===
+                  path.resolve(location.address),
+              )
+              .map((file) => ({ snapshot, file })),
+      );
+      const current = matches.toSorted((left, right) =>
+        right.snapshot.observedAt.localeCompare(left.snapshot.observedAt),
+      )[0];
+      if (current === undefined) {
+        if (
+          snapshots.some((snapshot) =>
+            pathIsWithin(snapshot.root, location.address),
+          )
+        ) {
+          this.recordCurrentFileObservationSupportsWithDrizzle(
+            transaction,
+            execution,
+            location.id,
+          );
+          transaction
+            .delete(currentFileObservations)
+            .where(eq(currentFileObservations.locationId, location.id))
+            .run();
+        }
+        continue;
+      }
+      const conditionalBaseline = currentObservationConditionalBaseline(
+        transaction,
+        {
+          artifactId: location.artifactId,
+          locationId: location.id,
+          snapshotId: current.snapshot.id,
+          observedAt: current.snapshot.observedAt,
+          size: current.file.size,
+          modifiedAt: current.file.modifiedAt,
+        },
+      );
+      transaction
+        .insert(currentFileObservations)
+        .values({
+          locationId: location.id,
+          snapshotId: current.snapshot.id,
+          observedAt: current.snapshot.observedAt,
+          size: current.file.size,
+          modifiedAt: current.file.modifiedAt,
+          conditionalBaseline,
+        })
+        .onConflictDoUpdate({
+          target: currentFileObservations.locationId,
+          set: {
+            snapshotId: current.snapshot.id,
+            observedAt: current.snapshot.observedAt,
+            size: current.file.size,
+            modifiedAt: current.file.modifiedAt,
+            conditionalBaseline,
+          },
+        })
+        .run();
+      this.recordCurrentFileObservationSupportsWithDrizzle(
+        transaction,
+        execution,
+        location.id,
+      );
+    }
+    this.projectCurrentFileObservationsWithDrizzle(transaction, execution, []);
+  }
+
+  private recordCurrentFileObservationSupportsWithDrizzle(
+    transaction: DrizzleWriteTransaction,
+    execution: WorkflowExecution,
+    locationId: string,
+  ): void {
+    const roots: Array<{
+      readonly id: string;
+      readonly version: number;
+      readonly path: string;
+      readonly authorizedTargetsJson: string;
+    }> = (execution.workflowInput?.observedRoots ?? []).map((root) => ({
+      id: root.id,
+      version: root.configVersion,
+      path: root.containerPath,
+      authorizedTargetsJson: JSON.stringify(root.authorizedTargetRoots ?? []),
+    }));
+    if (
+      roots.length === 0 &&
+      execution.workflowInput?.version ===
+        "observed-material-association-input/1"
+    ) {
+      const root =
+        execution.resolvedSelection?.filesystemScopes[0]?.observedRoot;
+      if (root !== undefined)
+        roots.push({
+          id: root.id,
+          version: root.configVersion,
+          path: root.containerPath,
+          authorizedTargetsJson: JSON.stringify(root.authorizedTargetRoots),
+        });
+    }
+    for (const root of roots) {
+      transaction
+        .delete(currentFileObservationSupports)
+        .where(
+          and(
+            eq(currentFileObservationSupports.locationId, locationId),
+            eq(currentFileObservationSupports.observedRootId, root.id),
+            eq(
+              currentFileObservationSupports.observedRootVersion,
+              root.version,
+            ),
+          ),
+        )
+        .run();
+      transaction
+        .insert(currentFileObservationSupports)
+        .values({
+          locationId,
+          observedRootId: root.id,
+          observedRootVersion: root.version,
+          observedRootPath: root.path,
+          authorizedTargetsJson: root.authorizedTargetsJson,
+        })
+        .onConflictDoNothing()
+        .run();
     }
   }
 
@@ -8542,173 +11346,6 @@ export class SqliteCatalogue
     );
   }
 
-  /**
-   * 更正时的事实撤回与识别头推进属于同一个即时 CAS 事务。在保留历史范围语义的同时，
-   * 通过事务的 Drizzle 查询构建器表达每一次读写。
-   */
-  private retractIdentityFactsWithDrizzle(
-    transaction: DrizzleWriteTransaction,
-    input: {
-      readonly assetId: string;
-      readonly sourceIdentity: string;
-      readonly nativeAddress: string;
-      readonly sourceRecordId: string;
-    },
-  ): void {
-    const coverageIds = transaction
-      .select({ coverageId: sourceLineageHeads.coverageId })
-      .from(sourceLineageHeads)
-      .where(
-        and(
-          eq(sourceLineageHeads.subjectId, input.assetId),
-          eq(sourceLineageHeads.sourceIdentity, input.sourceIdentity),
-          eq(sourceLineageHeads.nativeAddress, input.nativeAddress),
-        ),
-      )
-      .all()
-      .map((row) => row.coverageId);
-    const supersededMetadata = new Set(
-      transaction
-        .select({
-          predecessorId: metadataAssertionLifecycles.predecessorAssertionId,
-        })
-        .from(metadataAssertionLifecycles)
-        .all()
-        .flatMap((row) =>
-          row.predecessorId === null ? [] : [row.predecessorId],
-        ),
-    );
-    const retractedMetadata = new Set(
-      transaction
-        .select({ assertionId: metadataAssertionRetractions.assertionId })
-        .from(metadataAssertionRetractions)
-        .all()
-        .map((row) => row.assertionId),
-    );
-    const supersededRelationships = new Set(
-      transaction
-        .select({
-          predecessorId: relationshipLifecycles.predecessorRelationshipId,
-        })
-        .from(relationshipLifecycles)
-        .all()
-        .flatMap((row) =>
-          row.predecessorId === null ? [] : [row.predecessorId],
-        ),
-    );
-    const retractedRelationships = new Set(
-      transaction
-        .select({ relationshipId: relationshipRetractions.relationshipId })
-        .from(relationshipRetractions)
-        .all()
-        .map((row) => row.relationshipId),
-    );
-    for (const coverageId of coverageIds) {
-      const metadata = transaction
-        .select({
-          assertionId: metadataAssertionLifecycles.assertionId,
-          subjectId: metadataAssertions.subjectId,
-          sourceSlot: metadataAssertionLifecycles.sourceSlot,
-        })
-        .from(metadataAssertionLifecycles)
-        .innerJoin(
-          metadataAssertions,
-          eq(metadataAssertions.id, metadataAssertionLifecycles.assertionId),
-        )
-        .where(
-          and(
-            eq(
-              metadataAssertionLifecycles.sourceIdentity,
-              input.sourceIdentity,
-            ),
-            eq(metadataAssertionLifecycles.nativeAddress, input.nativeAddress),
-            eq(metadataAssertionLifecycles.coverageId, coverageId),
-          ),
-        )
-        .all()
-        .filter(
-          (row) =>
-            !supersededMetadata.has(row.assertionId) &&
-            !retractedMetadata.has(row.assertionId),
-        );
-      const metadataChanges = deriveSourceSlotLifecycleChanges({
-        currentSlots: metadata.map((item) =>
-          sourceFactCoordinate(item.subjectId, item.sourceSlot),
-        ),
-        nextSlots: [],
-        coverageCompleteness: "complete",
-      });
-      const metadataSlots = new Set(metadataChanges.retracted);
-      for (const item of metadata) {
-        if (
-          !metadataSlots.has(
-            sourceFactCoordinate(item.subjectId, item.sourceSlot),
-          )
-        )
-          continue;
-        transaction
-          .insert(metadataAssertionRetractions)
-          .values({
-            id: `metadata-retraction_${input.sourceRecordId}_${item.assertionId}`,
-            assertionId: item.assertionId,
-            sourceRecordId: input.sourceRecordId,
-          })
-          .onConflictDoNothing()
-          .run();
-      }
-
-      const relationships = transaction
-        .select({
-          relationshipId: relationshipLifecycles.relationshipId,
-          subjectId: entityRelationships.subjectId,
-          sourceSlot: relationshipLifecycles.sourceSlot,
-        })
-        .from(relationshipLifecycles)
-        .innerJoin(
-          entityRelationships,
-          eq(entityRelationships.id, relationshipLifecycles.relationshipId),
-        )
-        .where(
-          and(
-            eq(relationshipLifecycles.sourceIdentity, input.sourceIdentity),
-            eq(relationshipLifecycles.nativeAddress, input.nativeAddress),
-            eq(relationshipLifecycles.coverageId, coverageId),
-          ),
-        )
-        .all()
-        .filter(
-          (row) =>
-            !supersededRelationships.has(row.relationshipId) &&
-            !retractedRelationships.has(row.relationshipId),
-        );
-      const relationshipChanges = deriveSourceSlotLifecycleChanges({
-        currentSlots: relationships.map((item) =>
-          sourceFactCoordinate(item.subjectId, item.sourceSlot),
-        ),
-        nextSlots: [],
-        coverageCompleteness: "complete",
-      });
-      const relationshipSlots = new Set(relationshipChanges.retracted);
-      for (const item of relationships) {
-        if (
-          !relationshipSlots.has(
-            sourceFactCoordinate(item.subjectId, item.sourceSlot),
-          )
-        )
-          continue;
-        transaction
-          .insert(relationshipRetractions)
-          .values({
-            id: `relationship-retraction_${input.sourceRecordId}_${item.relationshipId}`,
-            relationshipId: item.relationshipId,
-            sourceRecordId: input.sourceRecordId,
-          })
-          .onConflictDoNothing()
-          .run();
-      }
-    }
-  }
-
   private insertRefreshMetadataWithDrizzle(
     transaction: DrizzleWriteTransaction,
     submission: MetadataRefreshSubmission,
@@ -8724,6 +11361,8 @@ export class SqliteCatalogue
           property: metadataAssertions.property,
           value: metadataAssertions.value,
           qualifiers_json: metadataAssertions.qualifiersJson,
+          source_record_ids_json: metadataAssertions.sourceRecordIdsJson,
+          producer_json: metadataAssertions.producerJson,
         })
         .from(metadataAssertionLifecycles)
         .innerJoin(
@@ -8777,6 +11416,32 @@ export class SqliteCatalogue
         previous !== undefined &&
         metadataAssertionMatchesCurrent(previous, assertion)
       ) {
+        assertCompatibleProducer(
+          previous.producer_json,
+          assertion.producer,
+          "Metadata Assertion",
+        );
+        const provenance = new Set([
+          ...(JSON.parse(previous.source_record_ids_json) as string[]),
+          ...assertion.sourceRecordIds,
+        ]);
+        transaction
+          .update(metadataAssertions)
+          .set({
+            sourceRecordIdsJson: JSON.stringify([...provenance].toSorted()),
+            producerJson: sql`COALESCE(${metadataAssertions.producerJson}, ${producerJson(assertion.producer)})`,
+          })
+          .where(eq(metadataAssertions.id, previous.assertion_id))
+          .run();
+        for (const sourceRecordId of assertion.sourceRecordIds)
+          transaction
+            .insert(metadataAssertionSources)
+            .values({
+              assertionId: previous.assertion_id,
+              sourceRecordId,
+            })
+            .onConflictDoNothing()
+            .run();
         continue;
       }
       const result = transaction
@@ -8851,6 +11516,8 @@ export class SqliteCatalogue
           type: entityRelationships.type,
           role: entityRelationships.role,
           qualifiers_json: entityRelationships.qualifiersJson,
+          source_record_ids_json: entityRelationships.sourceRecordIdsJson,
+          producer_json: entityRelationships.producerJson,
         })
         .from(relationshipLifecycles)
         .innerJoin(
@@ -8895,6 +11562,32 @@ export class SqliteCatalogue
         previous !== undefined &&
         relationshipMatchesCurrent(previous, relationship)
       ) {
+        assertCompatibleProducer(
+          previous.producer_json,
+          relationship.producer,
+          "Entity Relationship",
+        );
+        const provenance = new Set([
+          ...(JSON.parse(previous.source_record_ids_json) as string[]),
+          ...relationship.sourceRecordIds,
+        ]);
+        transaction
+          .update(entityRelationships)
+          .set({
+            sourceRecordIdsJson: JSON.stringify([...provenance].toSorted()),
+            producerJson: sql`COALESCE(${entityRelationships.producerJson}, ${producerJson(relationship.producer)})`,
+          })
+          .where(eq(entityRelationships.id, previous.relationship_id))
+          .run();
+        for (const sourceRecordId of relationship.sourceRecordIds)
+          transaction
+            .insert(relationshipSources)
+            .values({
+              relationshipId: previous.relationship_id,
+              sourceRecordId,
+            })
+            .onConflictDoNothing()
+            .run();
         continue;
       }
       const relationshipId = `source-refresh-relationship_${randomUUID()}`;
@@ -8969,7 +11662,7 @@ export class SqliteCatalogue
 
   private insertProjectedRelationshipsAndMentionsWithDrizzle(
     transaction: DrizzleWriteTransaction,
-    preview: ChangeImpactPreview,
+    preview: ChangeImpactPreview & { readonly proposal: RecognitionProposal },
   ): void {
     const replacementSourceRecordIds = new Set(
       recognitionSourceInterpretation(preview.proposal)?.sourceRecordIds ?? [],
@@ -9077,7 +11770,7 @@ export class SqliteCatalogue
 
   private applyProjectedArtifactsWithDrizzle(
     transaction: DrizzleWriteTransaction,
-    preview: ChangeImpactPreview,
+    preview: ChangeImpactPreview & { readonly proposal: RecognitionProposal },
     predecessorDecisionId: string,
     successorDecisionId: string,
   ): void {
@@ -9153,8 +11846,116 @@ export class SqliteCatalogue
         (association) => association.id,
       ),
     );
+    for (const projected of preview.projected.artifactAssociations) {
+      const currentAssociation = currentAssociations.find(
+        (association) => association.id === projected.id,
+      );
+      const existed = currentAssociation !== undefined;
+      const predecessorSupported =
+        transaction
+          .select({ id: artifactAssociationRecognitionSupports.associationId })
+          .from(artifactAssociationRecognitionSupports)
+          .where(
+            and(
+              eq(
+                artifactAssociationRecognitionSupports.associationId,
+                projected.id,
+              ),
+              eq(
+                artifactAssociationRecognitionSupports.recognitionDecisionId,
+                predecessorDecisionId,
+              ),
+            ),
+          )
+          .get() !== undefined;
+      if (
+        preview.proposal.basis.kind !== "source-interpretation" &&
+        projected.sourceAssociationId === undefined &&
+        (currentAssociation === undefined ||
+          currentAssociation.sourceAssociationId === null) &&
+        (!existed || predecessorSupported)
+      )
+        transaction
+          .insert(artifactAssociationRecognitionSupports)
+          .values({
+            associationId: projected.id,
+            recognitionDecisionId: successorDecisionId,
+          })
+          .onConflictDoNothing()
+          .run();
+    }
     for (const current of currentAssociations) {
       if (projectedIds.has(current.id)) continue;
+      const hasRemainingRecognitionSupport = transaction
+        .select({
+          id: artifactAssociationRecognitionSupports.recognitionDecisionId,
+        })
+        .from(artifactAssociationRecognitionSupports)
+        .where(
+          eq(artifactAssociationRecognitionSupports.associationId, current.id),
+        )
+        .all()
+        .some(
+          ({ id: supportDecisionId }) =>
+            supportDecisionId !== predecessorDecisionId &&
+            transaction
+              .select({
+                id: recognitionDecisionSupersessions.predecessorDecisionId,
+              })
+              .from(recognitionDecisionSupersessions)
+              .where(
+                eq(
+                  recognitionDecisionSupersessions.predecessorDecisionId,
+                  supportDecisionId,
+                ),
+              )
+              .get() === undefined &&
+            transaction
+              .select({
+                id: recognitionDecisionRetractions.predecessorDecisionId,
+              })
+              .from(recognitionDecisionRetractions)
+              .where(
+                eq(
+                  recognitionDecisionRetractions.predecessorDecisionId,
+                  supportDecisionId,
+                ),
+              )
+              .get() === undefined,
+        );
+      const hasCurrentSourceSupport =
+        current.sourceAssociationId !== null &&
+        (JSON.parse(current.sourceRecordIdsJson) as readonly string[]).length >
+          0 &&
+        transaction
+          .select({ id: currentSourceAssociations.associationId })
+          .from(currentSourceAssociations)
+          .where(
+            and(
+              eq(currentSourceAssociations.subjectId, current.subjectId),
+              eq(
+                currentSourceAssociations.associationId,
+                current.sourceAssociationId,
+              ),
+            ),
+          )
+          .get() !== undefined;
+      if (hasRemainingRecognitionSupport || hasCurrentSourceSupport) continue;
+      const hadAnyRecognitionSupport =
+        transaction
+          .select({ id: artifactAssociationRecognitionSupports.associationId })
+          .from(artifactAssociationRecognitionSupports)
+          .where(
+            eq(
+              artifactAssociationRecognitionSupports.associationId,
+              current.id,
+            ),
+          )
+          .get() !== undefined;
+      if (!hadAnyRecognitionSupport && current.sourceAssociationId === null)
+        throw new Error(
+          "Change Impact Preview touches an other-legacy Artifact Association",
+        );
       const successor = preview.projected.artifactAssociations.find(
         (association) => association.role === current.role,
       );
@@ -9204,6 +12005,7 @@ export class SqliteCatalogue
       currentAssociationsRows,
       decisions,
       policies,
+      currentLineageHeads,
     ] = await Promise.all([
       query
         .select()
@@ -9240,10 +12042,49 @@ export class SqliteCatalogue
           inArray(metadataPolicyEnrollments.subjectId, sqliteTextSet(assetIds)),
         )
         .orderBy(asc(sql<number>`${metadataPolicyEnrollments}.rowid`)),
+      query
+        .select({
+          subjectId: sourceLineageHeads.subjectId,
+          sourceRecordId: sourceLineageHeads.sourceRecordId,
+        })
+        .from(sourceLineageHeads)
+        .where(inArray(sourceLineageHeads.subjectId, sqliteTextSet(assetIds))),
     ]);
     const proposalIds = uniqueStrings(
       decisions.map((decision) => decision.proposalId),
     );
+    const decisionIds = decisions.map((decision) => decision.id);
+    const [recognitionSupersessionRows, recognitionRetractionRows] =
+      decisionIds.length === 0
+        ? [[], []]
+        : await Promise.all([
+            query
+              .select({
+                id: recognitionDecisionSupersessions.predecessorDecisionId,
+              })
+              .from(recognitionDecisionSupersessions)
+              .where(
+                inArray(
+                  recognitionDecisionSupersessions.predecessorDecisionId,
+                  sqliteTextSet(decisionIds),
+                ),
+              ),
+            query
+              .select({
+                id: recognitionDecisionRetractions.predecessorDecisionId,
+              })
+              .from(recognitionDecisionRetractions)
+              .where(
+                inArray(
+                  recognitionDecisionRetractions.predecessorDecisionId,
+                  sqliteTextSet(decisionIds),
+                ),
+              ),
+          ]);
+    const endedRecognitionDecisionIds = new Set([
+      ...recognitionSupersessionRows.map((row) => row.id),
+      ...recognitionRetractionRows.map((row) => row.id),
+    ]);
     const proposalRows =
       proposalIds.length === 0
         ? []
@@ -9318,6 +12159,7 @@ export class SqliteCatalogue
     const metadataIds = metadataRows.map((row) => row.id);
     const relationshipIds = relationshipRows.map((row) => row.id);
     const sourceRecordIds = uniqueStrings([
+      ...currentLineageHeads.map((row) => row.sourceRecordId),
       ...parsedProposals.flatMap(
         ({ proposal }) =>
           recognitionSourceInterpretation(proposal)?.sourceRecordIds ?? [],
@@ -9340,6 +12182,7 @@ export class SqliteCatalogue
     ]);
     const [
       artifactSupersessions,
+      artifactRecognitionSupportRows,
       artifactRetractionsRows,
       metadataLifecyclesRows,
       metadataRetractionsRows,
@@ -9355,6 +12198,17 @@ export class SqliteCatalogue
             .where(
               inArray(
                 artifactAssociationSupersessions.predecessorAssociationId,
+                sqliteTextSet(artifactAssociationIds),
+              ),
+            ),
+      artifactAssociationIds.length === 0
+        ? Promise.resolve([])
+        : query
+            .select()
+            .from(artifactAssociationRecognitionSupports)
+            .where(
+              inArray(
+                artifactAssociationRecognitionSupports.associationId,
                 sqliteTextSet(artifactAssociationIds),
               ),
             ),
@@ -9490,31 +12344,51 @@ export class SqliteCatalogue
     const participantIds = uniqueStrings(
       relationshipRows.map((row) => row.participantId),
     );
+    const lifecycleSourcedEntityRows =
+      currentLineageHeads.length === 0
+        ? []
+        : await query
+            .select()
+            .from(sourcedEntities)
+            .where(
+              sql`EXISTS (
+                SELECT 1 FROM json_each(${sourcedEntities.sourceRecordIdsJson}) AS source_id
+                WHERE source_id.value IN (${sql.join(
+                  currentLineageHeads.map(
+                    ({ sourceRecordId }) => sql`${sourceRecordId}`,
+                  ),
+                  sql`, `,
+                )})
+              )`,
+            );
+    const entityIds = uniqueStrings([
+      ...participantIds,
+      ...lifecycleSourcedEntityRows.map((row) => row.id),
+    ]);
     const [participantEntities, sourcedEntityRows, resolutionRows] =
-      participantIds.length === 0
+      entityIds.length === 0
         ? [[], [], []]
         : await Promise.all([
             query
               .select()
               .from(entities)
-              .where(inArray(entities.id, sqliteTextSet(participantIds)))
+              .where(inArray(entities.id, sqliteTextSet(entityIds)))
               .orderBy(asc(entities.id)),
-            query
-              .select()
-              .from(sourcedEntities)
-              .where(
-                inArray(sourcedEntities.id, sqliteTextSet(participantIds)),
-              ),
-            query
-              .select()
-              .from(entityResolutionDecisions)
-              .where(
-                inArray(
-                  entityResolutionDecisions.entityId,
-                  sqliteTextSet(participantIds),
-                ),
-              )
-              .orderBy(asc(sql<number>`${entityResolutionDecisions}.rowid`)),
+            Promise.resolve(lifecycleSourcedEntityRows),
+            participantIds.length === 0
+              ? Promise.resolve([])
+              : query
+                  .select()
+                  .from(entityResolutionDecisions)
+                  .where(
+                    inArray(
+                      entityResolutionDecisions.entityId,
+                      sqliteTextSet(participantIds),
+                    ),
+                  )
+                  .orderBy(
+                    asc(sql<number>`${entityResolutionDecisions}.rowid`),
+                  ),
           ]);
     const mentionIds = uniqueStrings(
       resolutionRows.map((resolution) => resolution.mentionId),
@@ -9539,6 +12413,8 @@ export class SqliteCatalogue
         artifactAssociations: artifactAssociationRows,
         artifactSupersessions,
         artifactRetractions: artifactRetractionsRows,
+        artifactRecognitionSupports: artifactRecognitionSupportRows,
+        endedRecognitionDecisionIds,
         metadata: metadataRows,
         metadataLifecycles: metadataLifecyclesRows,
         metadataRetractions: metadataRetractionsRows,
@@ -9577,12 +12453,7 @@ export class SqliteCatalogue
       (item) =>
         item.id === head.recognitionDecisionId && item.assetId === assetId,
     );
-    if (
-      decision === undefined ||
-      (recognitionSourceAssociationRow !== undefined &&
-        decision.proposalId !== recognitionSourceAssociationRow.proposalId)
-    )
-      return undefined;
+    if (decision === undefined) return undefined;
     const proposalRow = rows.proposals.find(
       (item) => item.id === decision.proposalId,
     );
@@ -9593,6 +12464,12 @@ export class SqliteCatalogue
       ruleResults: JSON.parse(
         proposalRow.ruleResultsJson,
       ) as RecognitionProposal["ruleResults"],
+      ...(proposalRow.observedMaterialInterpretationJson === null
+        ? {}
+        : (JSON.parse(proposalRow.observedMaterialInterpretationJson) as Pick<
+            RecognitionProposal,
+            "observedArtifactAssociations" | "observedArtifactRevisions"
+          >)),
     };
     const currentAssociationIds = new Set(
       rows.currentAssociations.flatMap((item) =>
@@ -9606,10 +12483,10 @@ export class SqliteCatalogue
       subjectId: association.subjectId,
       sourceIdentity: association.sourceIdentity,
       nativeAddress: association.nativeAddress,
-      proposalId: association.proposalId,
     });
     const recognitionSourceAssociation =
-      recognitionSourceAssociationRow === undefined
+      recognitionSourceAssociationRow === undefined ||
+      !currentAssociationIds.has(recognitionSourceAssociationRow.id)
         ? undefined
         : projectSourceAssociation(recognitionSourceAssociationRow);
     const currentAssociations = [
@@ -9641,7 +12518,10 @@ export class SqliteCatalogue
       rows.sourceRecords.map((record) => [record.id, record]),
     );
     const factLineages = new Set([
-      ...(interpretation?.sourceRecordIds ?? []).flatMap((id) => {
+      ...(recognitionSourceAssociation === undefined
+        ? []
+        : (interpretation?.sourceRecordIds ?? [])
+      ).flatMap((id) => {
         const record = sourceRecordsById.get(id);
         return record === undefined
           ? []
@@ -9664,6 +12544,15 @@ export class SqliteCatalogue
           retractedArtifactAssociationIds.has(row.id)
         )
           return false;
+        const hasActiveRecognitionSupport =
+          rows.artifactRecognitionSupports.some(
+            (support) =>
+              support.associationId === row.id &&
+              !rows.endedRecognitionDecisionIds.has(
+                support.recognitionDecisionId,
+              ),
+          );
+        if (hasActiveRecognitionSupport) return true;
         const recordIds = jsonStringArray(
           row.sourceRecordIdsJson,
           "artifact association source records",
@@ -9750,7 +12639,13 @@ export class SqliteCatalogue
     );
     const metadataSourceRecords = rows.sourceRecords.flatMap((record) =>
       metadataRecordIds.has(record.id)
-        ? [{ id: record.id, sourceIdentity: record.sourceIdentity }]
+        ? [
+            {
+              id: record.id,
+              sourceIdentity: record.sourceIdentity,
+              nativeAddress: record.nativeAddress,
+            },
+          ]
         : [],
     );
     const observedArtifactIds = uniqueStrings([
@@ -9845,9 +12740,45 @@ export class SqliteCatalogue
         ];
       },
     );
+    const lineageEntities = rows.sourcedEntities.flatMap(
+      (sourcedEntity): SourcedEntity[] => {
+        const relatedEntity = entityById.get(sourcedEntity.id);
+        if (relatedEntity === undefined) return [];
+        const recordIds = jsonStringArray(
+          sourcedEntity.sourceRecordIdsJson,
+          "sourced entity source records",
+        );
+        if (
+          !recordIds.some((id) => {
+            const record = sourceRecordsById.get(id);
+            return (
+              record !== undefined &&
+              factLineages.has(
+                sourceLineageKey(record.sourceIdentity, record.nativeAddress),
+              )
+            );
+          })
+        )
+          return [];
+        return [
+          {
+            id: relatedEntity.id,
+            kind: relatedEntity.kind as SourcedEntity["kind"],
+            sourceIdentity: sourcedEntity.sourceIdentity,
+            sourceKey: sourcedEntity.sourceKey,
+            identityNamespace: sourcedEntity.identityNamespace,
+            label: sourcedEntity.label,
+            sourceRecordIds: recordIds,
+            ...(sourcedEntity.producerJson === null
+              ? {}
+              : { producer: producerFromJson(sourcedEntity.producerJson) }),
+          },
+        ];
+      },
+    );
     const currentEntities = [
       ...new Map(
-        [...relationshipEntities, ...relatedEntities].map((item) => [
+        [...relationshipEntities, ...lineageEntities].map((item) => [
           item.id,
           item,
         ]),
@@ -9878,11 +12809,8 @@ export class SqliteCatalogue
         };
       },
     );
-    const activeAssetRelationshipRows = relationshipRows.filter(
-      (row) =>
-        row.subjectId === assetId &&
-        !supersededRelationshipIds.has(row.id) &&
-        !retractedRelationshipIds.has(row.id),
+    const activeAssetRelationshipRows = currentRelationshipRows.filter(
+      (row) => row.subjectId === assetId,
     );
     const eligibleResolutionRows = rows.resolutions.filter((resolution) => {
       const resolutionRecordIds = jsonStringArray(
@@ -9978,6 +12906,17 @@ export class SqliteCatalogue
           };
         },
       ),
+      artifactAssociationRecognitionSupports:
+        rows.artifactRecognitionSupports.flatMap((support) =>
+          rows.endedRecognitionDecisionIds.has(support.recognitionDecisionId)
+            ? []
+            : [
+                {
+                  associationId: support.associationId,
+                  recognitionDecisionId: support.recognitionDecisionId,
+                },
+              ],
+        ),
       metadata,
       entities: currentEntities,
       entityMentions: mentionRows.map(
@@ -10037,14 +12976,14 @@ export class SqliteCatalogue
       .from(recognitionHeads)
       .where(eq(recognitionHeads.subjectId, assetId));
     if (head === undefined) return undefined;
+    if (head.recognitionDecisionId === null) return undefined;
 
-    const [recognitionSourceAssociation] = await query
+    const [storedRecognitionSourceAssociation] = await query
       .select({
         id: sourceAssociations.id,
         subjectId: sourceAssociations.subjectId,
         sourceIdentity: sourceAssociations.sourceIdentity,
         nativeAddress: sourceAssociations.nativeAddress,
-        proposalId: sourceAssociations.proposalId,
       })
       .from(sourceAssociations)
       .where(
@@ -10059,7 +12998,6 @@ export class SqliteCatalogue
         subjectId: sourceAssociations.subjectId,
         sourceIdentity: sourceAssociations.sourceIdentity,
         nativeAddress: sourceAssociations.nativeAddress,
-        proposalId: sourceAssociations.proposalId,
       })
       .from(currentSourceAssociations)
       .innerJoin(
@@ -10081,6 +13019,14 @@ export class SqliteCatalogue
         ]),
       ).values(),
     ];
+    const currentAssociationIds = new Set(
+      currentAssociations.map(({ id: associationId }) => associationId),
+    );
+    const recognitionSourceAssociation =
+      storedRecognitionSourceAssociation !== undefined &&
+      currentAssociationIds.has(storedRecognitionSourceAssociation.id)
+        ? storedRecognitionSourceAssociation
+        : undefined;
     const [decision] = await query
       .select()
       .from(recognitionDecisions)
@@ -10090,12 +13036,7 @@ export class SqliteCatalogue
           eq(recognitionDecisions.assetId, assetId),
         ),
       );
-    if (
-      decision === undefined ||
-      (recognitionSourceAssociation !== undefined &&
-        decision.proposalId !== recognitionSourceAssociation.proposalId)
-    )
-      return undefined;
+    if (decision === undefined) return undefined;
     const [proposalRow] = await query
       .select()
       .from(recognitionProposals)
@@ -10110,10 +13051,9 @@ export class SqliteCatalogue
     };
 
     const interpretation = recognitionSourceInterpretation(proposal);
-    const relatedEntities = interpretation?.entities ?? [];
     const artifactSubjectIds = uniqueStrings([
       assetId,
-      ...relatedEntities.map((item) => item.id),
+      ...(interpretation?.entities ?? []).map((item) => item.id),
     ]);
     const primaryRecordIds = interpretation?.sourceRecordIds ?? [];
     const [
@@ -10146,8 +13086,15 @@ export class SqliteCatalogue
     const artifactAssociationIds = artifactAssociationRows.map((row) => row.id);
     const metadataAssertionIds = metadataRows.map((row) => row.id);
     const relationshipIds = relationshipRows.map((row) => row.id);
+    const currentLineageRecordIds = (
+      await query
+        .select({ sourceRecordId: sourceLineageHeads.sourceRecordId })
+        .from(sourceLineageHeads)
+        .where(eq(sourceLineageHeads.subjectId, assetId))
+    ).map(({ sourceRecordId }) => sourceRecordId);
     const sourceRecordIds = uniqueStrings([
       ...primaryRecordIds,
+      ...currentLineageRecordIds,
       ...artifactAssociationRows.flatMap((row) =>
         jsonStringArray(
           row.sourceRecordIdsJson,
@@ -10172,6 +13119,9 @@ export class SqliteCatalogue
       relationshipLifecyclesRows,
       relationshipRetractionRows,
       sourceRecordRows,
+      recognitionSupportRows,
+      recognitionSupersessionRows,
+      recognitionRetractionRows,
     ] = await Promise.all([
       artifactAssociationIds.length === 0
         ? Promise.resolve([])
@@ -10240,13 +13190,44 @@ export class SqliteCatalogue
             .from(sourceRecords)
             .where(inArray(sourceRecords.id, sourceRecordIds))
             .orderBy(asc(sql<number>`${sourceRecords}.rowid`)),
+      artifactAssociationIds.length === 0
+        ? Promise.resolve([])
+        : query
+            .select({
+              associationId:
+                artifactAssociationRecognitionSupports.associationId,
+              recognitionDecisionId:
+                artifactAssociationRecognitionSupports.recognitionDecisionId,
+            })
+            .from(artifactAssociationRecognitionSupports)
+            .where(
+              inArray(
+                artifactAssociationRecognitionSupports.associationId,
+                artifactAssociationIds,
+              ),
+            ),
+      query
+        .select({
+          recognitionDecisionId:
+            recognitionDecisionSupersessions.predecessorDecisionId,
+        })
+        .from(recognitionDecisionSupersessions),
+      query
+        .select({
+          recognitionDecisionId:
+            recognitionDecisionRetractions.predecessorDecisionId,
+        })
+        .from(recognitionDecisionRetractions),
     ]);
 
     const sourceRecordsById = new Map(
       sourceRecordRows.map((record) => [record.id, record]),
     );
     const factLineages = new Set([
-      ...primaryRecordIds.flatMap((id) => {
+      ...(recognitionSourceAssociation === undefined
+        ? []
+        : primaryRecordIds
+      ).flatMap((id) => {
         const record = sourceRecordsById.get(id);
         return record === undefined
           ? []
@@ -10256,12 +13237,73 @@ export class SqliteCatalogue
         sourceLineageKey(association.sourceIdentity, association.nativeAddress),
       ),
     ]);
+    const currentSourcedEntityRows = (
+      await query.select().from(sourcedEntities)
+    ).filter((row) => {
+      const ids = jsonStringArray(
+        row.sourceRecordIdsJson,
+        "sourced entity source records",
+      );
+      return ids.some((id) => {
+        const record = sourceRecordsById.get(id);
+        return (
+          record !== undefined &&
+          factLineages.has(
+            sourceLineageKey(record.sourceIdentity, record.nativeAddress),
+          )
+        );
+      });
+    });
+    const currentSourcedEntityIds = uniqueStrings(
+      currentSourcedEntityRows.map(({ id }) => id),
+    );
+    const currentSourcedEntityKinds = new Map(
+      currentSourcedEntityIds.length === 0
+        ? []
+        : (
+            await query
+              .select({ id: entities.id, kind: entities.kind })
+              .from(entities)
+              .where(inArray(entities.id, currentSourcedEntityIds))
+          ).map((row) => [row.id, row.kind]),
+    );
+    const lineageEntities = currentSourcedEntityRows.flatMap(
+      (row): SourcedEntity[] => {
+        const kind = currentSourcedEntityKinds.get(row.id);
+        if (kind === undefined) return [];
+        return [
+          {
+            id: row.id,
+            kind: kind as SourcedEntity["kind"],
+            sourceIdentity: row.sourceIdentity,
+            sourceKey: row.sourceKey,
+            identityNamespace: row.identityNamespace,
+            label: row.label,
+            sourceRecordIds: jsonStringArray(
+              row.sourceRecordIdsJson,
+              "sourced entity source records",
+            ),
+            ...(row.producerJson === null
+              ? {}
+              : { producer: producerFromJson(row.producerJson) }),
+          },
+        ];
+      },
+    );
     const supersededArtifactAssociationIds = new Set(
       artifactSupersessions.map((row) => row.predecessorAssociationId),
     );
     const retractedArtifactAssociationIds = new Set(
       artifactRetractions.map((row) => row.associationId),
     );
+    const endedRecognitionDecisionIds = new Set([
+      ...recognitionSupersessionRows.map(
+        ({ recognitionDecisionId }) => recognitionDecisionId,
+      ),
+      ...recognitionRetractionRows.map(
+        ({ recognitionDecisionId }) => recognitionDecisionId,
+      ),
+    ]);
     const currentArtifactAssociationRows = artifactAssociationRows.filter(
       (row) => {
         if (
@@ -10273,6 +13315,12 @@ export class SqliteCatalogue
           row.sourceRecordIdsJson,
           "artifact association source records",
         );
+        const hasCurrentRecognitionSupport = recognitionSupportRows.some(
+          (support) =>
+            support.associationId === row.id &&
+            !endedRecognitionDecisionIds.has(support.recognitionDecisionId),
+        );
+        if (hasCurrentRecognitionSupport) return true;
         if (associationRecordIds.length === 0) return row.subjectId === assetId;
         return associationRecordIds.some((id) => {
           const record = sourceRecordsById.get(id);
@@ -10360,7 +13408,13 @@ export class SqliteCatalogue
     const metadataRecordIdSet = new Set(metadataRecordIds);
     const metadataSourceRecords = sourceRecordRows.flatMap((record) =>
       metadataRecordIdSet.has(record.id)
-        ? [{ id: record.id, sourceIdentity: record.sourceIdentity }]
+        ? [
+            {
+              id: record.id,
+              sourceIdentity: record.sourceIdentity,
+              nativeAddress: record.nativeAddress,
+            },
+          ]
         : [],
     );
 
@@ -10497,7 +13551,7 @@ export class SqliteCatalogue
     );
     const currentEntities = [
       ...new Map(
-        [...relationshipEntities, ...relatedEntities].map((item) => [
+        [...relationshipEntities, ...lineageEntities].map((item) => [
           item.id,
           item,
         ]),
@@ -10529,11 +13583,8 @@ export class SqliteCatalogue
       },
     );
 
-    const activeAssetRelationshipRows = relationshipRows.filter(
-      (row) =>
-        row.subjectId === assetId &&
-        !supersededRelationshipIds.has(row.id) &&
-        !retractedRelationshipIds.has(row.id),
+    const activeAssetRelationshipRows = currentRelationshipRows.filter(
+      (row) => row.subjectId === assetId,
     );
     const assetRelationshipParticipantIds = uniqueStrings(
       activeAssetRelationshipRows.map((row) => row.participantId),
@@ -10683,6 +13734,12 @@ export class SqliteCatalogue
           };
         },
       ),
+      artifactAssociationRecognitionSupports: recognitionSupportRows.filter(
+        (support) =>
+          currentArtifactAssociationRows.some(
+            ({ id: associationId }) => associationId === support.associationId,
+          ) && !endedRecognitionDecisionIds.has(support.recognitionDecisionId),
+      ),
       metadata,
       entities: currentEntities,
       entityMentions: entityMentionsForView,
@@ -10699,6 +13756,47 @@ function uniqueStrings(values: readonly string[]): string[] {
 /** 使用一个绑定的 JSON 值，避免展开页面触及 SQLite 变量上限。 */
 function sqliteTextSet<T extends string | number>(values: readonly T[]) {
   return sql<T>`(select value from json_each(${JSON.stringify(values)}))`;
+}
+
+function hasExactObjectKeys(
+  value: unknown,
+  expected: readonly string[],
+): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return false;
+  const actual = Object.keys(value).toSorted();
+  const allowed = expected.toSorted();
+  return (
+    actual.length === allowed.length &&
+    actual.every((key, index) => key === allowed[index])
+  );
+}
+
+function sourceRefreshFailureDispositionsAreConsistent(
+  run: SourceRefreshRun,
+  execution: WorkflowExecution,
+): boolean {
+  const prefix = `source-refresh-failure:${run.id}:`;
+  const reserved = execution.dispositions.filter((item) =>
+    item.key.startsWith(prefix),
+  );
+  if (new Set(reserved.map((item) => item.key)).size !== reserved.length)
+    return false;
+  return reserved.every((disposition) => {
+    const matches = run.scopes.filter(
+      (scope) =>
+        `source-refresh-failure:${run.id}:${scope.coverage.coverageId}:${scope.acquisitionAttempt}` ===
+        disposition.key,
+    );
+    if (matches.length !== 1) return false;
+    const scope = matches[0]!;
+    return (
+      scope.state === "terminal" &&
+      (scope.outcome === "failed" || scope.outcome === "stale") &&
+      disposition.status === "failed" &&
+      disposition.reason === scope.reason
+    );
+  });
 }
 
 function originalPersistenceError(error: unknown): unknown {

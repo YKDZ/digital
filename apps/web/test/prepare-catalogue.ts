@@ -12,8 +12,8 @@ export async function prepareWebProductData(
   productDataDirectory: string,
 ): Promise<void> {
   await execFileAsync(
-    "pnpm",
-    ["--filter", "@digital/sqlite", "db:prepare:test-product-data"],
+    process.execPath,
+    ["packages/sqlite/dist/prepare-test-product-data.js"],
     {
       cwd: path.resolve(import.meta.dirname, "../../.."),
       env: {
@@ -23,8 +23,8 @@ export async function prepareWebProductData(
     },
   );
   await execFileAsync(
-    "pnpm",
-    ["--filter", "@digital/db-migrations", "prepare-only"],
+    process.execPath,
+    ["packages/db-migrations/dist/cli.js", "prepare-only"],
     {
       cwd: path.resolve(import.meta.dirname, "../../.."),
       env: { ...process.env, DIGITAL_PRODUCT_DATA: productDataDirectory },

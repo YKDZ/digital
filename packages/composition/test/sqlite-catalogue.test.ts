@@ -35,11 +35,14 @@ import {
   sha256,
   artifactProofConditionalBaseline,
 } from "@digital/application";
-import type { AcceptedRecognition, SourceRecord } from "@digital/domain";
-import {
-  FanboxCollector,
-  FanboxDateDirectoryInterpreter,
-} from "@digital/fanbox";
+import type {
+  AcceptedRecognition,
+  SourceAssociationChangeProposal,
+  SourceAssociationDecision,
+  SourceRecord,
+} from "@digital/domain";
+import { FanboxDateDirectoryInterpreter } from "@digital/fanbox";
+import { createScriptedFanboxProductAssembly } from "@digital/fanbox/testing";
 import { ReadOnlyFilesystemObserver } from "@digital/filesystem";
 import { SqliteCatalogue, type SqliteCatalogueOptions } from "@digital/sqlite";
 import {
@@ -2459,7 +2462,10 @@ describe("SqliteCatalogue lifecycle", () => {
       ],
     });
 
-    await catalogue.rejectChangeImpactPreview("attention-preview");
+    await catalogue.rejectChangeImpactPreview({
+      previewId: "attention-preview",
+      rejectedBy: "attention-reviewer",
+    });
     await expect(
       catalogue.listCurrentAttentionPage({ limit: 10 }),
     ).resolves.toEqual({
@@ -3097,7 +3103,10 @@ describe("SqliteCatalogue lifecycle", () => {
       },
     ]);
     await expect(
-      catalogue.rejectChangeImpactPreview("only-valid-preview"),
+      catalogue.rejectChangeImpactPreview({
+        previewId: "only-valid-preview",
+        rejectedBy: "attention-reviewer",
+      }),
     ).resolves.toBe("rejected");
     expect(
       nativeDatabase
@@ -3508,18 +3517,12 @@ describe("SqliteCatalogue lifecycle", () => {
         ["secondary-z", "https://source.example/z"],
         ["secondary-a", "https://source.example/a"],
       ] as const) {
-        database
-          .prepare(
-            `INSERT INTO source_associations (
-              id, subject_id, source_identity, native_address, proposal_id, is_current
-            ) VALUES (?, ?, ?, ?, ?, 1)`,
-          )
-          .run(id, "asset", "source", address, "proposal");
-        database
-          .prepare(
-            "INSERT INTO current_source_associations (subject_id, association_id) VALUES (?, ?)",
-          )
-          .run("asset", id);
+        insertCurrentSourceAssociation(database, {
+          id,
+          subjectId: "asset",
+          sourceIdentity: "source",
+          nativeAddress: address,
+        });
       }
     } finally {
       database.close();
@@ -3564,9 +3567,9 @@ describe("SqliteCatalogue lifecycle", () => {
     }
     const afterPrimaryStoppedApplying = await catalogue.listCurrentCatalogue();
     expect(afterPrimaryStoppedApplying).toHaveLength(1);
-    expect(
-      afterPrimaryStoppedApplying[0]?.recognitionSourceAssociation.id,
-    ).toBe("association");
+    expect(afterPrimaryStoppedApplying[0]?.recognitionSourceAssociation).toBe(
+      undefined,
+    );
     expect(
       afterPrimaryStoppedApplying[0]?.sourceAssociations.map(
         (association) => association.id,
@@ -3586,9 +3589,29 @@ describe("SqliteCatalogue lifecycle", () => {
     const withoutCurrentSources = await catalogue.listCurrentCatalogue();
     expect(withoutCurrentSources).toHaveLength(1);
     expect(withoutCurrentSources[0]).toMatchObject({
-      recognitionSourceAssociation: { id: "association" },
       sourceAssociations: [],
     });
+    expect(withoutCurrentSources[0]?.recognitionSourceAssociation).toBe(
+      undefined,
+    );
+    const durableRecognitionHead = new DatabaseSync(
+      path.join(root, "catalogue.sqlite"),
+    );
+    try {
+      expect(
+        durableRecognitionHead
+          .prepare(
+            `SELECT recognition_source_association_id, recognition_decision_id
+             FROM recognition_heads WHERE subject_id = ?`,
+          )
+          .get("asset"),
+      ).toEqual({
+        recognition_source_association_id: "association",
+        recognition_decision_id: "decision",
+      });
+    } finally {
+      durableRecognitionHead.close();
+    }
     catalogue.close();
   });
 
@@ -3608,18 +3631,12 @@ describe("SqliteCatalogue lifecycle", () => {
         ["secondary-z", "https://source.example/z"],
         ["secondary-a", "https://source.example/a"],
       ] as const) {
-        database
-          .prepare(
-            `INSERT INTO source_associations (
-              id, subject_id, source_identity, native_address, proposal_id, is_current
-            ) VALUES (?, ?, ?, ?, ?, 0)`,
-          )
-          .run(id, "asset", "source", address, "proposal");
-        database
-          .prepare(
-            "INSERT INTO current_source_associations (subject_id, association_id) VALUES (?, ?)",
-          )
-          .run("asset", id);
+        insertCurrentSourceAssociation(database, {
+          id,
+          subjectId: "asset",
+          sourceIdentity: "source",
+          nativeAddress: address,
+        });
       }
       for (const id of ["z-artifact", "a-artifact"] as const) {
         database.prepare("INSERT INTO artifacts (id) VALUES (?)").run(id);
@@ -4163,6 +4180,31 @@ describe("SqliteCatalogue lifecycle", () => {
     const database = new DatabaseSync(prepared.databasePath);
     try {
       database
+        .prepare("INSERT INTO entities (id, kind) VALUES (?, ?)")
+        .run("asset", "digital-asset");
+      database
+        .prepare(
+          "INSERT INTO recognition_proposals (id, execution_id, basis_json, rule_results_json) VALUES (?, ?, ?, ?)",
+        )
+        .run("proposal", "execution", '{"kind":"observed-evidence"}', "[]");
+      database
+        .prepare(
+          "INSERT INTO source_associations (id, subject_id, source_identity, native_address) VALUES (?, ?, ?, ?)",
+        )
+        .run("association", "asset", "source", "https://source.example/work");
+      database
+        .prepare(
+          "INSERT INTO recognition_decisions (id, proposal_id, asset_id, accepted_rule_results_json) VALUES (?, ?, ?, ?)",
+        )
+        .run("decision", "proposal", "asset", "[]");
+      database
+        .prepare(
+          `INSERT INTO source_association_establishment_supports (
+            association_id, recognition_decision_id, source_association_decision_id
+          ) VALUES (?, ?, NULL)`,
+        )
+        .run("association", "decision");
+      database
         .prepare(
           "INSERT INTO recognition_heads (subject_id, recognition_source_association_id, recognition_decision_id) VALUES (?, ?, ?)",
         )
@@ -4200,11 +4242,6 @@ describe("SqliteCatalogue lifecycle", () => {
           ),
       ).toThrow();
 
-      database
-        .prepare(
-          "INSERT INTO recognition_decisions (id, proposal_id, asset_id, accepted_rule_results_json) VALUES (?, ?, ?, ?)",
-        )
-        .run("decision-one", "proposal", "asset", "[]");
       expect(() =>
         database
           .prepare(
@@ -5574,6 +5611,126 @@ function sourceRecord() {
   };
 }
 
+function sourceAssociationEstablishment(input: {
+  readonly id: string;
+  readonly subjectId: string;
+  readonly sourceIdentity: string;
+  readonly nativeAddress: string;
+  readonly sourceRecordIds: readonly string[];
+}): {
+  readonly proposal: SourceAssociationChangeProposal;
+  readonly decision: SourceAssociationDecision;
+} {
+  const proposal: SourceAssociationChangeProposal = {
+    id: `source-association-proposal:${input.id}`,
+    kind: "establish",
+    subjectId: input.subjectId,
+    successor: {
+      id: input.id,
+      subjectId: input.subjectId,
+      sourceIdentity: input.sourceIdentity,
+      nativeAddress: input.nativeAddress,
+    },
+    sourceRecordIds: input.sourceRecordIds,
+    proposedBy: {
+      kind: "capability",
+      coordinate: {
+        capabilityId: "composition.test-source-association",
+        capabilityVersion: "1",
+        contractVersion: "1",
+      },
+    },
+    evidence: {
+      observed: [],
+      manual: [],
+      sourceCandidates: [
+        {
+          outcome: "accepted",
+          sourceIdentity: input.sourceIdentity,
+          nativeAddress: input.nativeAddress,
+          sourceRecordIds: input.sourceRecordIds,
+          ruleResults: [],
+          explanation: "测试来源关联与当前地址一致",
+        },
+      ],
+      conflicts: [],
+    },
+  };
+  return {
+    proposal,
+    decision: {
+      id: `source-association-decision:${input.id}`,
+      proposalId: proposal.id,
+      subjectId: input.subjectId,
+      decidedBy: {
+        kind: "application-policy",
+        policyCoordinate: "composition/test-source-association/1",
+      },
+    },
+  };
+}
+
+function insertCurrentSourceAssociation(
+  database: DatabaseSync,
+  input: {
+    readonly id: string;
+    readonly subjectId: string;
+    readonly sourceIdentity: string;
+    readonly nativeAddress: string;
+  },
+): void {
+  const { proposal, decision } = sourceAssociationEstablishment({
+    ...input,
+    sourceRecordIds: [],
+  });
+  database
+    .prepare(
+      "INSERT INTO source_associations (id, subject_id, source_identity, native_address) VALUES (?, ?, ?, ?)",
+    )
+    .run(input.id, input.subjectId, input.sourceIdentity, input.nativeAddress);
+  database
+    .prepare(
+      `INSERT INTO source_association_change_proposals (
+        id, subject_id, kind, payload_json, proposed_by_json, evidence_json
+      ) VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      proposal.id,
+      proposal.subjectId,
+      proposal.kind,
+      JSON.stringify(proposal),
+      JSON.stringify(proposal.proposedBy),
+      JSON.stringify(proposal.evidence),
+    );
+  database
+    .prepare(
+      `INSERT INTO source_association_decisions (
+        id, proposal_id, subject_id, decided_by_kind, decided_by_coordinate
+      ) VALUES (?, ?, ?, ?, ?)`,
+    )
+    .run(
+      decision.id,
+      decision.proposalId,
+      decision.subjectId,
+      decision.decidedBy.kind,
+      decision.decidedBy.kind === "user"
+        ? decision.decidedBy.actorId
+        : decision.decidedBy.policyCoordinate,
+    );
+  database
+    .prepare(
+      `INSERT INTO source_association_establishment_supports (
+        association_id, recognition_decision_id, source_association_decision_id
+      ) VALUES (?, NULL, ?)`,
+    )
+    .run(input.id, decision.id);
+  database
+    .prepare(
+      "INSERT INTO current_source_associations (subject_id, association_id) VALUES (?, ?)",
+    )
+    .run(input.subjectId, input.id);
+}
+
 function accepted(): AcceptedRecognition {
   const interpretation = {
     id: "interpretation",
@@ -6245,30 +6402,32 @@ function recoveryWorkflow(
       {
         capability: capability("recovery.interpreter"),
         canInterpret: ({ sourceRecords }) => sourceRecords.length === 1,
-        interpret: ({ sourceRecords }) => ({
-          id: "recovery-interpretation",
-          producer: capability("recovery.interpreter"),
-          sourceRecordIds: [sourceRecords[0].id],
-          sourceIdentity: "recovery-source",
-          sourceAddress: "opaque:recovery-work",
-          metadata: [
-            {
-              property: "asset.title",
-              sourceSlot: "recovery.title",
-              value: "Recovery work",
-              sourceRecordIds: [sourceRecords[0].id],
-            },
-          ],
-          sourceArtifacts: [
-            {
-              id: "recovery-cover-candidate",
-              sourceRecordId: sourceRecords[0].id,
-              role: "asset.primary-cover",
-              acquisitionReference: "opaque:recovery-cover",
-              mediaType: "image/jpeg",
-            },
-          ],
-        }),
+        interpret: ({ sourceRecords }) => [
+          {
+            id: "recovery-interpretation",
+            producer: capability("recovery.interpreter"),
+            sourceRecordIds: [sourceRecords[0].id],
+            sourceIdentity: "recovery-source",
+            sourceAddress: "opaque:recovery-work",
+            metadata: [
+              {
+                property: "asset.title",
+                sourceSlot: "recovery.title",
+                value: "Recovery work",
+                sourceRecordIds: [sourceRecords[0].id],
+              },
+            ],
+            sourceArtifacts: [
+              {
+                id: "recovery-cover-candidate",
+                sourceRecordId: sourceRecords[0].id,
+                role: "asset.primary-cover",
+                acquisitionReference: "opaque:recovery-cover",
+                mediaType: "image/jpeg",
+              },
+            ],
+          },
+        ],
       },
     ],
     recognizers: [
@@ -6615,22 +6774,24 @@ function enrichmentCheckpointRecoveryWorkflow(
           evidence.some(
             (item) => item.sourceIdentity === "surviving-recovery-source",
           ),
-        interpret: () => ({
-          id: "surviving-recovery-interpretation",
-          producer: capability("enrichment-recovery.interpreter"),
-          sourceRecordIds: ["surviving-recovery-record"],
-          sourceIdentity: "surviving-recovery-source",
-          sourceAddress: "surviving-recovery:work",
-          metadata: [
-            {
-              property: "asset.awards",
-              sourceSlot: "surviving-recovery.awards",
-              value: "Recovered award",
-              sourceRecordIds: ["surviving-recovery-record"],
-            },
-          ],
-          sourceArtifacts: [],
-        }),
+        interpret: () => [
+          {
+            id: "surviving-recovery-interpretation",
+            producer: capability("enrichment-recovery.interpreter"),
+            sourceRecordIds: ["surviving-recovery-record"],
+            sourceIdentity: "surviving-recovery-source",
+            sourceAddress: "surviving-recovery:work",
+            metadata: [
+              {
+                property: "asset.awards",
+                sourceSlot: "surviving-recovery.awards",
+                value: "Recovered award",
+                sourceRecordIds: ["surviving-recovery-record"],
+              },
+            ],
+            sourceArtifacts: [],
+          },
+        ],
       },
     ],
     sourceAssociationCandidateInterpreters: [],
@@ -6861,150 +7022,152 @@ function reevaluationWorkflow(
               : undefined;
           const sourceSubjectFactsEnabled =
             state.sourceResolvedSubject !== undefined;
-          return {
-            id: `reevaluation-interpretation-${state.sourceVersion}`,
-            producer: capability("reevaluation.interpreter"),
-            sourceRecordIds: [recordId],
-            sourceIdentity: "reevaluation-source",
-            sourceAddress: "opaque:reevaluation-work",
-            metadata: [
-              {
-                property: "asset.title",
-                sourceSlot: "reevaluation.title",
-                value: state.stableSourceFacts
-                  ? "Stable reevaluation title"
-                  : `Reevaluation title ${state.sourceVersion}`,
-                sourceRecordIds: [recordId],
-              },
-              ...(state.expanded
-                ? [
-                    {
-                      property: "asset.summary",
-                      sourceSlot: "reevaluation.summary",
-                      value: "Expanded summary",
-                      sourceRecordIds: [recordId],
-                    },
-                  ]
-                : []),
-              ...(!sourceSubjectFactsEnabled
+          return [
+            {
+              id: `reevaluation-interpretation-${state.sourceVersion}`,
+              producer: capability("reevaluation.interpreter"),
+              sourceRecordIds: [recordId],
+              sourceIdentity: "reevaluation-source",
+              sourceAddress: "opaque:reevaluation-work",
+              metadata: [
+                {
+                  property: "asset.title",
+                  sourceSlot: "reevaluation.title",
+                  value: state.stableSourceFacts
+                    ? "Stable reevaluation title"
+                    : `Reevaluation title ${state.sourceVersion}`,
+                  sourceRecordIds: [recordId],
+                },
+                ...(state.expanded
+                  ? [
+                      {
+                        property: "asset.summary",
+                        sourceSlot: "reevaluation.summary",
+                        value: "Expanded summary",
+                        sourceRecordIds: [recordId],
+                      },
+                    ]
+                  : []),
+                ...(!sourceSubjectFactsEnabled
+                  ? []
+                  : [
+                      {
+                        ...(sourceResolvedSubject === undefined
+                          ? {}
+                          : { subjectId: sourceResolvedSubject.id }),
+                        property: "entity.display-name",
+                        sourceSlot: "reevaluation.source-subject.name",
+                        value: "Stable sourced subject",
+                        sourceRecordIds: [recordId],
+                        qualifiers:
+                          state.reverseSourceResolvedSubjectQualifiers === true
+                            ? [
+                                { key: "language", value: "en" },
+                                { key: "script", value: "Latn" },
+                              ]
+                            : [
+                                { key: "script", value: "Latn" },
+                                { key: "language", value: "en" },
+                              ],
+                      },
+                    ]),
+              ],
+              entities: [
+                {
+                  id: "reevaluation-persona",
+                  kind: "persona" as const,
+                  sourceIdentity: "reevaluation-source",
+                  sourceKey: "persona",
+                  identityNamespace: "reevaluation.persona",
+                  label: "Stable persona",
+                  sourceRecordIds: [recordId],
+                },
+                ...(state.expanded
+                  ? [
+                      {
+                        id: "reevaluation-editor",
+                        kind: "persona" as const,
+                        sourceIdentity: "reevaluation-source",
+                        sourceKey: "editor",
+                        identityNamespace: "reevaluation.persona",
+                        label: "Expanded editor",
+                        sourceRecordIds: [recordId],
+                      },
+                    ]
+                  : []),
+                ...(sourceResolvedSubject === undefined
+                  ? []
+                  : [
+                      {
+                        id: sourceResolvedSubject.id,
+                        kind: "persona" as const,
+                        sourceIdentity: "reevaluation-source",
+                        sourceKey: sourceResolvedSubject.sourceKey,
+                        identityNamespace: "reevaluation.source-subject",
+                        label: sourceResolvedSubject.label,
+                        sourceRecordIds: [recordId],
+                      },
+                    ]),
+              ],
+              relationships: [
+                {
+                  participantId: "reevaluation-persona",
+                  type: "asset.contribution" as const,
+                  role: "voice",
+                  sourceSlot: "reevaluation.credit.voice",
+                  sourceRecordIds: [recordId],
+                },
+                ...(state.expanded
+                  ? [
+                      {
+                        participantId: "reevaluation-editor",
+                        type: "asset.contribution" as const,
+                        role: "editing",
+                        sourceSlot: "reevaluation.credit.editing",
+                        sourceRecordIds: [recordId],
+                      },
+                    ]
+                  : []),
+                ...(!sourceSubjectFactsEnabled
+                  ? []
+                  : [
+                      {
+                        ...(sourceResolvedSubject === undefined
+                          ? {}
+                          : { subjectId: sourceResolvedSubject.id }),
+                        participantId: "reevaluation-persona",
+                        type: "entity.association",
+                        role: "related",
+                        sourceSlot: "reevaluation.source-subject.association",
+                        sourceRecordIds: [recordId],
+                        qualifiers:
+                          state.reverseSourceResolvedSubjectQualifiers === true
+                            ? [
+                                { key: "kind", value: "credit" },
+                                { key: "scope", value: "source" },
+                              ]
+                            : [
+                                { key: "scope", value: "source" },
+                                { key: "kind", value: "credit" },
+                              ],
+                      },
+                    ]),
+              ],
+              entityMentions: [],
+              entityResolutionDecisions: [],
+              sourceArtifacts: state.omitCover
                 ? []
                 : [
                     {
-                      ...(sourceResolvedSubject === undefined
-                        ? {}
-                        : { subjectId: sourceResolvedSubject.id }),
-                      property: "entity.display-name",
-                      sourceSlot: "reevaluation.source-subject.name",
-                      value: "Stable sourced subject",
-                      sourceRecordIds: [recordId],
-                      qualifiers:
-                        state.reverseSourceResolvedSubjectQualifiers === true
-                          ? [
-                              { key: "language", value: "en" },
-                              { key: "script", value: "Latn" },
-                            ]
-                          : [
-                              { key: "script", value: "Latn" },
-                              { key: "language", value: "en" },
-                            ],
+                      id: "reevaluation-cover",
+                      sourceRecordId: recordId,
+                      role: "asset.primary-cover",
+                      acquisitionReference: "opaque:reevaluation-cover",
+                      mediaType: "image/jpeg",
                     },
-                  ]),
-            ],
-            entities: [
-              {
-                id: "reevaluation-persona",
-                kind: "persona" as const,
-                sourceIdentity: "reevaluation-source",
-                sourceKey: "persona",
-                identityNamespace: "reevaluation.persona",
-                label: "Stable persona",
-                sourceRecordIds: [recordId],
-              },
-              ...(state.expanded
-                ? [
-                    {
-                      id: "reevaluation-editor",
-                      kind: "persona" as const,
-                      sourceIdentity: "reevaluation-source",
-                      sourceKey: "editor",
-                      identityNamespace: "reevaluation.persona",
-                      label: "Expanded editor",
-                      sourceRecordIds: [recordId],
-                    },
-                  ]
-                : []),
-              ...(sourceResolvedSubject === undefined
-                ? []
-                : [
-                    {
-                      id: sourceResolvedSubject.id,
-                      kind: "persona" as const,
-                      sourceIdentity: "reevaluation-source",
-                      sourceKey: sourceResolvedSubject.sourceKey,
-                      identityNamespace: "reevaluation.source-subject",
-                      label: sourceResolvedSubject.label,
-                      sourceRecordIds: [recordId],
-                    },
-                  ]),
-            ],
-            relationships: [
-              {
-                participantId: "reevaluation-persona",
-                type: "asset.contribution" as const,
-                role: "voice",
-                sourceSlot: "reevaluation.credit.voice",
-                sourceRecordIds: [recordId],
-              },
-              ...(state.expanded
-                ? [
-                    {
-                      participantId: "reevaluation-editor",
-                      type: "asset.contribution" as const,
-                      role: "editing",
-                      sourceSlot: "reevaluation.credit.editing",
-                      sourceRecordIds: [recordId],
-                    },
-                  ]
-                : []),
-              ...(!sourceSubjectFactsEnabled
-                ? []
-                : [
-                    {
-                      ...(sourceResolvedSubject === undefined
-                        ? {}
-                        : { subjectId: sourceResolvedSubject.id }),
-                      participantId: "reevaluation-persona",
-                      type: "entity.association",
-                      role: "related",
-                      sourceSlot: "reevaluation.source-subject.association",
-                      sourceRecordIds: [recordId],
-                      qualifiers:
-                        state.reverseSourceResolvedSubjectQualifiers === true
-                          ? [
-                              { key: "kind", value: "credit" },
-                              { key: "scope", value: "source" },
-                            ]
-                          : [
-                              { key: "scope", value: "source" },
-                              { key: "kind", value: "credit" },
-                            ],
-                    },
-                  ]),
-            ],
-            entityMentions: [],
-            entityResolutionDecisions: [],
-            sourceArtifacts: state.omitCover
-              ? []
-              : [
-                  {
-                    id: "reevaluation-cover",
-                    sourceRecordId: recordId,
-                    role: "asset.primary-cover",
-                    acquisitionReference: "opaque:reevaluation-cover",
-                    mediaType: "image/jpeg",
-                  },
-                ],
-          };
+                  ],
+            },
+          ];
         },
       },
     ],
@@ -7234,44 +7397,48 @@ function crossBasisReplacementWorkflow(
         canInterpret: ({ sourceRecords }) =>
           sourceRecords.length === 1 &&
           sourceRecords[0]?.sourceIdentity === "cross-basis-source",
-        interpret: ({ sourceRecords }) => ({
-          id: "cross-basis-interpretation",
-          producer: capability("cross-basis.interpreter"),
-          sourceRecordIds: [sourceRecords[0].id],
-          sourceIdentity: "cross-basis-source",
-          sourceAddress: "opaque:cross-basis-work",
-          metadata: [
-            {
-              property: "asset.title",
-              sourceSlot: "cross-basis.source.title",
-              value: "Source work",
-              sourceRecordIds: [sourceRecords[0].id],
-            },
-          ],
-          sourceArtifacts: [],
-        }),
+        interpret: ({ sourceRecords }) => [
+          {
+            id: "cross-basis-interpretation",
+            producer: capability("cross-basis.interpreter"),
+            sourceRecordIds: [sourceRecords[0].id],
+            sourceIdentity: "cross-basis-source",
+            sourceAddress: "opaque:cross-basis-work",
+            metadata: [
+              {
+                property: "asset.title",
+                sourceSlot: "cross-basis.source.title",
+                value: "Source work",
+                sourceRecordIds: [sourceRecords[0].id],
+              },
+            ],
+            sourceArtifacts: [],
+          },
+        ],
       },
       {
         capability: capability("cross-basis.supplement-interpreter"),
         canInterpret: ({ sourceRecords }) =>
           sourceRecords.length === 1 &&
           sourceRecords[0]?.sourceIdentity === "cross-basis-supplement",
-        interpret: ({ sourceRecords }) => ({
-          id: "cross-basis-supplement-interpretation",
-          producer: capability("cross-basis.supplement-interpreter"),
-          sourceRecordIds: [sourceRecords[0].id],
-          sourceIdentity: "cross-basis-supplement",
-          sourceAddress: "opaque:cross-basis-supplement",
-          metadata: [
-            {
-              property: "asset.awards",
-              sourceSlot: "cross-basis.supplement.awards",
-              value: "Supplement award",
-              sourceRecordIds: [sourceRecords[0].id],
-            },
-          ],
-          sourceArtifacts: [],
-        }),
+        interpret: ({ sourceRecords }) => [
+          {
+            id: "cross-basis-supplement-interpretation",
+            producer: capability("cross-basis.supplement-interpreter"),
+            sourceRecordIds: [sourceRecords[0].id],
+            sourceIdentity: "cross-basis-supplement",
+            sourceAddress: "opaque:cross-basis-supplement",
+            metadata: [
+              {
+                property: "asset.awards",
+                sourceSlot: "cross-basis.supplement.awards",
+                value: "Supplement award",
+                sourceRecordIds: [sourceRecords[0].id],
+              },
+            ],
+            sourceArtifacts: [],
+          },
+        ],
       },
     ],
     recognizers: [
@@ -7414,23 +7581,30 @@ it("replaces recognition basis in both directions through a reopened Application
           }
         : undefined,
     );
-    const expectedProjectedSourceAssociations =
-      successor === "source-interpretation"
+    const expectedProjectedSourceAssociations = [
+      {
+        sourceIdentity: "cross-basis-supplement",
+        nativeAddress: "opaque:cross-basis-supplement",
+      },
+      ...(successor === "source-interpretation"
         ? [
             {
               sourceIdentity: "cross-basis-source",
               nativeAddress: "opaque:cross-basis-work",
             },
           ]
-        : [];
+        : []),
+    ];
+    const expectedProjectedMetadata = [
+      expect.objectContaining({ value: "Supplement award" }),
+      ...(successor === "source-interpretation"
+        ? [expect.objectContaining({ value: "Source work" })]
+        : []),
+    ];
     expect(preview?.projected.sourceAssociations).toEqual(
       expectedProjectedSourceAssociations,
     );
-    expect(preview?.projected.metadata).not.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ value: "Supplement award" }),
-      ]),
-    );
+    expect(preview?.projected.metadata).toEqual(expectedProjectedMetadata);
     await expect(
       workflow.inspectChangeImpactPreview(preview!.id),
     ).resolves.toMatchObject({
@@ -7462,7 +7636,10 @@ it("replaces recognition basis in both directions through a reopened Application
         END`);
       rollbackGuard.close();
       await expect(
-        resumed.applyChangeImpactPreview(preview!.id),
+        resumed.applyChangeImpactPreview({
+          previewId: preview!.id,
+          confirmedBy: "cross-basis-reviewer",
+        }),
       ).rejects.toThrow();
       await expect(
         reopened.findAcceptedForDirectory("/observed/cross-basis"),
@@ -7479,26 +7656,18 @@ it("replaces recognition basis in both directions through a reopened Application
       removeRollbackGuard.close();
     }
     await expect(
-      resumed.applyChangeImpactPreview(preview!.id),
+      resumed.applyChangeImpactPreview({
+        previewId: preview!.id,
+        confirmedBy: "cross-basis-reviewer",
+      }),
     ).resolves.toMatchObject({ status: "applied" });
     const after = await reopened.findAcceptedForDirectory(
       "/observed/cross-basis",
     );
     expect(after?.accepted).toMatchObject({
       proposal: { basis: { kind: successor } },
-      sourceAssociations:
-        successor === "source-interpretation"
-          ? [
-              {
-                sourceIdentity: "cross-basis-source",
-                nativeAddress: "opaque:cross-basis-work",
-              },
-            ]
-          : [],
-      metadata:
-        successor === "source-interpretation"
-          ? [expect.objectContaining({ value: "Source work" })]
-          : [],
+      sourceAssociations: expectedProjectedSourceAssociations,
+      metadata: expectedProjectedMetadata,
     });
     expect(after?.accepted.recognitionSourceAssociation).toEqual(
       successor === "source-interpretation"
@@ -7513,11 +7682,7 @@ it("replaces recognition basis in both directions through a reopened Application
         expect.objectContaining(association),
       ),
     );
-    expect(after?.accepted.metadata).not.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ value: "Supplement award" }),
-      ]),
-    );
+    expect(after?.accepted.metadata).toEqual(expectedProjectedMetadata);
     expect(after?.accepted.recognitionDecision.id).not.toBe(
       before!.recognitionDecision.id,
     );
@@ -7623,6 +7788,55 @@ function multiRecoveryWorkflow(
     capabilityVersion: "1",
     contractVersion: "1",
   });
+  const collectSharedRecords = () => {
+    state.counts.collect += 1;
+    const productRecord = (key: "one" | "two") => ({
+      id: `product-record-${key}-${state.generation}`,
+      sourceIdentity: "multi",
+      nativeAddress: `opaque:${key}`,
+      mediaType: "application/json",
+      acquiredAt: "2026-07-30T00:00:00.000Z",
+      acquisition: {
+        requestedAddress: `https://source.example/${key}`,
+        method: "GET" as const,
+        authorized: false,
+      },
+      coverage: {
+        id: "complete",
+        completeness: "complete" as const,
+        authority: "official" as const,
+      },
+      digest: `digest-product-${key}-${state.generation}`,
+      body: "{}",
+    });
+    const sharedCoverRecordId = `shared-cover-record-${state.generation}`;
+    return {
+      failures: [],
+      records: [
+        productRecord("one"),
+        productRecord("two"),
+        {
+          id: sharedCoverRecordId,
+          sourceIdentity: "multi",
+          nativeAddress: "opaque:shared-cover",
+          mediaType: "image/jpeg",
+          acquiredAt: "2026-07-30T00:00:00.000Z",
+          acquisition: {
+            requestedAddress: "https://source.example/shared-cover",
+            method: "GET" as const,
+            authorized: false,
+          },
+          coverage: {
+            id: "complete",
+            completeness: "complete" as const,
+            authority: "official" as const,
+          },
+          digest: `digest-${sharedCoverRecordId}`,
+          body: "shared cover",
+        },
+      ],
+    };
+  };
   const persistence = Object.create(catalogue) as SqliteCatalogue;
   if (state.blockSecondProposal === true) {
     persistence.finishExecutionWithProposal = async (
@@ -7704,33 +7918,12 @@ function multiRecoveryWorkflow(
         capability: capability("multi.collector"),
         canCollect: () => true,
         coverageScopeIds: () => ["complete"],
+        collectionScopeIds: () => ["shared-work"],
         async collect() {
-          state.counts.collect += 1;
-          const recordId = `shared-record-${state.generation}`;
-          return {
-            failures: [],
-            records: [
-              {
-                id: recordId,
-                sourceIdentity: "multi",
-                nativeAddress: "opaque:shared-work",
-                mediaType: "application/json",
-                acquiredAt: "2026-07-30T00:00:00.000Z",
-                acquisition: {
-                  requestedAddress: "https://source.example/shared",
-                  method: "GET" as const,
-                  authorized: false,
-                },
-                coverage: {
-                  id: "complete",
-                  completeness: "complete" as const,
-                  authority: "official" as const,
-                },
-                digest: `digest-${recordId}`,
-                body: "{}",
-              },
-            ],
-          };
+          return collectSharedRecords();
+        },
+        async collectShared() {
+          return collectSharedRecords();
         },
       },
     ],
@@ -7740,55 +7933,76 @@ function multiRecoveryWorkflow(
         canInterpret: () => true,
         interpret: ({ sourceRecords, evidence }) => {
           state.counts.interpret += 1;
-          const recordId = sourceRecords[0].id;
-          const boundary = evidence[0].sourceAddress!.slice(-3);
-          return {
-            id: `interpretation-${randomUUID()}`,
-            producer: capability("multi.interpreter"),
-            sourceRecordIds: [recordId],
-            sourceIdentity: "multi",
-            sourceAddress: evidence[0].sourceAddress!,
-            metadata: [
-              {
-                property: "asset.title",
-                sourceSlot: "multi.title",
-                value: boundary,
-                sourceRecordIds: [recordId],
-              },
-            ],
-            sourceArtifacts: [
-              {
-                id: `shared-cover-${recordId}`,
-                sourceRecordId: recordId,
-                subjectId: "shared-work",
-                role: "asset.primary-cover",
-                acquisitionReference:
-                  state.conflictingSecondCandidate === true &&
-                  boundary === "two"
-                    ? "opaque:conflicting-cover"
-                    : "opaque:shared-cover",
-                mediaType: "image/jpeg",
-              },
-              {
-                id: `${boundary}-attachment-${recordId}`,
-                sourceRecordId: recordId,
-                role: "asset.attachment",
-                acquisitionReference: `opaque:${boundary}-attachment`,
-                mediaType: "image/jpeg",
-              },
-            ],
-            entities: [
-              {
-                id: "shared-work",
-                kind: "entity" as const,
-                sourceIdentity: "multi",
-                sourceKey: "shared-work",
-                identityNamespace: "multi.work",
-                label: "Shared work",
-                sourceRecordIds: [recordId],
-              },
-            ],
-          };
+          const sourceAddress = evidence[0].sourceAddress!;
+          const productRecords =
+            sourceAddress === "opaque:query"
+              ? sourceRecords.filter(
+                  (record) =>
+                    record.nativeAddress === "opaque:one" ||
+                    record.nativeAddress === "opaque:two",
+                )
+              : sourceRecords.filter(
+                  (record) => record.nativeAddress === sourceAddress,
+                );
+          const sharedCoverRecord = sourceRecords.find(
+            (record) => record.nativeAddress === "opaque:shared-cover",
+          );
+          if (productRecords.length === 0 || sharedCoverRecord === undefined)
+            throw new Error(
+              "multi fixture requires product and shared cover records",
+            );
+          const sharedCoverRecordId = sharedCoverRecord.id;
+          return productRecords.map((productRecord) => {
+            const recordId = productRecord.id;
+            const boundary = productRecord.nativeAddress.slice(-3);
+            return {
+              id: `interpretation-${randomUUID()}`,
+              producer: capability("multi.interpreter"),
+              sourceRecordIds: [recordId, sharedCoverRecordId],
+              sourceIdentity: "multi",
+              sourceAddress: productRecord.nativeAddress,
+              metadata: [
+                {
+                  property: "asset.title",
+                  sourceSlot: "multi.title",
+                  value: boundary,
+                  sourceRecordIds: [recordId],
+                },
+              ],
+              sourceArtifacts: [
+                {
+                  id: `shared-cover-${sharedCoverRecordId}`,
+                  sourceRecordId: sharedCoverRecordId,
+                  subjectId: "shared-work",
+                  role: "asset.primary-cover",
+                  acquisitionReference:
+                    state.conflictingSecondCandidate === true &&
+                    boundary === "two"
+                      ? "opaque:conflicting-cover"
+                      : "opaque:shared-cover",
+                  mediaType: "image/jpeg",
+                },
+                {
+                  id: `${boundary}-attachment-${recordId}`,
+                  sourceRecordId: recordId,
+                  role: "asset.attachment",
+                  acquisitionReference: `opaque:${boundary}-attachment`,
+                  mediaType: "image/jpeg",
+                },
+              ],
+              entities: [
+                {
+                  id: "shared-work",
+                  kind: "entity" as const,
+                  sourceIdentity: "multi",
+                  sourceKey: "shared-work",
+                  identityNamespace: "multi.work",
+                  label: "Shared work",
+                  sourceRecordIds: [recordId, sharedCoverRecordId],
+                },
+              ],
+            };
+          });
         },
       },
     ],
@@ -7888,6 +8102,50 @@ function multiRecoveryWorkflow(
     recognitionReevaluation: persistence,
     recognitionChangeImpact: persistence,
     metadataRefreshPersistence: persistence,
+    sourceAddressingCapabilities: [
+      {
+        capability: capability("multi.addressing"),
+        inputRequirement: {
+          sourceIdentity: "multi",
+          displayName: "Multi fixture",
+          fields: [
+            {
+              key: "address",
+              label: "Address",
+              required: true,
+              acceptedInput: "opaque address",
+            },
+          ],
+        },
+        normalize(input) {
+          const address = input.address;
+          return typeof address !== "string" || address.length === 0
+            ? { status: "invalid" as const, reason: "address required" }
+            : {
+                status: "accepted" as const,
+                normalizedInput: { address },
+                evidence: {
+                  kind: "directed-source-address" as const,
+                  sourceIdentity: "multi",
+                  sourceAddress: address,
+                  explanation: "fixture query address",
+                  producer: capability("multi.addressing"),
+                },
+              };
+        },
+      },
+    ],
+    sourceAssociationInterpreters: [
+      {
+        capability: capability("multi.association"),
+        canInterpret: () => true,
+        interpret: () => ({
+          status: "accepted" as const,
+          explanation: "fixture source association",
+        }),
+      },
+    ],
+    sourceEnrichmentPersistence: persistence,
     configurationCompatibility: {
       async checkCompatibility() {
         return { compatible: true };
@@ -8993,7 +9251,7 @@ describe("SQLite Asset Refresh persistence", () => {
     const identityBefore = {
       association: identityBeforeDatabase
         .prepare(
-          `SELECT id, subject_id, source_identity, native_address, proposal_id
+          `SELECT id, subject_id, source_identity, native_address
            FROM source_associations WHERE id = ?`,
         )
         .get(initialAccepted!.recognitionSourceAssociation.id),
@@ -9127,7 +9385,7 @@ describe("SQLite Asset Refresh persistence", () => {
     expect(
       database
         .prepare(
-          `SELECT id, subject_id, source_identity, native_address, proposal_id
+          `SELECT id, subject_id, source_identity, native_address
            FROM source_associations WHERE id = ?`,
         )
         .get(initialAccepted!.recognitionSourceAssociation.id),
@@ -10051,9 +10309,8 @@ describe("SQLite Asset Refresh persistence", () => {
     };
 
     state.stableSourceFacts = true;
-    await expect(
-      workflow.refreshMetadata({ selection }),
-    ).resolves.toMatchObject({
+    const firstStable = await workflow.refreshMetadata({ selection });
+    expect(firstStable).toMatchObject({
       execution: { status: "completed", outcome: "accepted" },
     });
     const database = new DatabaseSync(path.join(root, "catalogue.sqlite"));
@@ -10071,6 +10328,14 @@ describe("SQLite Asset Refresh persistence", () => {
     };
 
     const repeated = await workflow.refreshMetadata({ selection });
+    const stableRecordIds = [
+      firstStable.sourceRecords[0]!.id,
+      repeated.sourceRecords[0]!.id,
+    ].toSorted((left, right) => left.localeCompare(right));
+    const stableRelationshipRecordIds = [
+      initial.sourceRecords[0]!.id,
+      ...stableRecordIds,
+    ].toSorted((left, right) => left.localeCompare(right));
     const after = {
       metadata: count("metadata_assertions"),
       metadataLifecycles: count("metadata_assertion_lifecycles"),
@@ -10089,6 +10354,28 @@ describe("SQLite Asset Refresh persistence", () => {
         "opaque:reevaluation-work",
         "reevaluation.complete",
       ) as { readonly source_record_id: string } | undefined;
+    const metadataProvenanceCount = (
+      database
+        .prepare(
+          `SELECT COUNT(*) AS count
+           FROM metadata_assertion_sources provenance
+           JOIN metadata_assertion_lifecycles lifecycle
+             ON lifecycle.assertion_id = provenance.assertion_id
+           WHERE lifecycle.source_slot = ?`,
+        )
+        .get("reevaluation.title") as { readonly count: number }
+    ).count;
+    const relationshipProvenanceCount = (
+      database
+        .prepare(
+          `SELECT COUNT(*) AS count
+           FROM relationship_sources provenance
+           JOIN relationship_lifecycles lifecycle
+             ON lifecycle.relationship_id = provenance.relationship_id
+           WHERE lifecycle.source_slot = ?`,
+        )
+        .get("reevaluation.credit.voice") as { readonly count: number }
+    ).count;
     database.close();
 
     expect(repeated).toMatchObject({
@@ -10103,6 +10390,39 @@ describe("SQLite Asset Refresh persistence", () => {
     });
     expect(after).toEqual(before);
     expect(lineage?.source_record_id).toBe(repeated.sourceRecords[0]?.id);
+    expect(metadataProvenanceCount).toBe(3);
+    expect(relationshipProvenanceCount).toBe(3);
+
+    const [projected] = await catalogue.findAcceptedForSubjects([
+      current!.entity.id,
+    ]);
+    expect(
+      projected?.accepted.metadata.find(
+        ({ sourceSlot }) => sourceSlot === "reevaluation.title",
+      )?.sourceRecordIds,
+    ).toEqual(stableRecordIds);
+    expect(
+      projected?.accepted.relationships?.find(
+        ({ sourceSlot }) => sourceSlot === "reevaluation.credit.voice",
+      )?.sourceRecordIds,
+    ).toEqual(stableRelationshipRecordIds);
+
+    catalogue.close();
+    const reopened = SqliteCatalogue.forProductData(root);
+    const [reopenedProjection] = await reopened.findAcceptedForSubjects([
+      current!.entity.id,
+    ]);
+    expect(
+      reopenedProjection?.accepted.metadata.find(
+        ({ sourceSlot }) => sourceSlot === "reevaluation.title",
+      )?.sourceRecordIds,
+    ).toEqual(stableRecordIds);
+    expect(
+      reopenedProjection?.accepted.relationships?.find(
+        ({ sourceSlot }) => sourceSlot === "reevaluation.credit.voice",
+      )?.sourceRecordIds,
+    ).toEqual(stableRelationshipRecordIds);
+    reopened.close();
   });
 
   it("keeps sourced-subject facts unchanged after their first public Source Refresh adoption", async () => {
@@ -11302,7 +11622,10 @@ describe("SQLite Asset Refresh persistence", () => {
         expect.objectContaining({
           key: "two",
           proposalId: expect.any(String),
-          sourceRecordIds: [expect.stringContaining("shared-record-")],
+          sourceRecordIds: expect.arrayContaining([
+            expect.stringContaining("product-record-two-"),
+            expect.stringContaining("shared-cover-record-"),
+          ]),
           sourceArtifactAcquisitions: [
             expect.objectContaining({
               candidateId: expect.stringContaining("two-attachment"),
@@ -11481,6 +11804,102 @@ describe("SQLite Asset Refresh persistence", () => {
     laterCatalogue.close();
   });
 
+  it("reopens a multi-product source decision whose query address differs from both products", async () => {
+    const { root, catalogue } = await createCatalogueWithRoot();
+    const state = {
+      generation: randomUUID(),
+      blockSecondStore: false,
+      counts: {
+        directory: 0,
+        collect: 0,
+        interpret: 0,
+        recognize: 0,
+        acquire: 0,
+        storeSecond: 0,
+      },
+    };
+    const initialWorkflow = recoveryWorkflow(catalogue, {
+      includeFormatFacts: true,
+    });
+    await scanFixtureRegisteredObservedScope(initialWorkflow, {
+      directory: "/observed/multi",
+      acceptTrusted: true,
+      executionId: "multi-source-decision",
+    });
+    const accepted = await catalogue.inspectExecution("multi-source-decision");
+    const assetId = accepted?.workItemInspections?.[0]?.accepted?.entity.id;
+    if (assetId === undefined)
+      throw new Error("multi fixture did not accept a source-decision target");
+    state.generation = randomUUID();
+    const workflow = multiRecoveryWorkflow(catalogue, state);
+
+    const prepared = await workflow.prepareConflictedEstablishment({
+      assetId,
+      sourceIdentity: "multi",
+      sourceInput: { address: "opaque:query" },
+      initiatedBy: "reviewer",
+    });
+    expect(prepared.state).toBe("awaiting-selection");
+    expect(prepared.candidates).toHaveLength(2);
+    catalogue.close();
+
+    const reopened = SqliteCatalogue.forProductData(root);
+    const recovered = multiRecoveryWorkflow(reopened, state);
+    const awaiting = await recovered.inspectSourceAssociationDecision(
+      prepared.executionId,
+    );
+    expect(awaiting).toMatchObject({ state: "awaiting-selection" });
+    expect(awaiting?.candidates).toHaveLength(2);
+
+    const selected = await recovered.selectSourceAssociationCandidate({
+      executionId: prepared.executionId,
+      candidateReference: awaiting!.candidates[1]!.reference,
+    });
+    expect(selected.state).toBe("awaiting-confirmation");
+    expect(selected.preview?.projected.metadata).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          property: "asset.title",
+          sourceSlot: "multi.title",
+          value: "two",
+        }),
+      ]),
+    );
+    expect(selected.preview?.projected.metadata).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sourceSlot: "multi.title", value: "one" }),
+      ]),
+    );
+    expect(selected.preview?.projected.sourceAssociations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceIdentity: "multi",
+          nativeAddress: "opaque:two",
+        }),
+      ]),
+    );
+    const durablePreview = await reopened.inspectChangeImpactPreview(
+      selected.preview!.id,
+    );
+    expect(durablePreview?.projected.metadata).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceSlot: "multi.title",
+          sourceRecordIds: [expect.stringContaining("product-record-two-")],
+        }),
+      ]),
+    );
+    expect(durablePreview?.projected.metadata).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceSlot: "multi.title",
+          sourceRecordIds: [expect.stringContaining("product-record-one-")],
+        }),
+      ]),
+    );
+    reopened.close();
+  });
+
   it("rebuilds a legal recognizer proposal from actual interpreter and format producers after SQLite restart", async () => {
     const { root, catalogue } = await createCatalogueWithRoot();
     const executionId = "recognizer-provenance-restart";
@@ -11653,20 +12072,32 @@ describe("SQLite Asset Refresh persistence", () => {
     for (const [index, reflection] of reflections.entries()) {
       const title =
         index === 1 ? `"${reflection}"` : JSON.stringify(reflection);
-      const collector = new FanboxCollector({
-        creatorId: "customudon",
-        cookieHeader: `FANBOXSESSID=${secret}`,
-        request: async () => ({
-          ok: true,
-          status: 200,
-          headers: { get: () => "application/json" },
-          arrayBuffer: async () =>
-            new TextEncoder().encode(
-              `{"body":{"items":[{"id":"9135862","creatorId":"customudon","title":${title},"publishedDatetime":"2025-01-01T00:11:17+09:00"}]}}`,
-            ).buffer,
-        }),
+      const assembly = createScriptedFanboxProductAssembly(async () => ({
+        kind: "response",
+        status: 200,
+        mediaType: "application/json",
+        body: new TextEncoder().encode(
+          `{"body":{"items":[{"id":"9135862","creatorId":"customudon","title":${title},"publishedDatetime":"2025-01-01T00:11:17+09:00"}]}}`,
+        ),
+      }));
+      const collector = assembly.createCollector({
+        creatorIds: () => ["customudon"],
+        privateConfigurationForExecution: () =>
+          JSON.stringify({
+            format: "fanbox-browser-request-context/2",
+            userAgent: "composition-test/1",
+            cookies: [
+              {
+                name: "FANBOXSESSID",
+                value: secret,
+                domain: ".fanbox.cc",
+                path: "/",
+              },
+            ],
+          }),
       });
       const collected = await collector.collect(evidence);
+      await assembly.close();
       const initial = { ...execution(), id: `fanbox-secret-${index}` };
 
       expect(collected.records).toEqual([]);
@@ -13438,9 +13869,18 @@ describe("SQLite Asset Refresh persistence", () => {
     };
     await catalogue.createExecution({ ...execution(), reusePlan });
     await retainSourceRecords(catalogue, "execution", [initialRecord]);
+    const initialAccepted = {
+      ...accepted(),
+      artifactAssociations: accepted().artifactAssociations.map(
+        (association) => ({
+          ...association,
+          sourceAssociationId: "association",
+        }),
+      ),
+    };
     await acceptRecognition(catalogue, {
       execution: { ...acceptedExecution(), reusePlan },
-      accepted: accepted(),
+      accepted: initialAccepted,
     });
     await saveCurrentAttentionPreview(catalogue, {
       executionId: "source-enrichment-preview-owner",
@@ -13463,6 +13903,12 @@ describe("SQLite Asset Refresh persistence", () => {
     };
     await catalogue.createExecution(supplementExecution);
     await retainSourceRecords(catalogue, "supplement", [supplementRecord]);
+    const supplementSourceAssociation = {
+      id: "supplement-association",
+      subjectId: "asset",
+      sourceIdentity: "supplement",
+      nativeAddress: "supplement:work",
+    };
     await catalogue.applySourceEnrichment({
       expectedExecution: supplementExecution,
       execution: supplementExecution,
@@ -13472,13 +13918,11 @@ describe("SQLite Asset Refresh persistence", () => {
         recognitionDecisionId: accepted().recognitionDecision.id,
       },
       assetId: "asset",
-      sourceAssociation: {
-        id: "supplement-association",
-        subjectId: "asset",
-        sourceIdentity: "supplement",
-        nativeAddress: "supplement:work",
-        proposalId: "source-enrichment:supplement",
-      },
+      sourceAssociation: supplementSourceAssociation,
+      ...sourceAssociationEstablishment({
+        ...supplementSourceAssociation,
+        sourceRecordIds: [supplementRecord.id],
+      }),
       sourceRecords: [supplementRecord],
       interpretation: {
         id: "supplement-interpretation",
@@ -13504,6 +13948,8 @@ describe("SQLite Asset Refresh persistence", () => {
     await expect(
       catalogue.inspectChangeImpactPreview("source-enrichment-sibling-preview"),
     ).resolves.toMatchObject({ status: "stale" });
+    const enrichedBeforeIdentityChange =
+      (await catalogue.findAcceptedForDirectory("/observed"))!.accepted;
     const lateEnrichmentExecution = {
       ...execution(),
       id: "late-enrichment",
@@ -13631,10 +14077,27 @@ describe("SQLite Asset Refresh persistence", () => {
       recognitionDecisionId: "decision",
     });
     const preview: ChangeImpactPreview = {
+      version: "change-impact-preview/2",
       id: "preview",
       executionId: "directed",
       assetId: "asset",
       proposal,
+      change: { kind: "recognition-supersession", proposal },
+      evidenceComparison: {
+        observed: [],
+        manual: [],
+        sourceCandidates: [
+          {
+            outcome: "accepted",
+            sourceIdentity: "source",
+            nativeAddress: "https://source.example/new-work",
+            sourceRecordIds: ["new-record"],
+            ruleResults: proposal.ruleResults,
+            explanation: "测试身份更正来源解释",
+          },
+        ],
+        conflicts: [],
+      },
       baselines: [
         { key: "source-association", value: "association" },
         { key: "recognition-decision", value: "decision" },
@@ -13642,32 +14105,38 @@ describe("SQLite Asset Refresh persistence", () => {
         { key: "complete-current-projection", value: completeBaseline },
       ],
       current: {
-        sourceAssociations: [
-          {
-            sourceIdentity:
-              accepted().recognitionSourceAssociation.sourceIdentity,
-            nativeAddress:
-              accepted().recognitionSourceAssociation.nativeAddress,
-          },
-        ],
+        recognitionState: "recognized",
+        recognitionDecisionId: "decision",
+        sourceAssociations: enrichedBeforeIdentityChange.sourceAssociations.map(
+          ({ sourceIdentity, nativeAddress }) => ({
+            sourceIdentity,
+            nativeAddress,
+          }),
+        ),
         recognitionSourceAssociation: {
           sourceIdentity:
-            accepted().recognitionSourceAssociation.sourceIdentity,
-          nativeAddress: accepted().recognitionSourceAssociation.nativeAddress,
+            enrichedBeforeIdentityChange.recognitionSourceAssociation
+              .sourceIdentity,
+          nativeAddress:
+            enrichedBeforeIdentityChange.recognitionSourceAssociation
+              .nativeAddress,
         },
-        metadata: accepted().metadata,
-        entities: accepted().entities ?? [],
-        entityMentions: accepted().entityMentions ?? [],
-        entityResolutionDecisions: accepted().entityResolutionDecisions ?? [],
-        relationships: accepted().relationships ?? [],
-        artifacts: accepted().artifacts,
-        locations: accepted().locations,
-        blobs: accepted().blobs,
-        artifactRevisions: accepted().artifactRevisions,
-        artifactAssociations: accepted().artifactAssociations,
+        metadata: enrichedBeforeIdentityChange.metadata,
+        entities: enrichedBeforeIdentityChange.entities ?? [],
+        entityMentions: enrichedBeforeIdentityChange.entityMentions ?? [],
+        entityResolutionDecisions:
+          enrichedBeforeIdentityChange.entityResolutionDecisions ?? [],
+        relationships: enrichedBeforeIdentityChange.relationships ?? [],
+        artifacts: enrichedBeforeIdentityChange.artifacts,
+        locations: enrichedBeforeIdentityChange.locations,
+        blobs: enrichedBeforeIdentityChange.blobs,
+        artifactRevisions: enrichedBeforeIdentityChange.artifactRevisions,
+        artifactAssociations: enrichedBeforeIdentityChange.artifactAssociations,
         primaryCoverArtifactId: "artifact",
       },
       projected: {
+        recognitionState: "recognized",
+        recognitionDecisionId: "recognition-decision-preview",
         sourceAssociations: [
           {
             sourceIdentity: "supplement",
@@ -13682,7 +14151,12 @@ describe("SQLite Asset Refresh persistence", () => {
           sourceIdentity: "source",
           nativeAddress: "https://source.example/new-work",
         },
-        metadata: proposal.basis.interpretation.metadata,
+        metadata: [
+          ...enrichedBeforeIdentityChange.metadata.filter((assertion) =>
+            assertion.sourceRecordIds.includes(supplementRecord.id),
+          ),
+          ...proposal.basis.interpretation.metadata,
+        ],
         entities: [newEntity],
         entityMentions: [newMention],
         entityResolutionDecisions:
@@ -13817,8 +14291,14 @@ describe("SQLite Asset Refresh persistence", () => {
           subjectId: "asset",
           sourceIdentity: "late-supplement",
           nativeAddress: "late-supplement:old-work",
-          proposalId: "source-enrichment:late-supplement",
         },
+        ...sourceAssociationEstablishment({
+          id: "late-enrichment-association",
+          subjectId: "asset",
+          sourceIdentity: "late-supplement",
+          nativeAddress: "late-supplement:old-work",
+          sourceRecordIds: [lateEnrichmentRecord.id],
+        }),
         sourceRecords: [lateEnrichmentRecord],
         interpretation: {
           id: "late-enrichment-interpretation",
@@ -13858,19 +14338,29 @@ describe("SQLite Asset Refresh persistence", () => {
         recognitionSourceAssociation: {
           nativeAddress: "https://source.example/new-work",
         },
-        sourceAssociations: [
+        sourceAssociations: expect.arrayContaining([
+          expect.objectContaining({
+            sourceIdentity: "supplement",
+            nativeAddress: "supplement:work",
+          }),
           expect.objectContaining({
             nativeAddress: "https://source.example/new-work",
           }),
-        ],
-        metadata: [
+        ]),
+        metadata: expect.arrayContaining([
+          expect.objectContaining({
+            property: "asset.awards",
+            sourceSlot: "supplement.awards",
+            value: "Supplement award",
+            sourceRecordIds: ["supplement-record"],
+          }),
           expect.objectContaining({
             property: "asset.title",
             sourceSlot: "source.title",
             value: "New work",
             sourceRecordIds: ["new-record"],
           }),
-        ],
+        ]),
         entities: [{ id: "new-persona", label: "New credited name" }],
         entityMentions: [{ id: "new-mention" }],
         entityResolutionDecisions: [{ id: "new-resolution" }],
@@ -13891,13 +14381,24 @@ describe("SQLite Asset Refresh persistence", () => {
       },
     });
     const replaced = await catalogue.findAcceptedForDirectory("/observed");
-    expect(replaced?.accepted.sourceAssociations).not.toEqual(
+    expect(replaced?.accepted.sourceAssociations).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           sourceIdentity: "supplement",
         }),
+      ]),
+    );
+    expect(replaced?.accepted.sourceAssociations).not.toEqual(
+      expect.arrayContaining([
         expect.objectContaining({
           sourceIdentity: "late-supplement",
+        }),
+      ]),
+    );
+    expect(replaced?.accepted.metadata).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          value: "Supplement award",
         }),
       ]),
     );
@@ -13974,7 +14475,10 @@ describe("SQLite Asset Refresh persistence", () => {
       id: "rejected-preview",
     });
     await expect(
-      catalogue.rejectChangeImpactPreview("rejected-preview"),
+      catalogue.rejectChangeImpactPreview({
+        previewId: "rejected-preview",
+        rejectedBy: "change-impact-reviewer",
+      }),
     ).resolves.toBe("rejected");
     expect(
       (await catalogue.listCurrentAttentionPage({ limit: 10 })).items,
@@ -13995,7 +14499,10 @@ describe("SQLite Asset Refresh persistence", () => {
         recognitionSourceAssociation: {
           nativeAddress: "https://source.example/new-work",
         },
-        metadata: [expect.objectContaining({ value: "New work" })],
+        metadata: expect.arrayContaining([
+          expect.objectContaining({ value: "Supplement award" }),
+          expect.objectContaining({ value: "New work" }),
+        ]),
       },
     });
 
@@ -14090,10 +14597,30 @@ describe("SQLite Asset Refresh persistence", () => {
       primaryCoverArtifactId: "new-cover",
     };
     const reversePreview: ChangeImpactPreview = {
+      version: "change-impact-preview/2",
       id: "reverse-preview",
       executionId: "reverse",
       assetId: "asset",
       proposal: reverseProposal,
+      change: {
+        kind: "recognition-supersession",
+        proposal: reverseProposal,
+      },
+      evidenceComparison: {
+        observed: [],
+        manual: [],
+        sourceCandidates: [
+          {
+            outcome: "accepted",
+            sourceIdentity: "source",
+            nativeAddress: "https://source.example/work",
+            sourceRecordIds: ["reverse-record"],
+            ruleResults: reverseProposal.ruleResults,
+            explanation: "测试身份回退来源解释",
+          },
+        ],
+        conflicts: [],
+      },
       baselines: [
         {
           key: "source-association",
@@ -14128,7 +14655,12 @@ describe("SQLite Asset Refresh persistence", () => {
           sourceIdentity: "source",
           nativeAddress: "https://source.example/work",
         },
-        metadata: reverseProposal.basis.interpretation.metadata,
+        metadata: [
+          ...current.accepted.metadata.filter((assertion) =>
+            assertion.sourceRecordIds.includes(supplementRecord.id),
+          ),
+          ...reverseProposal.basis.interpretation.metadata,
+        ],
       },
       blockingConditions: [],
       status: "awaiting-confirmation",
@@ -14171,10 +14703,27 @@ describe("SQLite Asset Refresh persistence", () => {
       id: "atomic-change-proposal",
     };
     const preview = {
+      version: "change-impact-preview/2" as const,
       id: "atomic-change-preview",
       executionId: running.id,
       assetId: "asset",
       proposal,
+      change: { kind: "recognition-supersession" as const, proposal },
+      evidenceComparison: {
+        observed: [],
+        manual: [],
+        sourceCandidates: [
+          {
+            outcome: "accepted" as const,
+            sourceIdentity: "source",
+            nativeAddress: "https://source.example/projected",
+            sourceRecordIds: ["record"],
+            ruleResults: proposal.ruleResults,
+            explanation: "测试身份更正来源解释",
+          },
+        ],
+        conflicts: [],
+      },
       baselines: [],
       current: {
         sourceAssociations: [
@@ -15712,7 +16261,6 @@ describe("SQLite Asset Refresh persistence", () => {
       subjectId: "asset",
       sourceIdentity: "other-source",
       nativeAddress: "other:exact:1",
-      proposalId: "source-enrichment:enrichment-execution",
     };
     const enrichmentInterpretation = {
       id: "other-interpretation",
@@ -15868,6 +16416,10 @@ describe("SQLite Asset Refresh persistence", () => {
       },
       assetId: "asset",
       sourceAssociation: enrichmentAssociation,
+      ...sourceAssociationEstablishment({
+        ...enrichmentAssociation,
+        sourceRecordIds: [enrichmentRecord.id],
+      }),
       sourceRecords: [enrichmentRecord],
       interpretation: enrichmentInterpretation,
       managedArtifacts: {
@@ -15990,7 +16542,11 @@ describe("SQLite Asset Refresh persistence", () => {
       "ordinary-film-metadata",
     ]);
     expect(reopened?.accepted.metadataSourceRecords).toEqual([
-      { id: "record", sourceIdentity: "source" },
+      {
+        id: "record",
+        sourceIdentity: "source",
+        nativeAddress: "https://source.example/work",
+      },
     ]);
     later.close();
   });

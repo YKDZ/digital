@@ -30,6 +30,7 @@ import {
   DlsiteCollector,
   DlsiteExactDirectoryInterpreter,
   DlsiteExactRecognizer,
+  DlsiteSourceAddressing,
   DlsiteSourceInterpreter,
   dlsiteInformationFulfillmentCapabilities,
 } from "@digital/dlsite";
@@ -40,15 +41,13 @@ import {
 } from "@digital/epub";
 import {
   FanboxArtifactAcquirer,
-  FanboxCollector,
   FanboxDateDirectoryInterpreter,
   FanboxExactRecognizer,
   FanboxSourceInterpreter,
+  createFanboxProductAssembly,
   fanboxCreatorIdFromEvidence,
   fanboxOfficialCollectionCapability,
   fanboxSourceConnectionCapability,
-  validatedFanboxBrowserCredential,
-  verifyFanboxStoredCredential,
 } from "@digital/fanbox";
 import {
   BdmvFilesystemPackageInterpreter,
@@ -56,9 +55,12 @@ import {
   ContentAddressedManagedArtifactStore,
   ReadOnlyFilesystemObserver,
 } from "@digital/filesystem";
+import { createKadokawaJapanSource } from "@digital/kadokawa-jp";
 import {
   NbinetCollector,
   NbinetExactIsbnRecognizer,
+  NbinetSourceAddressing,
+  NbinetSourceAssociationInterpreter,
   NbinetSourceInterpreter,
 } from "@digital/nbinet";
 import {
@@ -97,6 +99,7 @@ import {
   type ProductDataWriterLifecycle,
 } from "@digital/product-data";
 import { SqliteCatalogue } from "@digital/sqlite";
+import { createTaiwanKadokawaSource } from "@digital/taiwan-kadokawa";
 import {
   TmdbArtifactAcquirer,
   TmdbCollector,
@@ -252,6 +255,7 @@ function composeAssetRefreshWithGeneration(
       privateState,
       environment: configuration,
     });
+    const fanboxProductAssembly = createFanboxProductAssembly();
     const sourceConnections = new ProductSourceConnections({
       privateState,
       environment: configuration,
@@ -264,9 +268,10 @@ function composeAssetRefreshWithGeneration(
         connectionCapability: fanboxSourceConnectionCapability,
         collectorCapability: fanboxOfficialCollectionCapability,
         creatorIdFromEvidence: fanboxCreatorIdFromEvidence,
-        validatedBrowserCredential: validatedFanboxBrowserCredential,
-        verifyStoredCredential: verifyFanboxStoredCredential,
-        createCollector: (input) => new FanboxCollector(input),
+        validatedBrowserCredential:
+          fanboxProductAssembly.validatedBrowserCredential,
+        verifyStoredCredential: fanboxProductAssembly.verifyStoredCredential,
+        createCollector: fanboxProductAssembly.createCollector,
       },
       tmdb: {
         connectionCapability: tmdbSourceConnectionCapability,
@@ -286,6 +291,8 @@ function composeAssetRefreshWithGeneration(
       bangumiCapabilitiesFromProductConnections(sourceConnections);
     const tmdb = tmdbCapabilitiesFromPrivateConfiguration(sourceConnections);
     const omdb = omdbCapabilitiesFromPrivateConfiguration(sourceConnections);
+    const taiwanKadokawa = createTaiwanKadokawaSource();
+    const kadokawaJapan = createKadokawaJapanSource();
     const pdf = createPdfRecognitionCapabilities();
     const directoryInterpreters = [
       new DlsiteExactDirectoryInterpreter(),
@@ -304,6 +311,8 @@ function composeAssetRefreshWithGeneration(
       new DlsiteCollector(),
       bangumi.collector,
       new NbinetCollector(),
+      taiwanKadokawa.collector,
+      kadokawaJapan.collector,
       tmdb.collector,
       omdb.collector,
       ...fanbox.collectors,
@@ -312,14 +321,27 @@ function composeAssetRefreshWithGeneration(
       new DlsiteSourceInterpreter(),
       new BangumiSourceInterpreter(),
       new NbinetSourceInterpreter(),
+      taiwanKadokawa.interpreter,
+      kadokawaJapan.interpreter,
       new TmdbSourceInterpreter(),
       omdb.interpreter,
       ...fanbox.sourceInterpreters,
     ];
+    const sourceAddressingCapabilities = [
+      new DlsiteSourceAddressing(),
+      new NbinetSourceAddressing(),
+      taiwanKadokawa.sourceAddressing,
+      kadokawaJapan.sourceAddressing,
+    ];
     const sourceAssociationCandidateInterpreters = [
       omdb.sourceAssociationCandidateInterpreter,
     ];
-    const sourceAssociationInterpreters = [omdb.sourceAssociationInterpreter];
+    const sourceAssociationInterpreters = [
+      omdb.sourceAssociationInterpreter,
+      new NbinetSourceAssociationInterpreter(),
+      taiwanKadokawa.associationInterpreter,
+      kadokawaJapan.associationInterpreter,
+    ];
     const recognizers = [
       new DlsiteExactRecognizer(),
       new BangumiEpisodicRecognizer(),
@@ -334,6 +356,8 @@ function composeAssetRefreshWithGeneration(
       new BangumiArtifactAcquirer(),
       new TmdbArtifactAcquirer(),
       new OmdbArtifactAcquirer(),
+      taiwanKadokawa.artifactAcquirer,
+      kadokawaJapan.artifactAcquirer,
       ...fanbox.acquirers,
     ];
     const observedArtifactPartAcquirers = [
@@ -379,6 +403,7 @@ function composeAssetRefreshWithGeneration(
       ...formatInspectors.map(({ capability }) => capability),
       ...collectors.map(({ capability }) => capability),
       ...sourceInterpreters.map(({ capability }) => capability),
+      ...sourceAddressingCapabilities.map(({ capability }) => capability),
       ...sourceAssociationCandidateInterpreters.map(
         ({ capability }) => capability,
       ),
@@ -395,6 +420,7 @@ function composeAssetRefreshWithGeneration(
       formatInspectors,
       collectors,
       sourceInterpreters,
+      sourceAddressingCapabilities,
       sourceAssociationCandidateInterpreters,
       sourceAssociationInterpreters,
       sourceConnectionExecutionConfiguration: sourceConnections,
@@ -413,6 +439,7 @@ function composeAssetRefreshWithGeneration(
       workflowHistoryQueries: persistence,
       currentAttentionQueries: persistence,
       recognitionAcceptance: persistence,
+      observedMaterialAssociationPersistence: persistence,
       recognitionReevaluation: persistence,
       recognitionChangeImpact: persistence,
       metadataRefreshPersistence: persistence,
@@ -467,6 +494,7 @@ function composeAssetRefreshWithGeneration(
       persistence,
       ownedInvocationSupervisor,
       productWriterLease,
+      () => fanboxProductAssembly.close(),
     );
   } catch (error) {
     productWriterLease.close();
@@ -485,6 +513,7 @@ export function composeOwnedAssetRefresh<
   persistence: { readonly close: () => void },
   ownedInvocationSupervisor?: Pick<ExecutionHost, "close">,
   productWriterLease?: ProductDataWriterLifecycle,
+  closeFanboxAssembly?: () => Promise<void>,
 ): Workflow & { close(): Promise<void> } {
   const drainWorkflow = workflow.close.bind(workflow);
   let closing: Promise<void> | undefined;
@@ -495,6 +524,7 @@ export function composeOwnedAssetRefresh<
           ? []
           : [() => ownedInvocationSupervisor.close()]),
         drainWorkflow,
+        ...(closeFanboxAssembly === undefined ? [] : [closeFanboxAssembly]),
         () => persistence.close(),
         ...(productWriterLease === undefined
           ? []
@@ -791,6 +821,7 @@ export function composeProductApplication(input: {
   return {
     application: {
       configured: true,
+      productDataDirectory: path.resolve(productDataDirectory),
       get workflow() {
         return requireRuntime().workflow;
       },

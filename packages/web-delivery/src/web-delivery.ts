@@ -32,6 +32,12 @@ import type { Hono } from "hono";
 
 import { createApi } from "./api.ts";
 import type {
+  LibraryQuery,
+  IntakeSnapshot,
+  IntakeContent,
+} from "./catalogue.ts";
+import type { CatalogueSubjectResponse } from "./catalogue.ts";
+import type {
   AttentionViewModel,
   AutomationViewModel,
   CatalogueSurfaceResponse,
@@ -39,6 +45,261 @@ import type {
   ExecutionViewModel,
   ObservedRootViewModel,
 } from "./catalogue.ts";
+import type { SettingsSnapshot } from "./catalogue.ts";
+import { libraryItems, selectLibraryPage } from "./library-query.ts";
+
+export async function intakeSnapshot(input: {
+  readonly rootId?: string;
+  readonly executionId?: string;
+}): Promise<IntakeSnapshot> {
+  const roots = (await application().observedRootRegistrations.list())
+    .filter((root) => root.status === "active")
+    .map(({ id, displayName }) => ({ id, displayName }));
+  const rootId = input.rootId ?? roots[0]?.id;
+  if (rootId === undefined) return { roots, files: [], contents: [] };
+  if (!roots.some((root) => root.id === rootId))
+    throw new Error("文件位置已停用，请重新选择");
+  const intake = await application().inspectLocalIntake({
+    registrationId: rootId,
+    ...(input.executionId === undefined
+      ? {}
+      : { executionId: input.executionId }),
+  });
+  const execution = deliveryExecution(intake.execution);
+  return {
+    roots,
+    rootId,
+    files: intake.files,
+    contents: intake.contents.map((content) =>
+      deliveryAssetView(projectAssetView(assetViewFactsForAccepted(content))),
+    ),
+    ...(execution === undefined ? {} : { execution }),
+  };
+}
+
+function intakeContent(
+  review: Awaited<ReturnType<ProductAssetRefresh["prepareLocalContent"]>>,
+): IntakeContent {
+  return {
+    executionId: review.executionId,
+    status: review.status,
+    relativePaths: review.relativePaths,
+    asset: deliveryAssetView(
+      projectAssetView(assetViewFactsForAccepted(review.content)),
+    ),
+  };
+}
+
+export async function inspectIntakeContent(
+  executionId: string,
+): Promise<IntakeContent> {
+  return intakeContent(await application().inspectLocalContent(executionId));
+}
+
+export async function updateIntake(value: unknown): Promise<IntakeContent> {
+  const input = settingsObject(value);
+  const executionId = input.executionId;
+  if (typeof executionId !== "string" || !executionId)
+    throw new Error("请先检查文件");
+  if (input.action === "confirm")
+    return intakeContent(
+      await application().confirmLocalContent({ executionId }),
+    );
+  if (
+    input.action !== "prepare" ||
+    !Array.isArray(input.relativePaths) ||
+    !input.relativePaths.every((item: unknown) => typeof item === "string")
+  )
+    throw new Error("请选择待整理的文件");
+  if (
+    input.classification !== undefined &&
+    (typeof input.classification !== "string" ||
+      !["book", "audio", "video"].includes(input.classification))
+  )
+    throw new Error("请选择有效的内容类别");
+  if (input.name !== undefined && typeof input.name !== "string")
+    throw new Error("内容名称无效");
+  return intakeContent(
+    await application().prepareLocalContent({
+      executionId,
+      relativePaths: input.relativePaths as string[],
+      ...(input.name === undefined ? {} : { name: input.name as string }),
+      ...(input.classification === undefined
+        ? {}
+        : { classification: input.classification as string }),
+    }),
+  );
+}
+
+export async function settingsSnapshot(): Promise<SettingsSnapshot> {
+  const product = configuredProductApplication();
+  const registrations = product.workflow.observedRootRegistrations;
+  const roots = await Promise.all(
+    (await registrations.list()).map(async (root) => {
+      if (root.status !== "active") return { ...root, reachable: false };
+      try {
+        const bound = await registrations.resolveActiveScope({
+          registrationId: root.id,
+          relativeScope: ".",
+        });
+        await registrations.closeBoundScope(bound.scope);
+        return { ...root, reachable: true };
+      } catch (error) {
+        return {
+          ...root,
+          reachable: false,
+          problem: error instanceof Error ? error.message : "文件位置无法访问",
+        };
+      }
+    }),
+  );
+  return {
+    configured: product.configured,
+    ...(product.productDataDirectory === undefined
+      ? {}
+      : { productDataDirectory: product.productDataDirectory }),
+    roots,
+    sources: product.workflow.sourceConnections.inspect(),
+    automation: (await product.workflow.listAutomationIntents()).map(
+      toAutomationView,
+    ),
+  };
+}
+
+export async function updateSettingsRoot(value: unknown) {
+  const input = settingsObject(value);
+  const registrations = application().observedRootRegistrations;
+  const action = settingsText(input, "action");
+  if (action === "deactivate")
+    return await registrations.deactivate({
+      id: settingsText(input, "id"),
+      expectedVersion: settingsVersion(input),
+    });
+  if (action === "reconnect")
+    return await registrations.reconnect({
+      id: settingsText(input, "id"),
+      expectedVersion: settingsVersion(input),
+      containerPath: settingsText(input, "containerPath"),
+      readOnly: true,
+    });
+  const symlinkMode = settingsText(input, "symlinkMode");
+  if (
+    ![
+      "do-not-follow",
+      "follow-file-links",
+      "follow-file-and-directory-links",
+    ].includes(symlinkMode)
+  )
+    throw new Error("请选择链接策略");
+  const targets = input.allowedTargetRootIds;
+  if (
+    !Array.isArray(targets) ||
+    !targets.every((id): id is string => typeof id === "string")
+  )
+    throw new Error("请选择允许的链接目标");
+  const fields = {
+    displayName: settingsText(input, "displayName"),
+    readOnly: true as const,
+    symlinkMode: symlinkMode as
+      | "do-not-follow"
+      | "follow-file-links"
+      | "follow-file-and-directory-links",
+    allowedTargetRootIds: targets,
+  };
+  if (action === "create")
+    return await registrations.create({
+      ...fields,
+      containerPath: settingsText(input, "containerPath"),
+    });
+  if (action === "update")
+    return await registrations.update({
+      ...fields,
+      id: settingsText(input, "id"),
+      expectedVersion: settingsVersion(input),
+    });
+  throw new Error("未知文件位置操作");
+}
+
+function settingsObject(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("设置请求无效");
+  return value as Record<string, unknown>;
+}
+
+export async function updateSettingsConnection(value: unknown) {
+  const input = settingsObject(value);
+  const source = settingsText(input, "source");
+  const action = settingsText(input, "action");
+  const connections = application().sourceConnections;
+  if (source === "bangumi") {
+    if (action === "authorize") return connections.bangumi.beginAuthorization();
+    if (action === "revoke")
+      return connections.bangumi.revoke(settingsVersion(input));
+    if (action === "configure-client") {
+      connections.bangumi.configureClient({
+        clientId: settingsText(input, "clientId"),
+        clientSecret: settingsText(input, "clientSecret"),
+        redirectUri: settingsText(input, "redirectUri"),
+      });
+      return connections.bangumi.inspect();
+    }
+    if (action === "verify") {
+      await connections.bangumi.authorization().bearer();
+      return connections.bangumi.inspect();
+    }
+  }
+  if (source === "fanbox") {
+    const creatorId = settingsText(input, "creatorId");
+    if (action === "verify") return await connections.fanbox.verify(creatorId);
+    if (action === "revoke")
+      return connections.fanbox.revoke({
+        creatorId,
+        expectedVersion: settingsVersion(input),
+      });
+    if (action === "configure")
+      return await connections.fanbox.importBrowserCredentials({
+        creatorId,
+        browserCredential: input.browserCredential,
+      });
+    if (action === "replace")
+      return await connections.fanbox.replaceBrowserCredentials({
+        creatorId,
+        browserCredential: input.browserCredential,
+        expectedVersion: settingsVersion(input),
+      });
+  }
+  if (source === "tmdb" || source === "omdb") {
+    const connection = connections[source];
+    if (action === "verify") return await connection.verify();
+    if (action === "revoke") return connection.revoke(settingsVersion(input));
+    if (action === "configure" || action === "replace") {
+      const secret = settingsText(input, "secret");
+      if (source === "tmdb") {
+        if (action === "configure")
+          connections.tmdb.configureAccessToken(secret);
+        else
+          connections.tmdb.replaceAccessToken(secret, settingsVersion(input));
+      } else {
+        if (action === "configure") connections.omdb.configureApiKey(secret);
+        else connections.omdb.replaceApiKey(secret, settingsVersion(input));
+      }
+      return await connection.verify();
+    }
+  }
+  throw new Error("未知来源连接操作");
+}
+function settingsText(value: Record<string, unknown>, field: string): string {
+  const result = value[field];
+  if (typeof result !== "string" || !result.trim())
+    throw new Error("请填写完整的设置");
+  return result.trim();
+}
+function settingsVersion(value: Record<string, unknown>): number {
+  const result = value.expectedVersion;
+  if (typeof result !== "number" || !Number.isSafeInteger(result) || result < 0)
+    throw new Error("设置版本无效，请刷新后重试");
+  return result;
+}
 
 export type BangumiAuthorizationStart = ReturnType<
   ProductAssetRefresh["sourceConnections"]["bangumi"]["beginAuthorization"]
@@ -58,9 +319,10 @@ export type WebDelivery = {
 export function createWebDelivery(
   application: ProductApplication,
 ): WebDelivery {
-  application.setAutomationInformationRequirementForAcceptedSubject(
-    informationRequirementForAutomatedAcceptedSubject,
-  );
+  if (application.configured)
+    application.setAutomationInformationRequirementForAcceptedSubject(
+      informationRequirementForAutomatedAcceptedSubject,
+    );
   productApplication = application;
   const catalogueAutomation = createCatalogueAutomation(application);
   activeCatalogueAutomation = catalogueAutomation;
@@ -201,6 +463,9 @@ export function deliveryAssetView(view: AssetViewModel): AssetViewModel {
   const delivered = withDeliveryCover(view);
   return {
     ...delivered,
+    ...(delivered.files === undefined
+      ? {}
+      : { files: delivered.files.map(withDeliveryFileImage) }),
     ...(delivered.fanbox === undefined
       ? {}
       : {
@@ -214,7 +479,10 @@ export function deliveryAssetView(view: AssetViewModel): AssetViewModel {
     ...(delivered.book === undefined
       ? {}
       : {
-          book: withDeliveryCover(delivered.book),
+          book: {
+            ...withDeliveryCover(delivered.book),
+            files: delivered.book.files.map(withDeliveryFileImage),
+          },
         }),
     ...(delivered.film === undefined
       ? {}
@@ -222,6 +490,16 @@ export function deliveryAssetView(view: AssetViewModel): AssetViewModel {
           film: withDeliveryCover(delivered.film),
         }),
   };
+}
+
+function withDeliveryFileImage<T extends { readonly image?: string }>(
+  value: T,
+): T {
+  const image = deliveryCover(value.image);
+  if (image !== undefined) return { ...value, image };
+  if (value.image === undefined) return value;
+  const { image: _image, ...withoutImage } = value;
+  return withoutImage as T;
 }
 
 function withDeliveryCover<T extends { readonly cover?: string }>(value: T): T {
@@ -802,6 +1080,7 @@ function assetViewFactsForAccepted(
     entities: accepted.entities,
     relationships: accepted.relationships,
     artifactAssociations: accepted.artifactAssociations,
+    artifactRevisions: accepted.artifactRevisions,
     locations: accepted.locations,
   };
 }
@@ -865,6 +1144,42 @@ export function projectCatalogueAssets(
   return projectCatalogue(facts).map((view) =>
     "works" in view ? deliveryBangumiView(view) : deliveryAssetView(view),
   );
+}
+
+/** 详情按稳定主体读取，不依赖首页恰好加载了哪一页。 */
+export async function catalogueSubject(
+  id: string,
+): Promise<CatalogueSubjectResponse | undefined> {
+  if (productApplication?.configured !== true) return undefined;
+  const items = libraryItems(
+    await application().listCurrentCatalogueIndex(
+      libraryIndexMetadataProperties,
+    ),
+  );
+  const item = items.find(
+    (entry) => entry.view.id === id || entry.subjectIds.includes(id),
+  );
+  if (item === undefined) return undefined;
+  const assets = await catalogueViewsForSubjects(item.subjectIds);
+  const asset = assets.find((view) => view.id === item.view.id);
+  if (asset === undefined) return undefined;
+  return {
+    asset,
+    ...("works" in asset && asset.id !== id ? { selectedEpisodeId: id } : {}),
+  };
+}
+
+async function catalogueViewsForSubjects(subjectIds: readonly string[]) {
+  const facts: AssetViewFacts[] = [];
+  for (let offset = 0; offset < subjectIds.length; offset += 100) {
+    const batch = subjectIds.slice(offset, offset + 100);
+    const page = await application().listCurrentCataloguePage({
+      limit: batch.length,
+      subjectIds: batch,
+    });
+    facts.push(...page.items.map(assetViewFactsForAccepted));
+  }
+  return projectCatalogueAssets(facts);
 }
 
 function folderName(directory: string): string {
@@ -962,12 +1277,14 @@ export function deliveryExecution(
               projectAssetView({
                 id: inspection.changeImpactPreview.assetId,
                 ...inspection.changeImpactPreview.current,
+                locations: [],
               }),
             ),
             proposed: deliveryAssetView(
               projectAssetView({
                 id: inspection.changeImpactPreview.assetId,
                 ...inspection.changeImpactPreview.projected,
+                locations: [],
               }),
             ),
           },
@@ -999,6 +1316,7 @@ type CatalogueSurfaceRequest =
   | {
       readonly surface: "current-catalogue";
       readonly page?: CurrentCataloguePageRequest;
+      readonly query?: LibraryQuery;
     }
   | {
       readonly surface: "workflow-history";
@@ -1052,6 +1370,26 @@ export async function catalogueSurface(
   }
   const subject = application();
   if (input.surface === "current-catalogue") {
+    if (input.query !== undefined) {
+      const selected = selectLibraryPage(
+        await subject.listCurrentCatalogueIndex(libraryIndexMetadataProperties),
+        input.query,
+        input.page,
+      );
+      const views = await catalogueViewsForSubjects(selected.subjectIds);
+      const items = new Map(views.map((item) => [item.id, item]));
+      return {
+        surface: input.surface,
+        configured,
+        assets: selected.ids.flatMap((id) => {
+          const item = items.get(id);
+          return item === undefined ? [] : [item];
+        }),
+        total: selected.total,
+        categories: selected.categories,
+        pagination: selected.pagination,
+      };
+    }
     const page = await subject.listCurrentCataloguePage(input.page);
     const facts = page.items.map(assetViewFactsForAccepted);
     await Promise.all(
@@ -1159,8 +1497,236 @@ export async function startRefresh(input: {
   readonly rescrape?: boolean;
   readonly directedSourceAddress?: string;
   readonly directedSourceIdentity?: string;
+  readonly directedSourceInput?: Readonly<Record<string, string>>;
 }): Promise<{ readonly id: string }> {
   return await startRefreshWith(application(), input, executions());
+}
+
+export function sourceInputRequirements() {
+  return application().sourceInputRequirements();
+}
+
+export async function startSourceEnrichment(value: unknown) {
+  const input = settingsObject(value);
+  const subjectId = settingsText(input, "subjectId");
+  const sourceIdentity = settingsText(input, "sourceIdentity");
+  if (
+    typeof input.sourceInput !== "object" ||
+    input.sourceInput === null ||
+    Array.isArray(input.sourceInput) ||
+    !Object.values(input.sourceInput).every((item) => typeof item === "string")
+  )
+    throw new Error("来源输入无效");
+  return await executions().invoke(async (control) => {
+    await application().enrichSource({
+      subjectId,
+      sourceIdentity,
+      sourceInput: input.sourceInput as Readonly<Record<string, string>>,
+      informationRequirement: generalAssetViewInformationRequirement,
+      onExecutionStarted(execution) {
+        control.executionStarted(execution.id);
+      },
+      onHostCheckpoint() {
+        control.safeCheckpoint();
+      },
+    });
+  });
+}
+
+export async function inspectSourceEnrichment(executionId: string) {
+  const inspection = await application().inspect(executionId);
+  if (inspection === undefined || inspection.sourceEnrichments === undefined)
+    return undefined;
+  return {
+    id: inspection.execution.id,
+    status: inspection.execution.status,
+    ...(inspection.execution.outcome === undefined
+      ? {}
+      : { outcome: inspection.execution.outcome }),
+    ...(inspection.execution.reason === undefined
+      ? {}
+      : { reason: inspection.execution.reason }),
+    sourceEnrichments: inspection.sourceEnrichments,
+    sourceAssociations: inspection.accepted?.sourceAssociations ?? [],
+  };
+}
+
+export async function startSourceAssociationDecision(value: unknown) {
+  const input = settingsObject(value);
+  const intent = settingsText(input, "intent");
+  if (!new Set(["establish", "replace", "retract"]).has(intent))
+    throw new Error("来源关联决定意图无效");
+  const assetId = settingsText(input, "assetId");
+  const initiatedBy = settingsText(input, "initiatedBy");
+  const sourceInput = (): Readonly<Record<string, string>> => {
+    if (
+      typeof input.sourceInput !== "object" ||
+      input.sourceInput === null ||
+      Array.isArray(input.sourceInput) ||
+      !Object.values(input.sourceInput).every(
+        (item) => typeof item === "string",
+      )
+    )
+      throw new Error("来源输入无效");
+    return input.sourceInput as Readonly<Record<string, string>>;
+  };
+  return await executions().invoke(async (control) => {
+    const onExecutionStarted = (execution: { readonly id: string }) =>
+      control.executionStarted(execution.id);
+    const onHostCheckpoint = () => control.safeCheckpoint();
+    if (intent === "establish")
+      await application().prepareConflictedEstablishment({
+        assetId,
+        sourceIdentity: settingsText(input, "sourceIdentity"),
+        sourceInput: sourceInput(),
+        initiatedBy,
+        onExecutionStarted,
+        onHostCheckpoint,
+      });
+    else if (intent === "replace")
+      await application().prepareReplacement({
+        assetId,
+        predecessorAssociationId: settingsText(
+          input,
+          "predecessorAssociationId",
+        ),
+        sourceInput: sourceInput(),
+        initiatedBy,
+        onExecutionStarted,
+        onHostCheckpoint,
+      });
+    else
+      await application().prepareRetraction({
+        assetId,
+        predecessorAssociationId: settingsText(
+          input,
+          "predecessorAssociationId",
+        ),
+        initiatedBy,
+        reason: settingsText(input, "reason"),
+        onExecutionStarted,
+        onHostCheckpoint,
+      });
+  });
+}
+
+export async function inspectSourceAssociationDecision(executionId: string) {
+  return await application().inspectSourceAssociationDecision(executionId);
+}
+
+export async function inspectCorrectionSubject(assetId: string) {
+  return await application().inspectCorrectionSubject(assetId);
+}
+
+export async function selectSourceAssociationDecisionCandidate(
+  executionId: string,
+  value: unknown,
+) {
+  const input = settingsObject(value);
+  if (Object.keys(input).length !== 1)
+    throw new Error("来源候选选择包含未知字段");
+  return await application().selectSourceAssociationCandidate({
+    executionId,
+    candidateReference: settingsText(input, "candidateReference"),
+  });
+}
+
+export async function retrySourceAssociationDecision(executionId: string) {
+  return await executions().invoke(async (control) => {
+    await application().retrySourceAssociationDecision({
+      executionId,
+      onExecutionStarted(execution) {
+        control.executionStarted(execution.id);
+      },
+      onHostCheckpoint() {
+        control.safeCheckpoint();
+      },
+    });
+  });
+}
+
+export async function startRecognitionRetraction(value: unknown) {
+  const input = settingsObject(value);
+  return await executions().invoke(async (control) => {
+    await application().prepareRecognitionRetraction({
+      assetId: settingsText(input, "assetId"),
+      predecessorDecisionId: settingsText(input, "predecessorDecisionId"),
+      proposedBy: settingsText(input, "proposedBy"),
+      reason: settingsText(input, "reason"),
+      onExecutionStarted(execution) {
+        control.executionStarted(execution.id);
+      },
+    });
+  });
+}
+
+export async function startObservedMaterialAssociation(value: unknown) {
+  const input = settingsObject(value);
+  const allowed = new Set([
+    "targetAssetId",
+    "registrationId",
+    "relativeScope",
+    "relativePaths",
+    "initiatedBy",
+  ]);
+  if (Object.keys(input).some((key) => !allowed.has(key)))
+    throw new Error("观察材料关联请求包含不支持的字段");
+  if (
+    typeof input.targetAssetId !== "string" ||
+    !input.targetAssetId ||
+    typeof input.registrationId !== "string" ||
+    !input.registrationId ||
+    typeof input.relativeScope !== "string" ||
+    typeof input.initiatedBy !== "string" ||
+    !input.initiatedBy.trim() ||
+    !Array.isArray(input.relativePaths) ||
+    input.relativePaths.length === 0 ||
+    !input.relativePaths.every((item) => typeof item === "string" && item)
+  )
+    throw new Error("观察材料关联请求无效");
+  return await executions().invoke(async (control) => {
+    await application().prepareObservedMaterialAssociation({
+      targetAssetId: input.targetAssetId as string,
+      registrationId: input.registrationId as string,
+      relativeScope: input.relativeScope as string,
+      relativePaths: input.relativePaths as string[],
+      initiatedBy: input.initiatedBy as string,
+      onExecutionStarted(execution) {
+        control.executionStarted(execution.id);
+      },
+      onHostCheckpoint() {
+        control.safeCheckpoint();
+      },
+    });
+  });
+}
+
+export async function inspectObservedMaterialAssociation(executionId: string) {
+  return await application().inspectObservedMaterialAssociation(executionId);
+}
+
+export async function confirmObservedMaterialAssociation(value: unknown) {
+  const input = settingsObject(value);
+  if (
+    Object.keys(input).some(
+      (key) => key !== "executionId" && key !== "confirmedBy",
+    ) ||
+    typeof input.executionId !== "string" ||
+    !input.executionId ||
+    typeof input.confirmedBy !== "string" ||
+    !input.confirmedBy.trim()
+  )
+    throw new Error("观察材料确认请求无效");
+  return await executions().invoke(async (control) => {
+    control.executionStarted(input.executionId as string);
+    await application().confirmObservedMaterialAssociation({
+      executionId: input.executionId as string,
+      confirmedBy: input.confirmedBy as string,
+      onHostCheckpoint() {
+        control.safeCheckpoint();
+      },
+    });
+  });
 }
 
 export async function createObservedRoot(input: {
@@ -1223,6 +1789,38 @@ export async function startRefreshWith(
     input.intent === "metadata-refresh"
   )
     throw new Error("该操作需要精确内容标识");
+  if (input.directedSourceInput !== undefined) {
+    if (
+      input.directedSourceIdentity === undefined ||
+      input.directedSourceAddress !== undefined ||
+      typeof input.directedSourceInput !== "object" ||
+      Array.isArray(input.directedSourceInput) ||
+      !Object.values(input.directedSourceInput).every(
+        (item) => typeof item === "string",
+      )
+    )
+      throw new Error("明确来源输入无效");
+    return await host.invoke(async (control) => {
+      await subject.directedRecognitionSourceInputObservedScope({
+        registrationId: observedRootId,
+        relativeScope: input.relativeScope ?? ".",
+        sourceIdentity: input.directedSourceIdentity!,
+        sourceInput: input.directedSourceInput!,
+        informationRequirement: generalAssetViewInformationRequirement,
+        onExecutionStarted(execution) {
+          control.executionStarted(execution.id);
+        },
+        onHostCheckpoint() {
+          control.safeCheckpoint();
+        },
+      });
+    });
+  }
+  if (
+    input.directedSourceAddress !== undefined ||
+    input.directedSourceIdentity !== undefined
+  )
+    throw new Error("明确来源必须按来源输入要求提交");
   return await host.invoke(async (control) => {
     await subject.scanObservedScope({
       registrationId: observedRootId,
@@ -1245,7 +1843,7 @@ export async function startAssetRescrapeForSubject(
     ProductWorkflowOperations,
     | "inspectCurrentCatalogueSubject"
     | "inspectRefreshTarget"
-    | "rescrapeObservedScope"
+    | "rescrapeCurrentObservedScope"
   >,
   subjectId: string,
   host: Pick<ExecutionHost, "invoke">,
@@ -1274,7 +1872,7 @@ export async function startAssetRescrapeForSubject(
 }
 
 export async function startAssetRescrape(
-  subject: Pick<ReturnType<typeof application>, "rescrapeObservedScope">,
+  subject: Pick<ReturnType<typeof application>, "rescrapeCurrentObservedScope">,
   input: {
     readonly assetId: string;
     readonly observedRootId: string;
@@ -1294,12 +1892,10 @@ export async function startAssetRescrape(
   ),
 ): Promise<{ readonly id: string }> {
   return await host.invoke(async (control) => {
-    await subject.rescrapeObservedScope({
+    await subject.rescrapeCurrentObservedScope({
       subjectId: input.assetId,
       registrationId: input.observedRootId,
       relativeScope: input.relativeScope,
-      sourceAddress: input.sourceAddress,
-      sourceIdentity: input.sourceIdentity,
       informationRequirement,
       onExecutionStarted(execution) {
         control.executionStarted(execution.id);
@@ -1444,207 +2040,19 @@ export async function startAutomationNowWith(
 export async function updatePreview(input: {
   readonly action: "apply" | "reject";
   readonly previewId: string;
+  readonly actorId: string;
 }): Promise<{
   readonly status: "awaiting-confirmation" | "rejected" | "applied" | "stale";
 }> {
   const preview =
     input.action === "apply"
-      ? await application().applyChangeImpactPreview(input.previewId)
-      : await application().rejectChangeImpactPreview(input.previewId);
+      ? await application().applyChangeImpactPreview({
+          previewId: input.previewId,
+          confirmedBy: input.actorId,
+        })
+      : await application().rejectChangeImpactPreview({
+          previewId: input.previewId,
+          rejectedBy: input.actorId,
+        });
   return { status: preview.status };
-}
-
-import type { CatalogueSubjectResponse } from "./catalogue.ts";
-import { libraryItems } from "./library-query.ts";
-/** 详情按稳定主体读取，不依赖首页恰好加载了哪一页。 */
-export async function catalogueSubject(
-  id: string,
-): Promise<CatalogueSubjectResponse | undefined> {
-  if (productApplication?.configured !== true) return undefined;
-  const items = libraryItems(
-    await application().listCurrentCatalogueIndex(
-      libraryIndexMetadataProperties,
-    ),
-  );
-  const item = items.find(
-    (entry) => entry.view.id === id || entry.subjectIds.includes(id),
-  );
-  if (item === undefined) return undefined;
-  const assets = await catalogueViewsForSubjects(item.subjectIds);
-  const asset = assets.find((view) => view.id === item.view.id);
-  if (asset === undefined) return undefined;
-  return {
-    asset,
-    ...("works" in asset && asset.id !== id ? { selectedEpisodeId: id } : {}),
-  };
-}
-
-async function catalogueViewsForSubjects(subjectIds: readonly string[]) {
-  const facts: AssetViewFacts[] = [];
-  for (let offset = 0; offset < subjectIds.length; offset += 100) {
-    const batch = subjectIds.slice(offset, offset + 100);
-    const page = await application().listCurrentCataloguePage({
-      limit: batch.length,
-      subjectIds: batch,
-    });
-    facts.push(...page.items.map(assetViewFactsForAccepted));
-  }
-  return projectCatalogueAssets(facts);
-}
-
-import type { IntakeSnapshot, IntakeContent } from "./catalogue.ts";
-export async function intakeSnapshot(input: {
-  readonly rootId?: string;
-  readonly executionId?: string;
-}): Promise<IntakeSnapshot> {
-  const roots = (await application().observedRootRegistrations.list())
-    .filter((root) => root.status === "active")
-    .map(({ id, displayName }) => ({ id, displayName }));
-  const rootId = input.rootId ?? roots[0]?.id;
-  if (rootId === undefined) return { roots, files: [], contents: [] };
-  if (!roots.some((root) => root.id === rootId))
-    throw new Error("文件位置已停用，请重新选择");
-  const intake = await application().inspectLocalIntake({
-    registrationId: rootId,
-    ...(input.executionId === undefined
-      ? {}
-      : { executionId: input.executionId }),
-  });
-  const execution = deliveryExecution(intake.execution);
-  return {
-    roots,
-    rootId,
-    files: intake.files,
-    contents: intake.contents.map((content) =>
-      deliveryAssetView(projectAssetView(assetViewFactsForAccepted(content))),
-    ),
-    ...(execution === undefined ? {} : { execution }),
-  };
-}
-
-function intakeContent(
-  review: Awaited<ReturnType<ProductAssetRefresh["prepareLocalContent"]>>,
-): IntakeContent {
-  return {
-    executionId: review.executionId,
-    status: review.status,
-    relativePaths: review.relativePaths,
-    asset: deliveryAssetView(
-      projectAssetView(assetViewFactsForAccepted(review.content)),
-    ),
-  };
-}
-
-export async function inspectIntakeContent(
-  executionId: string,
-): Promise<IntakeContent> {
-  return intakeContent(await application().inspectLocalContent(executionId));
-}
-
-export async function updateIntake(value: unknown): Promise<IntakeContent> {
-  const input = settingsObject(value);
-  const executionId = input.executionId;
-  if (typeof executionId !== "string" || !executionId)
-    throw new Error("请先检查文件");
-  if (input.action === "confirm")
-    return intakeContent(
-      await application().confirmLocalContent({ executionId }),
-    );
-  if (
-    input.action !== "prepare" ||
-    !Array.isArray(input.relativePaths) ||
-    !input.relativePaths.every((item: unknown) => typeof item === "string")
-  )
-    throw new Error("请选择待整理的文件");
-  if (
-    input.classification !== undefined &&
-    (typeof input.classification !== "string" ||
-      !["book", "audio", "video"].includes(input.classification))
-  )
-    throw new Error("请选择有效的内容类别");
-  if (input.name !== undefined && typeof input.name !== "string")
-    throw new Error("内容名称无效");
-  return intakeContent(
-    await application().prepareLocalContent({
-      executionId,
-      relativePaths: input.relativePaths as string[],
-      ...(input.name === undefined ? {} : { name: input.name as string }),
-      ...(input.classification === undefined
-        ? {}
-        : { classification: input.classification as string }),
-    }),
-  );
-}
-
-export async function updateSettingsRoot(value: unknown) {
-  const input = settingsObject(value);
-  const registrations = application().observedRootRegistrations;
-  const action = settingsText(input, "action");
-  if (action === "deactivate")
-    return await registrations.deactivate({
-      id: settingsText(input, "id"),
-      expectedVersion: settingsVersion(input),
-    });
-  if (action === "reconnect")
-    return await registrations.reconnect({
-      id: settingsText(input, "id"),
-      expectedVersion: settingsVersion(input),
-      containerPath: settingsText(input, "containerPath"),
-      readOnly: true,
-    });
-  const symlinkMode = settingsText(input, "symlinkMode");
-  if (
-    ![
-      "do-not-follow",
-      "follow-file-links",
-      "follow-file-and-directory-links",
-    ].includes(symlinkMode)
-  )
-    throw new Error("请选择链接策略");
-  const targets = input.allowedTargetRootIds;
-  if (
-    !Array.isArray(targets) ||
-    !targets.every((id): id is string => typeof id === "string")
-  )
-    throw new Error("请选择允许的链接目标");
-  const fields = {
-    displayName: settingsText(input, "displayName"),
-    readOnly: true as const,
-    symlinkMode: symlinkMode as
-      | "do-not-follow"
-      | "follow-file-links"
-      | "follow-file-and-directory-links",
-    allowedTargetRootIds: targets,
-  };
-  if (action === "create")
-    return await registrations.create({
-      ...fields,
-      containerPath: settingsText(input, "containerPath"),
-    });
-  if (action === "update")
-    return await registrations.update({
-      ...fields,
-      id: settingsText(input, "id"),
-      expectedVersion: settingsVersion(input),
-    });
-  throw new Error("未知文件位置操作");
-}
-
-function settingsObject(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error("设置请求无效");
-  return value as Record<string, unknown>;
-}
-
-function settingsText(value: Record<string, unknown>, field: string): string {
-  const result = value[field];
-  if (typeof result !== "string" || !result.trim())
-    throw new Error("请填写完整的设置");
-  return result.trim();
-}
-function settingsVersion(value: Record<string, unknown>): number {
-  const result = value.expectedVersion;
-  if (typeof result !== "number" || !Number.isSafeInteger(result) || result < 0)
-    throw new Error("设置版本无效，请刷新后重试");
-  return result;
 }

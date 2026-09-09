@@ -9,6 +9,7 @@ import {
   type Recognizer,
   type RecognitionCandidateContext,
   type SourceArtifactAcquirer,
+  type SourceAddressingCapability,
   type SourceCollectionResult,
   type SourceCollectionFailure,
   type SourceCollector,
@@ -41,6 +42,13 @@ const collectorCapability = declareCapability({
   identity: "dlsite.official-collection",
   implementationVersion: "2",
   kind: "source-collector",
+  contractVersion: "1",
+  interpretationContractVersions: ["1"],
+});
+const addressingCapability = declareCapability({
+  identity: "dlsite.explicit-product-addressing",
+  implementationVersion: "1",
+  kind: "source-addressing",
   contractVersion: "1",
   interpretationContractVersions: ["1"],
 });
@@ -104,6 +112,61 @@ export const trustedDlsiteExactRule = {
   ruleId: "exact-official-product-address",
   ruleVersion: "1",
 } as const;
+
+export class DlsiteSourceAddressing implements SourceAddressingCapability {
+  readonly capability = addressingCapability;
+  readonly inputRequirement = {
+    sourceIdentity: "dlsite",
+    displayName: "DLsite",
+    fields: [
+      {
+        key: "product",
+        label: "产品",
+        required: true,
+        acceptedInput: "RJ／VJ 编号或 DLsite 规范官方产品页",
+        example: "RJ01668691",
+      },
+    ],
+  } as const;
+
+  normalize(input: Readonly<Record<string, string>>) {
+    if (Object.keys(input).length !== 1 || !Object.hasOwn(input, "product"))
+      return {
+        status: "invalid" as const,
+        reason: "DLsite 来源输入必须只包含产品字段",
+      };
+    const supplied = input.product;
+    if (supplied === undefined || supplied.length === 0)
+      return {
+        status: "invalid" as const,
+        reason: "请输入 RJ／VJ 编号或 DLsite 规范官方产品页",
+      };
+    let sourceAddress: string;
+    if (exactProductId.test(supplied)) {
+      sourceAddress = canonicalProductAddress(supplied);
+    } else {
+      try {
+        sourceAddress = canonicalDirectedProductAddress(supplied);
+      } catch {
+        return {
+          status: "invalid" as const,
+          reason: "RJ／VJ 编号或 DLsite 规范官方产品页无效",
+        };
+      }
+    }
+    return {
+      status: "accepted" as const,
+      normalizedInput: { product: sourceAddress },
+      evidence: {
+        kind: "directed-source-address" as const,
+        sourceIdentity: "dlsite",
+        sourceAddress,
+        explanation: "用户明确指定 DLsite 产品",
+        producer: this.capability,
+      },
+    };
+  }
+}
 
 export class DlsiteExactDirectoryInterpreter implements DirectoryInterpreter {
   readonly capability = directoryCapability;
@@ -414,7 +477,7 @@ export class DlsiteSourceInterpreter implements SourceInterpreter {
   interpret(input: {
     readonly evidence: readonly RecognitionEvidence[];
     readonly sourceRecords: readonly SourceRecord[];
-  }): SourceInterpretationBatch {
+  }): readonly SourceInterpretationBatch[] {
     const sourceAddress = input.sourceRecords[0]?.nativeAddress;
     if (
       sourceAddress === undefined ||
@@ -656,19 +719,21 @@ export class DlsiteSourceInterpreter implements SourceInterpreter {
         });
       }
     }
-    return {
-      id: `source-interpretation_${randomUUID()}`,
-      producer: this.capability,
-      sourceRecordIds: [json.id, html.id],
-      sourceIdentity: "dlsite",
-      sourceAddress,
-      metadata,
-      sourceArtifacts,
-      entities,
-      entityMentions,
-      entityResolutionDecisions,
-      relationships,
-    };
+    return [
+      {
+        id: `source-interpretation_${randomUUID()}`,
+        producer: this.capability,
+        sourceRecordIds: [json.id, html.id],
+        sourceIdentity: "dlsite",
+        sourceAddress,
+        metadata,
+        sourceArtifacts,
+        entities,
+        entityMentions,
+        entityResolutionDecisions,
+        relationships,
+      },
+    ];
   }
 }
 

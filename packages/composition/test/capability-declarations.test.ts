@@ -1,15 +1,21 @@
 import { applicationOwnedCapabilityDeclarations } from "@digital/application";
-import { DlsiteCollector, DlsiteSourceInterpreter } from "@digital/dlsite";
 import {
-  FanboxCollector,
+  DlsiteCollector,
+  DlsiteSourceAddressing,
+  DlsiteSourceInterpreter,
+} from "@digital/dlsite";
+import {
   FanboxDateDirectoryInterpreter,
   FanboxSourceInterpreter,
+  fanboxOfficialCollectionCapability,
 } from "@digital/fanbox";
 import { ReadOnlyFilesystemObserver } from "@digital/filesystem";
+import { createKadokawaJapanSource } from "@digital/kadokawa-jp";
 import {
   curatedInitialRecognitionPolicy,
   validateCapabilityDeclarations,
 } from "@digital/product-application";
+import { createTaiwanKadokawaSource } from "@digital/taiwan-kadokawa";
 import { describe, expect, test } from "vitest";
 
 describe("capability declarations", () => {
@@ -100,16 +106,20 @@ describe("capability declarations", () => {
 
   test("accepts contrasting DLsite and FANBOX declarations without introducing a provider contract", () => {
     const declarations = [
+      new DlsiteSourceAddressing().capability,
       new DlsiteCollector().capability,
       new DlsiteSourceInterpreter().capability,
       new FanboxDateDirectoryInterpreter("creator").capability,
-      new FanboxCollector({ creatorId: "creator", cookieHeader: "session=1" })
-        .capability,
+      fanboxOfficialCollectionCapability,
       new FanboxSourceInterpreter().capability,
     ];
 
     expect(validateCapabilityDeclarations(declarations)).toEqual(
       expect.arrayContaining([
+        expect.objectContaining({
+          identity: "dlsite.explicit-product-addressing",
+          kind: "source-addressing",
+        }),
         expect.objectContaining({
           identity: "dlsite.official-collection",
           kind: "source-collector",
@@ -117,6 +127,53 @@ describe("capability declarations", () => {
         expect.objectContaining({
           identity: "fanbox.creator-date-directory",
           kind: "directory-interpreter",
+        }),
+      ]),
+    );
+  });
+
+  test("statically declares the fixed Taiwan Kadokawa source bundle", () => {
+    const source = createTaiwanKadokawaSource();
+
+    expect(
+      validateCapabilityDeclarations([
+        source.sourceAddressing.capability,
+        source.collector.capability,
+        source.interpreter.capability,
+        source.associationInterpreter.capability,
+        source.artifactAcquirer.capability,
+      ]),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          identity: "taiwan-kadokawa.explicit-isbn-addressing",
+          kind: "source-addressing",
+        }),
+        expect.objectContaining({
+          identity: "taiwan-kadokawa.official-product-collection",
+          kind: "source-collector",
+        }),
+      ]),
+    );
+  });
+
+  test("statically declares the fixed KADOKAWA Japan source bundle", () => {
+    const source = createKadokawaJapanSource();
+    expect(
+      validateCapabilityDeclarations([
+        source.sourceAddressing.capability,
+        source.collector.capability,
+        source.interpreter.capability,
+        source.associationInterpreter.capability,
+        source.artifactAcquirer.capability,
+      ]),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          identity: "kadokawa-jp.explicit-isbn-addressing",
+        }),
+        expect.objectContaining({
+          identity: "kadokawa-jp.official-collection",
         }),
       ]),
     );

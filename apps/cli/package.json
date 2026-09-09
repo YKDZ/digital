@@ -39,6 +39,7 @@
     "test:e2e": "node --conditions=digital-source test/e2e/run-journeys.ts source distribution",
     "test:e2e:bangumi-live": "DIGITAL_E2E_JOURNEY=bangumi-episodic-live node --conditions=digital-source test/e2e/run-journeys.ts source distribution",
     "test:e2e:fanbox-live": "DIGITAL_E2E_JOURNEY=fanbox-five-live node --conditions=digital-source test/e2e/run-journeys.ts source distribution",
+    "test:e2e:pdf-live": "DIGITAL_E2E_JOURNEY=pdf-publication-live node --conditions=digital-source test/e2e/run-journeys.ts source distribution",
     "test:e2e:tmdb-omdb-live": "DIGITAL_E2E_JOURNEY=tmdb-omdb-live node --conditions=digital-source test/e2e/run-journeys.ts source distribution",
     "test:e2e:deep-integrity": "DIGITAL_DEEP_CORPUS_INTEGRITY=1 node --conditions=digital-source test/e2e/run-journeys.ts source distribution",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false"
@@ -50,6 +51,7 @@
   "devDependencies": {
     "@digital/application": "workspace:*",
     "@digital/db-migrations": "workspace:*",
+    "@digital/fanbox": "workspace:*",
     "@digital/test-support": "workspace:*",
     "@digital/typescript-config": "workspace:*",
     "@types/node": "catalog:",

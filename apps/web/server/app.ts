@@ -3,7 +3,11 @@ import { createWebDelivery, type WebDelivery } from "@digital/web-delivery";
 import vike from "@vikejs/hono";
 import { Hono } from "hono";
 
-import { processLifecycle } from "#/server/process-lifecycle";
+import {
+  processLifecycle,
+  type ProcessLifecycleRegistry,
+  type ProcessOwnerRegistration,
+} from "#/server/process-lifecycle";
 
 export type WebServerOptions = {
   readonly api?: Hono;
@@ -12,38 +16,120 @@ export type WebServerOptions = {
   readonly catalogueReadinessFailure?: () => string | undefined;
   readonly attachVike?: boolean;
   readonly createDelivery?: typeof createWebDelivery;
+  readonly lifecycle?: ProcessLifecycleRegistry;
   /** 仅由可执行组合根持有；Web delivery 本身不能关闭产品资源。 */
   readonly closeProduct?: () => Promise<void>;
 };
 
+export type WebAppBootstrap = {
+  readonly app: Hono;
+  publish(): void;
+  abort(): Promise<void>;
+};
+
+/** 仅供 Web 可执行 bootstrap 决定失败时是否必须保留进程临时根。 */
+export function shouldRetainWebProcessTemporaryRoot(error: unknown): boolean {
+  return processLifecycle.hasCleanupIncomplete(error);
+}
+
+export function combineWebBootstrapAbortFailure(
+  bootstrapError: unknown,
+  abortError: unknown,
+): AggregateError {
+  return new AggregateError(
+    [bootstrapError, abortError],
+    "Web bootstrap 失败且产品清理未完成",
+  );
+}
+
 /** Web 可执行入口同时选择组合和独立交付，再注入同一产品应用。 */
-export function createWebServer(
+export async function createWebServer(
   configuration: ProductConfiguration,
   options: WebServerOptions = {},
-) {
-  const product = runProduct(configuration, {
-    start(application) {
-      return (options.createDelivery ?? createWebDelivery)(application);
-    },
-  });
-  return createApp(product.result, {
-    ...options,
-    async closeProduct() {
-      await product.close();
-    },
+): Promise<WebAppBootstrap> {
+  const lifecycle = options.lifecycle ?? processLifecycle;
+  return await createOwnedWebApp(lifecycle, options, undefined, (bindClose) => {
+    const product = runProduct(configuration, {
+      start(application) {
+        return application;
+      },
+    });
+    bindClose(async () => await product.close());
+    return (options.createDelivery ?? createWebDelivery)(product.result);
   });
 }
 
-export function createApp(
+export async function createApp(
   delivery: WebDelivery,
   options: WebServerOptions = {},
-) {
-  const lifecycleRegistration = processLifecycle.register({
-    async shutdown() {
-      await options.closeProduct?.();
+): Promise<WebAppBootstrap> {
+  const lifecycle = options.lifecycle ?? processLifecycle;
+  return await createOwnedWebApp(
+    lifecycle,
+    options,
+    async () => await options.closeProduct?.(),
+    () => delivery,
+  );
+}
+
+async function createOwnedWebApp(
+  lifecycle: ProcessLifecycleRegistry,
+  options: WebServerOptions,
+  initialClose: (() => Promise<void>) | undefined,
+  acquire: (bindClose: (close: () => Promise<void>) => void) => WebDelivery,
+): Promise<WebAppBootstrap> {
+  let close = initialClose;
+  const bindClose = (ownedClose: () => Promise<void>): void => {
+    if (close !== undefined) throw new Error("Web 产品关闭动作已绑定");
+    close = ownedClose;
+  };
+  let lifecycleRegistration: ProcessOwnerRegistration;
+  try {
+    lifecycle.assertMayStart();
+    lifecycleRegistration = lifecycle.register({
+      async shutdown() {
+        await close?.();
+      },
+    });
+  } catch (registrationError) {
+    // register 同步失败前 registry 尚未接管；只有这条理论边界仍由调用者关闭。
+    try {
+      await close?.();
+    } catch (closeError) {
+      throw new AggregateError(
+        [registrationError, closeError],
+        "Web 产品登记失败且调用者清理未完成",
+      );
+    }
+    throw registrationError;
+  }
+  await lifecycleRegistration.ready;
+  let app: Hono;
+  try {
+    app = assembleApp(acquire(bindClose), options);
+  } catch (assemblyError) {
+    try {
+      await lifecycleRegistration.abort();
+    } catch (disposeError) {
+      throw new AggregateError(
+        [assemblyError, disposeError],
+        "Web app assembly 失败且产品清理未完成",
+      );
+    }
+    throw assemblyError;
+  }
+  return {
+    app,
+    publish() {
+      lifecycleRegistration.publish();
     },
-  });
-  void lifecycleRegistration.ready;
+    async abort() {
+      await lifecycleRegistration.abort();
+    },
+  };
+}
+
+function assembleApp(delivery: WebDelivery, options: WebServerOptions): Hono {
   const app = new Hono();
 
   // host 由进程持有且幂等，因此开发和测试中重复创建 Vike app 不会产生重复定时器。

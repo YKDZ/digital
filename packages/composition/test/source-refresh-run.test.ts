@@ -74,6 +74,37 @@ async function retainSourceRecords(
 }
 
 describe("Source Refresh Run SQLite authority", () => {
+  test("rejects extra keys in durable structured source failures after reopen", async () => {
+    const root = await preparedCatalogueRoot();
+    roots.push(root);
+    const catalogue = SqliteCatalogue.forProductData(root);
+    await catalogue.createExecution({
+      ...execution("malformed-source-failure"),
+      dispositions: [
+        {
+          key: "official-collection",
+          status: "failed",
+          sourceFailureCodes: [
+            {
+              capability: {
+                ...sourceCollectorProducer,
+                adjacent: "must-not-be-accepted",
+              },
+              code: "transport-failure",
+            },
+          ],
+        },
+      ] as unknown as WorkflowExecution["dispositions"],
+    });
+    catalogue.close();
+
+    const reopened = SqliteCatalogue.forProductData(root);
+    await expect(
+      reopened.inspectExecution("malformed-source-failure"),
+    ).rejects.toThrow("Malformed Workflow Execution source failure codes");
+    reopened.close();
+  });
+
   test("compare-and-appends one automatic Change Set and projects it through its Workflow Execution reference", async () => {
     const root = await preparedCatalogueRoot();
     roots.push(root);
@@ -241,6 +272,46 @@ describe("Source Refresh Run SQLite authority", () => {
       },
     });
 
+    await catalogue.createExecution(execution("checkpoint-split-execution"));
+    await catalogue.createSourceRefreshRun({
+      executionId: "checkpoint-split-execution",
+      run: refreshRun("checkpoint-split-run", "automatic", [
+        {
+          sourceIdentity: "source",
+          nativeAddress: "opaque:asset-1",
+          coverageId: "title",
+          sourceRecordId: initial.id,
+        },
+      ]),
+    });
+    await catalogue.beginSourceRefreshScopeAcquisition({
+      runId: "checkpoint-split-run",
+      coverage: {
+        sourceIdentity: "source",
+        nativeAddress: "opaque:asset-1",
+        coverageId: "title",
+      },
+    });
+    const splitInspection = (await catalogue.inspectExecution(
+      "checkpoint-split-execution",
+    ))!;
+    await catalogue.transitionExecution(splitInspection.execution, {
+      ...splitInspection.execution,
+      dispositions: [
+        ...splitInspection.execution.dispositions,
+        {
+          key: "source-refresh-failure:checkpoint-split-run:title:2",
+          status: "failed",
+          reason: "orphaned wrong-attempt half-state",
+        },
+        {
+          key: "source-refresh-failure:checkpoint-split-run:missing:1",
+          status: "failed",
+          reason: "orphaned disposition without a scope",
+        },
+      ],
+    });
+
     await catalogue.createExecution(execution("checkpoint-review-execution"));
     await catalogue.createSourceRefreshRun({
       executionId: "checkpoint-review-execution",
@@ -291,6 +362,132 @@ describe("Source Refresh Run SQLite authority", () => {
       phase: "reviewing",
       scopes: [{ state: "awaiting-review", acquisitionAttempt: 1 }],
     });
+    const expectedExecution = (await reopened.inspectExecution(
+      "checkpoint-acquiring-execution",
+    ))!.execution;
+    const foreignExecution = (await reopened.inspectExecution(
+      "checkpoint-planning-execution",
+    ))!.execution;
+    const coverage = {
+      sourceIdentity: "source",
+      nativeAddress: "opaque:asset-1",
+      coverageId: "title",
+    };
+    const idempotencyKey =
+      "source-refresh-failure:checkpoint-acquiring-run:title:1";
+    const input = {
+      expectedExecution,
+      runId: "checkpoint-acquiring-run",
+      coverage,
+      acquisitionAttempt: 1,
+      outcome: "failed" as const,
+      reason: "official collection failed",
+      sourceFailureCodes: [
+        { capability: sourceCollectorProducer, code: "transport-failure" },
+      ],
+      idempotencyKey,
+    };
+    await expect(
+      reopened.commitSourceRefreshCollectionFailure({
+        ...input,
+        expectedExecution: foreignExecution,
+      }),
+    ).rejects.toThrow("belongs to another execution");
+    const now = new Date();
+    const claim = { token: "collection-failure-owner", now: now.toISOString() };
+    await reopened.claimResumeExecution({
+      executionId: expectedExecution.id,
+      token: claim.token,
+      now: claim.now,
+      expiresAt: new Date(now.getTime() + 60_000).toISOString(),
+    });
+    const splitBefore = await reopened.inspectExecution(
+      "checkpoint-split-execution",
+    );
+    const splitRunBefore = await reopened.inspectSourceRefreshRun(
+      "checkpoint-split-run",
+    );
+    const splitNow = new Date(now.getTime() + 1);
+    const splitClaim = {
+      token: "split-state-owner",
+      now: splitNow.toISOString(),
+    };
+    await reopened.claimResumeExecution({
+      executionId: "checkpoint-split-execution",
+      token: splitClaim.token,
+      now: splitClaim.now,
+      expiresAt: new Date(splitNow.getTime() + 60_000).toISOString(),
+    });
+    await expect(
+      reopened.commitSourceRefreshCollectionFailure({
+        ...input,
+        expectedExecution: splitBefore!.execution,
+        runId: "checkpoint-split-run",
+        idempotencyKey: "source-refresh-failure:checkpoint-split-run:title:1",
+        resumeClaim: splitClaim,
+      }),
+    ).rejects.toThrow("Source Refresh collection failure split state");
+    await expect(
+      reopened.commitSourceRefreshCollectionFailure({
+        ...input,
+        expectedExecution: splitBefore!.execution,
+        runId: "checkpoint-split-run",
+        coverage: { ...coverage, coverageId: "missing" },
+        idempotencyKey: "source-refresh-failure:checkpoint-split-run:missing:1",
+        resumeClaim: splitClaim,
+      }),
+    ).rejects.toThrow("Source Refresh collection failure split state");
+    await expect(
+      reopened.inspectExecution("checkpoint-split-execution"),
+    ).resolves.toEqual(splitBefore);
+    await expect(
+      reopened.inspectSourceRefreshRun("checkpoint-split-run"),
+    ).resolves.toEqual(splitRunBefore);
+    await expect(
+      reopened.commitSourceRefreshCollectionFailure(input),
+    ).rejects.toThrow("stale resume claim");
+    for (const malformed of [
+      {},
+      [null],
+      [{ capability: null, code: "transport-failure" }],
+    ]) {
+      await expect(
+        reopened.commitSourceRefreshCollectionFailure({
+          ...input,
+          sourceFailureCodes: malformed as never,
+          resumeClaim: claim,
+        }),
+      ).rejects.toThrow(
+        "Source Refresh collection failure codes are malformed",
+      );
+    }
+    await expect(
+      reopened.commitSourceRefreshCollectionFailure({
+        ...input,
+        sourceFailureCodes: [
+          {
+            capability: sourceCollectorProducer,
+            code: "transport-failure",
+            adjacent: "must-not-be-persisted",
+          },
+        ],
+        resumeClaim: claim,
+      }),
+    ).rejects.toThrow("codes are malformed");
+    const committed = await reopened.commitSourceRefreshCollectionFailure({
+      ...input,
+      resumeClaim: claim,
+    });
+    await expect(
+      reopened.commitSourceRefreshCollectionFailure(input),
+    ).rejects.toThrow("stale resume claim");
+    await expect(
+      reopened.commitSourceRefreshCollectionFailure({
+        ...input,
+        resumeClaim: claim,
+      }),
+    ).resolves.toEqual(committed);
+
     reopened.close();
   });
 

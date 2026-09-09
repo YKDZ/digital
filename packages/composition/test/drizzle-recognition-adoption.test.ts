@@ -43,6 +43,38 @@ import {
 
 const cleanup: string[] = [];
 
+function sourceEnrichmentAuthority(
+  associationId: string,
+  subjectId: string,
+  sourceIdentity: string,
+  nativeAddress: string,
+  sourceRecordIds: readonly string[],
+) {
+  const proposal = {
+    id: `test-source-proposal:${associationId}`,
+    kind: "establish" as const,
+    subjectId,
+    successor: { id: associationId, subjectId, sourceIdentity, nativeAddress },
+    sourceRecordIds,
+    proposedBy: { kind: "user" as const, actorId: "test-operator" },
+    evidence: {
+      observed: [],
+      manual: [],
+      sourceCandidates: [],
+      conflicts: [],
+    },
+  };
+  return {
+    proposal,
+    decision: {
+      id: `test-source-decision:${associationId}`,
+      proposalId: proposal.id,
+      subjectId,
+      decidedBy: { kind: "user" as const, actorId: "test-operator" },
+    },
+  };
+}
+
 function instrumentedObservedRootRegistration(
   id: string,
   logicalDirectory = `/observed/${id}`,
@@ -273,6 +305,12 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
       evidence: [evidence],
       artifactRevisions: [revision],
     },
+    observedArtifactAssociations: [
+      {
+        observedArtifactReference: revision.observedArtifactReference,
+        role: "asset.material-delivered",
+      },
+    ],
     ruleResults: [
       {
         capabilityId: "local-recognizer",
@@ -295,11 +333,32 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
       assetId: "local-asset",
       acceptedRuleResults: proposal.ruleResults,
     },
-    artifacts: [],
-    locations: [],
-    blobs: [],
-    artifactRevisions: [],
-    artifactAssociations: [],
+    artifacts: [{ id: "local-epub-artifact" }],
+    locations: [
+      {
+        id: "local-epub-location",
+        artifactId: "local-epub-artifact",
+        address: "/observed/RJ01668691/book.epub",
+        kind: "observed",
+      },
+    ],
+    blobs: [revision.blob],
+    artifactRevisions: [
+      {
+        id: "local-epub-revision",
+        artifactId: "local-epub-artifact",
+        blobDigest: revision.blob.digest,
+        producer,
+      },
+    ],
+    artifactAssociations: [
+      {
+        id: "local-epub-association",
+        subjectId: "local-asset",
+        artifactId: "local-epub-artifact",
+        role: "asset.material-delivered",
+      },
+    ],
     metadata: [],
     entities: [],
     relationships: [],
@@ -359,20 +418,53 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
   const current = (await reopened.inspectExecution(running.id))!.accepted!;
   expect(current.recognitionSourceAssociation).toBeUndefined();
   expect(current.recognitionDecision.id).toBe("local-decision");
+  expect(current.artifactAssociations).toContainEqual(
+    expect.objectContaining({ id: "local-epub-association" }),
+  );
+  await expect(
+    reopened.auditObservedMaterialAssociations([
+      {
+        observedArtifactReference: "book.epub",
+        artifactId: "local-epub-artifact",
+        locationId: "local-epub-location",
+        revisionId: "local-epub-revision",
+        associationId: "local-epub-association",
+      },
+    ]),
+  ).resolves.toMatchObject([
+    {
+      association: { id: "local-epub-association" },
+      supports: [
+        {
+          decision: { id: "local-decision" },
+          proposal: { id: "local-proposal" },
+          projection: { observedArtifactReference: "book.epub" },
+        },
+      ],
+    },
+  ]);
   const nextRevision = {
     ...revision,
+    observedArtifactReference: "book-second.epub",
     blob: { ...revision.blob, digest: "epub-digest-2", byteLength: 2 },
   };
   const nextEvidence = {
     ...evidence,
     inspection: {
       ...evidence.inspection,
+      observedArtifactReference: nextRevision.observedArtifactReference,
       revision: nextRevision.blob,
     },
   };
   const nextProposal = {
     ...proposal,
     id: "local-proposal-2",
+    observedArtifactAssociations: [
+      {
+        observedArtifactReference: nextRevision.observedArtifactReference,
+        role: "asset.material-delivered",
+      },
+    ],
     basis: {
       ...proposal.basis,
       evidence: [nextEvidence],
@@ -393,7 +485,7 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
       {
         id: "local-epub-location-2",
         artifactId: "local-epub-artifact",
-        address: "/observed/book.epub",
+        address: "/observed/RJ01668691/book-second.epub",
         kind: "observed",
       },
     ],
@@ -447,15 +539,71 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
       entity: { id: accepted.entity.id },
       recognitionDecision: { id: accepted.recognitionDecision.id },
       sourceAssociations: [],
-      artifactRevisions: [
-        { id: "local-epub-revision-2", blobDigest: "epub-digest-2" },
-      ],
+      artifactRevisions: expect.arrayContaining([
+        expect.objectContaining({
+          id: "local-epub-revision-2",
+          blobDigest: "epub-digest-2",
+        }),
+      ]),
       metadata: [{ value: "本地标题第二版" }],
     },
   });
   const currentAfterReevaluation = (await reopened.inspectExecution(
     reevaluation.id,
   ))!.accepted!;
+  const multipleSupportFixture = new DatabaseSync(
+    path.join(root, "catalogue.sqlite"),
+  );
+  multipleSupportFixture
+    .prepare(
+      "INSERT INTO recognition_decisions (id, proposal_id, asset_id, accepted_rule_results_json) VALUES ('local-decision-2', 'local-proposal-2', 'local-asset', '[]')",
+    )
+    .run();
+  multipleSupportFixture
+    .prepare(
+      "INSERT INTO artifact_association_recognition_supports (association_id, recognition_decision_id) VALUES ('local-epub-association', 'local-decision-2')",
+    )
+    .run();
+  multipleSupportFixture.close();
+  const supportAudit = await reopened.auditObservedMaterialAssociations([
+    {
+      observedArtifactReference: "book.epub",
+      artifactId: "local-epub-artifact",
+      locationId: "local-epub-location",
+      revisionId: "local-epub-revision",
+      associationId: "local-epub-association",
+    },
+  ]);
+  expect(
+    supportAudit[0]?.supports.map((support) => ({
+      decisionId: support.decision.id,
+      reference: support.projection.observedArtifactReference,
+    })),
+  ).toEqual([
+    { decisionId: "local-decision", reference: "book.epub" },
+    { decisionId: "local-decision-2", reference: "book-second.epub" },
+  ]);
+  const missingInitialSupport = new DatabaseSync(
+    path.join(root, "catalogue.sqlite"),
+  );
+  missingInitialSupport
+    .prepare(
+      "DELETE FROM artifact_association_recognition_supports WHERE association_id = 'local-epub-association' AND recognition_decision_id = 'local-decision'",
+    )
+    .run();
+  missingInitialSupport.close();
+  await expect(
+    SqliteCatalogue.inspectProductionReadiness({ productDataDirectory: root }),
+  ).resolves.toMatchObject({ state: "catalogue-integrity-failed" });
+  const restoreInitialSupport = new DatabaseSync(
+    path.join(root, "catalogue.sqlite"),
+  );
+  restoreInitialSupport
+    .prepare(
+      "INSERT INTO artifact_association_recognition_supports (association_id, recognition_decision_id) VALUES ('local-epub-association', 'local-decision')",
+    )
+    .run();
+  restoreInitialSupport.close();
   const failedExecution = {
     ...runningExecution(),
     id: "local-failed-reevaluation",
@@ -486,10 +634,10 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
           },
         ],
         artifactRevisions: currentAfterReevaluation.artifactRevisions.map(
-          (item) => ({
-            ...item,
-            blobDigest: "conflicting-epub-digest",
-          }),
+          (item) =>
+            item.id === "local-epub-revision-2"
+              ? { ...item, blobDigest: "conflicting-epub-digest" }
+              : item,
         ),
       },
       sourceRecords: [],
@@ -547,10 +695,21 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
     recognitionDecisionId: accepted.recognitionDecision.id,
   });
   const preview = {
+    version: "change-impact-preview/2" as const,
     id: "local-change-impact",
     executionId: replacementExecution.id,
     assetId: accepted.entity.id,
     proposal: replacementProposal,
+    change: {
+      kind: "recognition-supersession" as const,
+      proposal: replacementProposal,
+    },
+    evidenceComparison: {
+      observed: [],
+      manual: [],
+      sourceCandidates: [],
+      conflicts: [],
+    },
     baselines: [
       {
         key: "recognition-decision",
@@ -1238,12 +1397,6 @@ it("compares a current Source Association against its durable row before Metadat
     forgedNativeAddress.record,
   ]);
   const expected = (await catalogue.inspectExecution(target.id))!.execution;
-  const canonicalHeads = await catalogue.freezeSourceLineageHeads({
-    assetId: "omdb-film",
-    sourceAssociation: association,
-    coverageIds: [candidate.record.coverage.id],
-  });
-
   const scenarios = [
     {
       name: "source identity",
@@ -1273,16 +1426,6 @@ it("compares a current Source Association against its durable row before Metadat
         coverageIds: [candidate.record.coverage.id],
       }),
     },
-    {
-      name: "proposal",
-      sourceAssociation: {
-        ...association,
-        proposalId: "forged-proposal",
-      },
-      sourceRecords: [candidate.record],
-      interpretation: candidate.interpretation,
-      expectedLineageHeads: canonicalHeads,
-    },
   ] as const;
   const factsBefore = adoptionFactCounts(root);
 
@@ -1308,7 +1451,6 @@ it("compares a current Source Association against its durable row before Metadat
     }),
   );
   expect(messages).toEqual([
-    "Metadata refresh Source Association conflicts with durable current association",
     "Metadata refresh Source Association conflicts with durable current association",
     "Metadata refresh Source Association conflicts with durable current association",
   ]);
@@ -1411,7 +1553,6 @@ it("uses shipped TMDB collection and interpretation while OMDb enrichment establ
     subjectId: "tmdb-film",
     sourceIdentity: "omdb",
     nativeAddress: "omdb:imdb:tt1234567",
-    proposalId: "source-enrichment:omdb-enrichment-execution",
   } as const;
   const pending = omdbEnrichmentExecution({
     id: "omdb-enrichment-execution",
@@ -1436,6 +1577,13 @@ it("uses shipped TMDB collection and interpretation while OMDb enrichment establ
 
   await expect(
     catalogue.applySourceEnrichment({
+      ...sourceEnrichmentAuthority(
+        association.id,
+        association.subjectId,
+        association.sourceIdentity,
+        association.nativeAddress,
+        initial.interpretation.sourceRecordIds,
+      ),
       expectedExecution: pending,
       execution: applied,
       expectedRecognitionBaseline: {
@@ -1455,10 +1603,17 @@ it("uses shipped TMDB collection and interpretation while OMDb enrichment establ
   ).resolves.toEqual([
     expect.objectContaining({
       accepted: expect.objectContaining({
-        recognitionSourceAssociation:
-          baseline.accepted.recognitionSourceAssociation,
+        recognitionSourceAssociation: expect.objectContaining({
+          id: baseline.accepted.recognitionSourceAssociation.id,
+          sourceIdentity:
+            baseline.accepted.recognitionSourceAssociation.sourceIdentity,
+          nativeAddress:
+            baseline.accepted.recognitionSourceAssociation.nativeAddress,
+        }),
         sourceAssociations: expect.arrayContaining([
-          baseline.accepted.recognitionSourceAssociation,
+          expect.objectContaining({
+            id: baseline.accepted.recognitionSourceAssociation.id,
+          }),
           association,
         ]),
         metadata: expect.arrayContaining([
@@ -1694,31 +1849,76 @@ it("reuses an exact durable enrichment association and rejects a replay before f
     subjectId: "tmdb-film",
     sourceIdentity: "omdb",
     nativeAddress: "omdb:imdb:tt1234567",
-    proposalId: "source-enrichment:omdb-replayed-execution",
   } as const;
+  const source = await omdbSourceResult({ awards: "Won 1 Oscar." });
   // 先前持久检查点可能已包含该精确关联。重新应用其最终效果必须附加它，
   // 而不是再次尝试 `INSERT`。
   catalogue.close();
   const ledger = new DatabaseSync(path.join(root, "catalogue.sqlite"));
   try {
+    const authority = sourceEnrichmentAuthority(
+      association.id,
+      association.subjectId,
+      association.sourceIdentity,
+      association.nativeAddress,
+      source.interpretation.sourceRecordIds,
+    );
+    ledger.exec("BEGIN IMMEDIATE");
     ledger
       .prepare(
-        `INSERT INTO source_associations (
-          id, subject_id, source_identity, native_address, proposal_id
-        ) VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO source_association_change_proposals
+        (id, subject_id, kind, payload_json, proposed_by_json, evidence_json)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        authority.proposal.id,
+        authority.proposal.subjectId,
+        authority.proposal.kind,
+        JSON.stringify(authority.proposal),
+        JSON.stringify(authority.proposal.proposedBy),
+        JSON.stringify(authority.proposal.evidence),
+      );
+    ledger
+      .prepare(
+        `INSERT INTO source_association_decisions
+        (id, proposal_id, subject_id, decided_by_kind, decided_by_coordinate)
+       VALUES (?, ?, ?, 'user', 'test-operator')`,
+      )
+      .run(
+        authority.decision.id,
+        authority.decision.proposalId,
+        authority.decision.subjectId,
+      );
+    ledger
+      .prepare(
+        `INSERT INTO source_associations
+        (id, subject_id, source_identity, native_address)
+       VALUES (?, ?, ?, ?)`,
       )
       .run(
         association.id,
         association.subjectId,
         association.sourceIdentity,
         association.nativeAddress,
-        association.proposalId,
       );
+    ledger
+      .prepare(
+        `INSERT INTO source_association_establishment_supports
+        (association_id, source_association_decision_id)
+       VALUES (?, ?)`,
+      )
+      .run(association.id, authority.decision.id);
+    ledger
+      .prepare(
+        `INSERT INTO current_source_associations (subject_id, association_id)
+       VALUES (?, ?)`,
+      )
+      .run(association.subjectId, association.id);
+    ledger.exec("COMMIT");
   } finally {
     ledger.close();
   }
 
-  const source = await omdbSourceResult({ awards: "Won 1 Oscar." });
   const pending = omdbEnrichmentExecution({
     id: "omdb-replayed-execution",
     baseline: baseline.accepted,
@@ -1738,6 +1938,13 @@ it("reuses an exact durable enrichment association and rejects a replay before f
   rejectDirectDatabaseWrites();
 
   const input = {
+    ...sourceEnrichmentAuthority(
+      association.id,
+      association.subjectId,
+      association.sourceIdentity,
+      association.nativeAddress,
+      source.interpretation.sourceRecordIds,
+    ),
     expectedExecution: pending,
     execution: applied,
     expectedRecognitionBaseline: {
@@ -1778,6 +1985,13 @@ it("reuses an exact durable enrichment association and rejects a replay before f
   const factsBeforeLineageConflict = adoptionFactCounts(root);
   await expect(
     catalogue.applySourceEnrichment({
+      ...sourceEnrichmentAuthority(
+        association.id,
+        association.subjectId,
+        association.sourceIdentity,
+        association.nativeAddress,
+        laterSource.interpretation.sourceRecordIds,
+      ),
       expectedExecution: laterPending,
       execution: laterApplied,
       expectedRecognitionBaseline: {
@@ -1873,6 +2087,13 @@ it("rejects an enrichment identity conflict when another current subject already
   rejectAllMetadataRefreshDml();
   await expect(
     catalogue.applySourceEnrichment({
+      ...sourceEnrichmentAuthority(
+        association.id,
+        association.subjectId,
+        association.sourceIdentity,
+        association.nativeAddress,
+        conflictingSource.interpretation.sourceRecordIds,
+      ),
       expectedExecution: pending,
       execution: applied,
       expectedRecognitionBaseline: {
@@ -1979,6 +2200,13 @@ it("preflights an enrichment batch before creating its optional association", as
   rejectAllMetadataRefreshDml();
   await expect(
     catalogue.applySourceEnrichment({
+      ...sourceEnrichmentAuthority(
+        association.id,
+        association.subjectId,
+        association.sourceIdentity,
+        association.nativeAddress,
+        interpretation.sourceRecordIds,
+      ),
       expectedExecution: pending,
       execution: applied,
       expectedRecognitionBaseline: {
@@ -2913,10 +3141,18 @@ it("keeps a terminal Change Impact Preview checkpoint inside Drizzle without dir
     id: "drizzle-change-preview-proposal",
   };
   const preview = {
+    version: "change-impact-preview/2" as const,
     id: "drizzle-change-preview",
     executionId: running.id,
     assetId: "dlsite-work",
     proposal,
+    change: { kind: "recognition-supersession" as const, proposal },
+    evidenceComparison: {
+      observed: [],
+      manual: [],
+      sourceCandidates: [],
+      conflicts: [],
+    },
     baselines: [],
     current: {
       sourceAssociation: {
@@ -3302,12 +3538,12 @@ it("rejects an invalid AcceptedRecognition before the SQLite transaction writes 
     ...accepted,
     recognitionSourceAssociation: {
       ...accepted.recognitionSourceAssociation,
-      proposalId: "different-proposal",
+      nativeAddress: "https://invalid.example/different-work",
     },
     sourceAssociations: [
       {
         ...accepted.recognitionSourceAssociation!,
-        proposalId: "different-proposal",
+        nativeAddress: "https://invalid.example/different-work",
       },
     ],
   };
@@ -3327,7 +3563,7 @@ it("rejects an invalid AcceptedRecognition before the SQLite transaction writes 
       accepted: invalid,
     }),
   ).rejects.toThrow(
-    "Source Association must reference the accepted Recognition Proposal",
+    "Source Association must match the Recognition Proposal source address",
   );
 
   expect(executionAuditJson(root, expected.id)).toBe(auditBefore);
@@ -3803,7 +4039,7 @@ function recognitionIdentityFacts(root: string) {
     return {
       associations: database
         .prepare(
-          `SELECT id, subject_id, source_identity, native_address, proposal_id
+          `SELECT id, subject_id, source_identity, native_address
            FROM source_associations
            ORDER BY id`,
         )
@@ -3928,6 +4164,8 @@ function instrumentedRecognitionWorkflow(
       : `-v${options.observation.version}`;
   const recordId = () =>
     `instrumented-${identity.key}-record${observationSuffix()}`;
+  let collectionSequence = 0;
+  let activeRecordId = recordId();
   const observationTime = () =>
     options?.observation === undefined
       ? "2026-08-02T00:00:00.000Z"
@@ -4003,7 +4241,9 @@ function instrumentedRecognitionWorkflow(
           evidence.sourceIdentity === identity.sourceIdentity,
         coverageScopeIds: () => ["dlsite.product"],
         async collect() {
-          const sourceRecordId = recordId();
+          collectionSequence += 1;
+          activeRecordId = `${recordId()}${collectionSequence === 1 ? "" : `-${collectionSequence}`}`;
+          const sourceRecordId = activeRecordId;
           return {
             failures: [],
             records: [
@@ -4040,31 +4280,33 @@ function instrumentedRecognitionWorkflow(
         capability: capability("dlsite.interpreter"),
         canInterpret: ({ sourceRecords }) => sourceRecords.length === 1,
         interpret: () => {
-          const sourceRecordId = recordId();
-          return {
-            id: `instrumented-${identity.key}-interpretation${observationSuffix()}`,
-            producer: capability("dlsite.interpreter"),
-            sourceRecordIds: [sourceRecordId],
-            sourceIdentity: identity.sourceIdentity,
-            sourceAddress: identity.sourceAddress,
-            metadata: [
-              {
-                property: "asset.title",
-                sourceSlot: "dlsite.title",
-                value: identity.title,
-                sourceRecordIds: [sourceRecordId],
-              },
-            ],
-            sourceArtifacts: [
-              {
-                id: `instrumented-${identity.key}-cover-candidate${observationSuffix()}`,
-                sourceRecordId,
-                role: "asset.primary-cover",
-                acquisitionReference: coverAddress,
-                mediaType: "image/jpeg",
-              },
-            ],
-          };
+          const sourceRecordId = activeRecordId;
+          return [
+            {
+              id: `instrumented-${identity.key}-interpretation${observationSuffix()}`,
+              producer: capability("dlsite.interpreter"),
+              sourceRecordIds: [sourceRecordId],
+              sourceIdentity: identity.sourceIdentity,
+              sourceAddress: identity.sourceAddress,
+              metadata: [
+                {
+                  property: "asset.title",
+                  sourceSlot: "dlsite.title",
+                  value: identity.title,
+                  sourceRecordIds: [sourceRecordId],
+                },
+              ],
+              sourceArtifacts: [
+                {
+                  id: `instrumented-${identity.key}-cover-candidate${observationSuffix()}`,
+                  sourceRecordId,
+                  role: "asset.primary-cover",
+                  acquisitionReference: coverAddress,
+                  mediaType: "image/jpeg",
+                },
+              ],
+            },
+          ];
         },
       },
     ],
@@ -4564,12 +4806,18 @@ async function omdbSourceResult(input: {
   const record = collected.records[0];
   if (record === undefined)
     throw new Error("OMDb fixture did not form a record");
+  const interpretations = new OmdbSourceInterpreter().interpret({
+    evidence: [omdbEvidence],
+    sourceRecords: collected.records,
+  });
+  if (interpretations.length !== 1)
+    throw new Error("OMDb fixture must produce exactly one interpretation");
+  const interpretation = interpretations[0];
+  if (interpretation === undefined)
+    throw new Error("OMDb fixture did not produce an interpretation");
   return {
     record,
-    interpretation: new OmdbSourceInterpreter().interpret({
-      evidence: [omdbEvidence],
-      sourceRecords: collected.records,
-    }),
+    interpretation,
   };
 }
 
@@ -4792,10 +5040,15 @@ async function tmdbAcceptedRecognitionFromShippedAdapter(): Promise<{
   const collected = await collector.collect(evidence[0]);
   if (collected.failures.length > 0)
     throw new Error("TMDB fixture collection unexpectedly failed");
-  const interpretation = new TmdbSourceInterpreter().interpret({
+  const interpretations = new TmdbSourceInterpreter().interpret({
     evidence,
     sourceRecords: collected.records,
   });
+  if (interpretations.length !== 1)
+    throw new Error("TMDB fixture must produce exactly one interpretation");
+  const interpretation = interpretations[0];
+  if (interpretation === undefined)
+    throw new Error("TMDB fixture did not produce an interpretation");
   const record = collected.records.find(
     (candidate) => candidate.coverage.id === "tmdb.movie",
   );

@@ -27,6 +27,17 @@ import type {
   SourcedEntity,
 } from "@digital/domain";
 
+import {
+  FanboxSessionTransportFault,
+  createPlaywrightFanboxSessionTransport,
+  fanboxEndpointAddress,
+  type FanboxClosedEndpoint,
+  type FanboxClosedGet,
+  type FanboxEndpointSessionTransport,
+  type FanboxPrivateBrowserContextV2,
+  type FanboxSessionResponse,
+} from "./browser-session.ts";
+
 const directoryCapability = declareCapability({
   identity: "fanbox.creator-date-directory",
   implementationVersion: "1",
@@ -36,18 +47,18 @@ const directoryCapability = declareCapability({
 });
 export const fanboxOfficialCollectionCapability = declareCapability({
   identity: "fanbox.official-collection",
-  implementationVersion: "1",
+  implementationVersion: "2",
   kind: "source-collector",
   contractVersion: "1",
   interpretationContractVersions: ["1"],
 });
 /**
- * 浏览器凭据是独立于 FANBOX 采集契约的私有能力。其导出 Cookie 结构绝不会进入
- * 领域层或应用层。
+ * 浏览器请求上下文是独立于 FANBOX 采集契约的私有能力。Cookie 与 User-Agent
+ * 绝不会进入领域层或应用层。
  */
 export const fanboxSourceConnectionCapability = declareCapability({
   identity: "fanbox.source-connection",
-  implementationVersion: "1",
+  implementationVersion: "2",
   kind: "source-connection",
   contractVersion: "1",
   interpretationContractVersions: ["1"],
@@ -74,10 +85,9 @@ const acquirerCapability = declareCapability({
   interpretationContractVersions: ["1"],
 });
 const maximumResponseBytes = 2 * 1024 * 1024;
-const maximumAuthenticationResponseBytes = 1024;
 const maximumCreatorSummaryPosts = 300;
 
-type FetchLike = (
+type FanboxArtifactFetch = (
   input: string,
   init: { readonly headers: Readonly<Record<string, string>> },
 ) => Promise<{
@@ -96,67 +106,191 @@ type CapturedFanboxResponse = {
   readonly envelopeBody: Record<string, unknown>;
 };
 
-/** 解析并验证 FANBOX 自己拥有的浏览器导出格式，再返回仅供能力使用的 Cookie 头。 */
-export async function validatedFanboxBrowserCredential(input: {
-  readonly creatorId: string;
-  readonly browserCookies: unknown;
-  readonly request?: FetchLike;
-}): Promise<string> {
-  if (!isFanboxCreatorId(input.creatorId))
-    throw new Error("FANBOX 创作者范围无效");
-  const cookieHeader = fanboxBrowserCookieHeader(input.browserCookies);
-  await verifyFanboxStoredCredential({
-    creatorId: input.creatorId,
-    cookieHeader,
-    ...(input.request === undefined ? {} : { request: input.request }),
-  });
-  return cookieHeader;
+export type FanboxProductAssembly = {
+  readonly validatedBrowserCredential: (input: {
+    readonly creatorId: string;
+    readonly browserCredential: unknown;
+  }) => Promise<string>;
+  readonly verifyStoredCredential: (input: {
+    readonly creatorId: string;
+    readonly privateConfiguration: string;
+  }) => Promise<void>;
+  readonly createCollector: (input: {
+    readonly creatorIds: () => readonly string[];
+    readonly privateConfigurationForExecution: (input: {
+      readonly creatorId: string;
+      readonly context: SourceCollectionExecutionContext | undefined;
+    }) => string | undefined;
+  }) => SourceCollector;
+  close(): Promise<void>;
+};
+
+/** 建立生产 FANBOX 能力闭包；factory 本身不启动 Chromium。 */
+export function createFanboxProductAssembly(): FanboxProductAssembly {
+  return createFanboxProductAssemblyWithTransport(
+    createPlaywrightFanboxSessionTransport(),
+  );
 }
 
-/** 通过当前只读端点证明已存储的 FANBOX 会话可用，不向 Application 暴露 Cookie 格式。 */
-export async function verifyFanboxStoredCredential(input: {
+/** 仅供 FANBOX 生产装配与 testing 子路径使用；不经 production public facade 暴露。 */
+export function createFanboxProductAssemblyWithTransport(
+  transport: FanboxEndpointSessionTransport,
+): FanboxProductAssembly {
+  return {
+    async validatedBrowserCredential(input) {
+      if (!isFanboxCreatorId(input.creatorId))
+        throw new Error("FANBOX 创作者范围无效");
+      const privateConfiguration = serializedFanboxBrowserCredential(
+        input.browserCredential,
+      );
+      const credential = fanboxPrivateCredential(privateConfiguration);
+      if (credential === undefined) throw new Error("FANBOX 来源连接验证失败");
+      try {
+        await verifyFanboxStoredCredentialWithTransport({
+          creatorId: input.creatorId,
+          credential,
+          transport,
+        });
+      } catch {
+        throw new Error("FANBOX 来源连接验证失败");
+      }
+      return privateConfiguration;
+    },
+    async verifyStoredCredential(input) {
+      if (!isFanboxCreatorId(input.creatorId))
+        throw new Error("FANBOX 创作者范围无效");
+      const credential = fanboxPrivateCredential(input.privateConfiguration);
+      if (credential === undefined) throw new Error("FANBOX 来源连接验证失败");
+      try {
+        await verifyFanboxStoredCredentialWithTransport({
+          creatorId: input.creatorId,
+          credential,
+          transport,
+        });
+      } catch {
+        throw new Error("FANBOX 来源连接验证失败");
+      }
+    },
+    createCollector(input) {
+      const collector = new FanboxCollector(transport, {
+        creatorIds: input.creatorIds,
+        privateConfigurationForExecution:
+          input.privateConfigurationForExecution,
+      });
+      return collector;
+    },
+    close: () => transport.close(),
+  };
+}
+
+async function verifyFanboxStoredCredentialWithTransport(input: {
   readonly creatorId: string;
-  readonly cookieHeader: string;
-  readonly request?: FetchLike;
+  readonly credential: FanboxPrivateCredential;
+  readonly transport: FanboxEndpointSessionTransport;
 }): Promise<void> {
-  if (!isFanboxCreatorId(input.creatorId))
-    throw new Error("FANBOX 创作者范围无效");
-  const request = input.request ?? fetch;
-  let response: Awaited<ReturnType<FetchLike>>;
-  try {
-    response = await request("https://api.fanbox.cc/user.countUnreadMessages", {
-      headers: {
-        Accept: "application/json",
-        Cookie: input.cookieHeader,
-        Origin: "https://www.fanbox.cc",
-        Referer: `https://www.fanbox.cc/@${input.creatorId}`,
-        "User-Agent": "digital-fanbox-integration/1",
-      },
-    });
-  } catch {
-    throw new Error("FANBOX 来源连接验证失败");
-  }
-  if (!response.ok || !isJsonMediaType(response.headers.get("content-type")))
-    throw new Error("FANBOX 来源连接验证失败");
-  let envelope: unknown;
-  try {
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (
-      bytes.byteLength === 0 ||
-      bytes.byteLength > maximumAuthenticationResponseBytes
-    )
-      throw new Error("invalid response");
-    envelope = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
-  } catch {
-    throw new Error("FANBOX 来源连接验证失败");
-  }
-  if (!isFanboxAuthenticatedSessionEnvelope(envelope))
-    throw new Error("FANBOX 来源连接验证失败");
+  await input.transport.transact({
+    creatorId: input.creatorId,
+    privateContext: input.credential.privateContext,
+    use: async (get) => {
+      const authentication = await verifiedFanboxSessionJson(get, {
+        kind: "login-status",
+      });
+      if (!isFanboxAuthenticatedSessionEnvelope(authentication))
+        throw new Error("invalid authenticated session");
+      const summaries = fanboxSummaryPosts(
+        fanboxSuccessfulEnvelope(
+          await verifiedFanboxSessionJson(get, {
+            kind: "creator-summaries",
+            creatorId: input.creatorId,
+            limit: 1,
+          }),
+        ),
+        input.creatorId,
+      );
+      if (summaries.length !== 1)
+        throw new Error("verification summary count was not exactly one");
+      const postId = requiredString(summaries[0]!.id, "summary post identity");
+      const detail = fanboxDetailPost(
+        fanboxSuccessfulEnvelope(
+          await verifiedFanboxSessionJson(get, {
+            kind: "post-detail",
+            postId,
+            access: "connected",
+          }),
+        ),
+      );
+      assertPostIdentity(detail, postId, input.creatorId, "detail");
+    },
+  });
 }
 
-function fanboxBrowserCookieHeader(value: unknown): string {
+async function verifiedFanboxSessionJson(
+  get: FanboxClosedGet,
+  endpoint: FanboxClosedEndpoint,
+): Promise<unknown> {
+  const response = await get(endpoint);
+  if (
+    response.kind !== "response" ||
+    response.status < 200 ||
+    response.status >= 300 ||
+    !isJsonMediaType(response.mediaType) ||
+    response.body.byteLength === 0
+  ) {
+    throw new Error("invalid response");
+  }
+  return JSON.parse(new TextDecoder().decode(response.body)) as unknown;
+}
+
+function sessionTransactionFailure(error: unknown): FanboxCollectionFault {
+  if (error instanceof FanboxCollectionFault) return error;
+  return new FanboxCollectionFault(
+    "FANBOX browser session transport failed",
+    "transport-failure",
+  );
+}
+
+function serializedFanboxBrowserCredential(value: unknown): string {
+  if (!isRecord(value) || !hasExactKeys(value, ["cookies", "userAgent"]))
+    throw new Error("FANBOX 浏览器凭据格式无效");
+  const userAgent = fanboxBrowserUserAgent(value.userAgent);
+  const cookies = fanboxBrowserCookies(value.cookies);
+  return JSON.stringify({
+    format: "fanbox-browser-request-context/2",
+    userAgent,
+    cookies,
+  });
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): boolean {
+  const actual = Object.keys(value).toSorted();
+  const sortedExpected = [...expected].toSorted();
+  return (
+    actual.length === sortedExpected.length &&
+    actual.every((key, index) => key === sortedExpected[index])
+  );
+}
+
+function fanboxBrowserUserAgent(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    value.trim().length === 0 ||
+    value !== value.trim() ||
+    value.length > 512 ||
+    !/^[\x20-\x7E]+$/u.test(value)
+  )
+    throw new Error("FANBOX 浏览器凭据格式无效");
+  return value;
+}
+
+function fanboxBrowserCookies(
+  value: unknown,
+): FanboxPrivateBrowserContextV2["cookies"] {
   if (!Array.isArray(value)) throw new Error("FANBOX 浏览器凭据格式无效");
-  const pairs: string[] = [];
+  const cookies: FanboxPrivateBrowserContextV2["cookies"][number][] = [];
+  const identities = new Map<string, string>();
   let hasSession = false;
   for (const item of value) {
     if (item === null || typeof item !== "object" || Array.isArray(item))
@@ -165,6 +299,12 @@ function fanboxBrowserCookieHeader(value: unknown): string {
       readonly name?: unknown;
       readonly value?: unknown;
       readonly domain?: unknown;
+      readonly path?: unknown;
+      readonly secure?: unknown;
+      readonly httpOnly?: unknown;
+      readonly sameSite?: unknown;
+      readonly expirationDate?: unknown;
+      readonly expires?: unknown;
     };
     if (
       typeof cookie.name !== "string" ||
@@ -172,18 +312,76 @@ function fanboxBrowserCookieHeader(value: unknown): string {
       typeof cookie.value !== "string" ||
       cookie.value.length === 0 ||
       !/^[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]+$/u.test(cookie.value) ||
-      (cookie.domain !== undefined &&
-        cookie.domain !== "fanbox.cc" &&
-        cookie.domain !== ".fanbox.cc")
+      (cookie.domain !== "fanbox.cc" && cookie.domain !== ".fanbox.cc") ||
+      (cookie.path !== undefined &&
+        (typeof cookie.path !== "string" ||
+          !cookie.path.startsWith("/") ||
+          containsControlCharacter(cookie.path))) ||
+      (cookie.secure !== undefined && typeof cookie.secure !== "boolean") ||
+      (cookie.httpOnly !== undefined && typeof cookie.httpOnly !== "boolean")
     ) {
       throw new Error("FANBOX 浏览器凭据格式无效");
     }
-    pairs.push(`${cookie.name}=${cookie.value}`);
+    const sameSite = normalizedSameSite(cookie.sameSite);
+    if (cookie.sameSite !== undefined && sameSite === undefined)
+      throw new Error("FANBOX 浏览器凭据格式无效");
+    const expirationDate = cookie.expirationDate;
+    const expires = cookie.expires;
+    if (
+      (expirationDate !== undefined &&
+        (typeof expirationDate !== "number" ||
+          !Number.isFinite(expirationDate))) ||
+      (expires !== undefined &&
+        (typeof expires !== "number" || !Number.isFinite(expires))) ||
+      (expirationDate !== undefined &&
+        expires !== undefined &&
+        expirationDate !== expires)
+    )
+      throw new Error("FANBOX 浏览器凭据格式无效");
+    const normalized = {
+      name: cookie.name,
+      value: cookie.value,
+      domain: cookie.domain,
+      path: cookie.path ?? "/",
+      ...(cookie.secure === undefined ? {} : { secure: cookie.secure }),
+      ...(cookie.httpOnly === undefined ? {} : { httpOnly: cookie.httpOnly }),
+      ...(sameSite === undefined ? {} : { sameSite }),
+      ...(expirationDate === undefined && expires === undefined
+        ? {}
+        : { expires: (expirationDate ?? expires)! }),
+    } satisfies FanboxPrivateBrowserContextV2["cookies"][number];
+    const identity = `${normalized.name}\u0000${normalized.domain}\u0000${normalized.path}`;
+    const serialized = JSON.stringify(normalized);
+    const previous = identities.get(identity);
+    if (previous !== undefined && previous !== serialized)
+      throw new Error("FANBOX 浏览器凭据格式无效");
+    if (previous === undefined) {
+      identities.set(identity, serialized);
+      cookies.push(normalized);
+    }
     hasSession ||= cookie.name === "FANBOXSESSID";
   }
-  if (pairs.length === 0 || !hasSession)
+  if (cookies.length === 0 || !hasSession)
     throw new Error("FANBOX 浏览器凭据缺少有效会话");
-  return pairs.join("; ");
+  return cookies;
+}
+
+function containsControlCharacter(value: string): boolean {
+  return Array.from(value).some((character) => {
+    const code = character.codePointAt(0)!;
+    return code <= 0x1f || code === 0x7f;
+  });
+}
+
+function normalizedSameSite(
+  value: unknown,
+): "Strict" | "Lax" | "None" | undefined {
+  if (value === undefined) return undefined;
+  if (value === "strict" || value === "Strict") return "Strict";
+  if (value === "lax" || value === "Lax") return "Lax";
+  if (value === "none" || value === "None" || value === "no_restriction")
+    return "None";
+  return undefined;
 }
 
 function isFanboxAuthenticatedSessionEnvelope(value: unknown): boolean {
@@ -205,7 +403,73 @@ function isFanboxAuthenticatedSessionEnvelope(value: unknown): boolean {
  * 被拒绝的传输仍可留下有效但范围更窄的摘要记录；无效的 HTTP 成功 JSON 则不行，
  * 因为它根本没有形成来源证据。
  */
-class FanboxTransportFailure extends Error {}
+type FanboxFailureKind =
+  | "transport-failure"
+  | "cloudflare-challenge"
+  | "summary-selection"
+  | "response-contract"
+  | "source-identity-conflict"
+  | "detail-contract"
+  | "connection-unavailable"
+  | "unknown";
+
+class FanboxCollectionFault extends Error {
+  readonly failureCode: string;
+
+  constructor(message: string, failureCode: string) {
+    super(message);
+    this.failureCode = failureCode;
+  }
+}
+
+class FanboxTransportFailure extends FanboxCollectionFault {
+  constructor(message: string, failureCode = "transport-failure") {
+    super(message, failureCode);
+  }
+}
+
+export type FanboxCollectionFailureCause =
+  | { readonly category: FanboxFailureKind }
+  | {
+      readonly category: "http-status";
+      readonly status: number;
+      readonly class: "4xx" | "5xx";
+    };
+
+export function decodeFanboxCollectionFailureCode(input: {
+  readonly capability: SourceCollectionFailure["capability"];
+  readonly code: string;
+}): FanboxCollectionFailureCause | undefined {
+  if (
+    !sameCapabilityCoordinate(
+      input.capability,
+      fanboxOfficialCollectionCapability,
+    )
+  )
+    return undefined;
+  if (
+    input.code === "transport-failure" ||
+    input.code === "cloudflare-challenge" ||
+    input.code === "summary-selection" ||
+    input.code === "response-contract" ||
+    input.code === "source-identity-conflict" ||
+    input.code === "detail-contract" ||
+    input.code === "connection-unavailable" ||
+    input.code === "unknown"
+  ) {
+    return { category: input.code };
+  }
+  const match = /^http:(creator-summaries|post-detail):([45][0-9]{2})$/u.exec(
+    input.code,
+  );
+  if (match === null) return undefined;
+  const status = Number(match[2]);
+  return {
+    category: "http-status",
+    status,
+    class: status < 500 ? "4xx" : "5xx",
+  };
+}
 
 export class FanboxDateDirectoryInterpreter implements DirectoryInterpreter {
   readonly capability = directoryCapability;
@@ -242,62 +506,30 @@ export class FanboxDateDirectoryInterpreter implements DirectoryInterpreter {
   }
 }
 
-export class FanboxCollector implements SourceCollector {
+class FanboxCollector implements SourceCollector {
   readonly capability = fanboxOfficialCollectionCapability;
   private readonly creatorIds: () => readonly string[];
-  private readonly cookieHeader: string | undefined;
-  private readonly cookieHeaderForExecution:
-    | ((input: {
+  private readonly privateConfigurationForExecution: (input: {
+    readonly creatorId: string;
+    readonly context: SourceCollectionExecutionContext | undefined;
+  }) => string | undefined;
+  private readonly transport: FanboxEndpointSessionTransport;
+
+  constructor(
+    transport: FanboxEndpointSessionTransport,
+    options: {
+      readonly creatorIds: () => readonly string[];
+      readonly privateConfigurationForExecution: (input: {
         readonly creatorId: string;
         readonly context: SourceCollectionExecutionContext | undefined;
-      }) => string | undefined)
-    | undefined;
-  private readonly request: FetchLike;
-
-  constructor(options: {
-    readonly creatorId?: string;
-    readonly creatorIds?: () => readonly string[];
-    readonly cookieHeader?: string;
-    readonly cookieHeaderForExecution?: (input: {
-      readonly creatorId: string;
-      readonly context: SourceCollectionExecutionContext | undefined;
-    }) => string | undefined;
-    readonly request?: FetchLike;
-  }) {
-    if (options.creatorId === undefined && options.creatorIds === undefined)
-      throw new Error("FANBOX collector requires a creator scope");
-    if (options.creatorId !== undefined && options.creatorIds !== undefined)
-      throw new Error("FANBOX collector accepts one creator scope source");
-    if (
-      options.cookieHeader === undefined &&
-      options.cookieHeaderForExecution === undefined
-    ) {
-      throw new Error("FANBOX authenticated collection requires credentials");
-    }
-    if (
-      options.cookieHeader !== undefined &&
-      options.cookieHeaderForExecution !== undefined
-    ) {
-      throw new Error("FANBOX collector accepts one credential source");
-    }
-    if (
-      options.creatorId !== undefined &&
-      !isFanboxCreatorId(options.creatorId)
-    ) {
-      throw new Error("FANBOX creator scope is invalid");
-    }
-    if (options.cookieHeader !== undefined && options.cookieHeader.length === 0)
-      throw new Error("FANBOX authenticated collection requires credentials");
-    this.creatorIds =
-      options.creatorId === undefined
-        ? () =>
-            (options.creatorIds?.() ?? []).filter((value) =>
-              isFanboxCreatorId(value),
-            )
-        : () => [options.creatorId!];
-    this.cookieHeader = options.cookieHeader;
-    this.cookieHeaderForExecution = options.cookieHeaderForExecution;
-    this.request = options.request ?? fetch;
+      }) => string | undefined;
+    },
+  ) {
+    this.creatorIds = () =>
+      options.creatorIds().filter((value) => isFanboxCreatorId(value));
+    this.transport = transport;
+    this.privateConfigurationForExecution =
+      options.privateConfigurationForExecution;
   }
 
   canCollect(evidence: RecognitionEvidence): boolean {
@@ -316,13 +548,25 @@ export class FanboxCollector implements SourceCollector {
     context?: SourceCollectionExecutionContext,
   ): Promise<SourceCollectionResult> {
     const creatorId = fanboxCreatorIdFromEvidence(evidence);
-    if (creatorId === undefined || !this.creatorIds().includes(creatorId))
+    if (creatorId === undefined)
       return {
         records: [],
         failures: [
           {
             capability: this.capability,
             reason: "FANBOX evidence does not belong to this creator scope",
+            failureCode: "unknown",
+          },
+        ],
+      };
+    if (!this.creatorIds().includes(creatorId))
+      return {
+        records: [],
+        failures: [
+          {
+            capability: this.capability,
+            reason: "FANBOX 创作者范围缺少当前执行可用的私有来源连接",
+            failureCode: "connection-unavailable",
           },
         ],
       };
@@ -334,6 +578,7 @@ export class FanboxCollector implements SourceCollector {
           {
             capability: this.capability,
             reason: "FANBOX 创作者范围缺少当前执行可用的私有来源连接",
+            failureCode: "connection-unavailable",
             affects: {
               recognition: true,
               metadataProperties: [
@@ -348,6 +593,27 @@ export class FanboxCollector implements SourceCollector {
         ],
       };
     }
+    try {
+      return await this.transport.transact({
+        creatorId,
+        privateContext: credential.privateContext,
+        use: async (get) =>
+          await this.collectInSession(evidence, creatorId, credential, get),
+      });
+    } catch (error) {
+      return {
+        records: [],
+        failures: [this.failure(sessionTransactionFailure(error), credential)],
+      };
+    }
+  }
+
+  private async collectInSession(
+    evidence: RecognitionEvidence,
+    creatorId: string,
+    credential: FanboxPrivateCredential,
+    get: FanboxClosedGet,
+  ): Promise<SourceCollectionResult> {
     const directoryConvention =
       evidence.kind === "directory-convention" &&
       sameCapabilityCoordinate(evidence.producer, directoryCapability);
@@ -362,6 +628,7 @@ export class FanboxCollector implements SourceCollector {
       summarySelection = await this.selectSummary({
         creatorId,
         credential,
+        get,
         ...(date === undefined
           ? { postId: associated!.postId }
           : { publicationDate: date }),
@@ -370,11 +637,25 @@ export class FanboxCollector implements SourceCollector {
       return { records: [], failures: [this.failure(error, credential)] };
     }
     const { captured: capturedSummary, selected } = summarySelection;
-    const postId = requiredString(selected.id, "summary post identity");
-    const summaryPublicationDatetime = requiredString(
-      selected.publishedDatetime,
-      "summary publication datetime",
-    );
+    let postId: string;
+    let summaryPublicationDatetime: string;
+    try {
+      postId = requiredString(selected.id, "summary post identity");
+      summaryPublicationDatetime = requiredString(
+        selected.publishedDatetime,
+        "summary publication datetime",
+      );
+    } catch (error) {
+      return {
+        records: [],
+        failures: [
+          this.failure(
+            new FanboxCollectionFault(errorMessage(error), "response-contract"),
+            credential,
+          ),
+        ],
+      };
+    }
     const nativeAddress = canonicalPostAddress(creatorId, postId);
     const summary = this.sourceRecord(
       capturedSummary,
@@ -382,30 +663,41 @@ export class FanboxCollector implements SourceCollector {
       "fanbox.creator-post-summaries",
       summarySelection.completeness,
     );
-    const detailAddress = new URL("https://api.fanbox.cc/post.info");
-    detailAddress.searchParams.set("postId", postId);
     let authenticatedDetailFailure: FanboxTransportFailure | undefined;
     let detailAuthorized = true;
     try {
       let capturedDetail: CapturedFanboxResponse;
       try {
         capturedDetail = await this.capture(
-          detailAddress.href,
+          {
+            kind: "post-detail",
+            postId,
+            access: "connected",
+          },
           "fanbox.post-detail",
-          creatorId,
           credential,
+          get,
         );
       } catch (error) {
         if (!(error instanceof FanboxTransportFailure)) throw error;
         authenticatedDetailFailure = error;
         detailAuthorized = false;
         capturedDetail = await this.capture(
-          detailAddress.href,
+          { kind: "post-detail", postId, access: "public" },
           "fanbox.post-detail",
-          creatorId,
+          credential,
+          get,
         );
       }
-      const detailPost = fanboxDetailPost(capturedDetail.envelopeBody);
+      let detailPost: Record<string, unknown>;
+      try {
+        detailPost = fanboxDetailPost(capturedDetail.envelopeBody);
+      } catch (error) {
+        throw new FanboxCollectionFault(
+          errorMessage(error),
+          "response-contract",
+        );
+      }
       try {
         assertPostIdentity(detailPost, postId, creatorId, "detail");
         if (detailPost.publishedDatetime !== summaryPublicationDatetime)
@@ -419,13 +711,21 @@ export class FanboxCollector implements SourceCollector {
           records: [],
           failures: [
             this.detailFailure(
-              this.failureReason(error, credential),
+              new FanboxCollectionFault(
+                errorMessage(error),
+                "source-identity-conflict",
+              ),
+              credential,
               nativeAddress,
             ),
           ],
         };
       }
-      validateDetailPost(detailPost);
+      try {
+        validateDetailPost(detailPost);
+      } catch (error) {
+        throw new FanboxCollectionFault(errorMessage(error), "detail-contract");
+      }
       const detail = this.sourceRecord(
         capturedDetail,
         nativeAddress,
@@ -441,7 +741,8 @@ export class FanboxCollector implements SourceCollector {
             ? []
             : [
                 this.detailFailure(
-                  this.failureReason(authenticatedDetailFailure, credential),
+                  authenticatedDetailFailure,
+                  credential,
                   nativeAddress,
                 ),
               ],
@@ -451,12 +752,7 @@ export class FanboxCollector implements SourceCollector {
       // 详情端点不能把它变成空来源响应；只会让详情事实族不可用。
       return {
         records: [summary],
-        failures: [
-          this.detailFailure(
-            this.failureReason(error, credential),
-            nativeAddress,
-          ),
-        ],
+        failures: [this.detailFailure(error, credential, nativeAddress)],
       };
     }
   }
@@ -464,49 +760,75 @@ export class FanboxCollector implements SourceCollector {
   private async selectSummary(input: {
     readonly creatorId: string;
     readonly credential: FanboxPrivateCredential;
+    readonly get: FanboxClosedGet;
     readonly postId?: string;
     readonly publicationDate?: string;
   }): Promise<FanboxSummarySelection> {
-    const initial = new URL("https://api.fanbox.cc/post.listCreator");
-    initial.searchParams.set("creatorId", input.creatorId);
-    initial.searchParams.set("limit", String(maximumCreatorSummaryPosts));
     const captured = await this.capture(
-      initial.href,
+      {
+        kind: "creator-summaries",
+        creatorId: input.creatorId,
+        limit: maximumCreatorSummaryPosts,
+      },
       "fanbox.creator-post-summaries",
-      input.creatorId,
       input.credential,
+      input.get,
     );
-    const posts = fanboxSummaryPosts(captured.envelopeBody, input.creatorId);
+    let posts: readonly FanboxPost[];
+    try {
+      posts = fanboxSummaryPosts(captured.envelopeBody, input.creatorId);
+    } catch (error) {
+      if (error instanceof FanboxCollectionFault) throw error;
+      throw new FanboxCollectionFault(errorMessage(error), "response-contract");
+    }
     const completeness = summaryCompleteness(posts.length);
     if (input.postId !== undefined) {
-      const selected = summaryPostForId(posts, input.postId);
+      let selected: FanboxPost | undefined;
+      try {
+        selected = summaryPostForId(posts, input.postId);
+      } catch (error) {
+        throw new FanboxCollectionFault(
+          errorMessage(error),
+          "summary-selection",
+        );
+      }
       if (selected !== undefined) return { captured, selected, completeness };
       if (completeness === "incomplete")
-        throw new Error(
+        throw new FanboxCollectionFault(
           "known post identity is absent from truncated creator summaries",
+          "summary-selection",
         );
-      throw new Error("known post identity is absent from creator summaries");
+      throw new FanboxCollectionFault(
+        "known post identity is absent from creator summaries",
+        "summary-selection",
+      );
     }
     const dateMatches = summaryPostsForDate(posts, input.publicationDate!).map(
       (selected) => ({ captured, selected, completeness }),
     );
     if (dateMatches.length === 0 && completeness === "incomplete")
-      throw new Error(
+      throw new FanboxCollectionFault(
         "creator publication date is absent from truncated creator summaries",
+        "summary-selection",
       );
-    return uniqueSummaryDateSelection(dateMatches);
+    try {
+      return uniqueSummaryDateSelection(dateMatches);
+    } catch (error) {
+      throw new FanboxCollectionFault(errorMessage(error), "summary-selection");
+    }
   }
 
   private credentialForExecution(
     creatorId: string,
     context: SourceCollectionExecutionContext | undefined,
   ): FanboxPrivateCredential | undefined {
-    const cookieHeader =
-      this.cookieHeader ??
-      this.cookieHeaderForExecution?.({ creatorId, context });
-    return cookieHeader === undefined
+    const privateConfiguration = this.privateConfigurationForExecution({
+      creatorId,
+      context,
+    });
+    return privateConfiguration === undefined
       ? undefined
-      : fanboxPrivateCredential(cookieHeader);
+      : fanboxPrivateCredential(privateConfiguration);
   }
 
   private failure(
@@ -516,16 +838,21 @@ export class FanboxCollector implements SourceCollector {
     return {
       capability: this.capability,
       reason: this.failureReason(error, credential),
+      failureCode:
+        error instanceof FanboxCollectionFault ? error.failureCode : "unknown",
     };
   }
 
   private detailFailure(
-    reason: string,
+    error: unknown,
+    credential: FanboxPrivateCredential,
     nativeAddress: string,
   ): SourceCollectionFailure {
     return {
       capability: this.capability,
-      reason,
+      reason: this.failureReason(error, credential),
+      failureCode:
+        error instanceof FanboxCollectionFault ? error.failureCode : "unknown",
       coverage: {
         sourceIdentity: "fanbox",
         nativeAddress,
@@ -547,74 +874,65 @@ export class FanboxCollector implements SourceCollector {
   }
 
   private async capture(
-    requestedAddress: string,
+    endpoint: Exclude<FanboxClosedEndpoint, { readonly kind: "login-status" }>,
     coverage: string,
-    creatorId: string,
-    credential?: FanboxPrivateCredential,
+    credential: FanboxPrivateCredential,
+    get: FanboxClosedGet,
   ): Promise<CapturedFanboxResponse> {
-    let response: Awaited<ReturnType<FetchLike>>;
+    let response: FanboxSessionResponse;
     try {
-      response = await this.request(requestedAddress, {
-        headers: {
-          Accept: "application/json",
-          Origin: "https://www.fanbox.cc",
-          Referer: `https://www.fanbox.cc/@${creatorId}`,
-          "User-Agent": "digital-fanbox-integration/1",
-          ...(credential === undefined
-            ? {}
-            : { Cookie: credential.cookieHeader }),
-        },
-      });
+      response = await get(endpoint);
     } catch (error) {
-      throw new FanboxTransportFailure(errorMessage(error));
+      if (
+        error instanceof FanboxSessionTransportFault &&
+        error.category === "network-failure"
+      )
+        throw new FanboxTransportFailure("renderer request failed");
+      throw sessionTransactionFailure(error);
     }
-    if (!response.ok) {
-      // Cloudflare 质询属于运维证据，而非来源响应。只检查被拒正文中足以对失败分类的部分，
-      // 绝不保留该正文或把它纳入诊断。
-      let rejected: Uint8Array;
-      try {
-        rejected = new Uint8Array(await response.arrayBuffer());
-      } catch {
-        throw new FanboxTransportFailure(`HTTP ${response.status}`);
-      }
-      const rejectedBody =
-        rejected.byteLength <= maximumResponseBytes
-          ? new TextDecoder().decode(rejected)
-          : "";
-      if (cloudflareChallenge(rejectedBody)) {
-        throw new FanboxTransportFailure(
-          "Cloudflare challenge blocked the official API request; refresh the private browser clearance before retrying",
-        );
-      }
-      throw new FanboxTransportFailure(`HTTP ${response.status}`);
+    if (response.kind === "response-limit")
+      throw new FanboxCollectionFault(
+        "response did not meet the capture limits",
+        "response-contract",
+      );
+    if (response.kind === "cloudflare-challenge")
+      throw new FanboxTransportFailure(
+        "Cloudflare challenge blocked the official API request; refresh the private browser clearance before retrying",
+        "cloudflare-challenge",
+      );
+    if (response.status < 200 || response.status >= 300) {
+      throw rejectedResponseFault(coverage, response.status);
     }
-    const mediaType = response.headers.get("content-type");
+    const mediaType = response.mediaType;
     if (!isJsonMediaType(mediaType))
-      throw new Error(`FANBOX ${coverage} response media type was not JSON`);
-    let bytes: Uint8Array;
-    try {
-      bytes = new Uint8Array(await response.arrayBuffer());
-    } catch (error) {
-      throw new FanboxTransportFailure(errorMessage(error));
-    }
+      throw new FanboxCollectionFault(
+        `FANBOX ${coverage} response media type was not JSON`,
+        "response-contract",
+      );
+    const bytes = response.body;
     if (bytes.byteLength === 0 || bytes.byteLength > maximumResponseBytes)
-      throw new Error("response did not meet the capture limits");
+      throw new FanboxCollectionFault(
+        "response did not meet the capture limits",
+        "response-contract",
+      );
     const body = new TextDecoder().decode(bytes);
     let envelopeBody: Record<string, unknown>;
     try {
       envelopeBody = fanboxSuccessfulEnvelope(JSON.parse(body) as unknown);
     } catch {
-      throw new Error(
+      throw new FanboxCollectionFault(
         `FANBOX ${coverage} response was not a successful envelope`,
+        "response-contract",
       );
     }
     if (credential?.containsPrivateConfiguration(body) === true) {
-      throw new Error(
+      throw new FanboxCollectionFault(
         "response contained private configuration and was not retained",
+        "response-contract",
       );
     }
     return {
-      requestedAddress,
+      requestedAddress: fanboxEndpointAddress(endpoint),
       body,
       bytes,
       mediaType,
@@ -652,41 +970,78 @@ export class FanboxCollector implements SourceCollector {
 }
 
 type FanboxPrivateCredential = {
-  readonly cookieHeader: string;
+  readonly privateConfiguration: string;
+  readonly privateContext: FanboxPrivateBrowserContextV2;
+  readonly userAgent: string;
   containsPrivateConfiguration(value: string): boolean;
   removePrivateConfiguration(value: string): string;
 };
 
 function fanboxPrivateCredential(
-  cookieHeader: string,
+  privateConfiguration: string,
 ): FanboxPrivateCredential | undefined {
-  if (cookieHeader.length === 0 || /[\r\n]/u.test(cookieHeader))
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(privateConfiguration) as unknown;
+  } catch {
     return undefined;
-  const sensitiveCookiePairs = cookieHeader
-    .split(/;\s*/u)
-    .filter((pair) => pair.includes("="));
-  if (sensitiveCookiePairs.length === 0) return undefined;
+  }
+  if (
+    !isRecord(parsed) ||
+    !hasExactKeys(parsed, ["cookies", "format", "userAgent"]) ||
+    parsed.format !== "fanbox-browser-request-context/2" ||
+    typeof parsed.userAgent !== "string" ||
+    !Array.isArray(parsed.cookies)
+  )
+    return undefined;
+  let userAgent: string;
+  let cookies: FanboxPrivateBrowserContextV2["cookies"];
+  try {
+    userAgent = fanboxBrowserUserAgent(parsed.userAgent);
+    cookies = fanboxBrowserCookies(parsed.cookies);
+  } catch {
+    return undefined;
+  }
+  const privateContext: FanboxPrivateBrowserContextV2 = {
+    format: "fanbox-browser-request-context/2",
+    userAgent,
+    cookies,
+  };
+  if (JSON.stringify(privateContext) !== privateConfiguration) return undefined;
+  const sensitiveCookiePairs = cookies.map(
+    (cookie) => `${cookie.name}=${cookie.value}`,
+  );
   // 裸露的短值（例如 A/B 实验标志）会自然出现在 HTTP 诊断中。完整 Cookie 对保持私有，
   // 只有形似令牌的值会作为独立子串被遮盖。
   const sensitiveCookieValues = sensitiveCookiePairs
     .map((pair) => pair.slice(pair.indexOf("=") + 1))
     .filter((secret) => secret.length >= 8);
-  const sensitiveRepresentations = sensitiveCookieValues.flatMap((secret) =>
-    privateRepresentations(secret),
+  const sensitiveConfigurationValues = [
+    ...sensitiveCookieValues,
+    ...sensitiveCookiePairs,
+    userAgent,
+  ];
+  const sensitiveRepresentations = sensitiveConfigurationValues.flatMap(
+    (secret) => privateRepresentations(secret),
   );
-  const sensitivePatterns = sensitiveCookieValues.map(
+  const sensitivePatterns = sensitiveConfigurationValues.map(
     (secret) => new RegExp(privateRepresentationPattern(secret), "u"),
   );
   const containsPrivateConfiguration = (value: string): boolean =>
-    value.includes(cookieHeader) ||
+    value.includes(privateConfiguration) ||
     sensitiveCookiePairs.some((pair) => value.includes(pair)) ||
     sensitiveRepresentations.some((secret) => value.includes(secret)) ||
     sensitivePatterns.some((pattern) => pattern.test(value));
   return {
-    cookieHeader,
+    privateConfiguration,
+    privateContext,
+    userAgent,
     containsPrivateConfiguration,
     removePrivateConfiguration(value) {
-      let sanitized = value.replaceAll(cookieHeader, "[credential removed]");
+      let sanitized = value.replaceAll(
+        privateConfiguration,
+        "[credential removed]",
+      );
       for (const pair of sensitiveCookiePairs)
         sanitized = sanitized.replaceAll(pair, "[credential removed]");
       for (const secret of sensitiveRepresentations)
@@ -814,13 +1169,19 @@ function isFanboxCreatorId(value: string): boolean {
   return /^[a-zA-Z0-9_-]+$/u.test(value);
 }
 
-function cloudflareChallenge(value: string): boolean {
-  const normalized = value.toLowerCase();
-  return (
-    normalized.includes("challenge-platform") ||
-    normalized.includes("_cf_chl_opt") ||
-    normalized.includes("cf-chl")
-  );
+function rejectedResponseFault(
+  coverage: string,
+  status: number,
+): FanboxCollectionFault {
+  const endpoint =
+    coverage === "fanbox.creator-post-summaries"
+      ? "creator-summaries"
+      : coverage === "fanbox.post-detail"
+        ? "post-detail"
+        : undefined;
+  return endpoint !== undefined && status >= 400 && status <= 599
+    ? new FanboxTransportFailure(`HTTP ${status}`, `http:${endpoint}:${status}`)
+    : new FanboxCollectionFault(`HTTP ${status}`, "response-contract");
 }
 
 export const trustedFanboxCreatorDateRule = {
@@ -891,7 +1252,7 @@ export class FanboxSourceInterpreter implements SourceInterpreter {
   interpret(input: {
     readonly evidence: readonly RecognitionEvidence[];
     readonly sourceRecords: readonly SourceRecord[];
-  }): SourceInterpretationBatch {
+  }): readonly SourceInterpretationBatch[] {
     const detail = input.sourceRecords.find(
       (record) => record.coverage.id === "fanbox.post-detail",
     );
@@ -1050,19 +1411,21 @@ export class FanboxSourceInterpreter implements SourceInterpreter {
       sourceSlot: `fanbox.post.creator:${creatorId}`,
       sourceRecordIds: [factRecord.id],
     };
-    return {
-      id: `source-interpretation_${randomUUID()}`,
-      producer: this.capability,
-      sourceRecordIds: input.sourceRecords.map((record) => record.id),
-      sourceIdentity: "fanbox",
-      sourceAddress: summary.nativeAddress,
-      metadata,
-      sourceArtifacts,
-      entities: [entity],
-      entityMentions: [mention],
-      entityResolutionDecisions: [resolution],
-      relationships: [relationship],
-    };
+    return [
+      {
+        id: `source-interpretation_${randomUUID()}`,
+        producer: this.capability,
+        sourceRecordIds: input.sourceRecords.map((record) => record.id),
+        sourceIdentity: "fanbox",
+        sourceAddress: summary.nativeAddress,
+        metadata,
+        sourceArtifacts,
+        entities: [entity],
+        entityMentions: [mention],
+        entityResolutionDecisions: [resolution],
+        relationships: [relationship],
+      },
+    ];
   }
 }
 
@@ -1111,9 +1474,9 @@ export class FanboxExactRecognizer implements Recognizer {
 
 export class FanboxArtifactAcquirer implements SourceArtifactAcquirer {
   readonly capability = acquirerCapability;
-  private readonly request: FetchLike;
+  private readonly request: FanboxArtifactFetch;
 
-  constructor(request: FetchLike = fetch) {
+  constructor(request: FanboxArtifactFetch = fetch) {
     this.request = request;
   }
 
@@ -1425,7 +1788,17 @@ function fanboxSummaryPosts(
   return body.posts.map((item, index) => {
     if (!isRecord(item))
       throw new Error(`FANBOX creator summary item ${index} was not an object`);
-    assertPostMatchesCreator(item, creatorId, "summary");
+    const actualCreatorId = requiredString(item.creatorId, "summary creator");
+    if (actualCreatorId !== creatorId)
+      throw new FanboxCollectionFault(
+        "FANBOX summary post creator differs from its scope",
+        "source-identity-conflict",
+      );
+    requiredString(item.id, "summary post identity");
+    requiredNonBlankString(item.title, "summary post title");
+    publicationDateOf(
+      requiredString(item.publishedDatetime, "summary publication datetime"),
+    );
     return item;
   });
 }

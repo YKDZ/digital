@@ -107,6 +107,32 @@ describe("information fulfillment composition", () => {
     expect(persistence.close).toHaveBeenCalledTimes(1);
   });
 
+  it("在工作流排空后、持久化关闭前释放 FANBOX 产品装配", async () => {
+    const order: string[] = [];
+    const fanboxFailure = new Error("browser cleanup failed");
+    const workflow = composeOwnedAssetRefresh(
+      {
+        async close() {
+          order.push("workflow");
+        },
+      } as never,
+      {
+        close() {
+          order.push("persistence");
+        },
+      },
+      undefined,
+      undefined,
+      async () => {
+        order.push("fanbox");
+        throw fanboxFailure;
+      },
+    );
+
+    await expect(workflow.close()).rejects.toBe(fanboxFailure);
+    expect(order).toEqual(["workflow", "fanbox", "persistence"]);
+  });
+
   it("shares one source-artifact fulfilment between delivery and the owned automation host", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "digital-shared-seam-"));
     temporaryRoots.push(root);
@@ -1282,13 +1308,18 @@ describe("information fulfillment composition", () => {
         acceptTrusted: true,
       });
       expect(automatic.intent).not.toHaveProperty("informationRequirement");
-      expect(automatic.initial).toMatchObject({ status: "started" });
+      expect(automatic.initial).toMatchObject({
+        status: "started",
+        execution: {
+          execution: { status: "completed", outcome: "accepted" },
+        },
+      });
       expect(
         requested.filter(
           (address) => address === "https://img.dlsite.jp/primary.jpg",
         ),
-      ).toHaveLength(1);
-      expect(await workflow.listInspections()).toHaveLength(executionCount + 1);
+      ).toHaveLength(2);
+      expect(await workflow.listInspections()).toHaveLength(executionCount + 2);
     } finally {
       await workflow.close();
     }

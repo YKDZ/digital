@@ -244,6 +244,13 @@ export type RecognitionProposal = {
   readonly observedMetadata?: readonly ObservedArtifactMetadataCandidate[];
   /** 本地检查事实的父修订独立于各部分。 */
   readonly observedArtifactRevisions?: readonly ObservedArtifactRevisionCandidate[];
+  /** 人工材料提案把每个不透明观察引用固定投影为一个产物角色。 */
+  readonly observedArtifactAssociations?: readonly ObservedArtifactAssociationCandidate[];
+};
+
+export type ObservedArtifactAssociationCandidate = {
+  readonly observedArtifactReference: string;
+  readonly role: ArtifactRole;
 };
 
 export type Entity = {
@@ -302,8 +309,235 @@ export type SourceAssociation = {
   readonly subjectId: string;
   readonly sourceIdentity: string;
   readonly nativeAddress: string;
-  readonly proposalId: string;
 };
+
+export type EvidenceComparison = {
+  readonly observed: readonly RecognitionEvidence[];
+  readonly manual: readonly RecognitionEvidence[];
+  readonly sourceCandidates: readonly {
+    /** 私有执行内候选引用；公开投影只回传其不可逆值。 */
+    readonly reference?: string;
+    readonly outcome: "accepted" | "contradicted";
+    readonly sourceIdentity: string;
+    readonly nativeAddress: string;
+    readonly sourceRecordIds: readonly string[];
+    readonly ruleResults: readonly RecognitionRuleResult[];
+    readonly explanation: string;
+  }[];
+  readonly conflicts: readonly string[];
+};
+
+export type ProposalAuthor =
+  | { readonly kind: "user"; readonly actorId: string }
+  | { readonly kind: "capability"; readonly coordinate: CapabilityCoordinate };
+
+export type DecisionAuthority =
+  | { readonly kind: "user"; readonly actorId: string }
+  | { readonly kind: "application-policy"; readonly policyCoordinate: string };
+
+export type SourceAssociationChangeProposal =
+  | {
+      readonly id: string;
+      readonly kind: "establish";
+      readonly subjectId: string;
+      readonly successor: SourceAssociation;
+      readonly sourceRecordIds: readonly string[];
+      readonly proposedBy: ProposalAuthor;
+      readonly evidence: EvidenceComparison;
+    }
+  | {
+      readonly id: string;
+      readonly kind: "replace";
+      readonly subjectId: string;
+      readonly predecessorAssociationId: string;
+      readonly successor: SourceAssociation;
+      readonly sourceRecordIds: readonly string[];
+      readonly proposedBy: ProposalAuthor;
+      readonly evidence: EvidenceComparison;
+    }
+  | {
+      readonly id: string;
+      readonly kind: "retract";
+      readonly subjectId: string;
+      readonly predecessorAssociationId: string;
+      readonly proposedBy: ProposalAuthor;
+      readonly reason: string;
+      readonly evidence: EvidenceComparison;
+    };
+
+export type SourceAssociationDecision = {
+  readonly id: string;
+  readonly proposalId: string;
+  readonly subjectId: string;
+  readonly decidedBy: DecisionAuthority;
+};
+
+export type SourceAssociationEstablishmentSupport = {
+  readonly associationId: string;
+  readonly establishedBy:
+    | { readonly kind: "recognition-decision"; readonly decisionId: string }
+    | {
+        readonly kind: "source-association-decision";
+        readonly decisionId: string;
+      };
+};
+
+export type SourceAssociationSupersession = {
+  readonly id: string;
+  readonly predecessorAssociationId: string;
+  readonly successorAssociationId: string;
+  readonly authorizedBy:
+    | {
+        readonly kind: "source-association-decision";
+        readonly decisionId: string;
+      }
+    | { readonly kind: "recognition-decision"; readonly decisionId: string };
+};
+
+export type SourceAssociationRetraction = {
+  readonly id: string;
+  readonly associationId: string;
+  readonly authorizedBy:
+    | {
+        readonly kind: "source-association-decision";
+        readonly decisionId: string;
+      }
+    | {
+        readonly kind: "recognition-decision-supersession";
+        readonly supersessionId: string;
+      }
+    | {
+        readonly kind: "recognition-decision-retraction";
+        readonly retractionId: string;
+      };
+};
+
+export type RecognitionDecisionSupersession = {
+  readonly id: string;
+  readonly predecessorDecisionId: string;
+  readonly successorDecisionId: string;
+};
+
+/**
+ * 验证由身份取代授权的精确来源关联撤回。调用者必须提供完整不可变因果链，不能用裸
+ * 后继决定代替取代事实。
+ */
+export function validateRecognitionSupersessionSourceRetraction(input: {
+  readonly retraction: SourceAssociationRetraction;
+  readonly association: SourceAssociation;
+  readonly establishmentSupport: SourceAssociationEstablishmentSupport;
+  readonly supersession: RecognitionDecisionSupersession;
+  readonly predecessorDecision: RecognitionDecision;
+  readonly successorDecision: RecognitionDecision;
+  readonly successorProposal: RecognitionProposal;
+  readonly alreadySuperseded?: boolean;
+  readonly alreadyRetracted?: boolean;
+}): SourceAssociationRetraction {
+  const {
+    retraction,
+    association,
+    establishmentSupport,
+    supersession,
+    predecessorDecision,
+    successorDecision,
+    successorProposal,
+  } = input;
+  if (
+    retraction.authorizedBy.kind !== "recognition-decision-supersession" ||
+    !retraction.id ||
+    retraction.associationId !== association.id ||
+    retraction.authorizedBy.supersessionId !== supersession.id ||
+    establishmentSupport.associationId !== association.id ||
+    establishmentSupport.establishedBy.kind !== "recognition-decision" ||
+    establishmentSupport.establishedBy.decisionId !==
+      supersession.predecessorDecisionId ||
+    predecessorDecision.id !== supersession.predecessorDecisionId ||
+    successorDecision.id !== supersession.successorDecisionId ||
+    predecessorDecision.id === successorDecision.id ||
+    predecessorDecision.assetId !== association.subjectId ||
+    successorDecision.assetId !== association.subjectId ||
+    successorDecision.proposalId !== successorProposal.id ||
+    recognitionSourceInterpretation(successorProposal) !== undefined ||
+    input.alreadySuperseded === true ||
+    input.alreadyRetracted === true
+  )
+    throw new Error(
+      "Recognition Supersession cannot authorize this Source Association retraction",
+    );
+  return retraction;
+}
+
+export type RecognitionDecisionRetractionIntent = {
+  readonly predecessorDecisionId: string;
+  readonly proposedBy: string;
+  readonly reason: string;
+};
+
+export type RecognitionDecisionRetraction =
+  RecognitionDecisionRetractionIntent & {
+    readonly id: string;
+    readonly decidedBy: string;
+  };
+
+export function validateSourceAssociationChange(input: {
+  readonly proposal: SourceAssociationChangeProposal;
+  readonly decision?: SourceAssociationDecision;
+  readonly predecessor?: SourceAssociation;
+}): SourceAssociationChangeProposal {
+  const { proposal, decision, predecessor } = input;
+  if (
+    !proposal.id ||
+    !proposal.subjectId ||
+    (decision !== undefined &&
+      (decision.proposalId !== proposal.id ||
+        decision.subjectId !== proposal.subjectId ||
+        !decision.id))
+  )
+    throw new Error("Source Association decision does not accept its proposal");
+  if (
+    (proposal.proposedBy.kind === "user" && !proposal.proposedBy.actorId) ||
+    (proposal.proposedBy.kind === "capability" &&
+      (!proposal.proposedBy.coordinate.capabilityId ||
+        !proposal.proposedBy.coordinate.capabilityVersion ||
+        !proposal.proposedBy.coordinate.contractVersion)) ||
+    (decision !== undefined &&
+      ((decision.decidedBy.kind === "user" && !decision.decidedBy.actorId) ||
+        (decision.decidedBy.kind === "application-policy" &&
+          !decision.decidedBy.policyCoordinate)))
+  )
+    throw new Error("Source Association authorship must be attributable");
+  if (proposal.kind === "establish") {
+    if (predecessor !== undefined)
+      throw new Error("Source Association establishment has no predecessor");
+  } else {
+    if (
+      predecessor === undefined ||
+      predecessor.id !== proposal.predecessorAssociationId ||
+      predecessor.subjectId !== proposal.subjectId
+    )
+      throw new Error("Source Association predecessor is invalid");
+  }
+  if (proposal.kind !== "retract") {
+    if (
+      proposal.successor.subjectId !== proposal.subjectId ||
+      !proposal.successor.id ||
+      !proposal.successor.sourceIdentity ||
+      !proposal.successor.nativeAddress
+    )
+      throw new Error("Source Association successor is invalid");
+    if (
+      proposal.kind === "replace" &&
+      (proposal.successor.sourceIdentity !== predecessor!.sourceIdentity ||
+        proposal.successor.nativeAddress === predecessor!.nativeAddress)
+    )
+      throw new Error(
+        "Source Association replacement must change one address within its source",
+      );
+  } else if (!proposal.reason) {
+    throw new Error("Source Association retraction requires a reason");
+  }
+  return proposal;
+}
 
 export type RecognitionDecision = {
   readonly id: string;
@@ -355,6 +589,262 @@ export type ArtifactAssociation = {
     readonly locator: string;
   };
 };
+
+/** 一个识别决定对一条产物关联的不可变、多对多支持。 */
+export type ArtifactAssociationRecognitionSupport = {
+  readonly associationId: string;
+  readonly recognitionDecisionId: string;
+};
+
+/** 一份被选择的完整材料到其全部耐久事实的显式投影。 */
+export type ObservedMaterialAssociationProjection = {
+  readonly observedArtifactReference: string;
+  readonly artifactId: string;
+  readonly locationId: string;
+  readonly revisionId: string;
+  readonly associationId: string;
+};
+
+export type ObservedMaterialAssociationAudit = {
+  readonly association: ArtifactAssociation;
+  readonly supports: readonly {
+    readonly support: ArtifactAssociationRecognitionSupport;
+    readonly decision: RecognitionDecision;
+    readonly proposal: RecognitionProposal;
+    readonly projection: ObservedMaterialAssociationProjection;
+    readonly location: Location;
+    readonly revision: ArtifactRevision;
+    readonly blob: Blob;
+  }[];
+};
+
+export function validateObservedMaterialAssociationAudit(
+  audit: ObservedMaterialAssociationAudit,
+): ObservedMaterialAssociationAudit {
+  if (audit.supports.length === 0)
+    throw new Error("Artifact Association has no valid decision support");
+  for (const item of audit.supports) {
+    const candidates = item.proposal.observedArtifactAssociations ?? [];
+    if (
+      item.support.associationId !== audit.association.id ||
+      item.support.recognitionDecisionId !== item.decision.id ||
+      item.decision.assetId !== audit.association.subjectId ||
+      item.decision.proposalId !== item.proposal.id ||
+      item.projection.associationId !== audit.association.id ||
+      item.projection.artifactId !== audit.association.artifactId ||
+      item.location.id !== item.projection.locationId ||
+      item.location.artifactId !== item.projection.artifactId ||
+      item.revision.id !== item.projection.revisionId ||
+      item.revision.artifactId !== item.projection.artifactId ||
+      item.revision.blobDigest !== item.blob.digest ||
+      !candidates.some(
+        (candidate) =>
+          candidate.observedArtifactReference ===
+            item.projection.observedArtifactReference &&
+          candidate.role === audit.association.role,
+      )
+    )
+      throw new Error("Artifact Association decision support chain is invalid");
+  }
+  return audit;
+}
+
+/** 给既有数字资产补充观察材料时提交的完整领域事实批次。 */
+export type ObservedMaterialAssociationSubmission = {
+  readonly proposal: RecognitionProposal;
+  readonly recognitionDecision: RecognitionDecision;
+  readonly artifacts: readonly Artifact[];
+  readonly locations: readonly Location[];
+  readonly blobs: readonly Blob[];
+  readonly artifactRevisions: readonly ArtifactRevision[];
+  readonly artifactAssociations: readonly ArtifactAssociation[];
+  readonly projections: readonly ObservedMaterialAssociationProjection[];
+  readonly supports: readonly ArtifactAssociationRecognitionSupport[];
+};
+
+export function validateObservedMaterialAssociationSubmission(
+  submission: ObservedMaterialAssociationSubmission,
+  context?: {
+    readonly knownDecisions?: readonly RecognitionDecision[];
+    readonly additionalSupports?: readonly ArtifactAssociationRecognitionSupport[];
+  },
+): ObservedMaterialAssociationSubmission {
+  const proposal = validateRecognitionProposal(submission.proposal);
+  if (proposal.basis.kind !== "manual-boundary")
+    throw new Error("Observed material proposal must use a manual boundary");
+  const basis = proposal.basis;
+  const candidates = proposal.observedArtifactAssociations ?? [];
+  const revisions = proposal.observedArtifactRevisions ?? [];
+  if (
+    basis.metadata.length !== 0 ||
+    basis.revisesProposalIds.length !== 0 ||
+    proposal.ruleResults.length !== 0 ||
+    candidates.length !== basis.materialReferences.length ||
+    revisions.length !== basis.materialReferences.length ||
+    candidates.some(
+      (candidate) =>
+        candidate.role !== "asset.material-delivered" ||
+        !basis.materialReferences.includes(candidate.observedArtifactReference),
+    ) ||
+    revisions.some(
+      (revision) =>
+        !basis.materialReferences.includes(revision.observedArtifactReference),
+    ) ||
+    new Set(candidates.map((candidate) => candidate.observedArtifactReference))
+      .size !== candidates.length ||
+    new Set(revisions.map((revision) => revision.observedArtifactReference))
+      .size !== revisions.length
+  ) {
+    throw new Error(
+      "Observed material proposal must completely project selected whole materials",
+    );
+  }
+  const decision = submission.recognitionDecision;
+  if (
+    !decision.id ||
+    decision.proposalId !== proposal.id ||
+    !decision.assetId ||
+    decision.acceptedRuleResults.length !== 0
+  )
+    throw new Error(
+      "Observed material decision must accept the target proposal",
+    );
+
+  const artifactIds = new Set(
+    submission.artifacts.map((artifact) => artifact.id),
+  );
+  const associationIds = new Set(
+    submission.artifactAssociations.map((association) => association.id),
+  );
+  const locations = new Map(
+    submission.locations.map((location) => [location.id, location]),
+  );
+  const artifactRevisions = new Map(
+    submission.artifactRevisions.map((revision) => [revision.id, revision]),
+  );
+  const associations = new Map(
+    submission.artifactAssociations.map((association) => [
+      association.id,
+      association,
+    ]),
+  );
+  const revisionsByReference = new Map(
+    revisions.map((revision) => [revision.observedArtifactReference, revision]),
+  );
+  const projectionReferences = new Set(
+    submission.projections.map(
+      (projection) => projection.observedArtifactReference,
+    ),
+  );
+  if (
+    artifactIds.size !== submission.artifacts.length ||
+    submission.projections.length !== candidates.length ||
+    projectionReferences.size !== candidates.length ||
+    candidates.some(
+      (candidate) =>
+        !projectionReferences.has(candidate.observedArtifactReference),
+    ) ||
+    submission.projections.some((projection) => {
+      const revisionCandidate = revisionsByReference.get(
+        projection.observedArtifactReference,
+      );
+      const location = locations.get(projection.locationId);
+      const revision = artifactRevisions.get(projection.revisionId);
+      const association = associations.get(projection.associationId);
+      return (
+        revisionCandidate === undefined ||
+        location?.artifactId !== projection.artifactId ||
+        revision?.artifactId !== projection.artifactId ||
+        revision.blobDigest !== revisionCandidate.blob.digest ||
+        association?.artifactId !== projection.artifactId ||
+        association.subjectId !== decision.assetId ||
+        association.role !== "asset.material-delivered"
+      );
+    }) ||
+    new Set(submission.projections.map((item) => item.artifactId)).size !==
+      artifactIds.size ||
+    new Set(submission.projections.map((item) => item.locationId)).size !==
+      locations.size ||
+    new Set(submission.projections.map((item) => item.revisionId)).size !==
+      artifactRevisions.size ||
+    new Set(submission.projections.map((item) => item.associationId)).size !==
+      associationIds.size ||
+    submission.artifactAssociations.some(
+      (association) =>
+        !association.id ||
+        association.subjectId !== decision.assetId ||
+        association.role !== "asset.material-delivered" ||
+        !artifactIds.has(association.artifactId) ||
+        association.sourceAssociationId !== undefined ||
+        association.sourceRecordIds?.length,
+    ) ||
+    associationIds.size !== submission.artifactAssociations.length
+  )
+    throw new Error("Observed material associations must belong to one target");
+
+  const decisions = new Map(
+    [decision, ...(context?.knownDecisions ?? [])].map((item) => [
+      item.id,
+      item,
+    ]),
+  );
+  const supports = [
+    ...submission.supports,
+    ...(context?.additionalSupports ?? []),
+  ];
+  if (
+    submission.artifactAssociations.some(
+      (association) =>
+        !submission.supports.some(
+          (support) =>
+            support.associationId === association.id &&
+            support.recognitionDecisionId === decision.id,
+        ),
+    ) ||
+    supports.some((support) => {
+      const supportedDecision = decisions.get(support.recognitionDecisionId);
+      return (
+        !associationIds.has(support.associationId) ||
+        supportedDecision === undefined ||
+        supportedDecision.assetId !== decision.assetId ||
+        (support.recognitionDecisionId === decision.id &&
+          supportedDecision.proposalId !== proposal.id)
+      );
+    }) ||
+    new Set(
+      supports.map(
+        (support) =>
+          `${support.associationId}\u0000${support.recognitionDecisionId}`,
+      ),
+    ).size !== supports.length
+  )
+    throw new Error(
+      "Observed material decision support is incomplete or invalid",
+    );
+
+  const blobDigests = new Set(submission.blobs.map((blob) => blob.digest));
+  if (
+    blobDigests.size !== submission.blobs.length ||
+    new Set(submission.artifactRevisions.map((revision) => revision.blobDigest))
+      .size !== blobDigests.size ||
+    submission.blobs.some(
+      (blob) =>
+        !submission.artifactRevisions.some(
+          (revision) => revision.blobDigest === blob.digest,
+        ),
+    ) ||
+    submission.locations.some(
+      (location) => !artifactIds.has(location.artifactId),
+    ) ||
+    submission.artifactRevisions.some(
+      (revision) =>
+        !artifactIds.has(revision.artifactId) ||
+        !blobDigests.has(revision.blobDigest),
+    )
+  )
+    throw new Error("Observed material facts contain dangling references");
+  return submission;
+}
 
 /**
  * 对来源持有产物关联作出的不可变终止。它由重新求值提议及使原关联缺失的完整来源记录
@@ -812,26 +1302,37 @@ export function validateAcceptedRecognition(
   accepted: AcceptedRecognition,
 ): AcceptedRecognition {
   validateRecognitionFactShape(accepted);
+  validateRecognitionIdentityBaseline(accepted);
+  return accepted;
+}
+
+function validateRecognitionIdentityBaseline(
+  accepted: AcceptedRecognition,
+): void {
+  validateRecognitionProposal(accepted.proposal);
+  if (accepted.entity.kind !== "digital-asset") {
+    throw new Error("Accepted recognition requires a Digital Asset entity");
+  }
+  if (
+    accepted.sourceAssociations.some(
+      (association) => association.subjectId !== accepted.entity.id,
+    )
+  ) {
+    throw new Error("Source Associations must belong to the accepted asset");
+  }
+  if (accepted.recognitionDecision.assetId !== accepted.entity.id) {
+    throw new Error("Recognition Decision must accept the same asset");
+  }
   const interpretation = recognitionSourceInterpretation(accepted.proposal);
   const recognitionAssociation = accepted.recognitionSourceAssociation;
   if (interpretation === undefined) {
-    if (
-      recognitionAssociation !== undefined ||
-      accepted.sourceAssociations.some(
-        (association) => association.proposalId === accepted.proposal.id,
-      )
-    )
+    if (recognitionAssociation !== undefined)
       throw new Error(
         "Observed recognition cannot manufacture a Source Association",
       );
   } else {
     if (recognitionAssociation === undefined)
       throw new Error("Source recognition requires its Source Association");
-    if (recognitionAssociation.proposalId !== accepted.proposal.id) {
-      throw new Error(
-        "Source Association must reference the accepted Recognition Proposal",
-      );
-    }
     if (
       recognitionAssociation.sourceIdentity !== interpretation.sourceIdentity
     ) {
@@ -865,7 +1366,6 @@ export function validateAcceptedRecognition(
       "Recognition Decision rules must match the accepted Recognition Proposal",
     );
   }
-  return accepted;
 }
 
 /**
@@ -876,7 +1376,7 @@ export function validateReevaluatedRecognition(input: {
   readonly current: AcceptedRecognition;
   readonly accepted: AcceptedRecognition;
 }): AcceptedRecognition {
-  validateAcceptedRecognition(input.current);
+  validateRecognitionIdentityBaseline(input.current);
   validateRecognitionFactShape(input.accepted);
   if (input.current.entity.id !== input.accepted.entity.id) {
     throw new Error(

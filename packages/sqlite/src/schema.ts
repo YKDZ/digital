@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   customType,
   check,
+  foreignKey,
   index,
   integer,
   primaryKey,
@@ -101,6 +102,10 @@ export const workflowExecutions = sqliteTable(
     cancellationJson: text("cancellation_json"),
     /** 新识别原子接受前可跨中断恢复的预分配主体身份。 */
     plannedAssetId: text("planned_asset_id"),
+    /** 观察材料关联的版本化输入、检查点与终态审计。 */
+    materialAssociationJson: text("material_association_json"),
+    /** 来源关联决定的严格版本化检查点。 */
+    sourceAssociationDecisionJson: text("source_association_decision_json"),
   },
   (table) => [
     primaryKey({ name: "workflow_executions_pk", columns: [table.id] }),
@@ -148,6 +153,10 @@ export const recognitionProposals = sqliteTable(
     executionId: text("execution_id").notNull(),
     basisJson: text("basis_json").notNull(),
     ruleResultsJson: text("rule_results_json").notNull(),
+    /** candidate 与观察 Revision 必须作为一个不可变解释整体保存。 */
+    observedMaterialInterpretationJson: text(
+      "observed_material_interpretation_json",
+    ),
   },
   (table) => [
     primaryKey({ name: "recognition_proposals_pk", columns: [table.id] }),
@@ -171,8 +180,6 @@ export const sourceAssociations = sqliteTable(
     subjectId: text("subject_id").notNull(),
     sourceIdentity: text("source_identity").notNull(),
     nativeAddress: text("native_address").notNull(),
-    proposalId: text("proposal_id").notNull(),
-    isCurrent: integer("is_current").notNull().default(1),
   },
   (table) => [
     primaryKey({ name: "source_associations_pk", columns: [table.id] }),
@@ -196,6 +203,196 @@ export const recognitionDecisions = sqliteTable(
     primaryKey({ name: "recognition_decisions_pk", columns: [table.id] }),
     uniqueIndex("recognition_decisions_proposal").on(table.proposalId),
     index("recognition_decisions_asset").on(table.assetId),
+  ],
+);
+
+export const sourceAssociationChangeProposals = sqliteTable(
+  "source_association_change_proposals",
+  {
+    id: text().notNull(),
+    subjectId: text("subject_id").notNull(),
+    kind: text().notNull(),
+    payloadJson: text("payload_json").notNull(),
+    proposedByJson: text("proposed_by_json").notNull(),
+    evidenceJson: text("evidence_json").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.id] }),
+    check(
+      "source_association_change_proposals_kind",
+      sql`kind IN ('establish', 'replace', 'retract')`,
+    ),
+  ],
+);
+
+export const sourceAssociationDecisions = sqliteTable(
+  "source_association_decisions",
+  {
+    id: text().notNull(),
+    proposalId: text("proposal_id").notNull(),
+    subjectId: text("subject_id").notNull(),
+    decidedByKind: text("decided_by_kind").notNull(),
+    decidedByCoordinate: text("decided_by_coordinate").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.id] }),
+    uniqueIndex("source_association_decisions_proposal").on(table.proposalId),
+    foreignKey({
+      columns: [table.proposalId],
+      foreignColumns: [sourceAssociationChangeProposals.id],
+    }),
+    check(
+      "source_association_decisions_authority_kind",
+      sql`decided_by_kind IN ('user', 'application-policy')`,
+    ),
+  ],
+);
+
+export const sourceAssociationEstablishmentSupports = sqliteTable(
+  "source_association_establishment_supports",
+  {
+    associationId: text("association_id").notNull(),
+    recognitionDecisionId: text("recognition_decision_id"),
+    sourceAssociationDecisionId: text("source_association_decision_id"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.associationId] }),
+    foreignKey({
+      columns: [table.associationId],
+      foreignColumns: [sourceAssociations.id],
+    }),
+    foreignKey({
+      columns: [table.recognitionDecisionId],
+      foreignColumns: [recognitionDecisions.id],
+    }),
+    foreignKey({
+      columns: [table.sourceAssociationDecisionId],
+      foreignColumns: [sourceAssociationDecisions.id],
+    }),
+    check(
+      "source_association_establishment_supports_exactly_one",
+      sql`(recognition_decision_id IS NOT NULL) <> (source_association_decision_id IS NOT NULL)`,
+    ),
+  ],
+);
+
+export const sourceAssociationSupersessions = sqliteTable(
+  "source_association_supersessions",
+  {
+    id: text().notNull(),
+    predecessorAssociationId: text("predecessor_association_id").notNull(),
+    successorAssociationId: text("successor_association_id").notNull(),
+    sourceAssociationDecisionId: text("source_association_decision_id"),
+    recognitionDecisionId: text("recognition_decision_id"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.id] }),
+    uniqueIndex("source_association_supersessions_predecessor").on(
+      table.predecessorAssociationId,
+    ),
+    uniqueIndex("source_association_supersessions_successor").on(
+      table.successorAssociationId,
+    ),
+    foreignKey({
+      columns: [table.predecessorAssociationId],
+      foreignColumns: [sourceAssociations.id],
+    }),
+    foreignKey({
+      columns: [table.successorAssociationId],
+      foreignColumns: [sourceAssociations.id],
+    }),
+    foreignKey({
+      columns: [table.sourceAssociationDecisionId],
+      foreignColumns: [sourceAssociationDecisions.id],
+    }),
+    foreignKey({
+      columns: [table.recognitionDecisionId],
+      foreignColumns: [recognitionDecisions.id],
+    }),
+    check(
+      "source_association_supersessions_exactly_one",
+      sql`(source_association_decision_id IS NOT NULL) <> (recognition_decision_id IS NOT NULL)`,
+    ),
+  ],
+);
+
+export const sourceAssociationRetractions = sqliteTable(
+  "source_association_retractions",
+  {
+    id: text().notNull(),
+    associationId: text("association_id").notNull(),
+    sourceAssociationDecisionId: text("source_association_decision_id"),
+    recognitionDecisionSupersessionId: text(
+      "recognition_decision_supersession_id",
+    ),
+    recognitionDecisionRetractionId: text("recognition_decision_retraction_id"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.id] }),
+    uniqueIndex("source_association_retractions_association").on(
+      table.associationId,
+    ),
+    foreignKey({
+      columns: [table.associationId],
+      foreignColumns: [sourceAssociations.id],
+    }),
+    foreignKey({
+      columns: [table.sourceAssociationDecisionId],
+      foreignColumns: [sourceAssociationDecisions.id],
+    }),
+    foreignKey({
+      columns: [table.recognitionDecisionSupersessionId],
+      foreignColumns: [recognitionDecisionSupersessions.id],
+    }),
+    foreignKey({
+      columns: [table.recognitionDecisionRetractionId],
+      foreignColumns: [recognitionDecisionRetractions.id],
+    }),
+    check(
+      "source_association_retractions_exactly_one",
+      sql`(source_association_decision_id IS NOT NULL) + (recognition_decision_supersession_id IS NOT NULL) + (recognition_decision_retraction_id IS NOT NULL) = 1`,
+    ),
+  ],
+);
+
+export const sourceAssociationLegacyRetirements = sqliteTable(
+  "source_association_legacy_retirements",
+  {
+    associationId: text("association_id").notNull(),
+    migrationId: text("migration_id").notNull(),
+    basis: text().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.associationId] }),
+    foreignKey({
+      columns: [table.associationId],
+      foreignColumns: [sourceAssociations.id],
+    }),
+    check(
+      "source_association_legacy_retirements_basis",
+      sql`basis = 'legacy-current-projection'`,
+    ),
+  ],
+);
+
+export const recognitionDecisionRetractions = sqliteTable(
+  "recognition_decision_retractions",
+  {
+    id: text().notNull(),
+    predecessorDecisionId: text("predecessor_decision_id").notNull(),
+    proposedBy: text("proposed_by").notNull(),
+    decidedBy: text("decided_by").notNull(),
+    reason: text().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.id] }),
+    uniqueIndex("recognition_decision_retractions_predecessor").on(
+      table.predecessorDecisionId,
+    ),
+    foreignKey({
+      columns: [table.predecessorDecisionId],
+      foreignColumns: [recognitionDecisions.id],
+    }),
   ],
 );
 
@@ -287,6 +484,34 @@ export const currentFileObservations = sqliteTable(
   ],
 );
 
+/** 每次成功扫描对当前位置的登记权威支持；同一位置可由重叠根独立支持。 */
+export const currentFileObservationSupports = sqliteTable(
+  "current_file_observation_supports",
+  {
+    locationId: text("location_id").notNull(),
+    observedRootId: text("observed_root_id").notNull(),
+    observedRootVersion: integer("observed_root_version").notNull(),
+    observedRootPath: text("observed_root_path").notNull(),
+    authorizedTargetsJson: text("authorized_targets_json")
+      .notNull()
+      .default("[]"),
+  },
+  (table) => [
+    primaryKey({
+      name: "current_file_observation_supports_pk",
+      columns: [
+        table.locationId,
+        table.observedRootId,
+        table.observedRootVersion,
+      ],
+    }),
+    index("current_file_observation_supports_root").on(
+      table.observedRootId,
+      table.observedRootVersion,
+    ),
+  ],
+);
+
 /** Blob 级持久分帧证明坐标；sidecar 字节本身位于 product-data proof store。 */
 export const artifactContentProofs = sqliteTable(
   "artifact_content_proofs",
@@ -344,6 +569,23 @@ export const artifactAssociations = sqliteTable(
       table.subjectId,
       table.sourceAssociationId,
       table.role,
+    ),
+  ],
+);
+
+export const artifactAssociationRecognitionSupports = sqliteTable(
+  "artifact_association_recognition_supports",
+  {
+    associationId: text("association_id").notNull(),
+    recognitionDecisionId: text("recognition_decision_id").notNull(),
+  },
+  (table) => [
+    primaryKey({
+      name: "artifact_association_recognition_supports_pk",
+      columns: [table.associationId, table.recognitionDecisionId],
+    }),
+    index("artifact_association_recognition_supports_decision").on(
+      table.recognitionDecisionId,
     ),
   ],
 );
@@ -578,7 +820,7 @@ export const recognitionHeads = sqliteTable(
   "recognition_heads",
   {
     subjectId: text("subject_id").notNull(),
-    recognitionDecisionId: text("recognition_decision_id").notNull(),
+    recognitionDecisionId: text("recognition_decision_id"),
     recognitionSourceAssociationId: text("recognition_source_association_id"),
   },
   (table) => [
@@ -586,6 +828,18 @@ export const recognitionHeads = sqliteTable(
       name: "recognition_heads_pk",
       columns: [table.subjectId],
     }),
+    foreignKey({
+      columns: [table.recognitionDecisionId],
+      foreignColumns: [recognitionDecisions.id],
+    }),
+    foreignKey({
+      columns: [table.recognitionSourceAssociationId],
+      foreignColumns: [sourceAssociations.id],
+    }),
+    check(
+      "recognition_heads_source_requires_decision",
+      sql`recognition_decision_id IS NOT NULL OR recognition_source_association_id IS NULL`,
+    ),
   ],
 );
 
@@ -895,6 +1149,13 @@ export const catalogueSchema = {
   recognitionProposals,
   entities,
   sourceAssociations,
+  sourceAssociationChangeProposals,
+  sourceAssociationDecisions,
+  sourceAssociationEstablishmentSupports,
+  sourceAssociationSupersessions,
+  sourceAssociationRetractions,
+  sourceAssociationLegacyRetirements,
+  recognitionDecisionRetractions,
   recognitionDecisions,
   artifacts,
   locations,
@@ -902,8 +1163,10 @@ export const catalogueSchema = {
   artifactRevisions,
   observedRevisionConfirmations,
   currentFileObservations,
+  currentFileObservationSupports,
   artifactContentProofs,
   artifactAssociations,
+  artifactAssociationRecognitionSupports,
   metadataAssertions,
   sourcedEntities,
   entityRelationships,

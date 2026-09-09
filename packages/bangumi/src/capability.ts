@@ -740,7 +740,7 @@ export class BangumiSourceInterpreter implements SourceInterpreter {
   interpret(input: {
     readonly evidence: readonly RecognitionEvidence[];
     readonly sourceRecords: readonly SourceRecord[];
-  }): SourceInterpretationBatch {
+  }): readonly SourceInterpretationBatch[] {
     const evidence = input.evidence.find(isEpisodeEvidence);
     const associated = input.evidence.find(
       (item) =>
@@ -752,11 +752,9 @@ export class BangumiSourceInterpreter implements SourceInterpreter {
     );
     const associatedEpisodeId = parseEpisodeAddress(associated?.sourceAddress);
     if (evidence === undefined && associatedEpisodeId !== undefined)
-      return this.interpretKnownEpisode(
-        associated!,
-        records,
-        associatedEpisodeId,
-      );
+      return [
+        this.interpretKnownEpisode(associated!, records, associatedEpisodeId),
+      ];
     if (evidence === undefined)
       throw new Error(
         "Bangumi interpretation requires episodic directory evidence",
@@ -935,17 +933,19 @@ export class BangumiSourceInterpreter implements SourceInterpreter {
               mediaType: "image/jpeg",
             },
           ];
-    return {
-      id: `source-interpretation_${randomUUID()}`,
-      producer: this.capability,
-      sourceRecordIds: records.map((record) => record.id),
-      sourceIdentity: "bangumi",
-      sourceAddress: episodeAddress(episode.id),
-      metadata,
-      sourceArtifacts,
-      entities: works,
-      relationships,
-    };
+    return [
+      {
+        id: `source-interpretation_${randomUUID()}`,
+        producer: this.capability,
+        sourceRecordIds: records.map((record) => record.id),
+        sourceIdentity: "bangumi",
+        sourceAddress: episodeAddress(episode.id),
+        metadata,
+        sourceArtifacts,
+        entities: works,
+        relationships,
+      },
+    ];
   }
 
   private interpretKnownEpisode(

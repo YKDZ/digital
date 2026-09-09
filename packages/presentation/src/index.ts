@@ -35,7 +35,10 @@ export const generalAssetViewInformationRequirement: InformationRequirement = {
     { property: "asset.declared-language", necessity: "optional" },
     { property: "asset.content-classification", necessity: "optional" },
   ],
-  artifactRoles: [{ role: "asset.primary-cover", necessity: "optional" }],
+  artifactRoles: [
+    { role: "asset.primary-cover", necessity: "optional" },
+    { role: "asset.material-image", necessity: "optional" },
+  ],
   relationshipTypes: [
     { type: "asset.*", necessity: "optional" },
     { type: "bangumi.subject.related", necessity: "optional" },
@@ -54,7 +57,10 @@ export const bookViewInformationRequirement: InformationRequirement = {
     { property: "asset.declared-language", necessity: "optional" },
     { property: "asset.summary", necessity: "optional" },
   ],
-  artifactRoles: [{ role: "asset.primary-cover", necessity: "optional" }],
+  artifactRoles: [
+    { role: "asset.primary-cover", necessity: "optional" },
+    { role: "asset.material-image", necessity: "optional" },
+  ],
   relationshipTypes: [],
 };
 
@@ -137,9 +143,21 @@ export type AssetViewModel = {
   readonly language?: string;
   readonly classifications: readonly string[];
   readonly cover?: string;
+  readonly files?: readonly {
+    readonly name: string;
+    readonly format: string;
+    readonly revisionId?: string;
+    readonly image?: string;
+  }[];
   readonly available: boolean;
   readonly officialPage?: string;
   readonly sourceLabel?: string;
+  /** 后续检查界面使用的全部当前来源关联；普通详情可只显示安静的来源链接。 */
+  readonly sources?: readonly {
+    readonly sourceIdentity: string;
+    readonly label?: string;
+    readonly officialPage?: string;
+  }[];
   readonly relationships: readonly {
     readonly heading: "参与者" | "相关内容";
     readonly label: string;
@@ -186,6 +204,8 @@ export type AssetViewModel = {
     readonly files: readonly {
       readonly name: string;
       readonly format: string;
+      readonly revisionId?: string;
+      readonly image?: string;
     }[];
   };
   readonly film?: {
@@ -257,6 +277,15 @@ export type AssetViewFacts = {
     readonly subjectId?: string;
     readonly artifactId: string;
     readonly role: string;
+    readonly observedArtifactPart?: {
+      readonly artifactId: string;
+      readonly revisionId: string;
+      readonly locator: string;
+    };
+  }[];
+  readonly artifactRevisions?: readonly {
+    readonly id: string;
+    readonly artifactId: string;
   }[];
   readonly locations: readonly {
     readonly artifactId: string;
@@ -418,7 +447,10 @@ function dlsiteCredits(
 export function projectAssetView(input: AssetViewFacts): AssetViewModel {
   const component = assetViewComponent(input);
   const coverAssociation = input.artifactAssociations.find(
-    (association) => association.role === "asset.primary-cover",
+    (association) =>
+      (association.subjectId === undefined ||
+        association.subjectId === input.id) &&
+      association.role === "asset.primary-cover",
   );
   const cover = input.locations.find(
     (location) =>
@@ -508,7 +540,36 @@ export function projectAssetView(input: AssetViewFacts): AssetViewModel {
     .map((location) => {
       const name = location.address.split(/[\\/]/u).at(-1) ?? "文件";
       const extension = /\.([^.]+)$/u.exec(name)?.[1]?.toUpperCase();
-      return { name, format: extension ?? "文件" };
+      const imageAssociation = input.artifactAssociations.find(
+        (association) =>
+          (association.subjectId === undefined ||
+            association.subjectId === input.id) &&
+          ["asset.material-image", "asset.primary-cover"].includes(
+            association.role,
+          ) &&
+          association.observedArtifactPart?.artifactId ===
+            location.artifactId &&
+          input.artifactRevisions?.some(
+            (revision) =>
+              revision.id === association.observedArtifactPart?.revisionId &&
+              revision.artifactId === location.artifactId,
+          ),
+      );
+      const image = input.locations.find(
+        (candidate) =>
+          candidate.kind === "managed" &&
+          candidate.artifactId === imageAssociation?.artifactId,
+      )?.address;
+      return {
+        name,
+        format: extension ?? "文件",
+        ...(imageAssociation?.observedArtifactPart === undefined
+          ? {}
+          : {
+              revisionId: imageAssociation.observedArtifactPart.revisionId,
+              ...(image === undefined ? {} : { image }),
+            }),
+      };
     });
   const bookIsbn13 = firstMetadata(input.metadata, "book.isbn-13");
   const bookPublisher = firstMetadata(input.metadata, "book.publisher");
@@ -521,6 +582,21 @@ export function projectAssetView(input: AssetViewFacts): AssetViewModel {
   const firstObservedFile = observedFiles[0];
   const primarySourceLabel = sourceLabel(
     input.sourceAssociation?.sourceIdentity,
+  );
+  const sources = (input.sourceAssociations ?? []).flatMap((association) =>
+    association.sourceIdentity === undefined
+      ? []
+      : [
+          {
+            sourceIdentity: association.sourceIdentity,
+            ...(sourceLabel(association.sourceIdentity) === undefined
+              ? {}
+              : { label: sourceLabel(association.sourceIdentity)! }),
+            ...(/^https?:\/\//u.test(association.nativeAddress)
+              ? { officialPage: association.nativeAddress }
+              : {}),
+          },
+        ],
   );
   return {
     id: input.id,
@@ -535,8 +611,10 @@ export function projectAssetView(input: AssetViewFacts): AssetViewModel {
     ...(publicationDateTime === undefined ? {} : { publicationDateTime }),
     ...(language === undefined ? {} : { language }),
     classifications,
+    files: observedFiles,
     ...(cover === undefined ? {} : { cover }),
     available: input.locations.some((location) => location.kind === "observed"),
+    sources,
     ...(input.sourceAssociation === undefined
       ? {}
       : {

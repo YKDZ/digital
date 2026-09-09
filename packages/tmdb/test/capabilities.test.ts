@@ -201,7 +201,7 @@ describe("TMDB collection and interpretation", () => {
     );
 
     const collected = await collector.collect(evidence[0]);
-    const interpreted = new TmdbSourceInterpreter().interpret({
+    const [interpreted] = new TmdbSourceInterpreter().interpret({
       evidence,
       sourceRecords: collected.records,
     });
@@ -265,7 +265,7 @@ describe("TMDB collection and interpretation", () => {
     );
 
     const collection = await collector.collect(evidence[0]);
-    const interpreted = new TmdbSourceInterpreter().interpret({
+    const [interpreted] = new TmdbSourceInterpreter().interpret({
       evidence,
       sourceRecords: collection.records,
     });
@@ -327,7 +327,7 @@ describe("TMDB collection and interpretation", () => {
     );
 
     const collection = await collector.collect(evidence[0]);
-    const interpreted = new TmdbSourceInterpreter().interpret({
+    const [interpreted] = new TmdbSourceInterpreter().interpret({
       evidence,
       sourceRecords: collection.records,
     });
@@ -603,7 +603,7 @@ describe("TMDB collection and interpretation", () => {
       snapshot("/library/恐怖直播 (2013)"),
     );
     const collected = await collector.collect(evidence[0]);
-    const interpreted = new TmdbSourceInterpreter().interpret({
+    const [interpreted] = new TmdbSourceInterpreter().interpret({
       evidence,
       sourceRecords: collected.records,
     });
@@ -751,7 +751,7 @@ describe("TMDB collection and interpretation", () => {
       },
     ] as const;
     const collected = await collector.collect(evidence[0]);
-    const interpreted = new TmdbSourceInterpreter().interpret({
+    const [interpreted] = new TmdbSourceInterpreter().interpret({
       evidence,
       sourceRecords: collected.records,
     });
@@ -1042,7 +1042,7 @@ describe("TMDB collection and interpretation", () => {
     const evidence = new TmdbStrictFilmDirectoryInterpreter().interpret(
       snapshot("/library/恐怖直播 (2013)"),
     );
-    const interpreted = interpreter.interpret({
+    const [interpreted] = interpreter.interpret({
       evidence,
       sourceRecords: [detail, directorCredits, credits],
     });
@@ -1123,7 +1123,7 @@ describe("TMDB collection and interpretation", () => {
       snapshot("/library/恐怖直播 (2013)"),
     );
 
-    const interpreted = new TmdbSourceInterpreter().interpret({
+    const [interpreted] = new TmdbSourceInterpreter().interpret({
       evidence,
       sourceRecords: [detail, directorCredits, credits],
     });

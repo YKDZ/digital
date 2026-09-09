@@ -93,6 +93,11 @@ type SourceConnectionDefinition = {
 export type ProductBangumiSourceConnection = {
   readonly capability: CapabilityCoordinate;
   inspect(): SourceConnectionInspection;
+  configureClient(input: {
+    readonly clientId: string;
+    readonly clientSecret: string;
+    readonly redirectUri: string;
+  }): void;
   beginAuthorization(): {
     readonly authorizationUrl: string;
     readonly expiresAt: string;
@@ -131,15 +136,15 @@ export type ProductSourceConnectionAdapters = {
     creatorIdFromEvidence(evidence: RecognitionEvidence): string | undefined;
     validatedBrowserCredential(input: {
       readonly creatorId: string;
-      readonly browserCookies: unknown;
+      readonly browserCredential: unknown;
     }): Promise<string>;
     verifyStoredCredential(input: {
       readonly creatorId: string;
-      readonly cookieHeader: string;
+      readonly privateConfiguration: string;
     }): Promise<void>;
     createCollector(input: {
       readonly creatorIds: () => readonly string[];
-      readonly cookieHeaderForExecution: (input: {
+      readonly privateConfigurationForExecution: (input: {
         readonly creatorId: string;
         readonly context: SourceCollectionExecutionContext | undefined;
       }) => string | undefined;
@@ -612,24 +617,25 @@ export class ProductFanboxSourceConnections {
 
   async importBrowserCredentials(input: {
     readonly creatorId: string;
-    readonly browserCookies: unknown;
+    readonly browserCredential: unknown;
   }): Promise<
     SourceConnectionInspection & {
       readonly creatorId: string;
     }
   > {
     assertFanboxCreatorId(input.creatorId);
-    const cookieHeader = await this.adapter.validatedBrowserCredential(input);
+    const privateConfiguration =
+      await this.adapter.validatedBrowserCredential(input);
     const connection = this.connectionFor(input.creatorId);
     return {
-      ...connection.configureVerified(cookieHeader),
+      ...connection.configureVerified(privateConfiguration),
       creatorId: input.creatorId,
     };
   }
 
   async replaceBrowserCredentials(input: {
     readonly creatorId: string;
-    readonly browserCookies: unknown;
+    readonly browserCredential: unknown;
     readonly expectedVersion?: number;
   }): Promise<
     SourceConnectionInspection & {
@@ -637,10 +643,14 @@ export class ProductFanboxSourceConnections {
     }
   > {
     assertFanboxCreatorId(input.creatorId);
-    const cookieHeader = await this.adapter.validatedBrowserCredential(input);
+    const privateConfiguration =
+      await this.adapter.validatedBrowserCredential(input);
     const connection = this.connectionFor(input.creatorId);
     return {
-      ...connection.replaceVerified(cookieHeader, input.expectedVersion),
+      ...connection.replaceVerified(
+        privateConfiguration,
+        input.expectedVersion,
+      ),
       creatorId: input.creatorId,
     };
   }
@@ -660,6 +670,11 @@ export class ProductFanboxSourceConnections {
     readonly creatorId: string;
   })[] {
     return this.creatorIds().map((creatorId) => this.inspect(creatorId));
+  }
+
+  async verify(creatorId: string): Promise<SourceConnectionInspection> {
+    assertFanboxCreatorId(creatorId);
+    return await this.connectionFor(creatorId).verify();
   }
 
   /**
@@ -705,7 +720,7 @@ export class ProductFanboxSourceConnections {
     );
   }
 
-  cookieHeaderForExecution(input: {
+  privateConfigurationForExecution(input: {
     readonly creatorId: string;
     readonly context: SourceCollectionExecutionContext | undefined;
   }): string | undefined {
@@ -718,7 +733,8 @@ export class ProductFanboxSourceConnections {
   collector(): SourceCollector {
     return this.adapter.createCollector({
       creatorIds: () => this.creatorIds(),
-      cookieHeaderForExecution: (input) => this.cookieHeaderForExecution(input),
+      privateConfigurationForExecution: (input) =>
+        this.privateConfigurationForExecution(input),
     });
   }
 
@@ -729,10 +745,10 @@ export class ProductFanboxSourceConnections {
         storageKey: `fanbox--${creatorId}`,
         capability: this.adapter.connectionCapability,
         bootstrapSecret: undefined,
-        verify: async (cookieHeader) =>
+        verify: async (privateConfiguration) =>
           await this.adapter.verifyStoredCredential({
             creatorId,
-            cookieHeader,
+            privateConfiguration,
           }),
       },
       this.privateState,

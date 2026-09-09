@@ -1,22 +1,13 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { usePageContext } from "vike-vue/usePageContext";
 
 import AssetDetail from "#/components/formal/AssetDetail.vue";
 import { Button } from "#/components/ui/button";
-import { useCatalogue } from "#/composables/use-catalogue";
+import { useCatalogueSubject } from "#/composables/use-catalogue-subject";
 
-const { catalogue, error, loading } = useCatalogue();
-const seriesId =
-  typeof window === "undefined"
-    ? ""
-    : decodeURIComponent(window.location.pathname.split("/").at(-1) ?? "");
-const series = computed(() =>
-  catalogue.value.assets.find(
-    (item) =>
-      "component" in item &&
-      item.component === "bangumi" &&
-      item.id === seriesId,
-  ),
+const pageContext = usePageContext();
+const { selected, error, loading, reload } = useCatalogueSubject(
+  () => pageContext.routeParams.id ?? "",
 );
 </script>
 
@@ -24,9 +15,11 @@ const series = computed(() =>
   <p v-if="loading" role="status" class="text-muted-foreground">
     正在读取内容…
   </p>
-  <p v-else-if="error" role="alert" class="text-destructive">{{ error }}</p>
-  <section v-else-if="series">
-    <AssetDetail :asset="series" />
+  <p v-else-if="error" role="alert" class="text-destructive">
+    {{ error }} <Button variant="link" @click="reload">重试</Button>
+  </p>
+  <section v-else-if="selected">
+    <AssetDetail :asset="selected.asset" />
   </section>
   <section v-else class="grid gap-4">
     <h1 class="text-3xl font-bold">未找到作品系列</h1>

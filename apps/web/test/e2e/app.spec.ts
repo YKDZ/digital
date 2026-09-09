@@ -16,6 +16,8 @@ test("renders the formal asset browser", async ({ page }) => {
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await expect(page.getByRole("heading", { name: "全部内容" })).toBeVisible();
   await expect(
-    page.getByRole("main").getByRole("link", { name: "添加内容" }),
+    page
+      .locator('[data-sidebar="sidebar"]')
+      .getByRole("link", { name: "添加内容" }),
   ).toBeVisible();
 });

@@ -123,7 +123,10 @@ const cliAssetViewInformationRequirement: InformationRequirement = {
     { property: "asset.declared-language", necessity: "optional" },
     { property: "asset.content-classification", necessity: "optional" },
   ],
-  artifactRoles: [{ role: "asset.primary-cover", necessity: "optional" }],
+  artifactRoles: [
+    { role: "asset.primary-cover", necessity: "optional" },
+    { role: "asset.material-image", necessity: "optional" },
+  ],
   relationshipTypes: [
     { type: "asset.*", necessity: "optional" },
     { type: "bangumi.subject.related", necessity: "optional" },
@@ -403,6 +406,87 @@ export function createCliCommand(
     resources.assetRefresh().sourceConnections.fanbox;
   const sourceConnections = () => resources.assetRefresh().sourceConnections;
 
+  const materialPrepareCommand = command
+    .command("material-association-prepare")
+    .description("检查文件位置中将关联到既有内容的完整文件。")
+    .requiredOption("--asset <id>", "既有内容标识")
+    .requiredOption("--root <id>", "已登记文件位置标识")
+    .requiredOption("--scope <scope>", "文件位置内的相对范围")
+    .requiredOption("--file <paths...>", "范围内的一个或多个完整文件")
+    .requiredOption("--initiated-by <actor>", "发起者")
+    .action(
+      async (options: {
+        readonly asset: string;
+        readonly root: string;
+        readonly scope: string;
+        readonly file: string[];
+        readonly initiatedBy: string;
+      }) => {
+        try {
+          const result = await resources
+            .assetRefresh()
+            .prepareObservedMaterialAssociation({
+              targetAssetId: options.asset,
+              registrationId: options.root,
+              relativeScope: options.scope,
+              relativePaths: options.file,
+              initiatedBy: options.initiatedBy,
+            });
+          runtime.streams.stdout.write(`${JSON.stringify(result)}\n`);
+        } catch (error) {
+          materialPrepareCommand.error(`error: ${errorMessage(error)}`, {
+            exitCode: 1,
+            code: "cli.material-association.prepare-failed",
+          });
+        }
+      },
+    );
+
+  const materialInspectCommand = command
+    .command("material-association-inspect")
+    .description("查看观察材料关联记录。")
+    .argument("<execution-id>", "关联执行标识")
+    .action(async (executionId: string) => {
+      try {
+        const result = await resources
+          .assetRefresh()
+          .inspectObservedMaterialAssociation(executionId);
+        runtime.streams.stdout.write(`${JSON.stringify(result)}\n`);
+      } catch (error) {
+        materialInspectCommand.error(`error: ${errorMessage(error)}`, {
+          exitCode: 1,
+          code: "cli.material-association.inspect-failed",
+        });
+      }
+    });
+
+  const materialConfirmCommand = command
+    .command("material-association-confirm")
+    .description("确认已检查的观察材料关联。")
+    .argument("<execution-id>", "关联执行标识")
+    .requiredOption("--confirmed-by <actor>", "确认者")
+    .action(
+      async (
+        executionId: string,
+        options: { readonly confirmedBy: string },
+      ) => {
+        try {
+          const result = await resources
+            .assetRefresh()
+            .confirmObservedMaterialAssociation({
+              executionId,
+              confirmedBy: options.confirmedBy,
+            });
+          runtime.streams.stdout.write(`${JSON.stringify(result)}\n`);
+        } catch (error) {
+          materialConfirmCommand.error(`error: ${errorMessage(error)}`, {
+            exitCode: 1,
+            code: "cli.material-association.confirm-failed",
+          });
+        }
+      },
+    );
+
   command
     .command("catalogue-surface")
     .description("查看当前目录、需要处理或刷新历史中的一个分页面。")
@@ -531,13 +615,14 @@ export function createCliCommand(
     .command("fanbox-connection-import")
     .description("导入并验证一个创作者范围的 FANBOX 浏览器凭据。")
     .argument("<creator-id>", "FANBOX 创作者范围")
-    .argument("<browser-cookie-file>", "浏览器导出的私密 Cookie JSON 文件")
-    .action(async (creatorId: string, browserCookieFile: string) => {
+    .argument("<browser-credential-file>", "浏览器请求上下文 JSON 文件")
+    .action(async (creatorId: string, browserCredentialFile: string) => {
       try {
         const inspection = await fanboxConnections().importBrowserCredentials({
           creatorId,
-          browserCookies:
-            await readFanboxBrowserCredentialFile(browserCookieFile),
+          browserCredential: await readFanboxBrowserCredentialFile(
+            browserCredentialFile,
+          ),
         });
         runtime.streams.stdout.write(`${JSON.stringify(inspection)}\n`);
       } catch (error) {
@@ -552,12 +637,12 @@ export function createCliCommand(
     .command("fanbox-connection-replace")
     .description("验证后替换一个创作者范围的 FANBOX 浏览器凭据。")
     .argument("<creator-id>", "FANBOX 创作者范围")
-    .argument("<browser-cookie-file>", "浏览器导出的私密 Cookie JSON 文件")
+    .argument("<browser-credential-file>", "浏览器请求上下文 JSON 文件")
     .requiredOption("--expected-version <number>", "当前连接版本")
     .action(
       async (
         creatorId: string,
-        browserCookieFile: string,
+        browserCredentialFile: string,
         options: { readonly expectedVersion: string },
       ) => {
         try {
@@ -565,8 +650,9 @@ export function createCliCommand(
             await fanboxConnections().replaceBrowserCredentials({
               creatorId,
               expectedVersion: sourceConnectionVersion(options.expectedVersion),
-              browserCookies:
-                await readFanboxBrowserCredentialFile(browserCookieFile),
+              browserCredential: await readFanboxBrowserCredentialFile(
+                browserCredentialFile,
+              ),
             });
           runtime.streams.stdout.write(`${JSON.stringify(inspection)}\n`);
         } catch (error) {
@@ -790,37 +876,70 @@ export function createCliCommand(
       );
   }
 
-  const scrapeCommand = command
-    .command("scrape")
-    .description("以精确来源地址刮削一个已登记文件位置内的范围。")
-    .argument("<observed-root-id>", "已登记的文件位置编号")
-    .argument("<source-address>", "来源提供的精确地址")
-    .option("--scope <relative-path>", "登记根内的有限相对范围", ".")
-    .requiredOption("--source-identity <identity>", "来源标识")
-    .option("--require-artifact-role <roles...>", "要求本次获取指定产物用途")
-    .option("--json", "输出临时机器可读结果")
+  command
+    .command("source-inputs")
+    .description("列出当前产品支持的明确来源输入要求。")
+    .option("--json", "输出机器可读结果")
+    .action((options: { readonly json?: boolean }) => {
+      const requirements = resources.assetRefresh().sourceInputRequirements();
+      runtime.streams.stdout.write(
+        options.json === true
+          ? `${JSON.stringify(requirements)}\n`
+          : requirements
+              .map(
+                (source) =>
+                  `${source.displayName} (${source.sourceIdentity})\n${source.fields
+                    .map(
+                      (field) =>
+                        `  ${field.key}: ${field.acceptedInput}${field.required ? "（必填）" : ""}`,
+                    )
+                    .join("\n")}`,
+              )
+              .join("\n"),
+      );
+    });
+
+  const enrichSourceCommand = command
+    .command("enrich-source")
+    .description("给一个已确认内容补充明确来源。")
+    .argument("<asset-id>", "内容编号")
+    .argument("<source-identity>", "来源标识")
+    .argument("<source-input-json>", "按来源要求提供的 JSON 对象")
+    .option("--json", "输出机器可读结果")
     .action(
       async (
-        observedRootId: string,
-        sourceAddress: string,
-        options: {
-          readonly json?: boolean;
-          readonly sourceIdentity: string;
-          readonly requireArtifactRole?: readonly string[];
-          readonly scope?: string;
-        },
+        assetId: string,
+        sourceIdentity: string,
+        sourceInputJson: string,
+        options: { readonly json?: boolean },
       ) => {
+        let sourceInput: unknown;
+        try {
+          sourceInput = JSON.parse(sourceInputJson) as unknown;
+        } catch {
+          enrichSourceCommand.error("error: 来源输入必须是 JSON 对象", {
+            exitCode: 1,
+            code: "cli.source-enrichment.invalid-input",
+          });
+        }
+        if (
+          typeof sourceInput !== "object" ||
+          sourceInput === null ||
+          Array.isArray(sourceInput) ||
+          !Object.values(sourceInput).every((item) => typeof item === "string")
+        )
+          enrichSourceCommand.error("error: 来源输入必须是字符串字段对象", {
+            exitCode: 1,
+            code: "cli.source-enrichment.invalid-input",
+          });
+        const workflow = resources.assetRefresh();
         let wroteInspection = false;
         try {
-          const workflow = resources.assetRefresh();
-          const inspection = await workflow.directedRecognitionObservedScope({
-            registrationId: observedRootId,
-            relativeScope: options.scope ?? ".",
-            sourceAddress,
-            sourceIdentity: options.sourceIdentity,
-            informationRequirement: informationRequirement(
-              options.requireArtifactRole,
-            ),
+          const inspection = await workflow.enrichSource({
+            subjectId: assetId,
+            sourceIdentity,
+            sourceInput: sourceInput as Readonly<Record<string, string>>,
+            informationRequirement: cliAssetViewInformationRequirement,
             onExecutionStarted(execution) {
               runtime.streams.stderr.write(`刷新记录：${execution.id}\n`);
             },
@@ -832,23 +951,285 @@ export function createCliCommand(
             renderInspection(inspection, options.json === true),
           );
           wroteInspection = true;
-          if (
-            inspection.execution.outcome === "failed" ||
-            inspection.execution.outcome === "partially-succeeded"
-          ) {
-            scrapeCommand.error(
-              `error: ${inspection.execution.reason ?? "scrape failed"}`,
-              { exitCode: 1, code: "cli.asset-refresh.scrape-failed" },
+          if (inspection.execution.outcome === "failed")
+            enrichSourceCommand.error(
+              `error: ${inspection.execution.reason ?? "source enrichment failed"}`,
+              { exitCode: 1, code: "cli.source-enrichment.failed" },
             );
-          }
         } catch (error) {
           if (error instanceof CommanderError) throw error;
           const reason = errorMessage(error);
           if (options.json === true && !wroteInspection)
             runtime.streams.stdout.write(renderStructuredFailure(reason));
-          scrapeCommand.error(`error: ${reason}`, {
+          enrichSourceCommand.error(`error: ${reason}`, {
             exitCode: 1,
-            code: "cli.asset-refresh.scrape-failed",
+            code: "cli.source-enrichment.failed",
+          });
+        }
+      },
+    );
+
+  const sourceDecision = command
+    .command("source-decision")
+    .description("准备一项点名来源关联的建立、更换或撤回。")
+    .argument("<intent>", "establish、replace 或 retract")
+    .argument("<asset-id>", "内容编号")
+    .argument("<source-or-association-id>", "来源标识或 predecessor 关联编号")
+    .argument("<input-or-reason>", "来源输入 JSON 或撤回原因")
+    .requiredOption("--actor <actor-id>", "发起者标识")
+    .option("--json", "输出机器可读结果")
+    .action(
+      async (
+        intent: string,
+        assetId: string,
+        sourceOrAssociationId: string,
+        inputOrReason: string,
+        options: { readonly actor: string; readonly json?: boolean },
+      ) => {
+        try {
+          const workflow = resources.assetRefresh();
+          const started = (execution: { readonly id: string }) =>
+            runtime.streams.stderr.write(`刷新记录：${execution.id}\n`);
+          let inspection;
+          if (intent === "retract")
+            inspection = await workflow.prepareRetraction({
+              assetId,
+              predecessorAssociationId: sourceOrAssociationId,
+              initiatedBy: options.actor,
+              reason: inputOrReason,
+              onExecutionStarted: started,
+            });
+          else {
+            const parsed = JSON.parse(inputOrReason) as unknown;
+            if (
+              typeof parsed !== "object" ||
+              parsed === null ||
+              Array.isArray(parsed) ||
+              !Object.values(parsed).every((item) => typeof item === "string")
+            )
+              throw new Error("来源输入必须是字符串字段对象");
+            inspection =
+              intent === "establish"
+                ? await workflow.prepareConflictedEstablishment({
+                    assetId,
+                    sourceIdentity: sourceOrAssociationId,
+                    sourceInput: parsed as Readonly<Record<string, string>>,
+                    initiatedBy: options.actor,
+                    onExecutionStarted: started,
+                  })
+                : intent === "replace"
+                  ? await workflow.prepareReplacement({
+                      assetId,
+                      predecessorAssociationId: sourceOrAssociationId,
+                      sourceInput: parsed as Readonly<Record<string, string>>,
+                      initiatedBy: options.actor,
+                      onExecutionStarted: started,
+                    })
+                  : undefined;
+          }
+          if (inspection === undefined)
+            throw new Error(
+              "来源关联决定意图必须是 establish、replace 或 retract",
+            );
+          runtime.streams.stdout.write(
+            `${JSON.stringify(inspection, null, options.json === true ? 0 : 2)}\n`,
+          );
+        } catch (error) {
+          if (error instanceof CommanderError) throw error;
+          sourceDecision.error(`error: ${errorMessage(error)}`, {
+            exitCode: 1,
+            code: "cli.source-decision.failed",
+          });
+        }
+      },
+    );
+
+  const inspectSourceDecision = command
+    .command("inspect-source-decision")
+    .argument("<execution-id>", "执行编号")
+    .option("--json", "输出机器可读结果")
+    .action(
+      async (executionId: string, options: { readonly json?: boolean }) => {
+        const inspection = await resources
+          .assetRefresh()
+          .inspectSourceAssociationDecision(executionId);
+        if (inspection === undefined)
+          inspectSourceDecision.error("error: 未找到来源关联决定", {
+            exitCode: 1,
+            code: "cli.source-decision.not-found",
+          });
+        runtime.streams.stdout.write(
+          `${JSON.stringify(inspection, null, options.json === true ? 0 : 2)}\n`,
+        );
+      },
+    );
+
+  const inspectCorrectionSubject = command
+    .command("inspect-correction-subject")
+    .argument("<asset-id>", "稳定内容编号")
+    .option("--json", "输出机器可读结果")
+    .action(async (assetId: string, options: { readonly json?: boolean }) => {
+      const inspection = await resources
+        .assetRefresh()
+        .inspectCorrectionSubject(assetId);
+      if (inspection === undefined)
+        inspectCorrectionSubject.error("error: 未找到可更正内容", {
+          exitCode: 1,
+          code: "cli.correction-subject.not-found",
+        });
+      runtime.streams.stdout.write(
+        `${JSON.stringify(inspection, null, options.json === true ? 0 : 2)}\n`,
+      );
+    });
+
+  const selectSourceDecision = command
+    .command("select-source-candidate")
+    .argument("<execution-id>", "执行编号")
+    .argument("<candidate-reference>", "候选引用")
+    .option("--json", "输出机器可读结果")
+    .action(
+      async (
+        executionId: string,
+        candidateReference: string,
+        options: { readonly json?: boolean },
+      ) => {
+        try {
+          if (candidateReference.trim().length === 0)
+            throw new Error("候选引用不能为空");
+          const inspection = await resources
+            .assetRefresh()
+            .selectSourceAssociationCandidate({
+              executionId,
+              candidateReference,
+            });
+          runtime.streams.stdout.write(
+            `${JSON.stringify(inspection, null, options.json === true ? 0 : 2)}\n`,
+          );
+        } catch (error) {
+          if (error instanceof CommanderError) throw error;
+          selectSourceDecision.error(`error: ${errorMessage(error)}`, {
+            exitCode: 1,
+            code: "cli.source-decision.select-failed",
+          });
+        }
+      },
+    );
+
+  const retrySourceDecision = command
+    .command("retry-source-decision")
+    .argument("<execution-id>", "已终止执行编号")
+    .option("--json", "输出机器可读结果")
+    .action(
+      async (executionId: string, options: { readonly json?: boolean }) => {
+        try {
+          const inspection = await resources
+            .assetRefresh()
+            .retrySourceAssociationDecision({
+              executionId,
+              onExecutionStarted(execution) {
+                runtime.streams.stderr.write(`刷新记录：${execution.id}\n`);
+              },
+            });
+          runtime.streams.stdout.write(
+            `${JSON.stringify(inspection, null, options.json === true ? 0 : 2)}\n`,
+          );
+        } catch (error) {
+          if (error instanceof CommanderError) throw error;
+          retrySourceDecision.error(`error: ${errorMessage(error)}`, {
+            exitCode: 1,
+            code: "cli.source-decision.retry-failed",
+          });
+        }
+      },
+    );
+
+  const retractIdentity = command
+    .command("retract-identity")
+    .argument("<asset-id>", "内容编号")
+    .argument("<decision-id>", "当前识别决定编号")
+    .argument("<reason>", "撤回原因")
+    .requiredOption("--actor <actor-id>", "提议者标识")
+    .option("--json", "输出机器可读结果")
+    .action(
+      async (
+        assetId: string,
+        decisionId: string,
+        reason: string,
+        options: { readonly actor: string; readonly json?: boolean },
+      ) => {
+        try {
+          const preview = await resources
+            .assetRefresh()
+            .prepareRecognitionRetraction({
+              assetId,
+              predecessorDecisionId: decisionId,
+              proposedBy: options.actor,
+              reason,
+              onExecutionStarted(execution) {
+                runtime.streams.stderr.write(`刷新记录：${execution.id}\n`);
+              },
+            });
+          runtime.streams.stdout.write(
+            renderChangeImpactPreview(preview, options.json === true),
+          );
+        } catch (error) {
+          if (error instanceof CommanderError) throw error;
+          retractIdentity.error(`error: ${errorMessage(error)}`, {
+            exitCode: 1,
+            code: "cli.identity-retraction.failed",
+          });
+        }
+      },
+    );
+
+  const scrapeSourceCommand = command
+    .command("scrape-source")
+    .description("按来源公布的输入要求定向识别一个文件范围。")
+    .argument("<observed-root-id>", "已登记的文件位置编号")
+    .argument("<source-identity>", "来源标识")
+    .argument("<source-input-json>", "按来源要求提供的 JSON 对象")
+    .option("--scope <relative-path>", "登记根内的有限相对范围", ".")
+    .option("--json", "输出机器可读结果")
+    .action(
+      async (
+        observedRootId: string,
+        sourceIdentity: string,
+        sourceInputJson: string,
+        options: { readonly scope?: string; readonly json?: boolean },
+      ) => {
+        try {
+          const sourceInput = JSON.parse(sourceInputJson) as unknown;
+          if (
+            typeof sourceInput !== "object" ||
+            sourceInput === null ||
+            Array.isArray(sourceInput) ||
+            !Object.values(sourceInput).every(
+              (item) => typeof item === "string",
+            )
+          )
+            throw new Error("来源输入必须是字符串字段对象");
+          const inspection = await resources
+            .assetRefresh()
+            .directedRecognitionSourceInputObservedScope({
+              registrationId: observedRootId,
+              relativeScope: options.scope ?? ".",
+              sourceIdentity,
+              sourceInput: sourceInput as Readonly<Record<string, string>>,
+              informationRequirement: cliAssetViewInformationRequirement,
+            });
+          runtime.streams.stdout.write(
+            renderInspection(inspection, options.json === true),
+          );
+          if (inspection.execution.outcome === "failed")
+            scrapeSourceCommand.error(
+              `error: ${inspection.execution.reason ?? "scrape failed"}`,
+              { exitCode: 1, code: "cli.source-scrape.failed" },
+            );
+        } catch (error) {
+          if (error instanceof CommanderError) throw error;
+          scrapeSourceCommand.error(`error: ${errorMessage(error)}`, {
+            exitCode: 1,
+            code: "cli.source-scrape.failed",
           });
         }
       },
@@ -856,21 +1237,21 @@ export function createCliCommand(
 
   const rescrapeCommand = command
     .command("rescrape")
-    .description("以精确来源地址重新刮削并生成身份变更预演。")
+    .description("按来源公布的输入要求重新刮削并生成身份变更预演。")
     .argument("<observed-root-id>", "已登记的文件位置编号")
-    .argument("<source-address>", "来源提供的精确地址")
+    .argument("<source-identity>", "来源标识")
+    .argument("<source-input-json>", "按来源要求提供的 JSON 对象")
     .option("--scope <relative-path>", "登记根内的有限相对范围", ".")
-    .requiredOption("--source-identity <identity>", "来源标识")
     .requiredOption("--subject-id <subjectId>", "当前精确主体标识")
     .option("--require-artifact-role <roles...>", "要求本次获取指定产物用途")
     .option("--json", "输出临时机器可读结果")
     .action(
       async (
         observedRootId: string,
-        sourceAddress: string,
+        sourceIdentity: string,
+        sourceInputJson: string,
         options: {
           readonly json?: boolean;
-          readonly sourceIdentity: string;
           readonly subjectId: string;
           readonly requireArtifactRole?: readonly string[];
           readonly scope?: string;
@@ -878,13 +1259,23 @@ export function createCliCommand(
       ) => {
         let wroteInspection = false;
         try {
+          const sourceInput = JSON.parse(sourceInputJson) as unknown;
+          if (
+            typeof sourceInput !== "object" ||
+            sourceInput === null ||
+            Array.isArray(sourceInput) ||
+            !Object.values(sourceInput).every(
+              (item) => typeof item === "string",
+            )
+          )
+            throw new Error("来源输入必须是字符串字段对象");
           const workflow = resources.assetRefresh();
           const inspection = await workflow.rescrapeObservedScope({
             subjectId: options.subjectId,
             registrationId: observedRootId,
             relativeScope: options.scope ?? ".",
-            sourceAddress,
-            sourceIdentity: options.sourceIdentity,
+            sourceIdentity,
+            sourceInput: sourceInput as Readonly<Record<string, string>>,
             informationRequirement: informationRequirement(
               options.requireArtifactRole,
             ),
@@ -945,57 +1336,76 @@ export function createCliCommand(
     .command("apply-preview")
     .description("确认并应用已保存的身份变更影响预演。")
     .argument("<preview-id>", "预演标识")
+    .requiredOption("--actor <actor-id>", "确认者标识")
     .option("--json", "输出临时机器可读结果")
-    .action(async (previewId: string, options: { readonly json?: boolean }) => {
-      try {
-        const workflow = resources.assetRefresh();
-        const result = await workflow.applyChangeImpactPreview(previewId);
-        const preview = await workflow.inspectChangeImpactPreview(previewId);
-        if (preview === undefined) throw new Error("应用后未找到变更影响预演");
-        runtime.streams.stdout.write(
-          renderChangeImpactPreview(preview, options.json === true),
-        );
-        if (result.status === "stale") {
-          applyPreviewCommand.error("error: 变更影响预演已过期，未应用", {
+    .action(
+      async (
+        previewId: string,
+        options: { readonly actor: string; readonly json?: boolean },
+      ) => {
+        try {
+          const workflow = resources.assetRefresh();
+          const result = await workflow.applyChangeImpactPreview({
+            previewId,
+            confirmedBy: options.actor,
+          });
+          const preview = await workflow.inspectChangeImpactPreview(previewId);
+          if (preview === undefined)
+            throw new Error("应用后未找到变更影响预演");
+          runtime.streams.stdout.write(
+            renderChangeImpactPreview(preview, options.json === true),
+          );
+          if (result.status === "stale") {
+            applyPreviewCommand.error("error: 变更影响预演已过期，未应用", {
+              exitCode: 1,
+              code: "cli.asset-refresh.apply-preview-stale",
+            });
+          }
+        } catch (error) {
+          if (error instanceof CommanderError) throw error;
+          applyPreviewCommand.error(`error: ${errorMessage(error)}`, {
             exitCode: 1,
-            code: "cli.asset-refresh.apply-preview-stale",
+            code: "cli.asset-refresh.apply-preview-failed",
           });
         }
-      } catch (error) {
-        if (error instanceof CommanderError) throw error;
-        applyPreviewCommand.error(`error: ${errorMessage(error)}`, {
-          exitCode: 1,
-          code: "cli.asset-refresh.apply-preview-failed",
-        });
-      }
-    });
+      },
+    );
 
   const rejectPreviewCommand = command
     .command("reject-preview")
     .description("拒绝已保存的身份变更影响预演。")
     .argument("<preview-id>", "预演标识")
+    .requiredOption("--actor <actor-id>", "拒绝者标识")
     .option("--json", "输出临时机器可读结果")
-    .action(async (previewId: string, options: { readonly json?: boolean }) => {
-      try {
-        const workflow = resources.assetRefresh();
-        const preview = await workflow.rejectChangeImpactPreview(previewId);
-        runtime.streams.stdout.write(
-          renderChangeImpactPreview(preview, options.json === true),
-        );
-        if (preview.status === "stale") {
-          rejectPreviewCommand.error("error: 变更影响预演已过期，未拒绝", {
+    .action(
+      async (
+        previewId: string,
+        options: { readonly actor: string; readonly json?: boolean },
+      ) => {
+        try {
+          const workflow = resources.assetRefresh();
+          const preview = await workflow.rejectChangeImpactPreview({
+            previewId,
+            rejectedBy: options.actor,
+          });
+          runtime.streams.stdout.write(
+            renderChangeImpactPreview(preview, options.json === true),
+          );
+          if (preview.status === "stale") {
+            rejectPreviewCommand.error("error: 变更影响预演已过期，未拒绝", {
+              exitCode: 1,
+              code: "cli.asset-refresh.reject-preview-stale",
+            });
+          }
+        } catch (error) {
+          if (error instanceof CommanderError) throw error;
+          rejectPreviewCommand.error(`error: ${errorMessage(error)}`, {
             exitCode: 1,
-            code: "cli.asset-refresh.reject-preview-stale",
+            code: "cli.asset-refresh.reject-preview-failed",
           });
         }
-      } catch (error) {
-        if (error instanceof CommanderError) throw error;
-        rejectPreviewCommand.error(`error: ${errorMessage(error)}`, {
-          exitCode: 1,
-          code: "cli.asset-refresh.reject-preview-failed",
-        });
-      }
-    });
+      },
+    );
 
   const inspectCommand = command
     .command("inspect")

@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   atPublicWorkflowBoundary,
   decodeAssetRefreshWorkflowInput,
+  decodeObservedMaterialAssociationCheckpoint,
+  decodeWorkflowExecutionInput,
   notifyWorkflowCheckpoint,
   WorkflowLifecycleInterruption,
 } from "../src/index.ts";
@@ -77,6 +79,94 @@ describe("Workflow Invocation Lifecycle", () => {
         { stage: "retained" },
       ),
     ).toThrow(WorkflowLifecycleInterruption);
+  });
+});
+
+describe("Observed material association durable decoding", () => {
+  const input = {
+    version: "observed-material-association-input/1",
+    trigger: "interactive",
+    initiatedBy: "operator",
+    acceptTrusted: false,
+    configurationReferences: [],
+    targetAssetId: "asset",
+    registrationId: "registration",
+    relativeScope: ".",
+    relativePaths: ["document.pdf"],
+  } as const;
+
+  it("decodes only the exact observed-material input union member", () => {
+    expect(decodeWorkflowExecutionInput(input)).toEqual({ valid: true, input });
+    expect(
+      decodeWorkflowExecutionInput({ ...input, undocumented: true }),
+    ).toMatchObject({ valid: false });
+    expect(
+      decodeWorkflowExecutionInput({ ...input, relativePaths: [] }),
+    ).toMatchObject({ valid: false });
+  });
+
+  it("keeps an early interrupted checkpoint inspectable but rejects extra fields", () => {
+    const checkpoint = {
+      version: "observed-material-association-checkpoint/1",
+      state: "interrupted",
+      input: {
+        targetAssetId: "asset",
+        registrationId: "registration",
+        relativeScope: ".",
+        relativePaths: ["document.pdf"],
+        initiatedBy: "operator",
+      },
+    } as const;
+    expect(
+      decodeObservedMaterialAssociationCheckpoint(checkpoint),
+    ).toMatchObject({
+      valid: true,
+    });
+    expect(
+      decodeObservedMaterialAssociationCheckpoint({
+        ...checkpoint,
+        secret: true,
+      }),
+    ).toMatchObject({ valid: false });
+  });
+
+  it("rejects awaiting-confirmation without its complete inspected state", () => {
+    expect(
+      decodeObservedMaterialAssociationCheckpoint({
+        version: "observed-material-association-checkpoint/1",
+        state: "awaiting-confirmation",
+        input: {
+          targetAssetId: "asset",
+          registrationId: "registration",
+          registrationVersion: 1,
+          relativeScope: ".",
+          relativePaths: ["document.pdf"],
+          initiatedBy: "operator",
+        },
+        identityBaseline: "identity",
+        materialBaseline: "material",
+      }),
+    ).toMatchObject({ valid: false });
+  });
+
+  it("rejects a structurally fake nested filesystem snapshot", () => {
+    expect(
+      decodeObservedMaterialAssociationCheckpoint({
+        version: "observed-material-association-checkpoint/1",
+        state: "inspecting",
+        input: {
+          targetAssetId: "asset",
+          registrationId: "registration",
+          registrationVersion: 1,
+          relativeScope: ".",
+          relativePaths: ["document.pdf"],
+          initiatedBy: "operator",
+        },
+        identityBaseline: "identity",
+        materialBaseline: "material",
+        snapshot: { attackerControlled: "not-a-snapshot" },
+      }),
+    ).toMatchObject({ valid: false });
   });
 });
 

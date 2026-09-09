@@ -74,8 +74,8 @@ describe("fixed corpus inventory baseline", () => {
       },
       {
         ownerTicket: "v1-live-acceptance/issues/04-pdf-series-live-gate.md",
-        journey: undefined,
-        status: "pending",
+        journey: "pdf-publication-live",
+        status: "implemented",
         rootCount: 1,
       },
       {
@@ -223,10 +223,9 @@ describe("fixed corpus inventory baseline", () => {
         },
       },
       {
-        expected: "must not declare a journey while pending",
+        expected: "journey must be a non-empty string",
         mutate: (oracle) => {
-          oracle.dedicatedIntegrationOwnershipGroups[3]!.journey =
-            "publication-seven-live";
+          delete oracle.dedicatedIntegrationOwnershipGroups[3]!.journey;
         },
       },
     ];

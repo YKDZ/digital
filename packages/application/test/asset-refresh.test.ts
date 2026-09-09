@@ -154,7 +154,7 @@ async function scanFixtureObservedScope(
 async function refreshFixtureObservedScope(
   workflow: Pick<
     AssetRefreshWorkflow,
-    "scanObservedScope" | "directedRecognitionObservedScope"
+    "scanObservedScope" | "directedRecognitionSourceInputObservedScope"
   >,
   input: Omit<
     Parameters<AssetRefreshWorkflow["scanObservedScope"]>[0],
@@ -205,11 +205,11 @@ async function refreshFixtureObservedScope(
       onHostCheckpoint: input.onHostCheckpoint,
       ...ordinary,
     });
-  return await workflow.directedRecognitionObservedScope({
+  return await workflow.directedRecognitionSourceInputObservedScope({
     registrationId: "fixture-root",
     relativeScope: ".",
-    sourceAddress: directedSourceAddress,
     sourceIdentity: directedSourceIdentity,
+    sourceInput: { address: directedSourceAddress },
     informationRequirement: input.informationRequirement,
     onExecutionStarted: input.onExecutionStarted,
     onProgress: input.onProgress,
@@ -259,10 +259,13 @@ async function rescrapeFixtureObservedSelection(
   workflow: Pick<AssetRefreshWorkflow, "rescrapeObservedScope">,
   input: Omit<
     Parameters<AssetRefreshWorkflow["rescrapeObservedScope"]>[0],
-    "registrationId" | "relativeScope" | "subjectId"
-  > & { readonly selection: FixtureSelection },
+    "registrationId" | "relativeScope" | "subjectId" | "sourceInput"
+  > & {
+    readonly selection: FixtureSelection;
+    readonly sourceAddress: string;
+  },
 ) {
-  const { selection, ...request } = input;
+  const { selection, sourceAddress, ...request } = input;
   const [subject] = selection.subjects;
   const scope = fixtureRegisteredScopeFromSelection(selection, "one");
   if (subject === undefined) throw new Error("rescrape requires one subject");
@@ -270,20 +273,27 @@ async function rescrapeFixtureObservedSelection(
     ...scope,
     subjectId: subject.subjectId,
     ...request,
+    sourceInput: { address: sourceAddress },
   });
 }
 
 async function directedRecognitionFixtureObservedSelection(
-  workflow: Pick<AssetRefreshWorkflow, "directedRecognitionObservedScope">,
+  workflow: Pick<
+    AssetRefreshWorkflow,
+    "directedRecognitionSourceInputObservedScope"
+  >,
   input: Omit<
-    Parameters<AssetRefreshWorkflow["directedRecognitionObservedScope"]>[0],
-    "registrationId" | "relativeScope"
-  > & { readonly selection: FixtureSelection },
+    Parameters<
+      AssetRefreshWorkflow["directedRecognitionSourceInputObservedScope"]
+    >[0],
+    "registrationId" | "relativeScope" | "sourceInput"
+  > & { readonly selection: FixtureSelection; readonly sourceAddress: string },
 ) {
-  const { selection, ...request } = input;
-  return await workflow.directedRecognitionObservedScope({
+  const { selection, sourceAddress, ...request } = input;
+  return await workflow.directedRecognitionSourceInputObservedScope({
     ...fixtureRegisteredScopeFromSelection(selection, "none"),
     ...request,
+    sourceInput: { address: sourceAddress },
   });
 }
 
@@ -325,6 +335,8 @@ function refreshFixture(options?: {
   readonly coverFailureState?: { fails: boolean };
   readonly collectionFailsAfterOneRecord?: boolean;
   readonly collectionUnavailableForUnrequestedMetadata?: boolean;
+  readonly collectionFailureCapabilityShape?: "incomplete" | "extra";
+  readonly collectionFailureProducerSpoof?: boolean;
   readonly catalogueFails?: boolean;
   readonly reusable?: boolean;
   readonly invalidMetadataProvenance?: boolean;
@@ -347,6 +359,10 @@ function refreshFixture(options?: {
   readonly configurationCompatibility?: WorkflowConfigurationCompatibility;
   readonly omitConfigurationCompatibility?: boolean;
   readonly independentEvidence?: boolean;
+  readonly duplicateFirstBoundaryEvidence?: boolean;
+  readonly conflictingSharedRecord?: boolean;
+  readonly sharedCollectionFailure?: boolean;
+  readonly producerInterpretationPresenceConflict?: boolean;
   readonly explicitWorkItemsAfterFirstInterpretation?: () => boolean;
   readonly failSecondCollection?: boolean;
   readonly competingProposals?: boolean;
@@ -369,6 +385,19 @@ function refreshFixture(options?: {
   readonly unusedConfiguredCollector?: boolean;
   /** 允许后续部署在一次执行后新增不适用的采集器。 */
   readonly unusedConfiguredCollectorState?: { enabled: boolean };
+  /** 在恢复预检后改变适用性的相邻采集器，用于证明 durable-only 计划不会重新枚举。 */
+  readonly dynamicRecoveryCollectorState?: {
+    enabled: boolean;
+    firstApplicable: boolean;
+    otherPlanApplicable?: boolean;
+    separateCapability?: boolean;
+    retainRecord?: boolean;
+    retainedRecordId?: string;
+    omitInterpretationContractVersions?: boolean;
+    nonShareable?: boolean;
+    canCollectCalls: number;
+    collectCalls: number;
+  };
   readonly incompleteSnapshot?: boolean;
   readonly thirdIndependentBoundary?: boolean;
   readonly ambiguousSourceAddresses?: readonly string[];
@@ -388,6 +417,16 @@ function refreshFixture(options?: {
   readonly formatEvidenceProducerSpoof?: boolean;
   readonly sourceOmitsTitle?: boolean;
   readonly sourceRelationshipQualifiers?: boolean;
+  readonly sourceAssociationOutcome?: "accepted" | "contradicted";
+  /** 一次采集形成两个可独立选择的来源产品解释。 */
+  readonly multipleSourceInterpretations?: boolean;
+  /** 故意错误的组合：同一批次被两个关联判断器接受。 */
+  readonly duplicateSourceAssociationInterpreters?: boolean;
+  /** 只在明确的来源关联试验地址上返回协调器必须拒绝的解释结果。 */
+  readonly sourceInterpretationFault?:
+    | "empty"
+    | "unknown-record"
+    | "duplicate-address";
   readonly sourceEnrichmentFails?: boolean;
   readonly sourceEnrichmentSucceeds?: boolean;
   /** 允许来源关联候选解释器伪造其生产者。 */
@@ -400,6 +439,7 @@ function refreshFixture(options?: {
     fails: boolean;
   };
   readonly sourceEnrichmentPartialFailure?: boolean;
+  readonly sourceEnrichmentUnsafeFailure?: boolean;
   /**
    * 验证独立配置的丰富操作之间的持久失败处理。第一个采集器正常抛错；第二个可暂停在采集中，
    * 用于模拟进程在下一检查点前退出。
@@ -407,6 +447,7 @@ function refreshFixture(options?: {
   readonly sourceEnrichmentFailureThenInterrupted?: boolean;
   readonly sourceEnrichmentFirstFailureStage?: "collection" | "interpretation";
   readonly enrichmentCollectionBarrier?: () => Promise<void>;
+  readonly mutateAcceptedDuringChangeBaseline?: boolean;
   readonly sourceOmitsCover?: boolean;
   readonly metadataPolicyConfigured?: boolean;
   readonly metadataPolicyConflict?: boolean;
@@ -495,6 +536,7 @@ function refreshFixture(options?: {
   let acquisitionCalls = 0;
   let managedStoreCalls = 0;
   let formatInspectionCalls = 0;
+  let changedDuringChangeBaseline = false;
   let observedPartAcquisitionCalls = 0;
   let recognitionAcceptanceCalls = 0;
   let lastOrdinaryReuseAvailability:
@@ -547,6 +589,70 @@ function refreshFixture(options?: {
       ...(workItems === undefined || workItems.length === 0
         ? {}
         : { workItems }),
+    });
+  };
+  const validSourceFailureCodes = (value: unknown): boolean =>
+    value === undefined ||
+    (Array.isArray(value) &&
+      value.length <= 16 &&
+      value.every((item) => {
+        if (
+          typeof item !== "object" ||
+          item === null ||
+          Array.isArray(item) ||
+          Object.keys(item).toSorted().join("\0") !== "capability\0code"
+        )
+          return false;
+        const candidate = item as Record<string, unknown>;
+        const capability = candidate.capability;
+        return (
+          typeof candidate.code === "string" &&
+          candidate.code.length > 0 &&
+          new TextEncoder().encode(candidate.code).byteLength <= 128 &&
+          typeof capability === "object" &&
+          capability !== null &&
+          !Array.isArray(capability) &&
+          Object.keys(capability).toSorted().join("\0") ===
+            "capabilityId\0capabilityVersion\0contractVersion\0identity\0implementationVersion\0interpretationContractVersions\0kind" &&
+          Object.values(capability).every((field) =>
+            Array.isArray(field)
+              ? field.length > 0 &&
+                field.every(
+                  (entry) =>
+                    typeof entry === "string" &&
+                    entry.trim().length > 0 &&
+                    entry.length <= 240,
+                )
+              : typeof field === "string" &&
+                field.trim().length > 0 &&
+                field.length <= 240,
+          )
+        );
+      }));
+  const sourceRefreshFailureDispositionsAreConsistent = (
+    run: import("@digital/domain").SourceRefreshRun,
+    execution: WorkflowExecution,
+  ): boolean => {
+    const prefix = `source-refresh-failure:${run.id}:`;
+    const reserved = execution.dispositions.filter((item) =>
+      item.key.startsWith(prefix),
+    );
+    if (new Set(reserved.map((item) => item.key)).size !== reserved.length)
+      return false;
+    return reserved.every((disposition) => {
+      const matches = run.scopes.filter(
+        (scope) =>
+          `source-refresh-failure:${run.id}:${scope.coverage.coverageId}:${scope.acquisitionAttempt}` ===
+          disposition.key,
+      );
+      if (matches.length !== 1) return false;
+      const scope = matches[0]!;
+      return (
+        scope.state === "terminal" &&
+        (scope.outcome === "failed" || scope.outcome === "stale") &&
+        disposition.status === "failed" &&
+        disposition.reason === scope.reason
+      );
     });
   };
   const persistence: RefreshFixturePersistence = {
@@ -605,6 +711,110 @@ function refreshFixture(options?: {
         ],
       });
     },
+    async commitSourceRefreshCollectionFailure(input) {
+      const inspection = persisted.get(input.expectedExecution.id);
+      const run = sourceRefreshRuns.get(input.runId);
+      const owner = sourceRefreshRunExecutions.get(input.runId);
+      if (
+        inspection === undefined ||
+        run === undefined ||
+        owner !== input.expectedExecution.id ||
+        !input.expectedExecution.sourceRefreshRunIds?.includes(input.runId)
+      )
+        throw new Error("Source Refresh collection failure owner is invalid");
+      if (!validSourceFailureCodes(input.sourceFailureCodes))
+        throw new Error(
+          "Source Refresh collection failure codes are malformed",
+        );
+      if (
+        !sourceRefreshFailureDispositionsAreConsistent(
+          run,
+          inspection.execution,
+        )
+      )
+        throw new Error("Source Refresh collection failure split state");
+      const expectedKey = `source-refresh-failure:${run.id}:${input.coverage.coverageId}:${input.acquisitionAttempt}`;
+      if (input.idempotencyKey !== expectedKey)
+        throw new Error("Source Refresh collection failure key is invalid");
+      const scope = run.scopes.find(
+        (candidate) =>
+          JSON.stringify(candidate.coverage) === JSON.stringify(input.coverage),
+      );
+      const claim = resumeClaims.get(input.expectedExecution.id);
+      const existingDisposition = inspection.execution.dispositions.find(
+        (item) => item.key === expectedKey,
+      );
+      if (scope?.state === "terminal") {
+        if (
+          (claim !== undefined || input.resumeClaim !== undefined) &&
+          (input.resumeClaim === undefined ||
+            claim?.token !== input.resumeClaim.token ||
+            claim.expiresAt <= input.resumeClaim.now)
+        )
+          throw new Error("stale resume claim");
+        if (
+          scope.acquisitionAttempt === input.acquisitionAttempt &&
+          scope.outcome === input.outcome &&
+          scope.reason === input.reason &&
+          existingDisposition?.status === "failed" &&
+          existingDisposition.reason === input.reason &&
+          JSON.stringify(existingDisposition.sourceFailureCodes) ===
+            JSON.stringify(input.sourceFailureCodes)
+        )
+          return { execution: inspection.execution, run };
+        throw new Error("Source Refresh collection failure replay conflicts");
+      }
+      if (
+        (claim !== undefined || input.resumeClaim !== undefined) &&
+        (input.resumeClaim === undefined ||
+          claim?.token !== input.resumeClaim.token ||
+          claim.expiresAt <= input.resumeClaim.now)
+      )
+        throw new Error("stale resume claim");
+      if (existingDisposition !== undefined)
+        throw new Error("Source Refresh collection failure split state");
+      if (
+        scope?.state !== "acquiring" ||
+        scope.acquisitionAttempt !== input.acquisitionAttempt ||
+        JSON.stringify(inspection.execution) !==
+          JSON.stringify(input.expectedExecution)
+      )
+        throw new Error("stale Source Refresh collection failure");
+      const nextRun = failSourceRefreshScope(run, {
+        coverage: input.coverage,
+        outcome: input.outcome,
+        reason: input.reason,
+      });
+      const nextExecution = {
+        ...input.expectedExecution,
+        dispositions: [
+          ...input.expectedExecution.dispositions.filter(
+            (item) => item.key !== input.idempotencyKey,
+          ),
+          {
+            key: input.idempotencyKey,
+            status: "failed" as const,
+            reason: input.reason,
+            ...(input.sourceFailureCodes === undefined
+              ? {}
+              : { sourceFailureCodes: input.sourceFailureCodes }),
+          },
+        ],
+      };
+      const nextInspection = {
+        ...inspection,
+        execution: nextExecution,
+        sourceRefreshRuns: [
+          ...(inspection.sourceRefreshRuns ?? []).filter(
+            (current) => current.id !== nextRun.id,
+          ),
+          nextRun,
+        ],
+      };
+      sourceRefreshRuns.set(nextRun.id, nextRun);
+      persisted.set(input.expectedExecution.id, nextInspection);
+      return { execution: nextExecution, run: nextRun };
+    },
     async finishExecution(_expectedExecution, execution) {
       executions.push(execution);
       const inspection = persisted.get(execution.id)!;
@@ -658,6 +868,24 @@ function refreshFixture(options?: {
       executions.push(execution);
       const inspection = persisted.get(execution.id)!;
       persisted.set(execution.id, { ...inspection, execution, proposal });
+      changePreviews.set(preview.id, preview);
+    },
+    async finishExecutionWithSourceAssociationPreview({
+      expectedExecution,
+      execution,
+      preview,
+    }) {
+      const inspection = persisted.get(expectedExecution.id)!;
+      persisted.set(execution.id, { ...inspection, execution });
+      changePreviews.set(preview.id, preview);
+    },
+    async finishExecutionWithRecognitionRetractionPreview({
+      expectedExecution,
+      execution,
+      preview,
+    }) {
+      const inspection = persisted.get(expectedExecution.id)!;
+      persisted.set(execution.id, { ...inspection, execution });
       changePreviews.set(preview.id, preview);
     },
     async acceptRecognition(input) {
@@ -886,6 +1114,26 @@ function refreshFixture(options?: {
             ];
       });
     },
+    async findCurrentSourceAssociationByCoordinate(input) {
+      return accepted
+        .flatMap((item) => item.sourceAssociations)
+        .find(
+          (association) =>
+            association.sourceIdentity === input.sourceIdentity &&
+            association.nativeAddress === input.nativeAddress,
+        );
+    },
+    async inspectSourceAssociationHistory(assetId) {
+      const current = accepted.find((item) => item.entity.id === assetId);
+      return current === undefined
+        ? undefined
+        : {
+            recognitionState: "recognized" as const,
+            recognitionDecisionId: current.recognitionDecision.id,
+            current: current.sourceAssociations,
+            historical: [],
+          };
+    },
     async findCurrentAcceptedForObservedArtifacts() {
       return (
         options?.observedArtifactReuseMatch ?? {
@@ -1033,6 +1281,29 @@ function refreshFixture(options?: {
       );
     },
     async freezeChangeImpactBaseline() {
+      if (
+        options?.mutateAcceptedDuringChangeBaseline === true &&
+        !changedDuringChangeBaseline &&
+        accepted[0] !== undefined
+      ) {
+        changedDuringChangeBaseline = true;
+        accepted[0] = {
+          ...accepted[0],
+          metadata: [
+            ...accepted[0].metadata,
+            {
+              property: "user.note",
+              sourceSlot: "user.note",
+              value: "并发用户事实",
+              sourceRecordIds: [],
+              authoredBy: {
+                initiatedBy: "reviewer",
+                proposalId: "manual-concurrent",
+              },
+            },
+          ],
+        };
+      }
       return "complete-current-projection";
     },
     async applyChangeImpactPreview({ preview, plan }) {
@@ -1068,16 +1339,75 @@ function refreshFixture(options?: {
                 }),
             recognitionDecision: plan.successorDecision,
             metadata: preview.projected.metadata,
+            entities: preview.projected.entities,
+            entityMentions: preview.projected.entityMentions,
+            entityResolutionDecisions:
+              preview.projected.entityResolutionDecisions,
+            relationships: preview.projected.relationships,
+            artifacts: preview.projected.artifacts,
+            locations: preview.projected.locations,
+            blobs: preview.projected.blobs,
+            artifactRevisions: preview.projected.artifactRevisions,
+            artifactAssociations: preview.projected.artifactAssociations,
           },
         });
       }
+      const acceptedIndex = accepted.findIndex(
+        ({ entity }) => entity.id === preview.assetId,
+      );
+      const acceptedValue = accepted[acceptedIndex];
+      if (acceptedValue !== undefined)
+        accepted[acceptedIndex] = {
+          ...acceptedValue,
+          proposal: preview.proposal,
+          recognitionDecision: plan.successorDecision,
+          sourceAssociations: preview.projected.sourceAssociations.map(
+            (association, index) => ({
+              id: `preview-association-${index}`,
+              subjectId: preview.assetId,
+              proposalId: preview.proposal.id,
+              ...association,
+            }),
+          ),
+          ...(plan.recognitionSourceAssociation === undefined
+            ? { recognitionSourceAssociation: undefined }
+            : {
+                recognitionSourceAssociation: plan.recognitionSourceAssociation,
+              }),
+          metadata: preview.projected.metadata,
+          entities: preview.projected.entities,
+          entityMentions: preview.projected.entityMentions,
+          entityResolutionDecisions:
+            preview.projected.entityResolutionDecisions,
+          relationships: preview.projected.relationships,
+          artifacts: preview.projected.artifacts,
+          locations: preview.projected.locations,
+          blobs: preview.projected.blobs,
+          artifactRevisions: preview.projected.artifactRevisions,
+          artifactAssociations: preview.projected.artifactAssociations,
+        };
       return "applied";
     },
-    async rejectChangeImpactPreview(previewId) {
+    async rejectChangeImpactPreview({ previewId }) {
       const preview = changePreviews.get(previewId);
       if (preview === undefined || preview.status !== "awaiting-confirmation")
         return "stale";
       changePreviews.set(previewId, { ...preview, status: "rejected" });
+      const inspection = persisted.get(preview.executionId);
+      if (inspection?.execution.sourceAssociationDecision !== undefined)
+        persisted.set(preview.executionId, {
+          ...inspection,
+          execution: {
+            ...inspection.execution,
+            status: "completed",
+            stage: "completed",
+            outcome: "cancelled",
+            sourceAssociationDecision: {
+              ...inspection.execution.sourceAssociationDecision,
+              state: "rejected",
+            },
+          },
+        });
       return "rejected";
     },
     async createAutomationIntentForObservedRoot({ intent }) {
@@ -1391,6 +1721,47 @@ function refreshFixture(options?: {
   const workflow = new AssetRefreshWorkflow({
     invocationSupervisor: new ExecutionHost(),
     observedRootRegistrations,
+    sourceAddressingCapabilities: [
+      {
+        capability: {
+          capabilityId: "source.addressing",
+          capabilityVersion: "1",
+          contractVersion: "1",
+        },
+        inputRequirement: {
+          sourceIdentity: "source",
+          displayName: "测试来源",
+          fields: [
+            {
+              key: "address",
+              label: "地址",
+              required: true,
+              acceptedInput: "完整地址",
+            },
+          ],
+        },
+        normalize(input) {
+          const address = input.address;
+          return typeof address !== "string" || address.trim().length === 0
+            ? { status: "invalid" as const, reason: "地址无效" }
+            : {
+                status: "accepted" as const,
+                normalizedInput: { address: address.trim() },
+                evidence: {
+                  kind: "directed-source-address" as const,
+                  sourceIdentity: "source",
+                  sourceAddress: address.trim(),
+                  explanation: "用户明确指定来源地址",
+                  producer: {
+                    capabilityId: "source.addressing",
+                    capabilityVersion: "1",
+                    contractVersion: "1",
+                  },
+                },
+              };
+        },
+      },
+    ],
     directoryInterpreters:
       options?.formatFactsOnly === true ||
       options?.observedEpubPart === true ||
@@ -1438,7 +1809,16 @@ function refreshFixture(options?: {
                     {
                       key: "first-boundary",
                       relativePaths: ["track.flac"],
-                      evidence: [exact],
+                      evidence:
+                        options?.duplicateFirstBoundaryEvidence === true
+                          ? [
+                              exact,
+                              {
+                                ...exact,
+                                explanation: "same shared source",
+                              },
+                            ]
+                          : [exact],
                     },
                     ...(options?.singletonExplicit === true
                       ? []
@@ -1626,6 +2006,13 @@ function refreshFixture(options?: {
           get contractVersion() {
             return options?.collectorCoordinateState?.contractVersion ?? "1";
           },
+          identity: "collector",
+          implementationVersion: "1",
+          kind: "source-collector",
+          interpretationContractVersions:
+            options?.producerInterpretationPresenceConflict === true
+              ? []
+              : ["1"],
         },
         canCollect: (evidence) =>
           evidence.sourceIdentity !== "supplement" &&
@@ -1658,8 +2045,43 @@ function refreshFixture(options?: {
                       digest: "shared-recovery-digest",
                       body: "{}",
                     },
+                    ...(options?.conflictingSharedRecord === true
+                      ? [
+                          {
+                            id: "shared-recovery-record",
+                            sourceIdentity: "source",
+                            nativeAddress: "https://source.example/shared-root",
+                            mediaType: "application/json",
+                            acquiredAt: "2026-07-29T00:00:00.000Z",
+                            acquisition: {
+                              requestedAddress: "https://source.example/shared",
+                              method: "GET" as const,
+                              authorized: false,
+                            },
+                            coverage: {
+                              id: "complete",
+                              completeness: "complete" as const,
+                              authority: "official" as const,
+                            },
+                            digest: "shared-recovery-digest-conflict",
+                            body: '{"conflict":true}',
+                          },
+                        ]
+                      : []),
                   ],
-                  failures: [],
+                  failures:
+                    options?.sharedCollectionFailure === true
+                      ? [
+                          {
+                            capability: this.capability,
+                            reason: "optional shared metadata unavailable",
+                            failureCode: "optional-metadata",
+                            affects: {
+                              metadataProperties: ["asset.description"],
+                            },
+                          },
+                        ]
+                      : [],
                 };
               },
             }
@@ -1733,7 +2155,20 @@ function refreshFixture(options?: {
             body: "{}",
           };
           return {
-            records: [record],
+            records: [
+              record,
+              ...(options?.multipleSourceInterpretations === true &&
+              evidence.sourceAddress === "https://source.example/multiple"
+                ? [
+                    {
+                      ...record,
+                      id: "multiple-second-record",
+                      nativeAddress: "https://source.example/multiple/second",
+                      digest: "multiple-second-digest",
+                    },
+                  ]
+                : []),
+            ],
             failures:
               options?.collectionFailsAfterOneRecord === true ||
               (evidence.sourceAddress !== undefined &&
@@ -1742,23 +2177,37 @@ function refreshFixture(options?: {
                 ) === true)
                 ? [
                     {
-                      capability: {
-                        capabilityId: "collector",
-                        capabilityVersion: "1",
-                        contractVersion: "1",
-                      },
+                      capability:
+                        options?.collectionFailureProducerSpoof === true
+                          ? {
+                              ...this.capability,
+                              capabilityId: "adjacent.collector",
+                            }
+                          : this.capability,
                       reason: "one endpoint failed",
                     },
                   ]
                 : options?.collectionUnavailableForUnrequestedMetadata === true
                   ? [
                       {
-                        capability: {
-                          capabilityId: "collector",
-                          capabilityVersion: "1",
-                          contractVersion: "1",
-                        },
+                        capability:
+                          options.collectionFailureCapabilityShape ===
+                          "incomplete"
+                            ? {
+                                capabilityId: "collector",
+                                capabilityVersion: "1",
+                                contractVersion: "1",
+                              }
+                            : options.collectionFailureCapabilityShape ===
+                                "extra"
+                              ? {
+                                  ...this.capability,
+                                  rawCapability:
+                                    "private capability material must not persist",
+                                }
+                              : this.capability,
                         reason: "protected detail unavailable",
+                        failureCode: "detail-contract",
                         affects: {
                           metadataProperties: ["source.protected-body"],
                           artifactRoles: ["fanbox.attachment.*"],
@@ -1779,6 +2228,10 @@ function refreshFixture(options?: {
                 capabilityId: "supplement.collector",
                 capabilityVersion: "1",
                 contractVersion: "1",
+                identity: "supplement.collector",
+                implementationVersion: "1",
+                kind: "source-collector",
+                interpretationContractVersions: ["1"],
               },
               canCollect: (evidence) =>
                 evidence.sourceIdentity === "supplement" ||
@@ -1858,8 +2311,19 @@ function refreshFixture(options?: {
                               capabilityId: "supplement.collector",
                               capabilityVersion: "1",
                               contractVersion: "1",
+                              identity: "supplement.collector",
+                              implementationVersion: "1",
+                              kind: "source-collector" as const,
+                              interpretationContractVersions: ["1"],
                             },
                             reason: "supplement detail response failed",
+                            failureCode: "detail-contract",
+                            ...(options.sourceEnrichmentUnsafeFailure === true
+                              ? {
+                                  raw: "private response must not persist",
+                                  credentialPath: "/private/credential",
+                                }
+                              : {}),
                           },
                         ]
                       : [],
@@ -1885,6 +2349,82 @@ function refreshFixture(options?: {
             },
           ]
         : []),
+      ...(options?.dynamicRecoveryCollectorState === undefined
+        ? []
+        : [
+            {
+              capability: {
+                capabilityId: options.dynamicRecoveryCollectorState
+                  .separateCapability
+                  ? "dynamic-collector"
+                  : "collector",
+                capabilityVersion: "1",
+                contractVersion: "1",
+                identity: "collector",
+                implementationVersion: "1",
+                kind: "source-collector" as const,
+                ...(options.dynamicRecoveryCollectorState
+                  .omitInterpretationContractVersions
+                  ? {}
+                  : { interpretationContractVersions: ["1"] }),
+              },
+              canCollect(evidence) {
+                if (!options.dynamicRecoveryCollectorState!.enabled)
+                  return false;
+                if (
+                  evidence.sourceAddress !== "https://source.example/other-work"
+                )
+                  return (
+                    options.dynamicRecoveryCollectorState!
+                      .otherPlanApplicable ?? true
+                  );
+                options.dynamicRecoveryCollectorState!.canCollectCalls += 1;
+                return options.dynamicRecoveryCollectorState!
+                  .canCollectCalls === 1
+                  ? options.dynamicRecoveryCollectorState!.firstApplicable
+                  : !options.dynamicRecoveryCollectorState!.firstApplicable;
+              },
+              coverageScopeIds: () => ["dynamic"],
+              collectionScopeIds: () =>
+                options.dynamicRecoveryCollectorState!.nonShareable
+                  ? []
+                  : ["test.shared-root"],
+              async collect() {
+                options.dynamicRecoveryCollectorState!.collectCalls += 1;
+                if (options.dynamicRecoveryCollectorState!.retainRecord)
+                  options.dynamicRecoveryCollectorState!.otherPlanApplicable = false;
+                return {
+                  records: options.dynamicRecoveryCollectorState!.retainRecord
+                    ? [
+                        {
+                          id:
+                            options.dynamicRecoveryCollectorState!
+                              .retainedRecordId ??
+                            `dynamic-record-${options.dynamicRecoveryCollectorState!.collectCalls}`,
+                          sourceIdentity: "source",
+                          nativeAddress: "https://source.example/work",
+                          mediaType: "application/json",
+                          acquiredAt: "2026-07-29T00:00:00.000Z",
+                          acquisition: {
+                            requestedAddress: "https://source.example/endpoint",
+                            method: "GET" as const,
+                            authorized: false,
+                          },
+                          coverage: {
+                            id: "complete",
+                            completeness: "complete" as const,
+                            authority: "official" as const,
+                          },
+                          digest: "digest",
+                          body: "{}",
+                        },
+                      ]
+                    : [],
+                  failures: [],
+                };
+              },
+            },
+          ]),
     ],
     sourceInterpreters: [
       {
@@ -1918,7 +2458,9 @@ function refreshFixture(options?: {
             sourceRecordIds: sourceRecords.map((record) => record.id),
             sourceIdentity: "source",
             sourceAddress:
-              evidence[0]?.sourceAddress ?? "https://source.example/work",
+              sourceRecords[0]?.nativeAddress ??
+              evidence[0]?.sourceAddress ??
+              "https://source.example/work",
             metadata:
               options?.sourceOmitsTitle === true
                 ? [
@@ -1933,7 +2475,11 @@ function refreshFixture(options?: {
                     {
                       property: "asset.title",
                       sourceSlot: "source.title",
-                      value: "Work",
+                      value:
+                        evidence[0]?.sourceAddress ===
+                        "https://source.example/other-work"
+                          ? "Other Work"
+                          : "Work",
                       sourceRecordIds:
                         options?.invalidMetadataProvenance === true ||
                         (options?.invalidRefreshMetadataProvenance === true &&
@@ -2064,7 +2610,38 @@ function refreshFixture(options?: {
                 }
               : {}),
           };
-          return batch;
+          if (
+            options?.multipleSourceInterpretations === true &&
+            evidence[0]?.sourceAddress === "https://source.example/multiple"
+          )
+            return sourceRecords.map((record, index) => ({
+              ...batch,
+              id: `multiple-interpretation-${index + 1}`,
+              sourceRecordIds: [record.id],
+              sourceAddress: record.nativeAddress,
+              metadata: [
+                {
+                  property: "asset.title",
+                  sourceSlot: `source.title.${index + 1}`,
+                  value: index === 0 ? "First candidate" : "Second candidate",
+                  sourceRecordIds: [record.id],
+                },
+              ],
+              sourceArtifacts: [],
+            }));
+          if (evidence[0]?.sourceAddress === "https://source.example/fault") {
+            if (options?.sourceInterpretationFault === "empty") return [];
+            if (options?.sourceInterpretationFault === "unknown-record")
+              return [
+                {
+                  ...batch,
+                  sourceRecordIds: [...batch.sourceRecordIds, "unknown-record"],
+                },
+              ];
+            if (options?.sourceInterpretationFault === "duplicate-address")
+              return [batch, { ...batch, id: "duplicate-address-batch" }];
+          }
+          return [batch];
         },
       },
       ...(options?.sourceEnrichmentSucceeds === true ||
@@ -2078,43 +2655,45 @@ function refreshFixture(options?: {
               },
               canInterpret: ({ evidence }) =>
                 evidence.some((item) => item.sourceIdentity === "supplement"),
-              interpret: ({ sourceRecords }) => ({
-                id: "supplement-interpretation",
-                producer: {
-                  capabilityId: "supplement.interpreter",
-                  capabilityVersion: "1",
-                  contractVersion: "1",
+              interpret: ({ sourceRecords }) => [
+                {
+                  id: "supplement-interpretation",
+                  producer: {
+                    capabilityId: "supplement.interpreter",
+                    capabilityVersion: "1",
+                    contractVersion: "1",
+                  },
+                  sourceRecordIds: ["supplement-record"],
+                  sourceIdentity: "supplement",
+                  sourceAddress: "supplement:work",
+                  metadata: [
+                    {
+                      property: "asset.awards",
+                      sourceSlot: "supplement.awards",
+                      value: "One award",
+                      sourceRecordIds: sourceRecords.map((record) => record.id),
+                    },
+                  ],
+                  sourceArtifacts: [
+                    {
+                      id: "supplement-cover",
+                      sourceRecordId: "supplement-record",
+                      role: "asset.primary-cover",
+                      acquisitionReference:
+                        "https://supplement.example/poster.jpg",
+                      mediaType: "image/jpeg",
+                    },
+                    {
+                      id: "supplement-background",
+                      sourceRecordId: "supplement-record",
+                      role: "asset.background",
+                      acquisitionReference:
+                        "https://supplement.example/background.jpg",
+                      mediaType: "image/jpeg",
+                    },
+                  ],
                 },
-                sourceRecordIds: ["supplement-record"],
-                sourceIdentity: "supplement",
-                sourceAddress: "supplement:work",
-                metadata: [
-                  {
-                    property: "asset.awards",
-                    sourceSlot: "supplement.awards",
-                    value: "One award",
-                    sourceRecordIds: sourceRecords.map((record) => record.id),
-                  },
-                ],
-                sourceArtifacts: [
-                  {
-                    id: "supplement-cover",
-                    sourceRecordId: "supplement-record",
-                    role: "asset.primary-cover",
-                    acquisitionReference:
-                      "https://supplement.example/poster.jpg",
-                    mediaType: "image/jpeg",
-                  },
-                  {
-                    id: "supplement-background",
-                    sourceRecordId: "supplement-record",
-                    role: "asset.background",
-                    acquisitionReference:
-                      "https://supplement.example/background.jpg",
-                    mediaType: "image/jpeg",
-                  },
-                ],
-              }),
+              ],
             },
           ]
         : []),
@@ -2144,26 +2723,28 @@ function refreshFixture(options?: {
                 evidence.some(
                   (item) => item.sourceIdentity === "surviving-supplement",
                 ),
-              interpret: ({ sourceRecords }) => ({
-                id: "surviving-supplement-interpretation",
-                producer: {
-                  capabilityId: "surviving-supplement.interpreter",
-                  capabilityVersion: "1",
-                  contractVersion: "1",
-                },
-                sourceRecordIds: ["surviving-supplement-record"],
-                sourceIdentity: "surviving-supplement",
-                sourceAddress: "surviving-supplement:work",
-                metadata: [
-                  {
-                    property: "asset.awards",
-                    sourceSlot: "surviving-supplement.awards",
-                    value: "One durable award",
-                    sourceRecordIds: sourceRecords.map((record) => record.id),
+              interpret: ({ sourceRecords }) => [
+                {
+                  id: "surviving-supplement-interpretation",
+                  producer: {
+                    capabilityId: "surviving-supplement.interpreter",
+                    capabilityVersion: "1",
+                    contractVersion: "1",
                   },
-                ],
-                sourceArtifacts: [],
-              }),
+                  sourceRecordIds: ["surviving-supplement-record"],
+                  sourceIdentity: "surviving-supplement",
+                  sourceAddress: "surviving-supplement:work",
+                  metadata: [
+                    {
+                      property: "asset.awards",
+                      sourceSlot: "surviving-supplement.awards",
+                      value: "One durable award",
+                      sourceRecordIds: sourceRecords.map((record) => record.id),
+                    },
+                  ],
+                  sourceArtifacts: [],
+                },
+              ],
             },
           ]
         : []),
@@ -2569,6 +3150,15 @@ function refreshFixture(options?: {
       async listCurrentCatalogue() {
         return accepted;
       },
+      async listCurrentCatalogueIndex(properties) {
+        return accepted.map((item, additionOrder) => ({
+          ...item,
+          additionOrder,
+          metadata: item.metadata.filter((assertion) =>
+            properties.includes(assertion.property),
+          ),
+        }));
+      },
     },
     workflowHistoryQueries: {
       async listWorkflowHistoryPage(input) {
@@ -2744,20 +3334,24 @@ function refreshFixture(options?: {
                 ]
               : []),
           ],
-          sourceAssociationInterpreters: [
-            {
+          sourceAssociationInterpreters: Array.from(
+            { length: options?.duplicateSourceAssociationInterpreters ? 2 : 1 },
+            (_, index) => ({
               capability: {
-                capabilityId: "supplement.association-interpreter",
+                capabilityId:
+                  index === 0
+                    ? "supplement.association-interpreter"
+                    : `supplement.association-interpreter-${index}`,
                 capabilityVersion: "1",
                 contractVersion: "1",
               },
               canInterpret: () => true,
               interpret: () => ({
                 status: "accepted" as const,
-                explanation: "exact supplement identity",
+                explanation: `exact supplement identity ${index}`,
               }),
-            },
-          ],
+            }),
+          ),
           sourceEnrichmentPersistence: {
             async checkpointSourceEnrichmentRecords(input) {
               const inspection = persisted.get(input.execution.id);
@@ -2913,6 +3507,31 @@ function refreshFixture(options?: {
             },
           }
         : {}),
+    ...(options?.sourceAssociationOutcome === undefined
+      ? {}
+      : {
+          sourceAssociationInterpreters: Array.from(
+            { length: options.duplicateSourceAssociationInterpreters ? 2 : 1 },
+            (_, index) => ({
+              capability: {
+                capabilityId:
+                  index === 0
+                    ? "source.association-interpreter"
+                    : `source.association-interpreter-${index}`,
+                capabilityVersion: "1",
+                contractVersion: "1",
+              },
+              canInterpret: () => true,
+              interpret: () => ({
+                status: options.sourceAssociationOutcome!,
+                explanation:
+                  options.sourceAssociationOutcome === "contradicted"
+                    ? "来源记录与当前身份矛盾"
+                    : `来源记录支持当前身份 ${index}`,
+              }),
+            }),
+          ),
+        }),
     changeImpactQueries: persistence,
     changeImpactCommands: persistence,
     ...(options?.resumeClock === undefined
@@ -2956,6 +3575,8 @@ function refreshFixture(options?: {
     automationIntents,
     persisted,
     resumeClaims,
+    executionCommands: persistence,
+    sourceRefreshRunPersistence,
   };
 }
 
@@ -3112,8 +3733,31 @@ describe("Asset Refresh acceptance", () => {
     ).toBe("accepted");
     expect(subject.accepted).toHaveLength(1);
     expect(subject.accepted[0]?.proposal.basis.kind).toBe("observed-evidence");
-    expect(subject.accepted[0]?.sourceAssociations).toEqual([]);
+    expect(subject.accepted[0]?.sourceAssociations).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          nativeAddress: "https://source.example/fault",
+        }),
+      ]),
+    );
     expect(subject.accepted[0]?.recognitionSourceAssociation).toBeUndefined();
+  });
+
+  it("routes a changed observed-only material boundary through correction preview", async () => {
+    let version = 1;
+    const subject = refreshFixture({
+      formatFactsOnly: true,
+      recognitionBasis: "observed-evidence",
+      snapshotVersion: () => version,
+    });
+    await scanFixtureObservedScope(subject.workflow, { acceptTrusted: true });
+    version = 2;
+
+    const changed = await scanFixtureObservedScope(subject.workflow, {
+      acceptTrusted: true,
+    });
+    expect(changed.execution.outcome).toBe("proposal");
+    expect(subject.changePreviews.size).toBe(1);
   });
 
   it("adds a later ordinary source to an observed-evidence asset without rewriting its recognition basis", async () => {
@@ -4169,6 +4813,72 @@ describe("Asset Refresh acceptance", () => {
     ]);
   });
 
+  it("consumes one shared collection result once per work item batch", async () => {
+    const subject = refreshFixture({
+      independentEvidence: true,
+      duplicateFirstBoundaryEvidence: true,
+      sharedCollectionScope: true,
+      sharedCollectionFailure: true,
+    });
+
+    const result = await refreshFixtureObservedScope(subject.workflow, {
+      directory: "/observed/work",
+      acceptTrusted: true,
+    });
+
+    expect(subject.collectionCalls()).toBe(1);
+    expect(result.sourceRecords).toHaveLength(1);
+    expect(result.execution.workItems?.[0]?.sourceRecordIds).toEqual([
+      "shared-recovery-record",
+    ]);
+    expect(
+      result.execution.dispositions.find(
+        (item) => item.key === "work-item:first-boundary",
+      )?.sourceFailureCodes,
+    ).toEqual([expect.objectContaining({ code: "optional-metadata" })]);
+  });
+
+  it("rejects conflicting records with the same id in one work item batch", async () => {
+    const subject = refreshFixture({
+      independentEvidence: true,
+      singletonExplicit: true,
+      sharedCollectionScope: true,
+      conflictingSharedRecord: true,
+    });
+
+    await expect(
+      refreshFixtureObservedScope(subject.workflow, {
+        directory: "/observed/work",
+        acceptTrusted: true,
+      }),
+    ).rejects.toThrow("同一来源记录标识对应冲突的不可变记录");
+  });
+
+  it("rejects the same record id when producer interpretation versions differ only by presence", async () => {
+    const subject = refreshFixture({
+      independentEvidence: true,
+      singletonExplicit: true,
+      producerInterpretationPresenceConflict: true,
+      dynamicRecoveryCollectorState: {
+        enabled: true,
+        firstApplicable: true,
+        retainRecord: true,
+        retainedRecordId: "record",
+        omitInterpretationContractVersions: true,
+        nonShareable: true,
+        canCollectCalls: 0,
+        collectCalls: 0,
+      },
+    });
+
+    await expect(
+      refreshFixtureObservedScope(subject.workflow, {
+        directory: "/observed/work",
+        acceptTrusted: true,
+      }),
+    ).rejects.toThrow("同一来源记录标识对应冲突的不可变记录");
+  });
+
   it("keeps one explicit boundary itemized and binds only its selected paths", async () => {
     const subject = refreshFixture({
       independentEvidence: true,
@@ -4529,7 +5239,7 @@ describe("Asset Refresh acceptance", () => {
     });
   });
 
-  it("does not directly accept an itemized identity replacement", async () => {
+  it("routes an itemized address-only change to source association replacement", async () => {
     let snapshotVersion = 0;
     const subject = refreshFixture({
       independentEvidence: true,
@@ -4555,13 +5265,14 @@ describe("Asset Refresh acceptance", () => {
       expect.arrayContaining([
         expect.objectContaining({
           key: "first-boundary",
-          outcome: "proposal",
+          outcome: "failed",
+          reason: "仅更改来源地址必须使用来源关联更换流程",
         }),
       ]),
     );
     expect(subject.accepted.map((item) => item.entity.id)).toContain(assetId);
     expect(subject.accepted).toHaveLength(2);
-    expect(subject.changePreviews.size).toBe(1);
+    expect(subject.changePreviews.size).toBe(0);
   });
 
   it("does not reuse explicit boundaries when required metadata or relationships expand", async () => {
@@ -4671,6 +5382,181 @@ describe("Asset Refresh acceptance", () => {
     expect(resumed.execution.outcome).toBe("accepted");
     expect(subject.collectionCalls()).toBe(collectionsBeforeResume);
     expect(subject.acquisitionCalls()).toBe(2);
+  });
+
+  it("closes itemized recovery when its uncommitted batch has no applicable collector", async () => {
+    const subject = refreshFixture({ independentEvidence: true });
+    await expect(
+      refreshFixtureObservedScope(subject.workflow, {
+        directory: "/observed/work",
+        acceptTrusted: true,
+        onCheckpoint(execution) {
+          if (
+            execution.workItems?.some(
+              (item) =>
+                item.key === "first-boundary" && item.outcome === "accepted",
+            )
+          )
+            throw new Error("interrupt before the second itemized batch");
+        },
+      }),
+    ).rejects.toThrow("interrupt before the second itemized batch");
+    const executionId = subject.executions[0].id;
+    const persisted = subject.persisted.get(executionId)!;
+    subject.persisted.set(executionId, {
+      ...persisted,
+      execution: {
+        ...persisted.execution,
+        workItems: persisted.execution.workItems?.map((item) =>
+          item.key === "second-boundary"
+            ? {
+                ...item,
+                planningEvidence: item.planningEvidence.map((evidence) => ({
+                  ...evidence,
+                  sourceIdentity: "supplement",
+                })),
+              }
+            : item,
+        ),
+      },
+    });
+    const collectionsBeforeResume = subject.collectionCalls();
+
+    const resumed = await subject.workflow.resume({
+      executionId,
+      acceptTrusted: true,
+    });
+
+    expect(resumed.execution.workItems).toEqual([
+      expect.objectContaining({ outcome: "accepted" }),
+      expect.objectContaining({
+        outcome: "failed",
+        reason: "官方来源完整采集批次尚未提交，当前工作项不能安全继续",
+      }),
+    ]);
+    expect(subject.collectionCalls()).toBe(collectionsBeforeResume);
+  });
+
+  it.each([false, true])(
+    "freezes a durable-only itemized recovery plan before a collector changes applicability from %s",
+    async (firstApplicable) => {
+      const dynamic = {
+        enabled: false,
+        firstApplicable,
+        canCollectCalls: 0,
+        collectCalls: 0,
+      };
+      const subject = refreshFixture({
+        independentEvidence: true,
+        sharedCollectionScope: true,
+        dynamicRecoveryCollectorState: dynamic,
+      });
+      await expect(
+        refreshFixtureObservedScope(subject.workflow, {
+          directory: "/observed/work",
+          acceptTrusted: true,
+          onCheckpoint(execution) {
+            if (
+              execution.workItems?.some(
+                (item) =>
+                  item.key === "first-boundary" && item.outcome === "accepted",
+              )
+            )
+              throw new Error("interrupt before durable-only sibling");
+          },
+        }),
+      ).rejects.toThrow("interrupt before durable-only sibling");
+      dynamic.enabled = true;
+      const collectionsBeforeResume = subject.collectionCalls();
+
+      const resumed = await subject.workflow.resume({
+        executionId: subject.executions[0].id,
+        acceptTrusted: true,
+      });
+
+      expect(dynamic.canCollectCalls).toBe(1);
+      expect(dynamic.collectCalls).toBe(0);
+      expect(subject.collectionCalls()).toBe(collectionsBeforeResume);
+      expect(
+        resumed.execution.workItems?.find(
+          (item) => item.key === "second-boundary",
+        )?.sourceRecordIds,
+      ).toEqual(["shared-recovery-record"]);
+    },
+  );
+
+  it("closes durable-only recovery when another applicable collector is not shareable", async () => {
+    const dynamic = {
+      enabled: false,
+      firstApplicable: true,
+      nonShareable: true,
+      canCollectCalls: 0,
+      collectCalls: 0,
+    };
+    const subject = refreshFixture({
+      independentEvidence: true,
+      sharedCollectionScope: true,
+      dynamicRecoveryCollectorState: dynamic,
+    });
+    await expect(
+      refreshFixtureObservedScope(subject.workflow, {
+        directory: "/observed/work",
+        acceptTrusted: true,
+        onCheckpoint(execution) {
+          if (
+            execution.workItems?.some(
+              (item) =>
+                item.key === "first-boundary" && item.outcome === "accepted",
+            )
+          )
+            throw new Error("interrupt before mixed durable recovery");
+        },
+      }),
+    ).rejects.toThrow("interrupt before mixed durable recovery");
+    dynamic.enabled = true;
+    const collectionsBeforeResume = subject.collectionCalls();
+
+    const resumed = await subject.workflow.resume({
+      executionId: subject.executions[0].id,
+      acceptTrusted: true,
+    });
+
+    expect(
+      resumed.execution.workItems?.find(
+        (item) => item.key === "second-boundary",
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        outcome: "failed",
+        reason: "官方来源完整采集批次尚未提交，当前工作项不能安全继续",
+      }),
+    );
+    expect(dynamic.collectCalls).toBe(0);
+    expect(subject.collectionCalls()).toBe(collectionsBeforeResume);
+  });
+
+  it("does not reuse an ordinary shared record from a plan where that collector is inapplicable", async () => {
+    const dynamic = {
+      enabled: true,
+      firstApplicable: true,
+      otherPlanApplicable: true,
+      separateCapability: true,
+      retainRecord: true,
+      canCollectCalls: 0,
+      collectCalls: 0,
+    };
+    const subject = refreshFixture({
+      independentEvidence: true,
+      sharedCollectionScope: true,
+      dynamicRecoveryCollectorState: dynamic,
+    });
+
+    await refreshFixtureObservedScope(subject.workflow, {
+      directory: "/observed/work",
+      acceptTrusted: true,
+    });
+
+    expect(dynamic.collectCalls).toBe(1);
   });
 
   it.each([
@@ -5433,6 +6319,69 @@ describe("Asset Refresh acceptance", () => {
         (disposition) => disposition.key === "official-collection",
       )?.reason,
     ).toContain("protected detail unavailable");
+    expect(
+      result.execution.dispositions.find(
+        (disposition) => disposition.key === "official-collection",
+      )?.sourceFailureCodes,
+    ).toEqual([
+      {
+        capability: {
+          capabilityId: "collector",
+          capabilityVersion: "1",
+          contractVersion: "1",
+          identity: "collector",
+          implementationVersion: "1",
+          kind: "source-collector",
+          interpretationContractVersions: ["1"],
+        },
+        code: "detail-contract",
+      },
+    ]);
+  });
+
+  it.each(["incomplete", "extra"] as const)(
+    "omits structured codes for a %s fresh failure capability coordinate",
+    async (collectionFailureCapabilityShape) => {
+      const subject = refreshFixture({
+        collectionUnavailableForUnrequestedMetadata: true,
+        collectionFailureCapabilityShape,
+      });
+
+      const result = await refreshFixtureObservedScope(subject.workflow, {
+        directory: "/observed/work",
+        acceptTrusted: true,
+      });
+
+      expect(result.execution.outcome).toBe("accepted");
+      expect(
+        result.execution.dispositions.find(
+          (item) => item.key === "official-collection",
+        )?.sourceFailureCodes,
+      ).toBeUndefined();
+      expect(JSON.stringify([...subject.persisted.values()])).not.toContain(
+        "private capability material must not persist",
+      );
+    },
+  );
+
+  it("rejects a collection failure attributed to an adjacent capability", async () => {
+    const subject = refreshFixture({
+      collectionFailsAfterOneRecord: true,
+      collectionFailureProducerSpoof: true,
+    });
+
+    const result = await refreshFixtureObservedScope(subject.workflow, {
+      directory: "/observed/work",
+      acceptTrusted: true,
+    });
+
+    expect(result.execution).toMatchObject({
+      outcome: "failed",
+      reason: expect.stringContaining(
+        "Source Collection Failure producer does not match the executing capability",
+      ),
+    });
+    expect(result.sourceRecords).toEqual([]);
   });
 
   it("blocks the same partial collection when the unavailable property is required", async () => {
@@ -6193,6 +7142,239 @@ describe("Asset Refresh acceptance", () => {
     });
   });
 
+  it("keeps the in-memory Source Refresh failure command atomic across ownership, lease, and replay validation", async () => {
+    const subject = refreshFixture({ sourceRefreshAuthority: true });
+    const accepted = await refreshFixtureObservedScope(subject.workflow, {
+      directory: "/observed/work",
+      acceptTrusted: true,
+    });
+    const authority = subject.sourceRefreshRunPersistence!;
+    const commands = subject.executionCommands;
+    const coverage = {
+      sourceIdentity: "source",
+      nativeAddress: "opaque:asset",
+      coverageId: "title",
+    };
+    const createAcquiring = async (
+      executionId: string,
+      runId: string,
+      withSibling = false,
+    ) => {
+      const { outcome: _outcome, ...terminal } = accepted.execution;
+      const execution: WorkflowExecution = {
+        ...terminal,
+        id: executionId,
+        status: "running",
+        stage: "recognition",
+        dispositions: [],
+        sourceRefreshRunIds: [],
+      };
+      await commands.createExecution(execution);
+      await authority.createSourceRefreshRun({
+        executionId,
+        run: {
+          id: runId,
+          initiatedBy: "test",
+          initiatedAt: "2026-08-01T00:00:00.000Z",
+          requestedSelection: {
+            subjectId: "atomic-subject",
+            sourceAssociationId: "atomic-association",
+            sourceIdentity: "source",
+            nativeAddress: "opaque:asset",
+            selectors: [],
+          },
+          reviewPolicy: "automatic",
+          baselineLineageHeads: [
+            { ...coverage, sourceRecordId: "atomic-baseline" },
+            ...(withSibling
+              ? [
+                  {
+                    ...coverage,
+                    coverageId: "description",
+                    sourceRecordId: "atomic-description-baseline",
+                  },
+                ]
+              : []),
+          ],
+        },
+      });
+      await authority.beginSourceRefreshScopeAcquisition({ runId, coverage });
+      if (withSibling)
+        await authority.beginSourceRefreshScopeAcquisition({
+          runId,
+          coverage: { ...coverage, coverageId: "description" },
+        });
+      return (await commands.inspectExecution(executionId))!.execution;
+    };
+    const expected = await createAcquiring("atomic-owner", "atomic-run");
+    const foreign = await createAcquiring("atomic-foreign", "foreign-run");
+    const key = "source-refresh-failure:atomic-run:title:1";
+    const codes = [
+      {
+        capability: {
+          capabilityId: "collector",
+          capabilityVersion: "1",
+          contractVersion: "1",
+          identity: "collector",
+          implementationVersion: "1",
+          kind: "source-collector",
+          interpretationContractVersions: ["1"],
+        },
+        code: "transport-failure",
+      },
+    ];
+    const input = {
+      expectedExecution: expected,
+      runId: "atomic-run",
+      coverage,
+      acquisitionAttempt: 1,
+      outcome: "failed" as const,
+      reason: "official collection failed",
+      sourceFailureCodes: codes,
+      idempotencyKey: key,
+    };
+    const before = await commands.inspectExecution(expected.id);
+    await expect(
+      commands.commitSourceRefreshCollectionFailure({
+        ...input,
+        sourceFailureCodes: [
+          {
+            capability: { ...codes[0]!.capability, identity: "   " },
+            code: "transport-failure",
+          },
+        ],
+      }),
+    ).rejects.toThrow("codes are malformed");
+    await expect(
+      commands.commitSourceRefreshCollectionFailure({
+        ...input,
+        expectedExecution: foreign,
+      }),
+    ).rejects.toThrow("owner is invalid");
+    await expect(
+      commands.commitSourceRefreshCollectionFailure({
+        ...input,
+        acquisitionAttempt: 2,
+      }),
+    ).rejects.toThrow("key is invalid");
+    await expect(
+      commands.commitSourceRefreshCollectionFailure({
+        ...input,
+        resumeClaim: { token: "missing-owner", now: "2026-08-01T00:00:00Z" },
+      }),
+    ).rejects.toThrow("stale resume claim");
+    await expect(commands.inspectExecution(expected.id)).resolves.toEqual(
+      before,
+    );
+    const now = "2026-08-01T00:00:01.000Z";
+    await commands.claimResumeExecution({
+      executionId: expected.id,
+      token: "atomic-owner-token",
+      now,
+      expiresAt: "2026-08-01T00:01:01.000Z",
+    });
+    const resumeClaim = { token: "atomic-owner-token", now };
+    const committed = await commands.commitSourceRefreshCollectionFailure({
+      ...input,
+      resumeClaim,
+    });
+    await expect(
+      commands.commitSourceRefreshCollectionFailure({
+        ...input,
+        resumeClaim,
+      }),
+    ).resolves.toEqual(committed);
+    await expect(
+      commands.commitSourceRefreshCollectionFailure({
+        ...input,
+        reason: "conflicting replay",
+        resumeClaim,
+      }),
+    ).rejects.toThrow("replay conflicts");
+    await commands.releaseResumeExecutionClaim({
+      executionId: expected.id,
+      token: resumeClaim.token,
+    });
+    await expect(
+      commands.commitSourceRefreshCollectionFailure(input),
+    ).resolves.toEqual(committed);
+    await expect(
+      commands.commitSourceRefreshCollectionFailure({
+        ...input,
+        reason: "conflicting unclaimed replay",
+      }),
+    ).rejects.toThrow("replay conflicts");
+    await expect(
+      commands.commitSourceRefreshCollectionFailure({
+        ...input,
+        resumeClaim: {
+          token: resumeClaim.token,
+          now: "2026-08-01T00:02:00.000Z",
+        },
+      }),
+    ).rejects.toThrow("stale resume claim");
+
+    const split = await createAcquiring("atomic-split", "split-run");
+    const splitKey = "source-refresh-failure:split-run:title:1";
+    await commands.transitionExecution(split, {
+      ...split,
+      dispositions: [
+        {
+          key: "source-refresh-failure:split-run:title:2",
+          status: "failed",
+          reason: "orphaned wrong-attempt half-state",
+        },
+      ],
+    });
+    const splitExpected = (await commands.inspectExecution(split.id))!
+      .execution;
+    const splitNow = "2026-08-01T00:00:02.000Z";
+    await commands.claimResumeExecution({
+      executionId: split.id,
+      token: "split-token",
+      now: splitNow,
+      expiresAt: "2026-08-01T00:01:02.000Z",
+    });
+    const splitBefore = await commands.inspectExecution(split.id);
+    await expect(
+      commands.commitSourceRefreshCollectionFailure({
+        ...input,
+        expectedExecution: splitExpected,
+        runId: "split-run",
+        idempotencyKey: splitKey,
+        resumeClaim: { token: "split-token", now: splitNow },
+      }),
+    ).rejects.toThrow("split state");
+    await expect(commands.inspectExecution(split.id)).resolves.toEqual(
+      splitBefore,
+    );
+
+    const siblingExpected = await createAcquiring(
+      "atomic-siblings",
+      "siblings-run",
+      true,
+    );
+    const siblingCommitted =
+      await commands.commitSourceRefreshCollectionFailure({
+        ...input,
+        expectedExecution: siblingExpected,
+        runId: "siblings-run",
+        coverage: { ...coverage, coverageId: "description" },
+        idempotencyKey: "source-refresh-failure:siblings-run:description:1",
+      });
+    const targetInput = {
+      ...input,
+      expectedExecution: siblingCommitted.execution,
+      runId: "siblings-run",
+      idempotencyKey: "source-refresh-failure:siblings-run:title:1",
+    };
+    const targetCommitted =
+      await commands.commitSourceRefreshCollectionFailure(targetInput);
+    await expect(
+      commands.commitSourceRefreshCollectionFailure(targetInput),
+    ).resolves.toEqual(targetCommitted);
+  });
+
   it("freezes only the application evidence, collector, and interpreter that actually participate in a Source Refresh Run", async () => {
     const subject = refreshFixture({
       sourceRefreshAuthority: true,
@@ -6665,7 +7847,10 @@ describe("Asset Refresh acceptance", () => {
     );
     expect(refreshed.accepted?.metadata).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ property: "asset.title", value: "Work" }),
+        expect.objectContaining({
+          property: "asset.title",
+          value: "Work",
+        }),
       ]),
     );
   });
@@ -6696,7 +7881,10 @@ describe("Asset Refresh acceptance", () => {
     );
     expect(inspected.accepted?.metadata).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ property: "asset.title", value: "Work" }),
+        expect.objectContaining({
+          property: "asset.title",
+          value: "Work",
+        }),
       ]),
     );
   });
@@ -7229,6 +8417,7 @@ describe("Asset Refresh acceptance", () => {
     const subject = refreshFixture({
       sourceEnrichmentSucceeds: true,
       sourceEnrichmentPartialFailure: true,
+      sourceEnrichmentUnsafeFailure: true,
       sourceOmitsCover: true,
     });
     let executionId: string | undefined;
@@ -7245,19 +8434,31 @@ describe("Asset Refresh acceptance", () => {
         },
         onCheckpoint(execution) {
           const checkpoint = execution.sourceEnrichments?.find(
-            (item) => item.stage === "source-records-retained",
+            (item) => item.stage === "failed",
           );
           if (checkpoint === undefined) return;
           executionId = execution.id;
           throw new Error(
-            "simulated interruption after partial enrichment collection",
+            "simulated interruption after atomic partial enrichment checkpoint",
           );
         },
       }),
     ).rejects.toThrow(
-      "simulated interruption after partial enrichment collection",
+      "simulated interruption after atomic partial enrichment checkpoint",
     );
     expect(executionId).toBeDefined();
+    const persistedBeforeResume = subject.persisted.get(executionId!);
+    expect(JSON.stringify(persistedBeforeResume)).not.toContain(
+      "private response must not persist",
+    );
+    expect(JSON.stringify(persistedBeforeResume)).not.toContain(
+      "/private/credential",
+    );
+    expect(
+      persistedBeforeResume?.execution.dispositions.find((item) =>
+        item.key.includes("source-enrichment"),
+      )?.sourceFailureCodes,
+    ).toBeUndefined();
     const collectionCalls = subject.collectionCalls();
 
     const resumed = await subject.workflow.resume({
@@ -7648,6 +8849,7 @@ describe("Asset Refresh acceptance", () => {
     await refreshFixtureObservedScope(subject.workflow, {
       directory: "/observed/work",
       acceptTrusted: true,
+      informationRequirement: primaryCoverRequirement,
     });
     const preview = await refreshFixtureObservedScope(subject.workflow, {
       directory: "/observed/work",
@@ -7662,24 +8864,36 @@ describe("Asset Refresh acceptance", () => {
     });
     expect(subject.accepted).toHaveLength(1);
     const stored = [...subject.changePreviews.values()][0];
-    const oldCoverId = subject.accepted[0]?.artifactAssociations.find(
+    const current = subject.accepted[0]!;
+    const oldCoverId = current.artifactAssociations.find(
       (association) => association.role === "asset.primary-cover",
     )?.artifactId;
+    expect(oldCoverId).toBeDefined();
+    const materialAssociations = current.artifactAssociations.filter(
+      ({ role }) => role === "asset.material-delivered",
+    );
+    const materialArtifactIds = new Set(
+      materialAssociations.map(({ artifactId }) => artifactId),
+    );
     expect(stored).toMatchObject({
       assetId: subject.accepted[0]?.entity.id,
       status: "awaiting-confirmation",
       projected: {
-        metadata: [{ property: "asset.title", value: "Work" }],
-        primaryCoverArtifactId: expect.any(String),
+        metadata: [{ property: "asset.title", value: "Other Work" }],
       },
     });
-    expect(stored.projected.primaryCoverArtifactId).not.toBe(oldCoverId);
+    expect(stored.projected.primaryCoverArtifactId).toBeUndefined();
     expect(
       stored.projected.artifactAssociations.filter(
         (association) => association.role === "asset.primary-cover",
       ),
-    ).toHaveLength(1);
-    expect(stored.projected.artifacts).toHaveLength(2);
+    ).toHaveLength(0);
+    expect(
+      stored.projected.artifactAssociations.map(({ id }) => id).toSorted(),
+    ).toEqual(materialAssociations.map(({ id }) => id).toSorted());
+    expect(stored.projected.artifacts.map(({ id }) => id).toSorted()).toEqual(
+      [...materialArtifactIds].toSorted(),
+    );
     expect(stored.projected.relationships).toEqual([
       expect.objectContaining({
         role: "cast",
@@ -7690,17 +8904,571 @@ describe("Asset Refresh acceptance", () => {
         ],
       }),
     ]);
-    expect(stored.projected.locations).toEqual(
+    expect(stored.projected.locations.map(({ id }) => id).toSorted()).toEqual(
+      current.locations
+        .filter(({ artifactId }) => materialArtifactIds.has(artifactId))
+        .map(({ id }) => id)
+        .toSorted(),
+    );
+    await expect(
+      subject.workflow.applyChangeImpactPreview({
+        previewId: stored.id,
+        confirmedBy: "reviewer",
+      }),
+    ).resolves.toMatchObject({ status: "applied" });
+    const applied = subject.accepted[0]!;
+    const appliedCoverId = applied.artifactAssociations.find(
+      ({ role }) => role === "asset.primary-cover",
+    )?.artifactId;
+    expect(appliedCoverId).toBeUndefined();
+    expect(
+      applied.artifactAssociations
+        .filter(({ role }) => role === "asset.material-delivered")
+        .map(({ artifactId }) => artifactId)
+        .toSorted(),
+    ).toEqual([...materialArtifactIds].toSorted());
+    expect(applied.artifacts).toHaveLength(materialArtifactIds.size);
+  });
+
+  it("returns the durable terminal preview when a confirmation response is retried", async () => {
+    const subject = refreshFixture();
+    await refreshFixtureObservedScope(subject.workflow, {
+      directory: "/observed/work",
+      acceptTrusted: true,
+    });
+    await refreshFixtureObservedScope(subject.workflow, {
+      directory: "/observed/work",
+      acceptTrusted: true,
+      directedSourceAddress: "https://source.example/other-work",
+      directedSourceIdentity: "source",
+    });
+    const preview = [...subject.changePreviews.values()].at(-1)!;
+
+    const concurrent = await Promise.all([
+      subject.workflow.applyChangeImpactPreview({
+        previewId: preview.id,
+        confirmedBy: "reviewer-a",
+      }),
+      subject.workflow.applyChangeImpactPreview({
+        previewId: preview.id,
+        confirmedBy: "reviewer-b",
+      }),
+    ]);
+    expect(concurrent.map(({ status }) => status)).toEqual([
+      "applied",
+      "applied",
+    ]);
+    await expect(
+      subject.workflow.applyChangeImpactPreview({
+        previewId: preview.id,
+        confirmedBy: "reviewer",
+      }),
+    ).resolves.toMatchObject({ status: "applied" });
+    await expect(
+      subject.workflow.rejectChangeImpactPreview({
+        previewId: preview.id,
+        rejectedBy: "reviewer",
+      }),
+    ).resolves.toMatchObject({ status: "applied" });
+
+    const rejectPreview = {
+      ...preview,
+      id: `${preview.id}:reject-race`,
+      status: "awaiting-confirmation" as const,
+    };
+    subject.changePreviews.set(rejectPreview.id, rejectPreview);
+    const rejected = await Promise.all([
+      subject.workflow.rejectChangeImpactPreview({
+        previewId: rejectPreview.id,
+        rejectedBy: "reviewer-a",
+      }),
+      subject.workflow.rejectChangeImpactPreview({
+        previewId: rejectPreview.id,
+        rejectedBy: "reviewer-b",
+      }),
+    ]);
+    expect(rejected.map(({ status }) => status)).toEqual([
+      "rejected",
+      "rejected",
+    ]);
+
+    const mixedPreview = {
+      ...preview,
+      id: `${preview.id}:mixed-race`,
+      status: "awaiting-confirmation" as const,
+    };
+    subject.changePreviews.set(mixedPreview.id, mixedPreview);
+    const mixed = await Promise.all([
+      subject.workflow.applyChangeImpactPreview({
+        previewId: mixedPreview.id,
+        confirmedBy: "reviewer-a",
+      }),
+      subject.workflow.rejectChangeImpactPreview({
+        previewId: mixedPreview.id,
+        rejectedBy: "reviewer-b",
+      }),
+    ]);
+    expect(new Set(mixed.map(({ status }) => status))).toEqual(
+      new Set(["applied"]),
+    );
+  });
+
+  it("rejects a locally mixed normalization record before applying its source preview", async () => {
+    const subject = refreshFixture({
+      sourceEnrichmentSucceeds: true,
+      sourceAssociationOutcome: "accepted",
+    });
+    await refreshFixtureObservedScope(subject.workflow, {
+      directory: "/observed/work",
+      acceptTrusted: true,
+    });
+    const prepared = await subject.workflow.prepareConflictedEstablishment({
+      assetId: subject.accepted[0]!.entity.id,
+      sourceIdentity: "source",
+      sourceInput: { address: "https://source.example/mixed-work" },
+      initiatedBy: "reviewer",
+    });
+    const durable = subject.persisted.get(prepared.executionId)!;
+    const checkpoint = durable.execution.sourceAssociationDecision!;
+    subject.persisted.set(prepared.executionId, {
+      ...durable,
+      execution: {
+        ...durable.execution,
+        sourceAssociationDecision: {
+          ...checkpoint,
+          normalization: {
+            ...checkpoint.normalization!,
+            normalizedInput: { address: "source:locally-mixed" },
+          },
+        },
+      },
+    });
+
+    await expect(
+      subject.workflow.applyChangeImpactPreview({
+        previewId: prepared.preview!.id,
+        confirmedBy: "reviewer",
+      }),
+    ).rejects.toThrow("持久因果记录无效");
+    expect(subject.accepted).toHaveLength(1);
+  });
+
+  it("recovers a recognition-retraction confirmation wait without interrupting it", async () => {
+    const subject = refreshFixture();
+    await refreshFixtureObservedScope(subject.workflow, {
+      directory: "/observed/work",
+      acceptTrusted: true,
+    });
+    const current = subject.accepted[0]!;
+    const preview = await subject.workflow.prepareRecognitionRetraction({
+      assetId: current.entity.id,
+      predecessorDecisionId: current.recognitionDecision.id,
+      proposedBy: "reviewer",
+      reason: "错误身份",
+    });
+
+    const resumed = await subject.workflow.resume({
+      executionId: preview.executionId,
+    });
+    expect(resumed.execution).toMatchObject({ status: "running" });
+    expect(resumed.changeImpactPreview).toMatchObject({
+      id: preview.id,
+      status: "awaiting-confirmation",
+    });
+    expect(subject.changePreviews.get(preview.id)).toMatchObject({
+      status: "awaiting-confirmation",
+    });
+  });
+
+  it("projects only current source and live recognition supports across a two-step ending", async () => {
+    const subject = refreshFixture();
+    await refreshFixtureObservedScope(subject.workflow, {
+      directory: "/observed/work",
+      acceptTrusted: true,
+    });
+    const current = subject.accepted[0]!;
+    const staleArtifact = { id: "stale-source-artifact" };
+    const staleAssociation = {
+      id: "stale-source-artifact-association",
+      subjectId: current.entity.id,
+      artifactId: staleArtifact.id,
+      role: "asset.material-delivered" as const,
+      sourceRecordIds: ["ended-source-record"],
+      sourceAssociationId: "ended-source-association",
+    };
+    const independent = {
+      id: "independent-source-association",
+      subjectId: current.entity.id,
+      sourceIdentity: "independent",
+      nativeAddress: "independent:work",
+      proposalId: "independent-proposal",
+    };
+    const coverArtifact = { id: "independently-supported-cover" };
+    const cover = {
+      id: "independently-supported-cover-association",
+      subjectId: current.entity.id,
+      artifactId: coverArtifact.id,
+      role: "asset.primary-cover" as const,
+      sourceRecordIds: ["independent-source-record"],
+      sourceAssociationId: independent.id,
+    };
+    const amended = {
+      ...current,
+      sourceAssociations: [...current.sourceAssociations, independent],
+      artifacts: [...current.artifacts, staleArtifact, coverArtifact],
+      artifactAssociations: [
+        ...current.artifactAssociations,
+        cover,
+        staleAssociation,
+      ],
+      artifactAssociationRecognitionSupports: [
+        ...(current.artifactAssociationRecognitionSupports ?? []),
+        {
+          associationId: cover.id,
+          recognitionDecisionId: current.recognitionDecision.id,
+        },
+      ],
+    };
+    subject.accepted.splice(0, 1, amended);
+    for (const [id, inspection] of subject.persisted)
+      if (inspection.accepted?.entity.id === amended.entity.id)
+        subject.persisted.set(id, { ...inspection, accepted: amended });
+
+    const preview = await subject.workflow.prepareRecognitionRetraction({
+      assetId: amended.entity.id,
+      predecessorDecisionId: amended.recognitionDecision.id,
+      proposedBy: "reviewer",
+      reason: "结束识别支持",
+    });
+    expect(preview.projected.artifactAssociations).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: staleAssociation.id }),
+      ]),
+    );
+    expect(preview.projected.artifactAssociations).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: cover.id })]),
+    );
+  });
+
+  it("preserves a contradicted source candidate as an explicit conflict preview", async () => {
+    const subject = refreshFixture({
+      sourceEnrichmentSucceeds: true,
+      sourceAssociationOutcome: "contradicted",
+    });
+    await refreshFixtureObservedScope(subject.workflow, {
+      directory: "/observed/work",
+      acceptTrusted: true,
+    });
+
+    const prepared = await subject.workflow.prepareConflictedEstablishment({
+      assetId: subject.accepted[0]!.entity.id,
+      sourceIdentity: "source",
+      sourceInput: { address: "https://source.example/other-work" },
+      initiatedBy: "reviewer",
+    });
+
+    expect(prepared).toMatchObject({
+      state: "awaiting-confirmation",
+      evidenceComparison: {
+        sourceCandidates: [
+          {
+            outcome: "contradicted",
+            explanation: "来源记录与当前身份矛盾",
+          },
+        ],
+        conflicts: ["来源记录与当前身份矛盾"],
+      },
+      preview: { status: "awaiting-confirmation" },
+    });
+    expect(prepared.candidates[0]?.ruleResults).toEqual([]);
+    expect(JSON.stringify(prepared)).not.toContain('"interpretation"');
+    expect(JSON.stringify(prepared)).not.toContain('"sourceRecordIds"');
+    expect(JSON.stringify(prepared)).not.toContain('"producer"');
+    expect(JSON.stringify(prepared)).not.toContain('"capabilityId"');
+    expect(prepared.preview?.projected.metadata).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          artifactId: stored.projected.primaryCoverArtifactId,
-          kind: "managed",
+          property: "asset.title",
+          value: "Other Work",
         }),
       ]),
     );
+  });
+
+  it("continues one of several public source candidates only by its opaque reference", async () => {
+    const subject = refreshFixture({
+      sourceEnrichmentSucceeds: true,
+      sourceAssociationOutcome: "accepted",
+      multipleSourceInterpretations: true,
+    });
+    await refreshFixtureObservedScope(subject.workflow, {
+      directory: "/observed/work",
+      acceptTrusted: true,
+    });
+    const prepared = await subject.workflow.prepareConflictedEstablishment({
+      assetId: subject.accepted[0]!.entity.id,
+      sourceIdentity: "source",
+      sourceInput: { address: "https://source.example/multiple" },
+      initiatedBy: "reviewer",
+    });
+    expect(prepared.state).toBe("awaiting-selection");
+    expect(prepared.candidates).toHaveLength(2);
+    expect(
+      new Set(prepared.candidates.map(({ reference }) => reference)).size,
+    ).toBe(2);
+    expect(JSON.stringify(prepared.candidates)).not.toContain(
+      "sourceRecordIds",
+    );
+    const generic = await subject.workflow.inspect(prepared.executionId);
+    expect(generic?.execution).not.toHaveProperty("sourceAssociationDecision");
+    expect(JSON.stringify(generic)).not.toContain("interpretation");
+
+    const selected = await subject.workflow.selectSourceAssociationCandidate({
+      executionId: prepared.executionId,
+      candidateReference: prepared.candidates[1]!.reference,
+    });
+    expect(selected.state).toBe("awaiting-confirmation");
+    expect(selected.preview?.evidenceComparison.sourceCandidates).toHaveLength(
+      2,
+    );
+    expect(selected.preview?.projected.metadata).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          property: "asset.title",
+          value: "Second candidate",
+        }),
+      ]),
+    );
+    expect(selected.preview?.projected.sourceAssociations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          nativeAddress: "https://source.example/multiple/second",
+        }),
+      ]),
+    );
+  });
+
+  it("keeps the asset without a source association when an interpreter returns no products", async () => {
+    const subject = refreshFixture({
+      sourceEnrichmentSucceeds: true,
+      sourceAssociationOutcome: "accepted",
+      sourceInterpretationFault: "empty",
+    });
+    await refreshFixtureObservedScope(subject.workflow, {
+      directory: "/observed/work",
+      acceptTrusted: true,
+    });
+
+    const prepared = await subject.workflow.prepareConflictedEstablishment({
+      assetId: subject.accepted[0]!.entity.id,
+      sourceIdentity: "source",
+      sourceInput: { address: "https://source.example/fault" },
+      initiatedBy: "reviewer",
+    });
+
+    expect(prepared).toMatchObject({ state: "failed", candidates: [] });
+    expect(subject.accepted[0]?.sourceAssociations).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          nativeAddress: "https://source.example/fault",
+        }),
+      ]),
+    );
+  });
+
+  it.each([
+    ["unknown-record", "来源解释引用了本次未保留的 Source Record"],
+    ["duplicate-address", "同一来源解释器不得重复解释同一来源地址"],
+  ] as const)(
+    "rejects a %s source interpretation before it can become a candidate",
+    async (sourceInterpretationFault, reason) => {
+      const subject = refreshFixture({
+        sourceEnrichmentSucceeds: true,
+        sourceAssociationOutcome: "accepted",
+        sourceInterpretationFault,
+      });
+      await refreshFixtureObservedScope(subject.workflow, {
+        directory: "/observed/work",
+        acceptTrusted: true,
+      });
+
+      await expect(
+        subject.workflow.prepareConflictedEstablishment({
+          assetId: subject.accepted[0]!.entity.id,
+          sourceIdentity: "source",
+          sourceInput: { address: "https://source.example/fault" },
+          initiatedBy: "reviewer",
+        }),
+      ).rejects.toThrow(reason);
+      expect(subject.accepted[0]?.sourceAssociations).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            nativeAddress: "https://source.example/fault",
+          }),
+        ]),
+      );
+    },
+  );
+
+  it("rejects two association interpreters for one source batch as a composition error", async () => {
+    const subject = refreshFixture({
+      sourceEnrichmentSucceeds: true,
+      sourceAssociationOutcome: "accepted",
+      duplicateSourceAssociationInterpreters: true,
+    });
+    await refreshFixtureObservedScope(subject.workflow, {
+      directory: "/observed/work",
+      acceptTrusted: true,
+    });
+
     await expect(
-      subject.workflow.applyChangeImpactPreview(stored.id),
-    ).resolves.toMatchObject({ status: "applied" });
+      subject.workflow.prepareConflictedEstablishment({
+        assetId: subject.accepted[0]!.entity.id,
+        sourceIdentity: "source",
+        sourceInput: { address: "https://source.example/other-work" },
+        initiatedBy: "reviewer",
+      }),
+    ).rejects.toThrow("一个来源解释只能由一个来源关联解释能力判定");
+  });
+
+  it("links a retried source decision to the frozen prior execution", async () => {
+    const subject = refreshFixture({
+      sourceEnrichmentSucceeds: true,
+      sourceAssociationOutcome: "accepted",
+    });
+    await refreshFixtureObservedScope(subject.workflow, {
+      directory: "/observed/work",
+      acceptTrusted: true,
+    });
+    const first = await subject.workflow.prepareConflictedEstablishment({
+      assetId: subject.accepted[0]!.entity.id,
+      sourceIdentity: "source",
+      sourceInput: { address: "https://source.example/retry-work" },
+      initiatedBy: "reviewer",
+    });
+    await subject.workflow.rejectChangeImpactPreview({
+      previewId: first.preview!.id,
+      rejectedBy: "reviewer",
+    });
+
+    const retried = await subject.workflow.retrySourceAssociationDecision({
+      executionId: first.executionId,
+    });
+    expect(
+      subject.persisted.get(retried.executionId)?.execution.workflowInput,
+    ).toMatchObject({ priorExecutionId: first.executionId });
+  });
+
+  it("honors the Host checkpoint before source-decision collection", async () => {
+    const subject = refreshFixture({
+      sourceEnrichmentSucceeds: true,
+      sourceAssociationOutcome: "accepted",
+    });
+    await refreshFixtureObservedScope(subject.workflow, {
+      directory: "/observed/work",
+      acceptTrusted: true,
+    });
+    const callsBefore = subject.collectionCalls();
+    const shutdown = new Error("host is closing");
+
+    await expect(
+      subject.workflow.prepareConflictedEstablishment({
+        assetId: subject.accepted[0]!.entity.id,
+        sourceIdentity: "source",
+        sourceInput: { address: "https://source.example/host-work" },
+        initiatedBy: "reviewer",
+        onHostCheckpoint() {
+          throw shutdown;
+        },
+      } as never),
+    ).rejects.toBe(shutdown);
+    expect(subject.collectionCalls()).toBe(callsBefore);
+  });
+
+  it("forms a source preview from the latest accepted state after delayed collection", async () => {
+    let entered!: () => void;
+    let release!: () => void;
+    let armed = false;
+    const collectionEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const collectionReleased = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const subject = refreshFixture({
+      sourceEnrichmentSucceeds: true,
+      sourceAssociationOutcome: "accepted",
+      collectionBarrier: async () => {
+        if (!armed) return;
+        entered();
+        await collectionReleased;
+      },
+    });
+    await refreshFixtureObservedScope(subject.workflow, {
+      directory: "/observed/work",
+      acceptTrusted: true,
+    });
+    armed = true;
+    const preparing = subject.workflow.prepareConflictedEstablishment({
+      assetId: subject.accepted[0]!.entity.id,
+      sourceIdentity: "source",
+      sourceInput: { address: "https://source.example/concurrent-work" },
+      initiatedBy: "reviewer",
+    });
+    await collectionEntered;
+    subject.accepted[0] = {
+      ...subject.accepted[0]!,
+      metadata: [
+        ...subject.accepted[0]!.metadata,
+        {
+          property: "user.note",
+          value: "added while collecting",
+          sourceSlot: "user.note",
+          sourceRecordIds: [],
+        },
+      ],
+    };
+    release();
+
+    const prepared = await preparing;
+    expect(prepared.preview?.current.metadata).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          property: "user.note",
+          value: "added while collecting",
+        }),
+      ]),
+    );
+    expect(prepared.preview?.projected.metadata).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          property: "user.note",
+          value: "added while collecting",
+        }),
+      ]),
+    );
+  });
+
+  it("fails without a proposal when accepted support changes while freezing the preview baseline", async () => {
+    const subject = refreshFixture({
+      sourceEnrichmentSucceeds: true,
+      sourceAssociationOutcome: "accepted",
+      mutateAcceptedDuringChangeBaseline: true,
+    });
+    await refreshFixtureObservedScope(subject.workflow, {
+      directory: "/observed/work",
+      acceptTrusted: true,
+    });
+
+    const result = await subject.workflow.prepareConflictedEstablishment({
+      assetId: subject.accepted[0]!.entity.id,
+      sourceIdentity: "source",
+      sourceInput: { address: "https://source.example/concurrent-baseline" },
+      initiatedBy: "reviewer",
+    });
+    expect(result).toMatchObject({ state: "failed" });
+    expect(result.preview).toBeUndefined();
+    expect(subject.changePreviews.size).toBe(0);
   });
 
   it("propagates a Host interruption after the durable change-impact preview without rewriting it as failure", async () => {
@@ -7744,7 +9512,7 @@ describe("Asset Refresh acceptance", () => {
     expect(subject.changePreviews.size).toBe(1);
   });
 
-  it("freezes the selected acquirer before a change-preview acquisition fails", async () => {
+  it("does not select an acquirer while building a change preview", async () => {
     const failure = { fails: false };
     const subject = refreshFixture({ coverFailureState: failure });
     await refreshFixtureObservedScope(subject.workflow, {
@@ -7766,7 +9534,7 @@ describe("Asset Refresh acceptance", () => {
     expect(
       subject.persisted.get(preview.execution.id)?.execution.compatibility
         .capabilityCoordinates,
-    ).toContain("acquirer@1/1");
+    ).not.toContain("acquirer@1/1");
   });
 
   it("projects concrete before and after state while preserving facts outside the replaced source", async () => {
@@ -7791,7 +9559,10 @@ describe("Asset Refresh acceptance", () => {
     expect(preview.projected.metadata).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ property: "user.note", value: "keep me" }),
-        expect.objectContaining({ property: "asset.title", value: "Work" }),
+        expect.objectContaining({
+          property: "asset.title",
+          value: "Other Work",
+        }),
       ]),
     );
     expect(preview.projected.relationships).toEqual(
@@ -7813,11 +9584,33 @@ describe("Asset Refresh acceptance", () => {
     const inspected = await subject.workflow.inspectChangeImpactPreview(
       preview.id,
     );
-    expect(inspected?.current.metadata).toEqual(preview.current.metadata);
-    expect(inspected?.projected.metadata).toEqual(preview.projected.metadata);
+    expect(inspected?.current.metadata).toEqual(
+      preview.current.metadata.map(
+        ({
+          producer: _producer,
+          sourceRecordIds: _sourceRecordIds,
+          authoredBy: _authoredBy,
+          observedArtifactPart: _observedArtifactPart,
+          ...item
+        }) => item,
+      ),
+    );
+    expect(inspected?.projected.metadata).toEqual(
+      preview.projected.metadata.map(
+        ({
+          producer: _producer,
+          sourceRecordIds: _sourceRecordIds,
+          authoredBy: _authoredBy,
+          observedArtifactPart: _observedArtifactPart,
+          ...item
+        }) => item,
+      ),
+    );
+    expect(JSON.stringify(inspected)).not.toContain("/observed/work");
+    expect(JSON.stringify(inspected)).not.toContain('"capabilityId"');
   });
 
-  it("removes a previously enriched source from an identity-replacement projection until it is validated again", async () => {
+  it("retains an independently enriched source in an identity-replacement projection", async () => {
     const subject = refreshFixture({ sourceEnrichmentSucceeds: true });
     await refreshFixtureObservedScope(subject.workflow, {
       directory: "/observed/work",
@@ -7851,7 +9644,7 @@ describe("Asset Refresh acceptance", () => {
         }),
       ]),
     );
-    expect(preview.projected.metadata).not.toEqual(
+    expect(preview.projected.metadata).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ property: "asset.awards" }),
       ]),
@@ -7880,6 +9673,26 @@ describe("Asset Refresh acceptance", () => {
     expect(subject.changePreviews.size).toBe(0);
   });
 
+  it("rejects an address-only recognition change in favor of source replacement", async () => {
+    const subject = refreshFixture();
+    await refreshFixtureObservedScope(subject.workflow, {
+      directory: "/observed/work",
+      acceptTrusted: true,
+    });
+
+    const result = await refreshFixtureObservedScope(subject.workflow, {
+      directory: "/observed/work",
+      acceptTrusted: true,
+      directedSourceAddress: "https://source.example/address-only",
+      directedSourceIdentity: "source",
+    });
+    expect(result.execution).toMatchObject({
+      outcome: "failed",
+      reason: "仅更改来源地址必须使用来源关联更换流程",
+    });
+    expect(subject.changePreviews.size).toBe(0);
+  });
+
   it("routes ordinary recognition back through preview after an identity replacement", async () => {
     const subject = refreshFixture();
     await refreshFixtureObservedScope(subject.workflow, {
@@ -7894,14 +9707,19 @@ describe("Asset Refresh acceptance", () => {
     });
     const replacementPreview = [...subject.changePreviews.values()].at(-1);
     expect(replacementPreview).toBeDefined();
-    await subject.workflow.applyChangeImpactPreview(replacementPreview!.id);
+    await subject.workflow.applyChangeImpactPreview({
+      previewId: replacementPreview!.id,
+      confirmedBy: "reviewer",
+    });
 
     const ordinary = await refreshFixtureObservedScope(subject.workflow, {
       directory: "/observed/work",
       acceptTrusted: true,
     });
 
-    expect(ordinary.execution.outcome).toBe("proposal");
+    expect(ordinary.execution.outcome, JSON.stringify(ordinary.execution)).toBe(
+      "proposal",
+    );
     expect([...subject.changePreviews.values()].at(-1)).toMatchObject({
       status: "awaiting-confirmation",
       projected: {
@@ -8709,6 +10527,51 @@ describe("Asset Refresh acceptance", () => {
       "interpreter@1/1",
       "recognizer@1/1",
     ]);
+  });
+
+  it("interrupts an ordinary recovery before every producer unless the retained batch stage and disposition agree", async () => {
+    const subject = refreshFixture();
+    let executionId = "";
+    await expect(
+      refreshFixtureObservedScope(subject.workflow, {
+        directory: "/observed/work",
+        acceptTrusted: true,
+        onCheckpoint(execution) {
+          executionId = execution.id;
+          throw new Error("freeze ordinary recovery checkpoint");
+        },
+      }),
+    ).rejects.toThrow("freeze ordinary recovery checkpoint");
+    const durable = subject.persisted.get(executionId)!;
+    subject.persisted.set(executionId, {
+      ...durable,
+      execution: {
+        ...durable.execution,
+        stage: "recognition",
+        sourceRecordIds: [],
+        dispositions: [
+          ...durable.execution.dispositions.filter(
+            (item) => item.key !== "official-collection",
+          ),
+          { key: "official-collection", status: "completed" },
+        ],
+      },
+      sourceRecords: [],
+    });
+    const collectionCalls = subject.collectionCalls();
+    const directoryInterpretations = subject.directoryInterpretations();
+
+    await expect(
+      subject.workflow.resume({ executionId }),
+    ).resolves.toMatchObject({
+      execution: {
+        outcome: "interrupted",
+        reason: "官方来源完整采集批次尚未提交，当前执行不能安全继续",
+      },
+    });
+    expect(subject.collectionCalls()).toBe(collectionCalls);
+    expect(subject.directoryInterpretations()).toBe(directoryInterpretations);
+    expect(subject.accepted).toEqual([]);
   });
 
   it("treats an execution with no frozen configuration references as compatible without a resolver", async () => {

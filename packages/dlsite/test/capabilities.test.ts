@@ -5,6 +5,7 @@ import {
   DlsiteCollector,
   DlsiteExactDirectoryInterpreter,
   DlsiteExactRecognizer,
+  DlsiteSourceAddressing,
   DlsiteSourceInterpreter,
 } from "../src/index.ts";
 
@@ -70,6 +71,57 @@ describe("DLsite exact directory convention", () => {
         ],
       }),
     ).toEqual([]);
+  });
+});
+
+describe("DLsite explicit product addressing", () => {
+  it.each([
+    [
+      "RJ01668691",
+      "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html",
+    ],
+    [
+      "VJ014635",
+      "https://www.dlsite.com/maniax/work/=/product_id/VJ014635.html",
+    ],
+    [
+      "https://www.dlsite.com/girls/work/=/product_id/RJ01497788.html",
+      "https://www.dlsite.com/girls/work/=/product_id/RJ01497788.html",
+    ],
+  ])("normalizes an explicit product %s", (product, sourceAddress) => {
+    const addressing = new DlsiteSourceAddressing();
+
+    expect(addressing.normalize({ product })).toEqual({
+      status: "accepted",
+      normalizedInput: { product: sourceAddress },
+      evidence: {
+        kind: "directed-source-address",
+        sourceIdentity: "dlsite",
+        sourceAddress,
+        explanation: "用户明确指定 DLsite 产品",
+        producer: addressing.capability,
+      },
+    });
+  });
+
+  it("rejects unknown fields and non-canonical product addresses", () => {
+    const addressing = new DlsiteSourceAddressing();
+
+    expect(
+      addressing.normalize({
+        product: "RJ01668691",
+        address: "https://www.dlsite.com/",
+      }),
+    ).toMatchObject({ status: "invalid" });
+    expect(
+      addressing.normalize({
+        product:
+          "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html?token=secret",
+      }),
+    ).toMatchObject({ status: "invalid" });
+    expect(addressing.normalize({ product: "RJ1668691" })).toMatchObject({
+      status: "invalid",
+    });
   });
 });
 
@@ -368,7 +420,7 @@ describe("DLsite collection and interpretation", () => {
       },
       body: '<meta name="description" content="Real introduction「DLsite store" />',
     };
-    const batch = interpreter.interpret({
+    const [batch] = interpreter.interpret({
       evidence: [evidence],
       sourceRecords: [json, html],
     });
@@ -496,7 +548,7 @@ describe("DLsite collection and interpretation", () => {
       body: "<html></html>",
     };
 
-    const batch = interpreter.interpret({
+    const [batch] = interpreter.interpret({
       evidence: [evidence],
       sourceRecords: [json, html],
     });
@@ -583,7 +635,7 @@ describe("DLsite collection and interpretation", () => {
       `,
     };
 
-    const batch = interpreter.interpret({
+    const [batch] = interpreter.interpret({
       evidence: [evidence],
       sourceRecords: [json, html],
     });
@@ -680,7 +732,7 @@ describe("DLsite collection and interpretation", () => {
       body: "<table><tr><th>声優</th><td>N/A</td></tr><tr><th>シナリオ</th><td>N/A</td></tr><tr><th>イラスト</th><td>N/A</td></tr><tr><th>作者</th><td>N/A</td></tr></table>",
     };
 
-    const batch = interpreter.interpret({
+    const [batch] = interpreter.interpret({
       evidence: [evidence],
       sourceRecords: [json, html],
     });
@@ -776,11 +828,13 @@ describe("DLsite collection and interpretation", () => {
       interpreter.interpret({
         evidence: [evidence],
         sourceRecords: records("//img.dlsite.jp/explicit.jpg"),
-      }).sourceArtifacts[0]?.acquisitionReference,
+      })[0]?.sourceArtifacts[0]?.acquisitionReference,
     ).toBe("https://img.dlsite.jp/explicit.jpg");
     expect(
-      interpreter.interpret({ evidence: [evidence], sourceRecords: records() })
-        .sourceArtifacts[0],
+      interpreter.interpret({
+        evidence: [evidence],
+        sourceRecords: records(),
+      })[0]?.sourceArtifacts[0],
     ).toMatchObject({
       acquisitionReference: "https://img.dlsite.jp/carousel.png",
       mediaType: "image/png",
@@ -830,13 +884,13 @@ describe("DLsite collection and interpretation", () => {
       interpreter.interpret({
         evidence: [evidence],
         sourceRecords: [json, html],
-      }).sourceArtifacts,
+      })[0]?.sourceArtifacts,
     ).toEqual([]);
   });
 
   it("binds HTML-only circle and credit fallbacks to the HTML source record without normalising occurrences", () => {
     const interpreter = new DlsiteSourceInterpreter();
-    const batch = interpreter.interpret({
+    const [batch] = interpreter.interpret({
       evidence: [evidence],
       sourceRecords: [
         {

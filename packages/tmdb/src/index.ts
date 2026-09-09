@@ -703,7 +703,7 @@ export class TmdbSourceInterpreter implements SourceInterpreter {
   interpret(input: {
     readonly evidence: readonly RecognitionEvidence[];
     readonly sourceRecords: readonly SourceRecord[];
-  }): SourceInterpretationBatch {
+  }): readonly SourceInterpretationBatch[] {
     const strict = input.evidence
       .filter((evidence) => evidence.sourceIdentity === "tmdb")
       .map((evidence) =>
@@ -840,34 +840,36 @@ export class TmdbSourceInterpreter implements SourceInterpreter {
         ],
       });
     }
-    return {
-      id: `source-interpretation_tmdb_${randomUUID()}`,
-      producer: this.capability,
-      sourceRecordIds: [
-        detail.id,
-        directorCredits.id,
-        credits.id,
-        ...(translations === undefined ? [] : [translations.id]),
-      ],
-      sourceIdentity: "tmdb",
-      sourceAddress: detail.nativeAddress,
-      recognitionEvidenceReferences: (strict === undefined
-        ? [detail]
-        : input.sourceRecords.filter(
-            (record) =>
-              record.sourceIdentity === "tmdb" &&
-              (record.coverage.id.startsWith("tmdb.search.page.") ||
-                record.coverage.id === "tmdb.movie"),
-          )
-      ).map((record) => ({
-        kind: "source-record" as const,
-        sourceRecordId: record.id,
-      })),
-      metadata,
-      sourceArtifacts,
-      entities: [...people.values()],
-      relationships,
-    };
+    return [
+      {
+        id: `source-interpretation_tmdb_${randomUUID()}`,
+        producer: this.capability,
+        sourceRecordIds: [
+          detail.id,
+          directorCredits.id,
+          credits.id,
+          ...(translations === undefined ? [] : [translations.id]),
+        ],
+        sourceIdentity: "tmdb",
+        sourceAddress: detail.nativeAddress,
+        recognitionEvidenceReferences: (strict === undefined
+          ? [detail]
+          : input.sourceRecords.filter(
+              (record) =>
+                record.sourceIdentity === "tmdb" &&
+                (record.coverage.id.startsWith("tmdb.search.page.") ||
+                  record.coverage.id === "tmdb.movie"),
+            )
+        ).map((record) => ({
+          kind: "source-record" as const,
+          sourceRecordId: record.id,
+        })),
+        metadata,
+        sourceArtifacts,
+        entities: [...people.values()],
+        relationships,
+      },
+    ];
   }
 }
 

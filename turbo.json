@@ -3,12 +3,7 @@
     "tags": {
       "application": {
         "dependencies": {
-          "allow": [
-            "application",
-            "domain",
-            "test-support",
-            "tooling"
-          ]
+          "allow": ["application", "domain", "test-support", "tooling"]
         }
       },
       "composition": {
@@ -53,31 +48,17 @@
       },
       "domain": {
         "dependencies": {
-          "allow": [
-            "domain",
-            "test-support",
-            "tooling"
-          ]
+          "allow": ["domain", "test-support", "tooling"]
         }
       },
       "infrastructure": {
         "dependencies": {
-          "allow": [
-            "application",
-            "domain",
-            "test-support",
-            "tooling"
-          ]
+          "allow": ["application", "domain", "test-support", "tooling"]
         }
       },
       "integration": {
         "dependencies": {
-          "allow": [
-            "application",
-            "domain",
-            "test-support",
-            "tooling"
-          ]
+          "allow": ["application", "domain", "test-support", "tooling"]
         }
       },
       "presentation": {
@@ -93,10 +74,7 @@
       },
       "test-support": {
         "dependencies": {
-          "allow": [
-            "test-support",
-            "tooling"
-          ]
+          "allow": ["test-support", "tooling"]
         }
       },
       "tooling": {
@@ -121,9 +99,7 @@
       "outputs": []
     },
     "//#format:write": {
-      "dependsOn": [
-        "//#lint:fix"
-      ],
+      "dependsOn": ["//#lint:fix"],
       "cache": false
     },
     "//#lint:fix": {
@@ -139,46 +115,32 @@
       "outputs": []
     },
     "typecheck": {
-      "dependsOn": [
-        "^typecheck"
-      ],
+      "dependsOn": ["^typecheck"],
       "outputs": []
     },
     "build": {
-      "dependsOn": [
-        "^build"
-      ]
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "@digital/presentation#build": {
+      "outputs": []
     },
     "test": {
-      "dependsOn": [
-        "build"
-      ],
+      "dependsOn": ["build"],
       "outputs": []
     },
     "test:e2e": {
-      "dependsOn": [
-        "build"
-      ],
+      "dependsOn": ["build"],
       "cache": false,
-      "passThroughEnv": [
-        "DIGITAL_TMDB_ACCESS_TOKEN",
-        "DIGITAL_OMDB_API_KEY"
-      ]
+      "passThroughEnv": ["DIGITAL_TMDB_ACCESS_TOKEN", "DIGITAL_OMDB_API_KEY"]
     },
     "test:e2e:tmdb-omdb-live": {
-      "dependsOn": [
-        "build"
-      ],
+      "dependsOn": ["build"],
       "cache": false,
-      "passThroughEnv": [
-        "DIGITAL_TMDB_ACCESS_TOKEN",
-        "DIGITAL_OMDB_API_KEY"
-      ]
+      "passThroughEnv": ["DIGITAL_TMDB_ACCESS_TOKEN", "DIGITAL_OMDB_API_KEY"]
     },
     "test:e2e:bangumi-live": {
-      "dependsOn": [
-        "build"
-      ],
+      "dependsOn": ["build"],
       "cache": false,
       "passThroughEnv": [
         "DIGITAL_BANGUMI_LIVE_PRODUCT_DATA",
@@ -195,9 +157,7 @@
       ]
     },
     "format:write": {
-      "dependsOn": [
-        "lint:fix"
-      ],
+      "dependsOn": ["lint:fix"],
       "cache": false
     },
     "lint:fix": {

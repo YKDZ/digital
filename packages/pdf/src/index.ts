@@ -33,31 +33,31 @@ const maximumMetadataTotalBytes = 8 * 1024 * 1024;
 
 const inspectorCapability = declareCapability({
   identity: "pdf.publication-inspection",
-  implementationVersion: "1",
+  implementationVersion: "2",
   kind: "artifact-format-inspector",
-  contractVersion: "1",
-  interpretationContractVersions: ["1"],
+  contractVersion: "2",
+  interpretationContractVersions: ["2"],
 });
 const recognizerCapability = declareCapability({
   identity: "pdf.local-publication-recognizer",
-  implementationVersion: "1",
+  implementationVersion: "2",
   kind: "recognizer",
-  contractVersion: "1",
-  interpretationContractVersions: ["1"],
+  contractVersion: "2",
+  interpretationContractVersions: ["2"],
 });
 const acquirerCapability = declareCapability({
   identity: "pdf.first-page-cover-acquirer",
-  implementationVersion: "1",
+  implementationVersion: "2",
   kind: "observed-artifact-part-acquirer",
-  contractVersion: "1",
-  interpretationContractVersions: ["1"],
+  contractVersion: "2",
+  interpretationContractVersions: ["2"],
 });
 
 export const trustedPdfLocalPublicationRule = {
   capabilityId: recognizerCapability.capabilityId,
   capabilityVersion: recognizerCapability.capabilityVersion,
   ruleId: "pdf.valid-single-publication-revision",
-  ruleVersion: "1",
+  ruleVersion: "2",
 } as const;
 
 export type PdfRecognitionCapabilities = Readonly<{
@@ -168,7 +168,7 @@ class PdfPublicationInspector implements ArtifactFormatInspector {
             ],
             parts: [
               {
-                role: "asset.primary-cover",
+                role: "asset.material-image",
                 locator: "pdf:page[1]",
                 mediaType: "image/png",
               },
@@ -243,7 +243,7 @@ class PdfFirstPageCoverAcquirer implements ObservedArtifactPartAcquirer {
 
   canAcquire(candidate: ObservedArtifactPartCandidate): boolean {
     return (
-      candidate.role === "asset.primary-cover" &&
+      candidate.role === "asset.material-image" &&
       candidate.locator === "pdf:page[1]" &&
       candidate.mediaType === "image/png" &&
       sameCapability(candidate.producer, inspectorCapability)

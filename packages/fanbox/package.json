@@ -8,9 +8,14 @@
   "type": "module",
   "exports": {
     ".": {
-      "digital-source": "./src/index.ts",
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
+      "digital-source": "./src/public.ts",
+      "types": "./dist/public.d.ts",
+      "default": "./dist/public.js"
+    },
+    "./testing": {
+      "digital-source": "./src/testing.ts",
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
     }
   },
   "scripts": {
@@ -24,7 +29,8 @@
   },
   "dependencies": {
     "@digital/application": "workspace:*",
-    "@digital/domain": "workspace:*"
+    "@digital/domain": "workspace:*",
+    "playwright": "1.62.0"
   },
   "devDependencies": {
     "@digital/typescript-config": "workspace:*",

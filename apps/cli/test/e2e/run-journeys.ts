@@ -282,6 +282,143 @@ async function runCommand(options: {
   });
 }
 
+type JourneyCommandExecutor = typeof runCommand;
+
+function errorDiagnostic(
+  error: unknown,
+  commands: readonly CliJourneyCommand[],
+): string {
+  return diagnosticText(
+    error instanceof Error ? error.message : String(error),
+    commands,
+  );
+}
+
+function formatJourneyLifecycleFailure(input: {
+  readonly mode: CliJourneyMode;
+  readonly journeyName: string;
+  readonly commands: readonly CliJourneyCommand[];
+  readonly results: readonly CliJourneyResult[];
+  readonly primaryFailed: boolean;
+  readonly primaryError?: unknown;
+  readonly teardownFailed: boolean;
+  readonly teardownError?: unknown;
+  readonly cleanupFailed: boolean;
+  readonly cleanupError?: unknown;
+}): Error {
+  const failures = [
+    ...(!input.primaryFailed
+      ? []
+      : [
+          `main failure: ${errorDiagnostic(input.primaryError, input.commands)}`,
+        ]),
+    ...(!input.teardownFailed
+      ? []
+      : [
+          `teardown failure: ${errorDiagnostic(input.teardownError, input.commands)}`,
+        ]),
+    ...(!input.cleanupFailed
+      ? []
+      : [
+          `workDir cleanup failure: ${errorDiagnostic(input.cleanupError, input.commands)}`,
+        ]),
+  ];
+  const commandDiagnostics = input.results.map((result, index) => {
+    const command = input.commands[index];
+    const applicable = command === undefined ? input.commands : [command];
+    return `${result.commandName}: exit ${result.exitCode}\nstdout: ${diagnosticText(result.stdout, applicable)}\nstderr: ${diagnosticText(result.stderr, applicable)}`;
+  });
+  const sanitized = [...commandDiagnostics, ...failures].join("\n");
+  return new Error(
+    `${input.mode}:${input.journeyName} journey failed${sanitized.length === 0 ? "" : `\n${sanitized}`}`,
+    { cause: new Error(failures.join("\n")) },
+  );
+}
+
+export async function runJourney(options: {
+  readonly journey: CliJourney;
+  readonly mode: CliJourneyMode;
+  readonly packedBin?: string;
+  readonly executeCommand?: JourneyCommandExecutor;
+  readonly prepareProductData?: typeof prepareCliProductData;
+}): Promise<string> {
+  const workDir = await mkdtemp(
+    path.join(
+      tmpdir(),
+      `digital-disposable-cli-${options.journey.name}-${options.mode}-`,
+    ),
+  );
+  const context = { mode: options.mode, packageRoot, workDir };
+  const results: CliJourneyResult[] = [];
+  let commands: readonly CliJourneyCommand[] = [];
+  let primaryFailed = false;
+  let primaryError: unknown;
+  try {
+    await options.journey.setup(context);
+    commands = options.journey.commands(context);
+    const preparedProductDataDirectories = new Set<string>();
+    for (const command of commands) {
+      const productDataDirectory = command.env?.DIGITAL_PRODUCT_DATA;
+      if (
+        productDataDirectory !== undefined &&
+        productDataDirectory.trim().length > 0 &&
+        !preparedProductDataDirectories.has(productDataDirectory)
+      ) {
+        await (options.prepareProductData ?? prepareCliProductData)(
+          productDataDirectory,
+        );
+        preparedProductDataDirectories.add(productDataDirectory);
+      }
+      const result = await (options.executeCommand ?? runCommand)({
+        mode: options.mode,
+        packedBin: options.packedBin,
+        command,
+        previousResults: results,
+        cwd: workDir,
+      });
+      results.push(result);
+      assertHaltedJourneyCommand(command, result);
+    }
+    await options.journey.assertions({ context, results });
+  } catch (error) {
+    primaryFailed = true;
+    primaryError = error;
+  }
+
+  let teardownFailed = false;
+  let teardownError: unknown;
+  try {
+    await options.journey.teardown?.({ context, results });
+  } catch (error) {
+    teardownFailed = true;
+    teardownError = error;
+  }
+
+  let cleanupFailed = false;
+  let cleanupError: unknown;
+  try {
+    await rm(workDir, { recursive: true, force: true });
+  } catch (error) {
+    cleanupFailed = true;
+    cleanupError = error;
+  }
+
+  if (primaryFailed || teardownFailed || cleanupFailed)
+    throw formatJourneyLifecycleFailure({
+      mode: options.mode,
+      journeyName: options.journey.name,
+      commands,
+      results,
+      primaryFailed,
+      primaryError,
+      teardownFailed,
+      teardownError,
+      cleanupFailed,
+      cleanupError,
+    });
+  return `${options.mode}:${options.journey.name}:passed`;
+}
+
 export async function runJourneys(options: {
   readonly mode: CliJourneyMode;
   readonly packedBin?: string;
@@ -289,53 +426,15 @@ export async function runJourneys(options: {
   const passed: string[] = [];
   for (const journey of await discoverJourneys()) {
     if (!journey.modes.includes(options.mode)) continue;
-    const workDir = await mkdtemp(
-      path.join(
-        tmpdir(),
-        `digital-disposable-cli-${journey.name}-${options.mode}-`,
-      ),
+    passed.push(
+      await runJourney({
+        journey,
+        mode: options.mode,
+        ...(options.packedBin === undefined
+          ? {}
+          : { packedBin: options.packedBin }),
+      }),
     );
-    const context = { mode: options.mode, packageRoot, workDir };
-    try {
-      await journey.setup(context);
-      const results: CliJourneyResult[] = [];
-      const commands = journey.commands(context);
-      const preparedProductDataDirectories = new Set<string>();
-      for (const command of commands) {
-        const productDataDirectory = command.env?.DIGITAL_PRODUCT_DATA;
-        if (
-          productDataDirectory !== undefined &&
-          productDataDirectory.trim().length > 0 &&
-          !preparedProductDataDirectories.has(productDataDirectory)
-        ) {
-          await prepareCliProductData(productDataDirectory);
-          preparedProductDataDirectories.add(productDataDirectory);
-        }
-        const result = await runCommand({
-          mode: options.mode,
-          packedBin: options.packedBin,
-          command,
-          previousResults: results,
-          cwd: workDir,
-        });
-        results.push(result);
-        assertHaltedJourneyCommand(command, result);
-      }
-      try {
-        await journey.assertions({ context, results });
-      } catch (error) {
-        throw formatJourneyAssertionFailure({
-          mode: options.mode,
-          journeyName: journey.name,
-          commands,
-          results,
-          error,
-        });
-      }
-      passed.push(`${options.mode}:${journey.name}:passed`);
-    } finally {
-      await rm(workDir, { recursive: true, force: true });
-    }
   }
   return passed;
 }

@@ -176,7 +176,7 @@ describe("Bangumi episodic directory convention", () => {
         ],
       }),
     ];
-    const batch = new BangumiSourceInterpreter().interpret({
+    const [batch] = new BangumiSourceInterpreter().interpret({
       evidence,
       sourceRecords: records,
     });
@@ -304,7 +304,7 @@ describe("Bangumi episodic directory convention", () => {
       }),
     ];
 
-    const batch = new BangumiSourceInterpreter().interpret({
+    const [batch] = new BangumiSourceInterpreter().interpret({
       evidence,
       sourceRecords: records,
     });
@@ -338,11 +338,12 @@ describe("Bangumi episodic directory convention", () => {
         { id: 999, relation: "续集" },
       ]),
     ];
-    expect(() =>
-      new BangumiSourceInterpreter().interpret({
-        evidence,
-        sourceRecords: records,
-      }),
+    expect(
+      () =>
+        new BangumiSourceInterpreter().interpret({
+          evidence,
+          sourceRecords: records,
+        })[0],
     ).toThrow("unique compatible");
   });
 
@@ -392,7 +393,7 @@ describe("Bangumi episodic directory convention", () => {
       new BangumiSourceInterpreter().interpret({
         evidence,
         sourceRecords: records,
-      }),
+      })[0],
     ).toMatchObject({ sourceAddress: "https://bgm.tv/episode/1575936" });
   });
 
@@ -659,7 +660,7 @@ describe("Bangumi episodic directory convention", () => {
     ]);
     const collected = await collector.collect(evidence);
     expect(collected.failures).toEqual([]);
-    const batch = new BangumiSourceInterpreter().interpret({
+    const [batch] = new BangumiSourceInterpreter().interpret({
       evidence: [evidence],
       sourceRecords: collected.records,
     });

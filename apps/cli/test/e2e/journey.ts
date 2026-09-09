@@ -58,4 +58,9 @@ export type CliJourney = {
     readonly context: CliJourneyContext;
     readonly results: readonly CliJourneyResult[];
   }): Promise<void>;
+  /** 基线已建立后无论主路径结果如何都执行，只核对外部不变量并释放登记状态。 */
+  teardown?(options: {
+    readonly context: CliJourneyContext;
+    readonly results: readonly CliJourneyResult[];
+  }): Promise<void>;
 };

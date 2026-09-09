@@ -1,15 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-type CatalogueFixture = {
-  readonly configured: boolean;
-  readonly assets: readonly unknown[];
-  readonly executions: readonly unknown[];
-  readonly automation: readonly unknown[];
-  readonly observedRoots?: readonly {
-    readonly id: string;
-    readonly displayName: string;
-  }[];
-};
+import { mockCataloguePage, type CatalogueFixture } from "./catalogue-fixture";
 
 const emptyCatalogue: CatalogueFixture = {
   configured: true,
@@ -22,9 +13,7 @@ async function mockCatalogue(
   page: import("@playwright/test").Page,
   catalogue: CatalogueFixture = emptyCatalogue,
 ) {
-  await page.route("**/api/catalogue", (route) =>
-    route.fulfill({ json: catalogue }),
-  );
+  await mockCataloguePage(page, catalogue);
 }
 
 function frierenCatalogue(): CatalogueFixture {
@@ -75,19 +64,16 @@ function frierenCatalogue(): CatalogueFixture {
   };
 }
 
-test("Bangumi browse renders one stable series card instead of 38 episode cards", async ({
-  page,
-}) => {
+test("剧集分组通过统一首页进入既有系列详情", async ({ page }) => {
   await mockCatalogue(page, frierenCatalogue());
 
   await page.goto("/", { waitUntil: "domcontentloaded" });
 
-  await expect(page.getByTestId("bangumi-card")).toHaveCount(1);
-  await expect(page.getByText("38 集本地内容")).toBeVisible();
-  await expect(page.getByTestId("bangumi-card")).toHaveAttribute(
-    "href",
-    "/series/bangumi-series%3Afrieren-work-1",
-  );
+  await expect(
+    page.getByRole("button", { name: "查看 葬送的芙莉莲" }),
+  ).toHaveCount(1);
+  await page.getByRole("button", { name: "查看 葬送的芙莉莲" }).click();
+  await expect(page).toHaveURL(/\/series\/bangumi-series%3Afrieren-work-1$/);
 });
 
 for (const viewport of [
@@ -144,28 +130,31 @@ for (const viewport of [
   });
 }
 
-test("添加内容成功后创建记录并链接详情", async ({ page }) => {
+test("添加内容用所选文件位置创建检查记录", async ({ page }) => {
   await mockCatalogue(page, {
     ...emptyCatalogue,
     observedRoots: [{ id: "work-root", displayName: "作品资料库" }],
   });
-  await page.route("**/api/refresh", (route) =>
-    route.fulfill({ status: 201, json: { id: "record-created" } }),
-  );
+  let requestBody: unknown;
+  await page.route("**/api/refresh", async (route) => {
+    requestBody = await route.request().postDataJSON();
+    await route.fulfill({ status: 201, json: { id: "record-created" } });
+  });
 
   await page.goto("/intake", { waitUntil: "domcontentloaded" });
-  await expect(page.getByText("还没有刷新记录。")).toBeVisible();
+  await expect(page.getByText("检查文件，开始整理")).toBeVisible();
   await page.getByLabel("文件位置").click();
   await page.getByRole("option", { name: "作品资料库" }).click();
-  await page.getByRole("button", { name: "开始处理" }).click();
+  await page.getByRole("button", { name: "检查文件" }).click();
 
-  await expect(page.getByText("已创建刷新记录，正在处理。")).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: "查看刷新记录" }),
-  ).toHaveAttribute("href", "/inspection?record=record-created");
+  await expect(page.getByText("待整理的文件")).toBeVisible();
+  expect(requestBody).toEqual({
+    observedRootId: "work-root",
+    relativeScope: ".",
+  });
 });
 
-test("添加内容只提交文件位置身份和相对范围", async ({ page }) => {
+test("添加内容只提交文件位置身份和固定范围", async ({ page }) => {
   await mockCatalogue(page, {
     ...emptyCatalogue,
     observedRoots: [{ id: "audio-root", displayName: "音声资料库" }],
@@ -179,12 +168,11 @@ test("添加内容只提交文件位置身份和相对范围", async ({ page }) 
   await page.goto("/intake", { waitUntil: "domcontentloaded" });
   await page.getByLabel("文件位置").click();
   await page.getByRole("option", { name: "音声资料库" }).click();
-  await page.getByLabel("范围（相对路径）").fill("作品/RJ01668691");
-  await page.getByRole("button", { name: "开始处理" }).click();
+  await page.getByRole("button", { name: "检查文件" }).click();
 
   expect(requestBody).toEqual({
     observedRootId: "audio-root",
-    relativeScope: "作品/RJ01668691",
+    relativeScope: ".",
   });
   expect(JSON.stringify(requestBody)).not.toContain("directory");
 });
@@ -199,10 +187,10 @@ test("添加内容失败时显示服务返回的错误", async ({ page }) => {
   );
 
   await page.goto("/intake", { waitUntil: "domcontentloaded" });
-  await expect(page.getByText("还没有刷新记录。")).toBeVisible();
+  await expect(page.getByText("检查文件，开始整理")).toBeVisible();
   await page.getByLabel("文件位置").click();
   await page.getByRole("option", { name: "作品资料库" }).click();
-  await page.getByRole("button", { name: "开始处理" }).click();
+  await page.getByRole("button", { name: "检查文件" }).click();
 
   await expect(page.getByRole("alert")).toContainText("请选择可用的文件位置");
 });
@@ -375,35 +363,60 @@ for (const result of [
   });
 }
 
-const persistedAutomation: CatalogueFixture = {
-  ...emptyCatalogue,
-  automation: [
-    {
-      id: "automation-1",
-      folder: "已保存的文件夹",
-      enabled: true,
-      intervalMilliseconds: 3_600_000,
-      acceptTrusted: true,
-    },
-  ],
-};
+async function mockSettings(
+  page: import("@playwright/test").Page,
+  plans = true,
+) {
+  await page.route("**/api/settings", (route) =>
+    route.fulfill({
+      json: {
+        configured: true,
+        roots: [
+          {
+            id: "book-root",
+            displayName: "已保存的文件夹",
+            containerPath: "/media/books",
+            status: "active",
+            reachable: true,
+            configVersion: 1,
+            symlinkMode: "do-not-follow",
+            allowedTargetRootIds: [],
+          },
+        ],
+        sources: [],
+        automation: plans
+          ? [
+              {
+                id: "automation-1",
+                folder: "已保存的文件夹",
+                observedRootId: "book-root",
+                relativeScope: ".",
+                enabled: true,
+                intervalMilliseconds: 3600000,
+                acceptTrusted: true,
+              },
+            ]
+          : [],
+      },
+    }),
+  );
+}
 
 test("重新载入后仍显示已保存的自动刷新设置", async ({ page }) => {
-  await mockCatalogue(page, persistedAutomation);
+  await mockSettings(page);
 
   await page.goto("/settings/automation", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "自动刷新", exact: true }).click();
   await expect(page.getByText("已保存的文件夹", { exact: true })).toBeVisible();
-  await expect(page.getByText("已启用 · 每小时")).toBeVisible();
+  await expect(page.getByText("整个文件位置 · 每小时")).toBeVisible();
 
   await page.reload({ waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "自动刷新", exact: true }).click();
   await expect(page.getByText("已保存的文件夹", { exact: true })).toBeVisible();
 });
 
 test("新增自动刷新只提交文件位置身份和相对范围", async ({ page }) => {
-  await mockCatalogue(page, {
-    ...emptyCatalogue,
-    observedRoots: [{ id: "book-root", displayName: "书籍资料库" }],
-  });
+  await mockSettings(page, false);
   let requestBody: unknown;
   await page.route("**/api/automation", async (route) => {
     requestBody = await route.request().postDataJSON();
@@ -416,10 +429,10 @@ test("新增自动刷新只提交文件位置身份和相对范围", async ({ pa
   });
 
   await page.goto("/settings/automation", { waitUntil: "domcontentloaded" });
-  await page.getByLabel("文件位置").click();
-  await page.getByRole("option", { name: "书籍资料库" }).click();
+  await page.getByRole("button", { name: "自动刷新", exact: true }).click();
+  await page.getByRole("button", { name: "添加计划", exact: true }).click();
   await page.getByLabel("范围（相对路径）").fill("轻小说");
-  await page.getByRole("button", { name: "启用自动刷新" }).click();
+  await page.getByRole("button", { name: "保存并启用" }).click();
 
   expect(requestBody).toEqual({
     action: "enable",
@@ -432,7 +445,7 @@ test("新增自动刷新只提交文件位置身份和相对范围", async ({ pa
 });
 
 test("立即刷新创建记录后提供详情链接", async ({ page }) => {
-  await mockCatalogue(page, persistedAutomation);
+  await mockSettings(page);
   await page.route("**/api/automation", (route) =>
     route.fulfill({
       json: { status: "started", execution: { id: "record-now" } },
@@ -440,24 +453,23 @@ test("立即刷新创建记录后提供详情链接", async ({ page }) => {
   );
 
   await page.goto("/settings/automation", { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "立即刷新" }).click();
+  await page.getByRole("button", { name: "自动刷新", exact: true }).click();
+  await page.getByRole("button", { name: "立即检查" }).click();
 
-  await expect(
-    page.getByText("已完成立即刷新，可查看刷新记录。"),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: "查看刷新记录" }),
-  ).toHaveAttribute("href", "/inspection?record=record-now");
+  await expect(page.getByText("已开始刷新", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "查看刷新记录" }).click();
+  await expect(page).toHaveURL(/\/inspection\?record=record-now$/);
 });
 
 test("重叠的立即刷新说明本次已跳过", async ({ page }) => {
-  await mockCatalogue(page, persistedAutomation);
+  await mockSettings(page);
   await page.route("**/api/automation", (route) =>
     route.fulfill({ json: { status: "skipped" } }),
   );
 
   await page.goto("/settings/automation", { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "立即刷新" }).click();
+  await page.getByRole("button", { name: "自动刷新", exact: true }).click();
+  await page.getByRole("button", { name: "立即检查" }).click();
 
   await expect(
     page.getByText("本次触发已跳过：当前仍有处理进行中。"),
@@ -465,13 +477,14 @@ test("重叠的立即刷新说明本次已跳过", async ({ page }) => {
 });
 
 test("停用自动刷新明确保留正在进行的处理", async ({ page }) => {
-  await mockCatalogue(page, persistedAutomation);
+  await mockSettings(page);
   await page.route("**/api/automation", (route) =>
     route.fulfill({ json: { status: "disabled" } }),
   );
 
   await page.goto("/settings/automation", { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "停用" }).click();
+  await page.getByRole("button", { name: "自动刷新", exact: true }).click();
+  await page.getByRole("switch").click();
 
   await expect(
     page.getByText("已停止后续自动刷新；正在进行的处理不会取消。"),

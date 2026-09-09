@@ -121,8 +121,8 @@ describe("CLI command control", () => {
     const output = testRuntime(["rescrape", "--help"]);
 
     await expect(runCli(output.runtime)).resolves.toBe(0);
-    expect(output.stdout()).toContain("--source-identity <identity>");
-    expect(output.stdout()).toContain("<source-address>");
+    expect(output.stdout()).toContain("<source-identity>");
+    expect(output.stdout()).toContain("<source-input-json>");
     expect(output.stdout()).not.toContain("DLsite");
     expect(output.stderr()).toBe("");
   });
@@ -168,13 +168,22 @@ describe("CLI command control", () => {
   });
 
   it("applies one saved change-impact preview and renders its safe JSON inspection", async () => {
-    const output = testRuntime(["apply-preview", "preview-1", "--json"]);
+    const output = testRuntime([
+      "apply-preview",
+      "preview-1",
+      "--actor",
+      "reviewer",
+      "--json",
+    ]);
     const calls: string[] = [];
     let closes = 0;
     const application = {
       openAssetRefresh() {
         return {
-          async applyChangeImpactPreview(previewId: string) {
+          async applyChangeImpactPreview(input: {
+            readonly previewId: string;
+          }) {
+            const { previewId } = input;
             calls.push(previewId);
             return { status: "applied" };
           },
@@ -204,13 +213,22 @@ describe("CLI command control", () => {
   });
 
   it("rejects one saved change-impact preview and renders its safe JSON inspection", async () => {
-    const output = testRuntime(["reject-preview", "preview-2", "--json"]);
+    const output = testRuntime([
+      "reject-preview",
+      "preview-2",
+      "--actor",
+      "reviewer",
+      "--json",
+    ]);
     const calls: string[] = [];
     let closes = 0;
     const application = {
       openAssetRefresh() {
         return {
-          async rejectChangeImpactPreview(previewId: string) {
+          async rejectChangeImpactPreview(input: {
+            readonly previewId: string;
+          }) {
+            const { previewId } = input;
             calls.push(previewId);
             return { id: previewId, status: "rejected" };
           },
@@ -236,8 +254,61 @@ describe("CLI command control", () => {
     expect(closes).toBe(0);
   });
 
+  it("continues an ambiguous source decision only through its opaque candidate reference", async () => {
+    const reference = "a".repeat(64);
+    const output = testRuntime([
+      "select-source-candidate",
+      "execution-ambiguous",
+      reference,
+      "--json",
+    ]);
+    const calls: unknown[] = [];
+    const application = {
+      openAssetRefresh() {
+        return {
+          async selectSourceAssociationCandidate(input: unknown) {
+            calls.push(input);
+            return {
+              executionId: "execution-ambiguous",
+              state: "awaiting-confirmation",
+              candidates: [
+                {
+                  reference,
+                  outcome: "accepted",
+                  sourceIdentity: "source",
+                  nativeAddress: "opaque:work",
+                  ruleResults: [],
+                  explanation: "候选已选择",
+                },
+              ],
+            };
+          },
+          close() {},
+        };
+      },
+      openAutomationHost() {
+        throw new Error("not used");
+      },
+    } as unknown as CliProductApplication;
+
+    await expect(
+      runCli(output.runtime, legacyCliApplication(application)),
+    ).resolves.toBe(0);
+    expect(calls).toEqual([
+      { executionId: "execution-ambiguous", candidateReference: reference },
+    ]);
+    expect(output.stdout()).not.toContain("sourceRecordIds");
+    expect(output.stderr()).toBe("");
+  });
+
   it("reports a missing change-impact preview without taking root ownership", async () => {
-    const output = testRuntime(["apply-preview", "missing", "--json"]);
+    const output = testRuntime([
+      "apply-preview",
+      "missing",
+      "--actor",
+      "reviewer",
+      "--json",
+    ]);
     let closes = 0;
     const application = {
       openAssetRefresh() {
@@ -266,7 +337,13 @@ describe("CLI command control", () => {
   });
 
   it("reports a stale applied preview explicitly after rendering its inspection", async () => {
-    const output = testRuntime(["apply-preview", "stale-preview", "--json"]);
+    const output = testRuntime([
+      "apply-preview",
+      "stale-preview",
+      "--actor",
+      "reviewer",
+      "--json",
+    ]);
     const application = {
       openAssetRefresh() {
         return {
@@ -296,7 +373,13 @@ describe("CLI command control", () => {
   });
 
   it("reports a missing preview from rejection without taking root ownership", async () => {
-    const output = testRuntime(["reject-preview", "missing", "--json"]);
+    const output = testRuntime([
+      "reject-preview",
+      "missing",
+      "--actor",
+      "reviewer",
+      "--json",
+    ]);
     let closes = 0;
     const application = {
       openAssetRefresh() {
@@ -325,11 +408,20 @@ describe("CLI command control", () => {
   });
 
   it("reports a stale rejected preview explicitly after rendering its inspection", async () => {
-    const output = testRuntime(["reject-preview", "stale-preview", "--json"]);
+    const output = testRuntime([
+      "reject-preview",
+      "stale-preview",
+      "--actor",
+      "reviewer",
+      "--json",
+    ]);
     const application = {
       openAssetRefresh() {
         return {
-          async rejectChangeImpactPreview(previewId: string) {
+          async rejectChangeImpactPreview(input: {
+            readonly previewId: string;
+          }) {
+            const { previewId } = input;
             return { id: previewId, status: "stale" };
           },
           close() {},

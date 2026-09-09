@@ -13,6 +13,7 @@ const port = String(39_000 + (process.pid % 1_000));
 const productData = path.join(root, "product-data");
 const observed = path.join(root, "observed");
 const failedData = path.join(root, "failed-product-data");
+const stoppedContainerExport = path.join(root, "stopped-web.tar");
 const uid = process.env.DIGITAL_COMPOSE_CHECK_UID ?? "1001";
 const gid = process.env.DIGITAL_COMPOSE_CHECK_GID ?? "1001";
 const abortController = new AbortController();
@@ -265,6 +266,67 @@ async function assertPersistedState(): Promise<void> {
   );
 }
 
+async function stopWebAndAssertShutdown(): Promise<void> {
+  const startedAt = Date.now();
+  await compose(["stop", "web"]);
+  const elapsedMilliseconds = Date.now() - startedAt;
+  if (elapsedMilliseconds >= 10_000)
+    throw new Error(
+      `Compose Web 未在默认 10 秒停止窗内结束：${elapsedMilliseconds}ms`,
+    );
+
+  const rawState = await run("docker", [
+    "inspect",
+    "--format={{json .State}}",
+    `${project}-web-1`,
+  ]);
+  const state = JSON.parse(rawState) as {
+    readonly Running?: unknown;
+    readonly Pid?: unknown;
+    readonly OOMKilled?: unknown;
+    readonly ExitCode?: unknown;
+  };
+  if (
+    state.Running !== false ||
+    state.Pid !== 0 ||
+    state.OOMKilled !== false ||
+    state.ExitCode !== 143
+  )
+    throw new Error(`Compose Web 停止状态不符合正常关闭合同：${rawState}`);
+
+  await run("docker", [
+    "export",
+    "--output",
+    stoppedContainerExport,
+    `${project}-web-1`,
+  ]);
+  try {
+    for (const pattern of [
+      "tmp/digital-web-process-*",
+      "tmp/digital-fanbox-browser-*",
+      "tmp/playwright_chromiumdev_profile-*",
+    ]) {
+      try {
+        const entries = await run("tar", [
+          "--list",
+          "--file",
+          stoppedContainerExport,
+          "--wildcards",
+          "--no-anchored",
+          pattern,
+        ]);
+        if (entries.trim())
+          throw new Error(`停止容器仍有临时 owner：${entries.trim()}`);
+      } catch (error) {
+        if (error instanceof CommandFailure && error.code === 2) continue;
+        throw error;
+      }
+    }
+  } finally {
+    await rm(stoppedContainerExport, { force: true });
+  }
+}
+
 async function assertRootConfigurationRejected(
   configuredUid: string,
   configuredGid: string,
@@ -313,6 +375,7 @@ try {
     `test "$(id -u)" = ${uid}; test "$(id -g)" = ${gid}; test "$(cat /observed/media/probe.txt)" = synthetic-observed-root; touch /data/non-root-write-proof; ! touch /observed/media/must-remain-read-only`,
   );
   await seedAndAssertPersistence();
+  await stopWebAndAssertShutdown();
   await compose(["down"]);
   await compose(["up", "-d"]);
   await waitReady(port);

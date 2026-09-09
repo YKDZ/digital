@@ -54,8 +54,10 @@ async function build(name: string): Promise<void> {
       await build(dependency);
   }
   // Docker 排除 `dist` 输出后，TypeScript 组合构建可能仍接受过期的构建信息文件。
-  // 只移除当前包的构建信息，使成功构建总会实体化其声明输出。
-  await rm(resolve(item.directory, "tsconfig.tsbuildinfo"), { force: true });
+  // 构建配置名决定默认构建信息文件名；移除它以确保重新实体化声明输出。
+  await rm(resolve(item.directory, "tsconfig.build.tsbuildinfo"), {
+    force: true,
+  });
   await run("pnpm", ["--filter", name, "run", "build"]);
   const sourceDist = resolve(item.directory, "dist");
   const sourceExport = item.manifest.exports?.["."]?.default;

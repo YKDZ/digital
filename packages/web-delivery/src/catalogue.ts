@@ -1,7 +1,64 @@
 import type {
+  ObservedRootRegistration,
+  SourceConnectionInspection,
+} from "@digital/application";
+import type {
   AssetViewModel,
   BangumiSeriesViewModel,
 } from "@digital/presentation";
+
+export type IntakeContent = {
+  readonly executionId: string;
+  readonly status: "proposed" | "accepted";
+  readonly relativePaths: readonly string[];
+  readonly asset: AssetViewModel;
+};
+
+export type IntakeSnapshot = {
+  readonly roots: readonly {
+    readonly id: string;
+    readonly displayName: string;
+  }[];
+  readonly rootId?: string;
+  readonly execution?: ExecutionViewModel;
+  readonly files: readonly {
+    readonly relativePath: string;
+    readonly size: number;
+    readonly assetIds: readonly string[];
+    readonly problem?: string;
+  }[];
+  readonly contents: readonly AssetViewModel[];
+};
+
+export async function requestIntake(
+  input: { rootId?: string; executionId?: string } = {},
+): Promise<IntakeSnapshot> {
+  const query = new URLSearchParams();
+  if (input.rootId) query.set("rootId", input.rootId);
+  if (input.executionId) query.set("executionId", input.executionId);
+  const response = await fetch(`/api/intake?${query}`);
+  const result = await response.json();
+  if (!response.ok)
+    throw new Error((result as { error?: string }).error ?? "暂时无法检查文件");
+  return result as IntakeSnapshot;
+}
+
+export type SettingsSnapshot = {
+  readonly configured: boolean;
+  readonly productDataDirectory?: string;
+  readonly roots: readonly (ObservedRootRegistration & {
+    readonly reachable: boolean;
+    readonly problem?: string;
+  })[];
+  readonly sources: readonly SourceConnectionInspection[];
+  readonly automation: readonly AutomationViewModel[];
+};
+
+export async function requestSettings(): Promise<SettingsSnapshot> {
+  const response = await fetch("/api/settings");
+  if (!response.ok) throw new Error("暂时无法读取设置");
+  return (await response.json()) as SettingsSnapshot;
+}
 
 export type {
   AssetViewModel,
@@ -10,6 +67,35 @@ export type {
   BangumiWorkViewModel,
 } from "@digital/presentation";
 export type CatalogueAssetViewModel = AssetViewModel | BangumiSeriesViewModel;
+export {
+  libraryCategories,
+  projectLibraryAsset,
+} from "@digital/presentation/library";
+export type { LibraryCategory } from "@digital/presentation";
+
+export type LibraryQuery = {
+  readonly text?: string;
+  readonly category?: string;
+  readonly sort?: "recent" | "name";
+};
+
+export type CatalogueSubjectResponse = {
+  readonly asset: CatalogueAssetViewModel;
+  readonly selectedEpisodeId?: string;
+};
+
+export async function requestCatalogueSubject(
+  id: string,
+  signal?: AbortSignal,
+): Promise<CatalogueSubjectResponse | undefined> {
+  const response = await fetch(
+    `/api/catalogue/${encodeURIComponent(id)}`,
+    signal === undefined ? undefined : { signal },
+  );
+  if (response.status === 404) return undefined;
+  if (!response.ok) throw new Error("暂时无法读取内容");
+  return (await response.json()) as CatalogueSubjectResponse;
+}
 
 /**
  * 交付层对应用层终态结果完整且用户可见的视图。保持该显式边界类型与应用层模型分离，
@@ -43,7 +129,11 @@ export function executionOutcomeLabel(outcome: ExecutionOutcome): string {
 export type ExecutionViewModel = {
   readonly id: string;
   readonly folder: string;
-  readonly intent: "scan-now" | "metadata-refresh" | "directed-recognition";
+  readonly intent:
+    | "scan-now"
+    | "metadata-refresh"
+    | "directed-recognition"
+    | "source-enrichment";
   readonly status: "running" | "completed" | "failed";
   readonly outcome?: ExecutionOutcome;
   readonly reason?: string;
@@ -178,6 +268,8 @@ export type CatalogueSurfaceRequest =
   | {
       readonly surface: "current-catalogue";
       readonly page?: CataloguePageRequest;
+      readonly query?: LibraryQuery;
+      readonly signal?: AbortSignal;
     }
   | {
       readonly surface: "workflow-history";
@@ -195,6 +287,11 @@ export type CatalogueSurfaceResponse =
       readonly configured: boolean;
       readonly assets: readonly CatalogueAssetViewModel[];
       readonly pagination: { readonly nextCursor?: string };
+      readonly total?: number;
+      readonly categories?: readonly {
+        readonly id: string;
+        readonly label: string;
+      }[];
     }
   | {
       readonly surface: "workflow-history";
@@ -250,6 +347,12 @@ export async function requestCatalogue(
   const query = new URLSearchParams();
   if (input !== undefined) {
     query.set("surface", input.surface);
+    if (input.surface === "current-catalogue" && input.query !== undefined) {
+      query.set("sort", input.query.sort ?? "recent");
+      if (input.query.text) query.set("q", input.query.text);
+      if (input.query.category && input.query.category !== "all")
+        query.set("category", input.query.category);
+    }
     if (input.surface !== "automation") {
       if (input.page?.cursor !== undefined)
         query.set("cursor", input.page.cursor);
@@ -258,7 +361,12 @@ export async function requestCatalogue(
     }
   }
   const suffix = query.size === 0 ? "" : `?${query.toString()}`;
-  const response = await fetch(`/api/catalogue${suffix}`);
+  const response = await fetch(
+    `/api/catalogue${suffix}`,
+    input?.surface === "current-catalogue" && input.signal !== undefined
+      ? { signal: input.signal }
+      : undefined,
+  );
   if (!response.ok) throw new Error("暂时无法读取内容");
   if (input !== undefined) {
     const page = (await response.json()) as CatalogueSurfaceResponse;
@@ -283,7 +391,13 @@ export async function requestCatalogue(
 }
 
 export async function sendAction<T>(
-  endpoint: "/api/intake" | "/api/refresh" | "/api/automation" | "/api/preview",
+  endpoint:
+    | "/api/intake"
+    | "/api/refresh"
+    | "/api/automation"
+    | "/api/preview"
+    | "/api/settings/roots"
+    | "/api/settings/connections",
   body: object,
 ): Promise<T> {
   const response = await fetch(endpoint, {
@@ -294,70 +408,4 @@ export async function sendAction<T>(
   const data = (await response.json()) as T & { readonly error?: string };
   if (!response.ok) throw new Error(data.error ?? "操作暂时无法完成");
   return data;
-}
-
-export {
-  libraryCategories,
-  projectLibraryAsset,
-} from "@digital/presentation/library";
-export type { LibraryCategory } from "@digital/presentation";
-
-export type LibraryQuery = {
-  readonly text?: string;
-  readonly category?: string;
-  readonly sort?: "recent" | "name";
-};
-
-export type CatalogueSubjectResponse = {
-  readonly asset: CatalogueAssetViewModel;
-  readonly selectedEpisodeId?: string;
-};
-
-export async function requestCatalogueSubject(
-  id: string,
-  signal?: AbortSignal,
-): Promise<CatalogueSubjectResponse | undefined> {
-  const response = await fetch(
-    `/api/catalogue/${encodeURIComponent(id)}`,
-    signal === undefined ? undefined : { signal },
-  );
-  if (response.status === 404) return undefined;
-  if (!response.ok) throw new Error("暂时无法读取内容");
-  return (await response.json()) as CatalogueSubjectResponse;
-}
-
-export type IntakeContent = {
-  readonly executionId: string;
-  readonly status: "proposed" | "accepted";
-  readonly relativePaths: readonly string[];
-  readonly asset: AssetViewModel;
-};
-
-export type IntakeSnapshot = {
-  readonly roots: readonly {
-    readonly id: string;
-    readonly displayName: string;
-  }[];
-  readonly rootId?: string;
-  readonly execution?: ExecutionViewModel;
-  readonly files: readonly {
-    readonly relativePath: string;
-    readonly size: number;
-    readonly assetIds: readonly string[];
-    readonly problem?: string;
-  }[];
-  readonly contents: readonly AssetViewModel[];
-};
-
-export async function requestIntake(
-  input: { rootId?: string; executionId?: string } = {},
-): Promise<IntakeSnapshot> {
-  const query = new URLSearchParams();
-  if (input.rootId) query.set("rootId", input.rootId);
-  if (input.executionId) query.set("executionId", input.executionId);
-  const response = await fetch(`/api/intake?${query}`);
-  const result = await response.json();
-  if (!response.ok)
-    throw new Error((result as { error?: string }).error ?? "暂时无法检查文件");
-  return result as IntakeSnapshot;
 }

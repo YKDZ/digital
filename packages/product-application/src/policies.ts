@@ -28,21 +28,27 @@ const trustedRecognitionRules = [
   },
   {
     capabilityId: "nbinet.exact-isbn-recognizer",
-    capabilityVersion: "1",
+    capabilityVersion: "2",
     ruleId: "embedded-isbn-in-exact-official-record",
+    ruleVersion: "2",
+  },
+  {
+    capabilityId: "nbinet.exact-isbn-recognizer",
+    capabilityVersion: "2",
+    ruleId: "directed-isbn-in-exact-official-record",
     ruleVersion: "1",
   },
   {
     capabilityId: "epub.local-publication-recognizer",
-    capabilityVersion: "1",
+    capabilityVersion: "2",
     ruleId: "epub.valid-single-publication-revision",
-    ruleVersion: "1",
+    ruleVersion: "2",
   },
   {
     capabilityId: "pdf.local-publication-recognizer",
-    capabilityVersion: "1",
+    capabilityVersion: "2",
     ruleId: "pdf.valid-single-publication-revision",
-    ruleVersion: "1",
+    ruleVersion: "2",
   },
   {
     capabilityId: "tmdb.strict-film-recognizer",
@@ -68,7 +74,7 @@ export function curatedInitialRecognitionPolicy(): RecognitionPolicy & {
   readonly trustedRuleCoordinates: readonly string[];
 } {
   return {
-    version: "curated-initial-sources/5",
+    version: "curated-initial-sources/7",
     trustedRuleCoordinates: trustedRecognitionRules.map(
       (rule) =>
         `${rule.capabilityId}@${rule.capabilityVersion}/${rule.ruleId}@${rule.ruleVersion}`,

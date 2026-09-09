@@ -1,12 +1,51 @@
-import { lstat, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { runProduct } from "@digital/composition";
 import { captureRawFilesystemSnapshot } from "@digital/test-support";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { runCli, type CliRuntime } from "../../src/main.ts";
 import { prepareCliProductData } from "../prepare-catalogue.ts";
+
+vi.mock("@digital/fanbox", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@digital/fanbox")>();
+  return {
+    ...actual,
+    createFanboxProductAssembly: () => ({
+      async validatedBrowserCredential(input: {
+        readonly browserCredential: unknown;
+      }) {
+        const credential = input.browserCredential as {
+          readonly userAgent: string;
+          readonly cookies: readonly unknown[];
+        };
+        return JSON.stringify({
+          format: "fanbox-browser-request-context/2",
+          userAgent: credential.userAgent,
+          cookies: credential.cookies,
+        });
+      },
+      async verifyStoredCredential() {},
+      createCollector: () => ({
+        capability: actual.fanboxOfficialCollectionCapability,
+        canCollect: () => false,
+        coverageScopeIds: () => [],
+        collect: async () => ({ records: [], failures: [] }),
+      }),
+      async close() {},
+    }),
+  };
+});
 
 const cleanupPaths: string[] = [];
 
@@ -25,6 +64,7 @@ async function disposableProductDataDirectory(): Promise<string> {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   await Promise.all(
     cleanupPaths
       .splice(0)
@@ -98,6 +138,415 @@ async function tree(
 }
 
 describe("Asset Refresh CLI", () => {
+  it("directs new material through a source-owned structured input", async () => {
+    const source = await temporaryDirectory("digital-cli-directed-input-");
+    const data = await disposableProductDataDirectory();
+    await writeFile(path.join(source, "new.pdf"), syntheticPdf());
+    await prepareCliProductData(data);
+    vi.stubGlobal(
+      "fetch",
+      async () =>
+        new Response(
+          JSON.stringify({
+            docs: [
+              {
+                pnx: {
+                  display: { title: ["CLI 定向书名"] },
+                  addata: { isbn: ["9789864738281"] },
+                },
+              },
+            ],
+          }),
+          { headers: { "content-type": "application/json" } },
+        ),
+    );
+    const rootId = await registerRoot({
+      source,
+      cwd: source,
+      env: { DIGITAL_PRODUCT_DATA: data },
+    });
+    const directed = runtime(
+      [
+        "scrape-source",
+        rootId,
+        "nbinet",
+        JSON.stringify({ isbn: "9789864738281" }),
+        "--json",
+      ],
+      { cwd: source, env: { DIGITAL_PRODUCT_DATA: data } },
+    );
+    expect(await runCli(directed.runtime), directed.stderr()).toBe(0);
+    expect(JSON.parse(directed.stdout())).toMatchObject({
+      execution: { outcome: "accepted" },
+      accepted: {
+        sourceAssociations: [
+          expect.objectContaining({ sourceIdentity: "nbinet" }),
+        ],
+      },
+    });
+  });
+
+  it("uses the public product use case for source requirements and explicit enrichment", async () => {
+    const source = await temporaryDirectory("digital-cli-source-enrichment-");
+    const data = await disposableProductDataDirectory();
+    await writeFile(path.join(source, "manual.pdf"), syntheticPdf());
+    await prepareCliProductData(data);
+    const product = runProduct(
+      { productDataDirectory: data, environment: {} },
+      { start: (application) => application.workflow },
+    );
+    const workflow = product.result;
+    let assetId: string;
+    try {
+      const root = await workflow.observedRootRegistrations.create({
+        displayName: "明确来源材料",
+        containerPath: source,
+        readOnly: true,
+        symlinkMode: "do-not-follow",
+        allowedTargetRootIds: [],
+      });
+      const scan = await workflow.scanObservedScope({
+        registrationId: root.id,
+        relativeScope: ".",
+        acceptTrusted: false,
+      });
+      const review = await workflow.prepareLocalContent({
+        executionId: scan.execution.id,
+        relativePaths: ["manual.pdf"],
+        name: "CLI 本地书",
+        classification: "book",
+      });
+      assetId = (
+        await workflow.confirmLocalContent({ executionId: review.executionId })
+      ).content.entity.id;
+    } finally {
+      await product.close();
+    }
+    vi.stubGlobal(
+      "fetch",
+      async () =>
+        new Response(
+          JSON.stringify({
+            docs: [
+              {
+                pnx: {
+                  display: { title: ["CLI 来源书名"] },
+                  addata: { isbn: ["9789864738281"] },
+                },
+              },
+              {
+                pnx: {
+                  display: { title: ["CLI 更换来源书名"] },
+                  addata: { isbn: ["9786264151726"] },
+                },
+              },
+            ],
+          }),
+          { headers: { "content-type": "application/json" } },
+        ),
+    );
+    const inputs = runtime(["source-inputs", "--json"], {
+      cwd: source,
+      env: { DIGITAL_PRODUCT_DATA: data },
+    });
+    await expect(runCli(inputs.runtime)).resolves.toBe(0);
+    expect(
+      (
+        JSON.parse(inputs.stdout()) as readonly {
+          readonly sourceIdentity: string;
+        }[]
+      ).map(({ sourceIdentity }) => sourceIdentity),
+    ).toEqual(["dlsite", "nbinet", "taiwan-kadokawa", "kadokawa-jp"]);
+    const invalid = runtime(
+      [
+        "enrich-source",
+        assetId,
+        "nbinet",
+        JSON.stringify({ isbn: "not-an-isbn" }),
+        "--json",
+      ],
+      { cwd: source, env: { DIGITAL_PRODUCT_DATA: data } },
+    );
+    expect(await runCli(invalid.runtime)).toBe(1);
+    expect(invalid.stderr()).toContain("ISBN-13");
+    const enriched = runtime(
+      [
+        "enrich-source",
+        assetId,
+        "nbinet",
+        JSON.stringify({ isbn: "9789864738281" }),
+        "--json",
+      ],
+      { cwd: source, env: { DIGITAL_PRODUCT_DATA: data } },
+    );
+    await expect(runCli(enriched.runtime)).resolves.toBe(0);
+    const enrichedInspection = JSON.parse(enriched.stdout()) as {
+      readonly accepted: {
+        readonly sourceAssociations: readonly {
+          readonly id: string;
+          readonly sourceIdentity: string;
+        }[];
+      };
+    };
+    expect(enrichedInspection).toMatchObject({
+      execution: { outcome: "accepted", acceptedAssetId: assetId },
+      accepted: {
+        entity: { id: assetId },
+        sourceAssociations: [
+          expect.objectContaining({ sourceIdentity: "nbinet" }),
+        ],
+      },
+    });
+    const beforeAudit = runtime(
+      ["inspect-correction-subject", assetId, "--json"],
+      { cwd: source, env: { DIGITAL_PRODUCT_DATA: data } },
+    );
+    await expect(runCli(beforeAudit.runtime)).resolves.toBe(0);
+    const nbinetAssociation = (
+      JSON.parse(beforeAudit.stdout()) as {
+        readonly current: readonly {
+          readonly id: string;
+          readonly sourceIdentity: string;
+        }[];
+      }
+    ).current.find(({ sourceIdentity }) => sourceIdentity === "nbinet")!;
+    const replace = runtime(
+      [
+        "source-decision",
+        "replace",
+        assetId,
+        nbinetAssociation.id,
+        JSON.stringify({ isbn: "9786264151726" }),
+        "--actor",
+        "cli-reviewer",
+        "--json",
+      ],
+      { cwd: source, env: { DIGITAL_PRODUCT_DATA: data } },
+    );
+    expect(await runCli(replace.runtime), replace.stderr()).toBe(0);
+    const replacementJson = replace.stdout();
+    const replacementInspection = JSON.parse(replacementJson) as {
+      readonly candidates: readonly unknown[];
+      readonly evidenceComparison: {
+        readonly sourceCandidates: readonly unknown[];
+      };
+    };
+    expect(replacementInspection.candidates.length).toBeGreaterThan(0);
+    expect(
+      replacementInspection.evidenceComparison.sourceCandidates.length,
+    ).toBeGreaterThan(0);
+    for (const forbidden of [
+      source,
+      "interpretation",
+      "sourceRecordIds",
+      "producer",
+      "capabilityId",
+      "capabilityVersion",
+      "contractVersion",
+    ])
+      expect(replacementJson).not.toContain(forbidden);
+    const retract = runtime(
+      [
+        "source-decision",
+        "retract",
+        assetId,
+        nbinetAssociation.id,
+        "错误来源关联",
+        "--actor",
+        "cli-reviewer",
+        "--json",
+      ],
+      { cwd: source, env: { DIGITAL_PRODUCT_DATA: data } },
+    );
+    expect(await runCli(retract.runtime), retract.stderr()).toBe(0);
+    expect(retract.stdout()).not.toContain(source);
+    expect(retract.stdout()).not.toContain("capabilityId");
+    const retractionInspection = JSON.parse(retract.stdout()) as {
+      readonly executionId: string;
+      readonly preview: { readonly id: string; readonly status: string };
+    };
+    expect(retractionInspection).toMatchObject({
+      state: "awaiting-confirmation",
+      preview: { status: "awaiting-confirmation" },
+    });
+    const apply = runtime(
+      [
+        "apply-preview",
+        retractionInspection.preview.id,
+        "--actor",
+        "cli-reviewer",
+        "--json",
+      ],
+      { cwd: source, env: { DIGITAL_PRODUCT_DATA: data } },
+    );
+    expect(await runCli(apply.runtime), apply.stderr()).toBe(0);
+    expect(JSON.parse(apply.stdout())).toMatchObject({
+      preview: { status: "applied" },
+    });
+    const audit = runtime(["inspect-correction-subject", assetId, "--json"], {
+      cwd: source,
+      env: { DIGITAL_PRODUCT_DATA: data },
+    });
+    await expect(runCli(audit.runtime)).resolves.toBe(0);
+    expect(JSON.parse(audit.stdout())).toMatchObject({
+      current: [],
+      historical: expect.arrayContaining([
+        expect.objectContaining({
+          association: expect.objectContaining({ id: nbinetAssociation.id }),
+          status: "retracted",
+          authorizedBy: expect.objectContaining({
+            kind: "source-association-decision",
+          }),
+        }),
+      ]),
+    });
+  });
+
+  it("默认普通重扫和重开保留 DLsite 官方封面及 PDF 精确文件图片", async () => {
+    const fixture = await temporaryDirectory("digital-cli-file-image-");
+    const source = path.join(fixture, "RJ01668691");
+    const data = await disposableProductDataDirectory();
+    await mkdir(path.join(source, "台本"), { recursive: true });
+    await writeFile(path.join(source, "track.wav"), new Uint8Array(44));
+    await writeFile(path.join(source, "台本", "script.pdf"), syntheticPdf());
+    await prepareCliProductData(data);
+    vi.stubGlobal("fetch", async (input: string | URL | Request) => {
+      const address =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      if (address.includes("/product/info/ajax")) {
+        return new Response(
+          JSON.stringify({
+            RJ01668691: {
+              site_id: "maniax",
+              work_name: "带台本的音声作品",
+              regist_date: "2026-07-17",
+              work_image: "//img.dlsite.jp/official.jpg",
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      if (
+        address ===
+        "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html"
+      ) {
+        return new Response("<html></html>", {
+          headers: { "content-type": "text/html" },
+        });
+      }
+      if (address === "https://img.dlsite.jp/official.jpg") {
+        return new Response(new Uint8Array([1, 2, 3, 4]), {
+          headers: { "content-type": "image/jpeg" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    const env = { DIGITAL_PRODUCT_DATA: data };
+    const rootId = await registerRoot({ source, cwd: source, env });
+    const initialScan = runtime(
+      [
+        "scan",
+        rootId,
+        "--require-artifact-role",
+        "asset.primary-cover",
+        "asset.material-image",
+        "--json",
+      ],
+      { cwd: source, env },
+    );
+    await expect(runCli(initialScan.runtime)).resolves.toBe(0);
+    const initialSurface = runtime(
+      ["catalogue-surface", "--surface", "current-catalogue"],
+      { cwd: source, env },
+    );
+    await expect(runCli(initialSurface.runtime)).resolves.toBe(0);
+    const [initial] = (
+      JSON.parse(initialSurface.stdout()) as {
+        items: Array<{
+          entity: { id: string };
+          artifactAssociations: Array<{
+            id: string;
+            role: string;
+            observedArtifactPart?: {
+              revisionId: string;
+              locator: string;
+            };
+          }>;
+        }>;
+      }
+    ).items;
+    expect(initial?.artifactAssociations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "asset.primary-cover" }),
+        expect.objectContaining({
+          role: "asset.material-image",
+          observedArtifactPart: expect.objectContaining({
+            revisionId: expect.any(String),
+            locator: "pdf:page[1]",
+          }),
+        }),
+      ]),
+    );
+
+    const defaultScan = runtime(["scan", rootId, "--json"], {
+      cwd: source,
+      env,
+    });
+    await expect(runCli(defaultScan.runtime)).resolves.toBe(0);
+    expect(JSON.parse(defaultScan.stdout())).toMatchObject({
+      execution: { outcome: "accepted" },
+    });
+    const reopenedSurface = runtime(
+      ["catalogue-surface", "--surface", "current-catalogue"],
+      { cwd: source, env },
+    );
+    await expect(runCli(reopenedSurface.runtime)).resolves.toBe(0);
+    const [reopened] = (
+      JSON.parse(reopenedSurface.stdout()) as {
+        items: (typeof initial)[];
+      }
+    ).items;
+    expect(reopened?.entity.id).toBe(initial?.entity.id);
+    expect(
+      reopened?.artifactAssociations.filter(
+        (association) => association.role === "asset.primary-cover",
+      ),
+    ).toHaveLength(1);
+    expect(
+      reopened?.artifactAssociations.filter(
+        (association) => association.role === "asset.material-image",
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        observedArtifactPart: expect.objectContaining({
+          revisionId: expect.any(String),
+          locator: "pdf:page[1]",
+        }),
+      }),
+    ]);
+
+    const repeatedScan = runtime(["scan", rootId, "--json"], {
+      cwd: source,
+      env,
+    });
+    await expect(runCli(repeatedScan.runtime)).resolves.toBe(0);
+    expect(JSON.parse(repeatedScan.stdout())).toMatchObject({
+      execution: { outcome: "no-change" },
+    });
+    const repeatedSurface = runtime(
+      ["catalogue-surface", "--surface", "current-catalogue"],
+      { cwd: source, env },
+    );
+    await expect(runCli(repeatedSurface.runtime)).resolves.toBe(0);
+    expect(JSON.parse(repeatedSurface.stdout())).toEqual(
+      JSON.parse(reopenedSurface.stdout()),
+    );
+  }, 30_000);
+
   it("starts, completes, and revokes a Bangumi OAuth connection without printing private grants", async () => {
     const data = await disposableProductDataDirectory();
     await prepareCliProductData(data);
@@ -178,30 +627,38 @@ describe("Asset Refresh CLI", () => {
     const secondSecret = "cli-fanbox-second-private-session";
     await writeFile(
       firstFile,
-      JSON.stringify([{ name: "FANBOXSESSID", value: firstSecret }]),
+      JSON.stringify({
+        userAgent: "test-browser/1",
+        cookies: [
+          {
+            name: "FANBOXSESSID",
+            value: firstSecret,
+            domain: ".fanbox.cc",
+            path: "/",
+          },
+        ],
+      }),
     );
     await writeFile(
       secondFile,
-      JSON.stringify([{ name: "FANBOXSESSID", value: secondSecret }]),
+      JSON.stringify({
+        userAgent: "test-browser/1",
+        cookies: [
+          {
+            name: "FANBOXSESSID",
+            value: secondSecret,
+            domain: ".fanbox.cc",
+            path: "/",
+          },
+        ],
+      }),
     );
-    const authenticationRequests: string[] = [];
-    vi.stubGlobal("fetch", async (input: string | URL) => {
-      authenticationRequests.push(new URL(input).pathname);
-      return {
-        ok: true,
-        status: 200,
-        headers: { get: () => "application/json" },
-        arrayBuffer: async () =>
-          new TextEncoder().encode(JSON.stringify({ body: 0 })).buffer,
-      };
-    });
 
     const imported = runtime(
       ["fanbox-connection-import", "customudon", firstFile],
       { cwd: "/workspace", env: { DIGITAL_PRODUCT_DATA: data } },
     );
     await expect(runCli(imported.runtime)).resolves.toBe(0);
-    expect(authenticationRequests).toEqual(["/user.countUnreadMessages"]);
     const first = JSON.parse(imported.stdout()) as { readonly version: number };
     expect(first.version).toBe(1);
 
@@ -216,10 +673,6 @@ describe("Asset Refresh CLI", () => {
       { cwd: "/workspace", env: { DIGITAL_PRODUCT_DATA: data } },
     );
     await expect(runCli(replaced.runtime)).resolves.toBe(0);
-    expect(authenticationRequests).toEqual([
-      "/user.countUnreadMessages",
-      "/user.countUnreadMessages",
-    ]);
     const second = JSON.parse(replaced.stdout()) as {
       readonly version: number;
     };
@@ -400,41 +853,6 @@ describe("Asset Refresh CLI", () => {
     );
   });
 
-  it("accepts an exact source address for a new directory without requiring a current subject", async () => {
-    const source = await temporaryDirectory("digital-directed-source-");
-    const data = await disposableProductDataDirectory();
-    await writeFile(path.join(source, "movie.mkv"), "source");
-    await prepareCliProductData(data);
-    const rootId = await registerRoot({
-      source,
-      cwd: source,
-      env: { DIGITAL_PRODUCT_DATA: data },
-    });
-    const directed = runtime(
-      [
-        "scrape",
-        rootId,
-        "https://www.themoviedb.org/movie/9509",
-        "--source-identity",
-        "tmdb",
-        "--json",
-      ],
-      {
-        cwd: source,
-        env: { DIGITAL_PRODUCT_DATA: data },
-      },
-    );
-
-    await expect(runCli(directed.runtime)).resolves.toBe(1);
-    expect(JSON.parse(directed.stdout())).toMatchObject({
-      execution: {
-        outcome: "failed",
-        reason: expect.stringContaining("私有访问令牌"),
-      },
-    });
-    expect(directed.stderr()).not.toContain("subject-id");
-  });
-
   it("does not echo malformed FANBOX credential-file contents through CLI import failure", async () => {
     const data = await disposableProductDataDirectory();
     await prepareCliProductData(data);
@@ -462,4 +880,169 @@ describe("Asset Refresh CLI", () => {
     expect(`${imported.stdout()}\n${imported.stderr()}`).not.toContain(secret);
     expect(await tree(data)).toEqual(before);
   });
+
+  it("prepares, inspects, and confirms observed material through the real CLI product", async () => {
+    const admitted = await temporaryDirectory("digital-cli-material-target-");
+    const material = await temporaryDirectory("digital-cli-material-source-");
+    const data = await disposableProductDataDirectory();
+    await writeFile(path.join(admitted, "initial.pdf"), syntheticPdf());
+    await writeFile(path.join(material, "appendix.txt"), "CLI whole material");
+    await prepareCliProductData(data);
+    const product = runProduct(
+      { productDataDirectory: data, environment: {} },
+      { start: (application) => application.workflow },
+    );
+    let assetId: string;
+    let rootId: string;
+    try {
+      const targetRoot = await product.result.observedRootRegistrations.create({
+        displayName: "CLI target",
+        containerPath: admitted,
+        readOnly: true,
+        symlinkMode: "do-not-follow",
+        allowedTargetRootIds: [],
+      });
+      await product.result.scanObservedScope({
+        registrationId: targetRoot.id,
+        relativeScope: ".",
+        acceptTrusted: true,
+      });
+      assetId = (await product.result.listCurrentCatalogue())[0]!.entity.id;
+      rootId = (
+        await product.result.observedRootRegistrations.create({
+          displayName: "CLI material",
+          containerPath: material,
+          readOnly: true,
+          symlinkMode: "do-not-follow",
+          allowedTargetRootIds: [],
+        })
+      ).id;
+    } finally {
+      await product.close();
+    }
+    const env = { DIGITAL_PRODUCT_DATA: data };
+    const prepared = runtime(
+      [
+        "material-association-prepare",
+        "--asset",
+        assetId,
+        "--root",
+        rootId,
+        "--scope",
+        ".",
+        "--file",
+        "appendix.txt",
+        "--initiated-by",
+        "cli-prepare",
+      ],
+      { cwd: material, env },
+    );
+    expect(await runCli(prepared.runtime), prepared.stderr()).toBe(0);
+    const preparedResult = JSON.parse(prepared.stdout()) as {
+      readonly executionId: string;
+      readonly status: string;
+    };
+    expect(preparedResult.status).toBe("awaiting-confirmation");
+    const inspected = runtime(
+      ["material-association-inspect", preparedResult.executionId],
+      { cwd: material, env },
+    );
+    expect(await runCli(inspected.runtime), inspected.stderr()).toBe(0);
+    expect(JSON.parse(inspected.stdout())).toMatchObject({
+      status: "awaiting-confirmation",
+      target: { id: assetId },
+      files: [{ relativePath: "appendix.txt" }],
+    });
+    const confirmed = runtime(
+      [
+        "material-association-confirm",
+        preparedResult.executionId,
+        "--confirmed-by",
+        "cli-confirm",
+      ],
+      { cwd: material, env },
+    );
+    expect(await runCli(confirmed.runtime), confirmed.stderr()).toBe(0);
+    expect(JSON.parse(confirmed.stdout())).toMatchObject({
+      status: "accepted",
+      confirmedBy: "cli-confirm",
+      target: { id: assetId },
+    });
+  });
+
+  it("uses the shared current catalogue query after a successful scan confirms material is gone", async () => {
+    const source = await temporaryDirectory(
+      "digital-cli-current-catalogue-membership-",
+    );
+    const data = await disposableProductDataDirectory();
+    await writeFile(path.join(source, "local.txt"), "CLI 本地内容");
+    await prepareCliProductData(data);
+    const product = runProduct(
+      { productDataDirectory: data, environment: {} },
+      { start: (application) => application.workflow },
+    );
+    try {
+      const root = await product.result.observedRootRegistrations.create({
+        displayName: "CLI 当前目录材料",
+        containerPath: source,
+        readOnly: true,
+        symlinkMode: "do-not-follow",
+        allowedTargetRootIds: [],
+      });
+      const initial = await product.result.scanObservedScope({
+        registrationId: root.id,
+        relativeScope: ".",
+        acceptTrusted: false,
+      });
+      const review = await product.result.prepareLocalContent({
+        executionId: initial.execution.id,
+        relativePaths: ["local.txt"],
+        name: "CLI 本地内容",
+        classification: "book",
+      });
+      await product.result.confirmLocalContent({
+        executionId: review.executionId,
+      });
+      await rm(path.join(source, "local.txt"));
+      await product.result.scanObservedScope({
+        registrationId: root.id,
+        relativeScope: ".",
+        acceptTrusted: false,
+      });
+    } finally {
+      await product.close();
+    }
+
+    const command = runtime(
+      ["catalogue-surface", "--surface", "current-catalogue"],
+      {
+        cwd: source,
+        env: { DIGITAL_PRODUCT_DATA: data },
+      },
+    );
+    await expect(runCli(command.runtime), command.stderr()).resolves.toBe(0);
+    expect(JSON.parse(command.stdout())).toMatchObject({ items: [] });
+  });
 });
+
+function syntheticPdf(): Uint8Array {
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] >>",
+  ];
+  let source = "%PDF-1.7\n";
+  const offsets = [0];
+  for (const [index, object] of objects.entries()) {
+    offsets.push(new TextEncoder().encode(source).byteLength);
+    source += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  }
+  const xref = new TextEncoder().encode(source).byteLength;
+  source += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  source += offsets
+    .slice(1)
+    .map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`)
+    .join("");
+  source += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return new TextEncoder().encode(source);
+}

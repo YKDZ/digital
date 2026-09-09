@@ -11,6 +11,11 @@
       "digital-source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./process-temporary-root": {
+      "digital-source": "./src/process-temporary-root.ts",
+      "types": "./dist/process-temporary-root.d.ts",
+      "default": "./dist/process-temporary-root.js"
     }
   },
   "scripts": {
@@ -30,6 +35,7 @@
     "@digital/epub": "workspace:*",
     "@digital/fanbox": "workspace:*",
     "@digital/filesystem": "workspace:*",
+    "@digital/kadokawa-jp": "workspace:*",
     "@digital/nbinet": "workspace:*",
     "@digital/omdb": "workspace:*",
     "@digital/pdf": "workspace:*",
@@ -37,6 +43,7 @@
     "@digital/product-application": "workspace:*",
     "@digital/product-data": "workspace:*",
     "@digital/sqlite": "workspace:*",
+    "@digital/taiwan-kadokawa": "workspace:*",
     "@digital/tmdb": "workspace:*"
   },
   "devDependencies": {

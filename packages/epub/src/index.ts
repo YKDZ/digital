@@ -21,31 +21,31 @@ const maximumDeflateCompressionRatio = 100;
 
 const directoryCapability = declareCapability({
   identity: "epub.publication-inspection",
-  implementationVersion: "1",
+  implementationVersion: "2",
   kind: "artifact-format-inspector",
-  contractVersion: "1",
-  interpretationContractVersions: ["1"],
+  contractVersion: "2",
+  interpretationContractVersions: ["2"],
 });
 const acquirerCapability = declareCapability({
   identity: "epub.embedded-cover-acquirer",
-  implementationVersion: "1",
+  implementationVersion: "2",
   kind: "observed-artifact-part-acquirer",
-  contractVersion: "1",
-  interpretationContractVersions: ["1"],
+  contractVersion: "2",
+  interpretationContractVersions: ["2"],
 });
 const localRecognizerCapability = declareCapability({
   identity: "epub.local-publication-recognizer",
-  implementationVersion: "1",
+  implementationVersion: "2",
   kind: "recognizer",
-  contractVersion: "1",
-  interpretationContractVersions: ["1"],
+  contractVersion: "2",
+  interpretationContractVersions: ["2"],
 });
 
 export const trustedEpubLocalPublicationRule = {
   capabilityId: localRecognizerCapability.capabilityId,
   capabilityVersion: localRecognizerCapability.capabilityVersion,
   ruleId: "epub.valid-single-publication-revision",
-  ruleVersion: "1",
+  ruleVersion: "2",
 } as const;
 
 export type EpubPublication = {
@@ -344,7 +344,7 @@ export class EpubPublicationInspector implements ArtifactFormatInspector {
               ? []
               : [
                   {
-                    role: "asset.primary-cover",
+                    role: "asset.material-image",
                     locator: publication.cover.locator,
                     mediaType: publication.cover.mediaType,
                   },
@@ -442,7 +442,7 @@ export class EpubEmbeddedCoverAcquirer implements ObservedArtifactPartAcquirer {
 
   canAcquire(candidate: ObservedArtifactPartCandidate): boolean {
     return (
-      candidate.role === "asset.primary-cover" &&
+      candidate.role === "asset.material-image" &&
       sameCapabilityCoordinate(candidate.producer, directoryCapability) &&
       mediaTypeEssence(candidate.mediaType).startsWith("image/") &&
       candidate.locator.startsWith("epub:")

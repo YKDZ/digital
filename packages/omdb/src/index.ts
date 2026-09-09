@@ -376,7 +376,7 @@ export class OmdbSourceInterpreter implements SourceInterpreter {
   interpret(input: {
     readonly evidence: readonly RecognitionEvidence[];
     readonly sourceRecords: readonly SourceRecord[];
-  }): SourceInterpretationBatch {
+  }): readonly SourceInterpretationBatch[] {
     const imdbId = input.evidence
       .map(omdbIdentifierFromEvidence)
       .find((value) => value !== undefined);
@@ -391,15 +391,17 @@ export class OmdbSourceInterpreter implements SourceInterpreter {
     const parsed = parseResponse(record.body);
     if (parsed.imdbId !== imdbId)
       throw new Error("OMDb 刷新记录未确认当前来源关联");
-    return {
-      id: `source-interpretation_omdb_${randomUUID()}`,
-      producer: this.capability,
-      sourceRecordIds: [record.id],
-      sourceIdentity: "omdb",
-      sourceAddress: record.nativeAddress,
-      metadata: metadataFromResponse(parsed, record.id),
-      sourceArtifacts: artifactCandidates(parsed, record.id),
-    };
+    return [
+      {
+        id: `source-interpretation_omdb_${randomUUID()}`,
+        producer: this.capability,
+        sourceRecordIds: [record.id],
+        sourceIdentity: "omdb",
+        sourceAddress: record.nativeAddress,
+        metadata: metadataFromResponse(parsed, record.id),
+        sourceArtifacts: artifactCandidates(parsed, record.id),
+      },
+    ];
   }
 }
 

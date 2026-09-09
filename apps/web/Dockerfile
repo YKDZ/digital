@@ -35,6 +35,9 @@ COPY --from=pruner /repo/out/json/ ./
 RUN pnpm install --offline --frozen-lockfile
 COPY --from=pruner /repo/out/full/ ./
 COPY --from=pruner /repo/scripts/build-production-workspace.ts ./scripts/build-production-workspace.ts
+# FANBOX production transport 与 package 中固定的 Playwright 版本共用同一 Chromium revision。
+ENV PLAYWRIGHT_BROWSERS_PATH="/ms-playwright"
+RUN pnpm --filter @digital/fanbox exec playwright install chromium
 # 先构建工作区依赖，再由 deploy 在隔离的部署目录中定点注入其发布文件。
 RUN node scripts/build-production-workspace.ts
 RUN pnpm --config.inject-workspace-packages=true --filter ./apps/web deploy --prod /runtime-deploy
@@ -44,7 +47,8 @@ FROM node:24-bookworm-slim AS application-runtime
 ARG DEPLOYMENT_BUILD_ID
 LABEL org.opencontainers.image.version="$DEPLOYMENT_BUILD_ID"
 ENV NODE_ENV="production" \
-  DIGITAL_PRODUCT_DATA="/data"
+  DIGITAL_PRODUCT_DATA="/data" \
+  PLAYWRIGHT_BROWSERS_PATH="/ms-playwright"
 WORKDIR /app
 RUN groupadd --system --gid 1001 nodejs \
   && useradd --system --uid 1001 --gid nodejs --home-dir /app --shell /usr/sbin/nologin app \
@@ -52,6 +56,10 @@ RUN groupadd --system --gid 1001 nodejs \
 COPY --chmod=755 apps/web/scripts/compose-entrypoint.sh /usr/local/bin/compose-entrypoint
 COPY --from=build --chown=app:nodejs /runtime-deploy/node_modules ./node_modules
 COPY --from=build --chown=app:nodejs /repo/apps/web/dist ./dist
+COPY --from=build /ms-playwright /ms-playwright
+RUN node /app/node_modules/.pnpm/playwright@1.62.0/node_modules/playwright/cli.js install-deps chromium \
+  && rm -rf /var/lib/apt/lists/* \
+  && chmod -R a-w /ms-playwright
 
 # 仅启动部署刻意不携带迁移 CLI、迁移 SQL 或准备入口。未准备的数据卷必须拒绝
 # readiness，而不是自行迁移。

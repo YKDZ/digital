@@ -4,8 +4,10 @@ import {
   declareCapability,
   type Recognizer,
   type RecognitionCandidateContext,
+  type SourceAddressingCapability,
   type SourceCollectionResult,
   type SourceCollector,
+  type SourceEnrichmentInput,
   type SourceInterpreter,
 } from "@digital/application";
 import type {
@@ -19,12 +21,12 @@ import type {
 const maximumResponseBytes = 2 * 1024 * 1024;
 const epubInspectorCapability = {
   capabilityId: "epub.publication-inspection",
-  capabilityVersion: "1",
-  contractVersion: "1",
+  capabilityVersion: "2",
+  contractVersion: "2",
   identity: "epub.publication-inspection",
-  implementationVersion: "1",
+  implementationVersion: "2",
   kind: "artifact-format-inspector",
-  interpretationContractVersions: ["1"],
+  interpretationContractVersions: ["2"],
 } as const satisfies CapabilityCoordinate;
 const collectorCapability = declareCapability({
   identity: "nbinet.exact-isbn-collection",
@@ -42,8 +44,22 @@ const interpreterCapability = declareCapability({
 });
 const recognizerCapability = declareCapability({
   identity: "nbinet.exact-isbn-recognizer",
-  implementationVersion: "1",
+  implementationVersion: "2",
   kind: "recognizer",
+  contractVersion: "2",
+  interpretationContractVersions: ["2"],
+});
+const addressingCapability = declareCapability({
+  identity: "nbinet.explicit-isbn-addressing",
+  implementationVersion: "1",
+  kind: "source-addressing",
+  contractVersion: "1",
+  interpretationContractVersions: ["1"],
+});
+const associationInterpreterCapability = declareCapability({
+  identity: "nbinet.exact-isbn-association-interpretation",
+  implementationVersion: "1",
+  kind: "source-association-interpreter",
   contractVersion: "1",
   interpretationContractVersions: ["1"],
 });
@@ -52,6 +68,12 @@ export const trustedNbinetExactEpubIsbnRule = {
   capabilityId: recognizerCapability.capabilityId,
   capabilityVersion: recognizerCapability.capabilityVersion,
   ruleId: "embedded-isbn-in-exact-official-record",
+  ruleVersion: "2",
+} as const;
+export const trustedNbinetDirectedIsbnRule = {
+  capabilityId: recognizerCapability.capabilityId,
+  capabilityVersion: recognizerCapability.capabilityVersion,
+  ruleId: "directed-isbn-in-exact-official-record",
   ruleVersion: "1",
 } as const;
 
@@ -62,6 +84,55 @@ type FetchLike = (input: string) => Promise<{
   arrayBuffer(): Promise<ArrayBuffer>;
 }>;
 
+export class NbinetSourceAddressing implements SourceAddressingCapability {
+  readonly capability = addressingCapability;
+  readonly inputRequirement = {
+    sourceIdentity: "nbinet",
+    displayName: "国家图书馆书目",
+    fields: [
+      {
+        key: "isbn",
+        label: "ISBN",
+        required: true,
+        acceptedInput: "ISBN-13 编号或国家图书馆完整书目地址",
+        example: "9789864738281",
+      },
+    ],
+  } as const;
+
+  normalize(input: Readonly<Record<string, string>>) {
+    if (Object.keys(input).some((key) => key !== "isbn"))
+      return {
+        status: "invalid" as const,
+        reason: "国家图书馆来源输入包含未知字段",
+      };
+    const supplied = string(input.isbn);
+    if (supplied === undefined)
+      return {
+        status: "invalid" as const,
+        reason: "请输入 ISBN-13 编号或国家图书馆完整书目地址",
+      };
+    const isbn = supportedIsbn13Lexeme(supplied) ?? isbnFromAddress(supplied);
+    if (isbn === undefined || !isValidIsbn13(isbn))
+      return {
+        status: "invalid" as const,
+        reason: "ISBN-13 编号或国家图书馆书目地址无效",
+      };
+    const sourceAddress = canonicalIsbnAddress(isbn);
+    return {
+      status: "accepted" as const,
+      normalizedInput: { isbn },
+      evidence: {
+        kind: "directed-source-address",
+        sourceIdentity: "nbinet",
+        sourceAddress,
+        explanation: "用户明确指定国家图书馆 ISBN",
+        producer: this.capability,
+      },
+    };
+  }
+}
+
 export class NbinetCollector implements SourceCollector {
   readonly capability = collectorCapability;
   private readonly request: FetchLike;
@@ -71,7 +142,7 @@ export class NbinetCollector implements SourceCollector {
   }
 
   canCollect(evidence: RecognitionEvidence): boolean {
-    return uniqueIsbnFromInspection(evidence) !== undefined;
+    return isbnFromEvidence(evidence) !== undefined;
   }
 
   coverageScopeIds(evidence: RecognitionEvidence): readonly string[] {
@@ -141,7 +212,7 @@ export class NbinetSourceInterpreter implements SourceInterpreter {
     readonly sourceRecords: readonly SourceRecord[];
   }): boolean {
     return (
-      exactInspectionIsbn(input.evidence) !== undefined &&
+      exactRequestedIsbn(input.evidence) !== undefined &&
       officialRecords(input.sourceRecords).length === 1
     );
   }
@@ -149,12 +220,10 @@ export class NbinetSourceInterpreter implements SourceInterpreter {
   interpret(input: {
     readonly evidence: readonly RecognitionEvidence[];
     readonly sourceRecords: readonly SourceRecord[];
-  }): SourceInterpretationBatch {
-    const isbn = exactInspectionIsbn(input.evidence);
+  }): readonly SourceInterpretationBatch[] {
+    const isbn = exactRequestedIsbn(input.evidence);
     if (isbn === undefined)
-      throw new Error(
-        "NBINet interpretation requires exact EPUB ISBN evidence",
-      );
+      throw new Error("NBINet interpretation requires one exact ISBN evidence");
     const records = officialRecords(input.sourceRecords);
     if (records.length !== 1)
       throw new Error(
@@ -209,15 +278,17 @@ export class NbinetSourceInterpreter implements SourceInterpreter {
         ),
       ),
     ];
-    return {
-      id: `source-interpretation_${randomUUID()}`,
-      producer: this.capability,
-      sourceRecordIds: [official.id],
-      sourceIdentity: "nbinet",
-      sourceAddress: canonicalIsbnAddress(isbn),
-      metadata,
-      sourceArtifacts: [],
-    };
+    return [
+      {
+        id: `source-interpretation_${randomUUID()}`,
+        producer: this.capability,
+        sourceRecordIds: [official.id],
+        sourceIdentity: "nbinet",
+        sourceAddress: canonicalIsbnAddress(isbn),
+        metadata,
+        sourceArtifacts: [],
+      },
+    ];
   }
 }
 
@@ -240,6 +311,11 @@ export class NbinetExactIsbnRecognizer implements Recognizer {
         "国家图书馆识别器需要精确解释器 producer coordinate 的来源解释",
       );
     const isbn = isbnFromAddress(input.basis.interpretation.sourceAddress);
+    const directed = input.evidence.some(
+      (item) =>
+        sameCapabilityCoordinate(item.producer, addressingCapability) &&
+        isbnFromEvidence(item) === isbn,
+    );
     const satisfied =
       isbn !== undefined &&
       input.evidence.some((item) => isbnFromEvidence(item) === isbn);
@@ -247,17 +323,66 @@ export class NbinetExactIsbnRecognizer implements Recognizer {
       id: `recognition-proposal_${randomUUID()}`,
       ruleResults: [
         {
-          ...trustedNbinetExactEpubIsbnRule,
+          ...(directed
+            ? trustedNbinetDirectedIsbnRule
+            : trustedNbinetExactEpubIsbnRule),
           outcome: satisfied ? "satisfied" : "contradicted",
           explanation: satisfied
-            ? "EPUB 内嵌精确 ISBN 已在国家图书馆书目记录中明确出现"
-            : "EPUB ISBN 与国家图书馆书目记录不一致",
+            ? directed
+              ? "用户指定 ISBN 已在国家图书馆唯一书目记录中明确出现"
+              : "EPUB 内嵌精确 ISBN 已在国家图书馆书目记录中明确出现"
+            : "ISBN 与国家图书馆书目记录不一致",
           evidence: input.evidence.filter(
             (item) => isbnFromEvidence(item) === isbn,
           ),
         },
       ],
     };
+  }
+}
+
+/** 已接受资产的显式 ISBN 只能在不与已有 ISBN 事实冲突时建立新来源关联。 */
+export class NbinetSourceAssociationInterpreter {
+  readonly capability = associationInterpreterCapability;
+
+  canInterpret(input: {
+    readonly evidence: RecognitionEvidence;
+    readonly interpretation: SourceInterpretationBatch;
+  }): boolean {
+    return (
+      input.evidence.sourceIdentity === "nbinet" &&
+      input.interpretation.sourceIdentity === "nbinet"
+    );
+  }
+
+  interpret(input: {
+    readonly subject: SourceEnrichmentInput;
+    readonly evidence: RecognitionEvidence;
+    readonly interpretation: SourceInterpretationBatch;
+  }) {
+    const isbn = isbnFromAddress(input.interpretation.sourceAddress);
+    if (
+      isbn === undefined ||
+      input.evidence.sourceAddress !== input.interpretation.sourceAddress
+    )
+      return undefined;
+    const existing = [
+      ...new Set(
+        input.subject.metadata
+          .filter((assertion) => assertion.property === "book.isbn-13")
+          .map((assertion) => supportedIsbn13Lexeme(String(assertion.value)))
+          .filter((value): value is string => value !== undefined),
+      ),
+    ];
+    return existing.every((value) => value === isbn)
+      ? {
+          status: "accepted" as const,
+          explanation: "明确 ISBN 与当前主体的身份证据无冲突",
+        }
+      : {
+          status: "contradicted" as const,
+          explanation: "明确 ISBN 与当前主体已有 ISBN 身份证据矛盾",
+        };
   }
 }
 
@@ -367,7 +492,15 @@ function inspectionFrom(
 }
 
 function isbnFromEvidence(evidence: RecognitionEvidence): string | undefined {
-  return uniqueIsbnFromInspection(evidence);
+  return (
+    uniqueIsbnFromInspection(evidence) ??
+    (evidence.sourceIdentity === "nbinet" &&
+    evidence.sourceAddress !== undefined &&
+    (evidence.kind === "directed-source-address" ||
+      evidence.kind === "source-association")
+      ? isbnFromAddress(evidence.sourceAddress)
+      : undefined)
+  );
 }
 
 function uniqueIsbnFromInspection(
@@ -390,15 +523,18 @@ function uniqueIsbnFromInspection(
   return values.length === 1 ? values[0] : undefined;
 }
 
-function exactInspectionIsbn(
+function exactRequestedIsbn(
   evidence: readonly RecognitionEvidence[],
 ): string | undefined {
-  const inspections = evidence.filter(
-    (item) => inspectionFrom(item) !== undefined,
-  );
-  return inspections.length === 1
-    ? uniqueIsbnFromInspection(inspections[0]!)
-    : undefined;
+  const values = [
+    ...new Set(
+      evidence.flatMap((item) => {
+        const isbn = isbnFromEvidence(item);
+        return isbn === undefined ? [] : [isbn];
+      }),
+    ),
+  ];
+  return values.length === 1 ? values[0] : undefined;
 }
 
 function officialRecords(

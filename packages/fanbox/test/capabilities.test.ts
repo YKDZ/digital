@@ -1,14 +1,150 @@
-import { knownSourceAssociationEvidenceCapability } from "@digital/application";
-import { describe, expect, it } from "vitest";
+import {
+  knownSourceAssociationEvidenceCapability,
+  type SourceCollectionExecutionContext,
+  type SourceCollector,
+} from "@digital/application";
+import { describe, expect, it, vi } from "vitest";
 
 import {
+  FanboxSessionTransportFault,
+  fanboxEndpointAddress,
+} from "../src/browser-session.ts";
+import {
   FanboxArtifactAcquirer,
-  FanboxCollector,
   FanboxDateDirectoryInterpreter,
   FanboxExactRecognizer,
   FanboxSourceInterpreter,
+  createFanboxProductAssembly,
+  decodeFanboxCollectionFailureCode,
   fanboxCreatorIdFromEvidence,
+  fanboxOfficialCollectionCapability,
 } from "../src/index.ts";
+import * as fanboxPublic from "../src/public.ts";
+import { createScriptedFanboxProductAssembly } from "../src/testing.ts";
+
+describe("FANBOX 产品浏览器连接", () => {
+  it("package root 不公开 collector 或独立验证入口", () => {
+    expect(fanboxPublic).not.toHaveProperty("FanboxCollector");
+    expect(fanboxPublic).not.toHaveProperty("validatedFanboxBrowserCredential");
+    expect(fanboxPublic).not.toHaveProperty("verifyFanboxStoredCredential");
+  });
+
+  it("生产连接验证不经 Node fetch 发出端点请求", async () => {
+    const nodeFetch = vi.fn(async () => {
+      throw new Error("Node transport must be unreachable");
+    });
+    vi.stubGlobal("fetch", nodeFetch);
+    const assembly = createFanboxProductAssembly();
+    try {
+      await expect(
+        assembly.validatedBrowserCredential({
+          creatorId: "customudon",
+          browserCredential: {
+            userAgent: "test-browser/1",
+            cookies: [
+              {
+                name: "FANBOXSESSID",
+                value: "test-private-session",
+                domain: ".fanbox.cc",
+                path: "/",
+              },
+            ],
+          },
+        }),
+      ).rejects.toThrow("FANBOX 来源连接验证失败");
+      expect(nodeFetch).not.toHaveBeenCalled();
+    } finally {
+      await assembly.close().catch(() => undefined);
+      vi.unstubAllGlobals();
+    }
+  }, 30_000);
+
+  it("把浏览器导出的 cookie 属性规范化为唯一 V2 私密串", async () => {
+    const assembly = createScriptedFanboxProductAssembly(
+      scriptedClosedGet(async (address) =>
+        jsonResponse(
+          address.includes("user.countUnreadMessages")
+            ? { body: 0 }
+            : address.includes("post.listCreator")
+              ? {
+                  body: {
+                    posts: [
+                      {
+                        id: "9135862",
+                        creatorId: "customudon",
+                        title: "测试帖子",
+                        publishedDatetime: "2025-01-01T00:11:17+09:00",
+                      },
+                    ],
+                  },
+                }
+              : {
+                  body: {
+                    post: {
+                      id: "9135862",
+                      creatorId: "customudon",
+                      title: "测试帖子",
+                      publishedDatetime: "2025-01-01T00:11:17+09:00",
+                    },
+                  },
+                },
+        ),
+      ),
+    );
+    const privateConfiguration = await assembly.validatedBrowserCredential({
+      creatorId: "customudon",
+      browserCredential: {
+        userAgent: "test-browser/1",
+        cookies: [
+          {
+            name: "FANBOXSESSID",
+            value: "test-private-session",
+            domain: ".fanbox.cc",
+            path: "/creator",
+            secure: true,
+            httpOnly: true,
+            sameSite: "no_restriction",
+            expirationDate: 2_000_000_000,
+            ignored: "not persisted",
+          },
+        ],
+      },
+    });
+
+    expect(JSON.parse(privateConfiguration)).toEqual({
+      format: "fanbox-browser-request-context/2",
+      userAgent: "test-browser/1",
+      cookies: [
+        {
+          name: "FANBOXSESSID",
+          value: "test-private-session",
+          domain: ".fanbox.cc",
+          path: "/creator",
+          secure: true,
+          httpOnly: true,
+          sameSite: "None",
+          expires: 2_000_000_000,
+        },
+      ],
+    });
+  });
+
+  it("硬拒绝 candidate-10 V1 私密串且不读取旧 cookieHeader", async () => {
+    const request = vi.fn();
+    const assembly = createScriptedFanboxProductAssembly(request);
+    await expect(
+      assembly.verifyStoredCredential({
+        creatorId: "customudon",
+        privateConfiguration: JSON.stringify({
+          format: "fanbox-browser-request-context/1",
+          cookieHeader: "FANBOXSESSID=test-private-session",
+          userAgent: "test-browser/1",
+        }),
+      }),
+    ).rejects.toThrow("FANBOX 来源连接验证失败");
+    expect(request).not.toHaveBeenCalled();
+  });
+});
 
 const snapshot = (root: string) => ({
   id: "snapshot",
@@ -18,6 +154,25 @@ const snapshot = (root: string) => ({
   files: [],
   observedAt: "2026-07-29T00:00:00.000Z",
 });
+
+function testPrivateConfiguration(
+  cookieHeader: string,
+  userAgent = "test-browser/1",
+): string {
+  return JSON.stringify({
+    format: "fanbox-browser-request-context/2",
+    userAgent,
+    cookies: cookieHeader.split(/;\s*/u).map((pair) => {
+      const separator = pair.indexOf("=");
+      return {
+        name: pair.slice(0, separator),
+        value: pair.slice(separator + 1),
+        domain: ".fanbox.cc",
+        path: "/",
+      };
+    }),
+  });
+}
 
 describe("FANBOX creator date convention", () => {
   it("keeps channel and publication-date grammar inside the integration", () => {
@@ -61,6 +216,73 @@ describe("FANBOX creator date convention", () => {
 });
 
 describe("FANBOX official collection", () => {
+  it.each([
+    ["http:creator-summaries:400", 400, "4xx"],
+    ["http:post-detail:599", 599, "5xx"],
+  ] as const)(
+    "decodes its bounded HTTP failure code %s",
+    (code, status, statusClass) => {
+      expect(
+        decodeFanboxCollectionFailureCode({
+          capability: fanboxOfficialCollectionCapability,
+          code,
+        }),
+      ).toEqual({ category: "http-status", status, class: statusClass });
+    },
+  );
+
+  it.each([
+    "http:post-detail:302",
+    "http:post-detail:600",
+    "http:post-detail:403:extra",
+  ])("rejects the malformed or out-of-range HTTP failure code %s", (code) => {
+    expect(
+      decodeFanboxCollectionFailureCode({
+        capability: fanboxOfficialCollectionCapability,
+        code,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("rejects a failure code attributed to an adjacent capability coordinate", () => {
+    expect(
+      decodeFanboxCollectionFailureCode({
+        capability: {
+          ...fanboxOfficialCollectionCapability,
+          implementationVersion: "adjacent",
+        },
+        code: "http:post-detail:403",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("exposes a capability-owned secret-free transport code", async () => {
+    const secret = "FANBOXSESSID=do-not-copy";
+    const collector = scriptedCollector({
+      creatorId: "customudon",
+      privateConfiguration: testPrivateConfiguration(secret),
+      request: async () => {
+        throw new Error(`network failed with ${secret}`);
+      },
+    });
+    const evidence = new FanboxDateDirectoryInterpreter("customudon").interpret(
+      snapshot("/library/25.01.01 post"),
+    )[0];
+
+    const result = await collector.collect(evidence);
+
+    expect(result.failures[0]).toMatchObject({
+      failureCode: "transport-failure",
+    });
+    expect(
+      decodeFanboxCollectionFailureCode({
+        capability: result.failures[0]!.capability,
+        code: result.failures[0]!.failureCode!,
+      }),
+    ).toEqual({ category: "transport-failure" });
+    expect(JSON.stringify(result.failures)).not.toContain("do-not-copy");
+  });
+
   it("accepts only Application's exact known-association provenance for an existing FANBOX address", () => {
     const knownAddress = "https://www.fanbox.cc/@customudon/posts/9135862";
     const spoofed = {
@@ -104,9 +326,9 @@ describe("FANBOX official collection", () => {
 
   it("retains one record for each real response without splitting a detail body and attachment listing", async () => {
     const requested: string[] = [];
-    const collector = new FanboxCollector({
+    const collector = scriptedCollector({
       creatorId: "customudon",
-      cookieHeader: "FANBOXSESSID=top-secret",
+      privateConfiguration: testPrivateConfiguration("FANBOXSESSID=top-secret"),
       request: async (address) => {
         requested.push(address);
         const body = address.includes("post.listCreator")
@@ -197,14 +419,14 @@ describe("FANBOX official collection", () => {
   it("uses a browser credential only when its frozen connection reference matches the creator scope", async () => {
     const privateSession = "fanbox-frozen-private-session";
     const requestedCookies: string[] = [];
-    const collector = new FanboxCollector({
+    const collector = scriptedCollector({
       creatorIds: () => ["customudon"],
-      cookieHeaderForExecution: ({ creatorId, context }) =>
+      privateConfigurationForExecution: ({ creatorId, context }) =>
         creatorId === "customudon" &&
         context?.configurationReferences.includes(
           "source-connection/fanbox/customudon@1",
         ) === true
-          ? `FANBOXSESSID=${privateSession}`
+          ? testPrivateConfiguration(`FANBOXSESSID=${privateSession}`)
           : undefined,
       request: async (address, init) => {
         requestedCookies.push(init.headers.Cookie ?? "");
@@ -253,6 +475,7 @@ describe("FANBOX official collection", () => {
       records: [],
       failures: [
         expect.objectContaining({
+          failureCode: "connection-unavailable",
           reason: expect.stringContaining("私有来源连接"),
         }),
       ],
@@ -276,11 +499,14 @@ describe("FANBOX official collection", () => {
 
   it("fails authentication or network access without exposing credentials", async () => {
     const secret = "experiment=0; FANBOXSESSID=top-secret";
-    const collector = new FanboxCollector({
+    const privateUserAgent = "private-browser-fingerprint/987654";
+    const collector = scriptedCollector({
       creatorId: "customudon",
-      cookieHeader: secret,
-      request: async () => {
-        throw new Error(`HTTP 403 transport rejected ${secret}`);
+      privateConfiguration: testPrivateConfiguration(secret, privateUserAgent),
+      request: async (_address, init) => {
+        throw new Error(
+          `HTTP 403 transport rejected ${secret} ${init.headers["User-Agent"]}`,
+        );
       },
     });
     const evidence = new FanboxDateDirectoryInterpreter("customudon").interpret(
@@ -291,8 +517,10 @@ describe("FANBOX official collection", () => {
 
     expect(result.records).toEqual([]);
     expect(JSON.stringify(result.failures)).not.toContain("top-secret");
-    expect(result.failures[0]?.reason).toContain("HTTP 403");
-    expect(result.failures[0]?.reason).toContain("transport rejected");
+    expect(JSON.stringify(result.failures)).not.toContain(privateUserAgent);
+    expect(result.failures[0]?.reason).toContain("renderer request failed");
+    expect(result.failures[0]?.reason).not.toContain("transport rejected");
+    expect(result.failures[0]?.failureCode).toBe("transport-failure");
   });
 
   it("redacts raw, JSON-escaped, and percent-encoded browser-secret reflections", async () => {
@@ -312,9 +540,11 @@ describe("FANBOX official collection", () => {
     )[0];
 
     for (const reflected of representations) {
-      const collector = new FanboxCollector({
+      const collector = scriptedCollector({
         creatorId: "customudon",
-        cookieHeader: `FANBOXSESSID=${secret}`,
+        privateConfiguration: testPrivateConfiguration(
+          `FANBOXSESSID=${secret}`,
+        ),
         request: async () => {
           throw new Error(`remote request rejected: ${reflected}`);
         },
@@ -331,9 +561,11 @@ describe("FANBOX official collection", () => {
     "does not retain an HTTP-success FANBOX envelope declaring an error %#",
     async (declaredError) => {
       const privateSession = "fanbox-semantic-error-session";
-      const collector = new FanboxCollector({
+      const collector = scriptedCollector({
         creatorId: "customudon",
-        cookieHeader: `FANBOXSESSID=${privateSession}`,
+        privateConfiguration: testPrivateConfiguration(
+          `FANBOXSESSID=${privateSession}`,
+        ),
         request: async () => ({
           ok: true,
           status: 200,
@@ -355,14 +587,17 @@ describe("FANBOX official collection", () => {
       expect(result.failures[0]?.reason).toContain(
         "response was not a successful envelope",
       );
+      expect(result.failures[0]?.failureCode).toBe("response-contract");
       expect(JSON.stringify(result)).not.toContain(privateSession);
     },
   );
 
   it("rejects an HTTP-success non-JSON response before it can form source evidence", async () => {
-    const collector = new FanboxCollector({
+    const collector = scriptedCollector({
       creatorId: "customudon",
-      cookieHeader: "FANBOXSESSID=non-json-semantic-session",
+      privateConfiguration: testPrivateConfiguration(
+        "FANBOXSESSID=non-json-semantic-session",
+      ),
       request: async () => ({
         ok: true,
         status: 200,
@@ -382,9 +617,11 @@ describe("FANBOX official collection", () => {
   });
 
   it("rejects a selected summary with an invalid official publication datetime before any source record forms", async () => {
-    const collector = new FanboxCollector({
+    const collector = scriptedCollector({
       creatorId: "customudon",
-      cookieHeader: "FANBOXSESSID=invalid-summary-datetime-session",
+      privateConfiguration: testPrivateConfiguration(
+        "FANBOXSESSID=invalid-summary-datetime-session",
+      ),
       request: async (address) =>
         jsonResponse(
           address.includes("post.info")
@@ -427,9 +664,11 @@ describe("FANBOX official collection", () => {
   });
 
   it("rejects a selected summary whose title is only whitespace before any source record forms", async () => {
-    const collector = new FanboxCollector({
+    const collector = scriptedCollector({
       creatorId: "customudon",
-      cookieHeader: "FANBOXSESSID=blank-summary-title-session",
+      privateConfiguration: testPrivateConfiguration(
+        "FANBOXSESSID=blank-summary-title-session",
+      ),
       request: async (address) =>
         jsonResponse(
           address.includes("post.info")
@@ -465,9 +704,11 @@ describe("FANBOX official collection", () => {
   });
 
   it("rejects an RFC3339-shaped summary datetime with an impossible timezone offset before any source record forms", async () => {
-    const collector = new FanboxCollector({
+    const collector = scriptedCollector({
       creatorId: "customudon",
-      cookieHeader: "FANBOXSESSID=invalid-summary-offset-session",
+      privateConfiguration: testPrivateConfiguration(
+        "FANBOXSESSID=invalid-summary-offset-session",
+      ),
       request: async (address) =>
         jsonResponse(
           address.includes("post.info")
@@ -553,9 +794,11 @@ describe("FANBOX official collection", () => {
   });
 
   it("rejects a detail whose valid publication datetime contradicts the selected summary before either record forms", async () => {
-    const collector = new FanboxCollector({
+    const collector = scriptedCollector({
       creatorId: "customudon",
-      cookieHeader: "FANBOXSESSID=mismatched-datetime-session",
+      privateConfiguration: testPrivateConfiguration(
+        "FANBOXSESSID=mismatched-datetime-session",
+      ),
       request: async (address) =>
         jsonResponse(
           address.includes("post.info")
@@ -594,9 +837,11 @@ describe("FANBOX official collection", () => {
   });
 
   it("rejects an invalid detail publication datetime before either source record forms", async () => {
-    const collector = new FanboxCollector({
+    const collector = scriptedCollector({
       creatorId: "customudon",
-      cookieHeader: "FANBOXSESSID=invalid-detail-datetime-session",
+      privateConfiguration: testPrivateConfiguration(
+        "FANBOXSESSID=invalid-detail-datetime-session",
+      ),
       request: async (address) =>
         jsonResponse(
           address.includes("post.info")
@@ -639,9 +884,11 @@ describe("FANBOX official collection", () => {
   });
 
   it("rejects a whitespace-only detail title without retaining a falsely paired summary", async () => {
-    const collector = new FanboxCollector({
+    const collector = scriptedCollector({
       creatorId: "customudon",
-      cookieHeader: "FANBOXSESSID=blank-detail-title-session",
+      privateConfiguration: testPrivateConfiguration(
+        "FANBOXSESSID=blank-detail-title-session",
+      ),
       request: async (address) =>
         jsonResponse(
           address.includes("post.info")
@@ -678,9 +925,11 @@ describe("FANBOX official collection", () => {
 
   it("preserves a meaningful Unicode title verbatim while trim only decides whether it is blank", async () => {
     const title = "  次の動画の準備　🎙️  ";
-    const collector = new FanboxCollector({
+    const collector = scriptedCollector({
       creatorId: "customudon",
-      cookieHeader: "FANBOXSESSID=unicode-title-session",
+      privateConfiguration: testPrivateConfiguration(
+        "FANBOXSESSID=unicode-title-session",
+      ),
       request: async (address) =>
         jsonResponse(
           address.includes("post.info")
@@ -711,7 +960,7 @@ describe("FANBOX official collection", () => {
 
     const evidence = knownFanboxPostEvidence();
     const result = await collector.collect(evidence);
-    const batch = new FanboxSourceInterpreter().interpret({
+    const [batch] = new FanboxSourceInterpreter().interpret({
       evidence: [evidence],
       sourceRecords: result.records,
     });
@@ -734,9 +983,11 @@ describe("FANBOX official collection", () => {
           ? "2025-01-01T00:11:17+09:00"
           : "2024-12-31T00:11:17+09:00",
     }));
-    const collector = new FanboxCollector({
+    const collector = scriptedCollector({
       creatorId: "customudon",
-      cookieHeader: "FANBOXSESSID=boundary-summary-session",
+      privateConfiguration: testPrivateConfiguration(
+        "FANBOXSESSID=boundary-summary-session",
+      ),
       request: async (address) => {
         requested.push(address);
         return jsonResponse(
@@ -784,9 +1035,11 @@ describe("FANBOX official collection", () => {
       title: `其他帖子 ${index}`,
       publishedDatetime: "2024-12-31T00:11:17+09:00",
     }));
-    const collector = new FanboxCollector({
+    const collector = scriptedCollector({
       creatorId: "customudon",
-      cookieHeader: "FANBOXSESSID=truncated-summary-session",
+      privateConfiguration: testPrivateConfiguration(
+        "FANBOXSESSID=truncated-summary-session",
+      ),
       request: async (address) => {
         requested.push(address);
         return jsonResponse({ body: { posts } });
@@ -805,14 +1058,17 @@ describe("FANBOX official collection", () => {
     expect(result.records).toEqual([]);
     expect(result.failures).toHaveLength(1);
     expect(result.failures[0]?.reason).toContain("truncated creator summaries");
+    expect(result.failures[0]?.failureCode).toBe("summary-selection");
     expect(requested).toHaveLength(1);
   });
 
   it("rejects a successful summary whose addressed post belongs to another creator before a detail record can form", async () => {
     const requested: string[] = [];
-    const collector = new FanboxCollector({
+    const collector = scriptedCollector({
       creatorId: "customudon",
-      cookieHeader: "FANBOXSESSID=semantic-summary-session",
+      privateConfiguration: testPrivateConfiguration(
+        "FANBOXSESSID=semantic-summary-session",
+      ),
       request: async (address) => {
         requested.push(address);
         return jsonResponse({
@@ -837,7 +1093,48 @@ describe("FANBOX official collection", () => {
 
     expect(result.records).toEqual([]);
     expect(result.failures).toHaveLength(1);
+    expect(result.failures[0]?.failureCode).toBe("source-identity-conflict");
     expect(requested).toHaveLength(1);
+  });
+
+  it("classifies duplicate known-post summaries as a selection failure", async () => {
+    const collector = scriptedCollector({
+      creatorId: "customudon",
+      privateConfiguration: testPrivateConfiguration(
+        "FANBOXSESSID=duplicate-summary-session",
+      ),
+      request: async () =>
+        jsonResponse({
+          body: {
+            posts: [
+              {
+                id: "9135862",
+                creatorId: "customudon",
+                title: "第一个摘要",
+                publishedDatetime: "2025-01-01T00:11:17+09:00",
+              },
+              {
+                id: "9135862",
+                creatorId: "customudon",
+                title: "冲突摘要",
+                publishedDatetime: "2025-01-01T00:11:17+09:00",
+              },
+            ],
+          },
+        }),
+    });
+    const known = {
+      kind: "source-association" as const,
+      sourceIdentity: "fanbox",
+      sourceAddress: "https://www.fanbox.cc/@customudon/posts/9135862",
+      explanation: "known",
+      producer: knownSourceAssociationEvidenceCapability,
+    };
+
+    const result = await collector.collect(known);
+
+    expect(result.records).toEqual([]);
+    expect(result.failures[0]?.failureCode).toBe("summary-selection");
   });
 
   it("retains a valid summary but no fabricated detail record when the protected endpoint is structurally malformed", async () => {
@@ -847,9 +1144,11 @@ describe("FANBOX official collection", () => {
     )[0];
 
     for (const detail of details) {
-      const collector = new FanboxCollector({
+      const collector = scriptedCollector({
         creatorId: "customudon",
-        cookieHeader: "FANBOXSESSID=malformed-detail-session",
+        privateConfiguration: testPrivateConfiguration(
+          "FANBOXSESSID=malformed-detail-session",
+        ),
         request: async (address) =>
           jsonResponse(
             address.includes("post.info")
@@ -878,6 +1177,7 @@ describe("FANBOX official collection", () => {
         }),
       ]);
       expect(result.failures).toHaveLength(1);
+      expect(result.failures[0]?.failureCode).toBe("response-contract");
       expect(result.failures[0]?.coverage).toEqual({
         sourceIdentity: "fanbox",
         nativeAddress: "https://www.fanbox.cc/@customudon/posts/9135862",
@@ -912,9 +1212,11 @@ describe("FANBOX official collection", () => {
     )[0];
 
     for (const detail of details) {
-      const collector = new FanboxCollector({
+      const collector = scriptedCollector({
         creatorId: "customudon",
-        cookieHeader: "FANBOXSESSID=semantic-detail-session",
+        privateConfiguration: testPrivateConfiguration(
+          "FANBOXSESSID=semantic-detail-session",
+        ),
         request: async (address) =>
           jsonResponse(
             address.includes("post.info")
@@ -937,13 +1239,16 @@ describe("FANBOX official collection", () => {
       const result = await collector.collect(evidence);
       expect(result.records).toEqual([]);
       expect(result.failures).toHaveLength(1);
+      expect(result.failures[0]?.failureCode).toBe("source-identity-conflict");
     }
   });
 
   it("rejects an unrecognized official post form instead of claiming complete detail coverage", async () => {
-    const collector = new FanboxCollector({
+    const collector = scriptedCollector({
       creatorId: "customudon",
-      cookieHeader: "FANBOXSESSID=unknown-form-session",
+      privateConfiguration: testPrivateConfiguration(
+        "FANBOXSESSID=unknown-form-session",
+      ),
       request: async (address) =>
         jsonResponse(
           address.includes("post.info")
@@ -985,12 +1290,15 @@ describe("FANBOX official collection", () => {
       }),
     ]);
     expect(result.failures).toHaveLength(1);
+    expect(result.failures[0]?.failureCode).toBe("detail-contract");
   });
 
   it("rejects a public article with no usable body instead of retaining a false complete detail record", async () => {
-    const collector = new FanboxCollector({
+    const collector = scriptedCollector({
       creatorId: "customudon",
-      cookieHeader: "FANBOXSESSID=empty-article-body-session",
+      privateConfiguration: testPrivateConfiguration(
+        "FANBOXSESSID=empty-article-body-session",
+      ),
       request: async (address) =>
         jsonResponse(
           address.includes("post.info")
@@ -1035,9 +1343,11 @@ describe("FANBOX official collection", () => {
   });
 
   it("rejects a public article with an empty block list instead of treating an empty body as complete", async () => {
-    const collector = new FanboxCollector({
+    const collector = scriptedCollector({
       creatorId: "customudon",
-      cookieHeader: "FANBOXSESSID=empty-article-blocks-session",
+      privateConfiguration: testPrivateConfiguration(
+        "FANBOXSESSID=empty-article-blocks-session",
+      ),
       request: async (address) =>
         jsonResponse(
           address.includes("post.info")
@@ -1300,9 +1610,11 @@ describe("FANBOX official collection", () => {
   });
 
   it("rejects an article attachment block whose map entry is malformed instead of retaining partial detail coverage", async () => {
-    const collector = new FanboxCollector({
+    const collector = scriptedCollector({
       creatorId: "customudon",
-      cookieHeader: "FANBOXSESSID=bad-article-attachment-session",
+      privateConfiguration: testPrivateConfiguration(
+        "FANBOXSESSID=bad-article-attachment-session",
+      ),
       request: async (address) =>
         jsonResponse(
           address.includes("post.info")
@@ -1351,9 +1663,13 @@ describe("FANBOX official collection", () => {
 
   it("fails closed when an official response reflects private configuration into the capturable body", async () => {
     const secret = "super-secret-session-token";
-    const collector = new FanboxCollector({
+    const privateUserAgent = "private-browser-fingerprint/response-123";
+    const collector = scriptedCollector({
       creatorId: "customudon",
-      cookieHeader: `p_ab_id=8; FANBOXSESSID=${secret}`,
+      privateConfiguration: testPrivateConfiguration(
+        `p_ab_id=8; FANBOXSESSID=${secret}`,
+        privateUserAgent,
+      ),
       request: async () => ({
         ok: true,
         status: 200,
@@ -1365,8 +1681,9 @@ describe("FANBOX official collection", () => {
                 posts: [
                   {
                     id: "9135862",
+                    creatorId: "customudon",
                     publishedDatetime: "2025-01-01T00:11:17+09:00",
-                    title: secret,
+                    title: privateUserAgent,
                   },
                 ],
               },
@@ -1382,13 +1699,16 @@ describe("FANBOX official collection", () => {
 
     expect(result.records).toEqual([]);
     expect(JSON.stringify(result)).not.toContain(secret);
+    expect(JSON.stringify(result)).not.toContain(privateUserAgent);
     expect(result.failures[0]?.reason).toContain("private configuration");
   });
 
-  it("does not let short cookie values damage ordinary HTTP diagnostics", async () => {
-    const collector = new FanboxCollector({
+  it("does not let short cookie values or raw browser errors cross the session seam", async () => {
+    const collector = scriptedCollector({
       creatorId: "customudon",
-      cookieHeader: "p_ab_id=8; p_ab_id_2=2",
+      privateConfiguration: testPrivateConfiguration(
+        "FANBOXSESSID=test-private-session; p_ab_id=8; p_ab_id_2=2",
+      ),
       request: async () => {
         throw new Error("HTTP 403 after 8 redirects");
       },
@@ -1399,15 +1719,16 @@ describe("FANBOX official collection", () => {
 
     const result = await collector.collect(evidence);
 
-    expect(result.failures[0]?.reason).toContain("HTTP 403 after 8 redirects");
+    expect(result.failures[0]?.reason).toContain("renderer request failed");
+    expect(result.failures[0]?.reason).not.toContain("8 redirects");
     expect(JSON.stringify(result)).not.toContain("p_ab_id=8");
   });
 
   it("captures restricted post detail so its form remains sourced instead of inferred from the summary", async () => {
     let requests = 0;
-    const collector = new FanboxCollector({
+    const collector = scriptedCollector({
       creatorId: "customudon",
-      cookieHeader: "FANBOXSESSID=private",
+      privateConfiguration: testPrivateConfiguration("FANBOXSESSID=private"),
       request: async (address) => {
         requests += 1;
         return {
@@ -1454,7 +1775,7 @@ describe("FANBOX official collection", () => {
     )[0];
 
     const result = await collector.collect(evidence);
-    const batch = new FanboxSourceInterpreter().interpret({
+    const [batch] = new FanboxSourceInterpreter().interpret({
       evidence: [evidence],
       sourceRecords: result.records,
     });
@@ -1476,9 +1797,9 @@ describe("FANBOX official collection", () => {
   it("retains the uniquely addressed summary when public detail transport is unavailable", async () => {
     let requests = 0;
     const cookies: (string | undefined)[] = [];
-    const collector = new FanboxCollector({
+    const collector = scriptedCollector({
       creatorId: "customudon",
-      cookieHeader: "FANBOXSESSID=private",
+      privateConfiguration: testPrivateConfiguration("FANBOXSESSID=private"),
       request: async (address, init) => {
         requests += 1;
         cookies.push(init.headers.Cookie);
@@ -1529,6 +1850,7 @@ describe("FANBOX official collection", () => {
       "fanbox.creator-post-summaries",
     );
     expect(result.failures[0]).toMatchObject({
+      failureCode: "http:post-detail:403",
       reason: expect.stringContaining("HTTP 403"),
       affects: {
         metadataProperties: ["fanbox.post.form", "asset.body"],
@@ -1539,9 +1861,9 @@ describe("FANBOX official collection", () => {
 
   it("identifies a Cloudflare challenge on protected detail without retaining its page or credentials", async () => {
     const secret = "FANBOXSESSID=top-secret";
-    const collector = new FanboxCollector({
+    const collector = scriptedCollector({
       creatorId: "customudon",
-      cookieHeader: secret,
+      privateConfiguration: testPrivateConfiguration(secret),
       request: async (address) =>
         address.includes("post.info")
           ? {
@@ -1583,6 +1905,7 @@ describe("FANBOX official collection", () => {
 
     expect(result.records).toHaveLength(1);
     expect(result.failures[0]?.reason).toContain("Cloudflare challenge");
+    expect(result.failures[0]?.failureCode).toBe("cloudflare-challenge");
     expect(result.failures[0]?.reason).toContain("browser clearance");
     expect(JSON.stringify(result)).not.toContain("top-secret");
     expect(JSON.stringify(result)).not.toContain("challenge-platform");
@@ -1591,9 +1914,10 @@ describe("FANBOX official collection", () => {
   it("uses one public detail response after authenticated transport rejection without sending its Cookie", async () => {
     const secret = "public-retry-private-session";
     const detailCookies: (string | undefined)[] = [];
-    const collector = new FanboxCollector({
+    const detailUserAgents: (string | undefined)[] = [];
+    const collector = scriptedCollector({
       creatorId: "customudon",
-      cookieHeader: `FANBOXSESSID=${secret}`,
+      privateConfiguration: testPrivateConfiguration(`FANBOXSESSID=${secret}`),
       request: async (address, init) => {
         if (address.includes("post.listCreator"))
           return jsonResponse({
@@ -1609,6 +1933,7 @@ describe("FANBOX official collection", () => {
             },
           });
         detailCookies.push(init.headers.Cookie);
+        detailUserAgents.push(init.headers["User-Agent"]);
         if (detailCookies.length === 1)
           return {
             ok: false,
@@ -1634,6 +1959,7 @@ describe("FANBOX official collection", () => {
     const result = await collector.collect(knownFanboxPostEvidence());
 
     expect(detailCookies).toEqual([`FANBOXSESSID=${secret}`, undefined]);
+    expect(detailUserAgents).toEqual(["test-browser/1", "test-browser/1"]);
     expect(result.failures).toEqual([]);
     expect(result.records[1]).toMatchObject({
       acquisition: { authorized: false },
@@ -1645,9 +1971,9 @@ describe("FANBOX official collection", () => {
   it("retains a public restricted detail and the sanitized authenticated coverage failure", async () => {
     const secret = "restricted-retry-private-session";
     const detailCookies: (string | undefined)[] = [];
-    const collector = new FanboxCollector({
+    const collector = scriptedCollector({
       creatorId: "customudon",
-      cookieHeader: `FANBOXSESSID=${secret}`,
+      privateConfiguration: testPrivateConfiguration(`FANBOXSESSID=${secret}`),
       request: async (address, init) => {
         if (address.includes("post.listCreator"))
           return jsonResponse({
@@ -1696,9 +2022,9 @@ describe("FANBOX official collection", () => {
   });
 
   it("reacquires a known FANBOX association without reinterpreting its directory", async () => {
-    const collector = new FanboxCollector({
+    const collector = scriptedCollector({
       creatorId: "customudon",
-      cookieHeader: "FANBOXSESSID=private",
+      privateConfiguration: testPrivateConfiguration("FANBOXSESSID=private"),
       request: async (address) => {
         const payload = address.includes("post.listCreator")
           ? {
@@ -1801,11 +2127,11 @@ describe("FANBOX interpretation", () => {
     }).collect(evidence);
 
     expect(collected.failures).toEqual([]);
-    const batch = new FanboxSourceInterpreter().interpret({
+    const [batch] = new FanboxSourceInterpreter().interpret({
       evidence: [evidence],
       sourceRecords: collected.records,
     });
-    const reinterpreted = new FanboxSourceInterpreter().interpret({
+    const [reinterpreted] = new FanboxSourceInterpreter().interpret({
       evidence: [evidence],
       sourceRecords: collected.records,
     });
@@ -1926,7 +2252,7 @@ describe("FANBOX interpretation", () => {
         type: "file",
         body: { files: ids.map(attachment) },
       }).collect(evidence);
-      const batch = new FanboxSourceInterpreter().interpret({
+      const [batch] = new FanboxSourceInterpreter().interpret({
         evidence: [evidence],
         sourceRecords: collected.records,
       });
@@ -1958,7 +2284,7 @@ describe("FANBOX interpretation", () => {
       detail: Parameters<typeof collectorForDetail>[0],
     ) => {
       const collected = await collectorForDetail(detail).collect(evidence);
-      const batch = new FanboxSourceInterpreter().interpret({
+      const [batch] = new FanboxSourceInterpreter().interpret({
         evidence: [evidence],
         sourceRecords: collected.records,
       });
@@ -2194,7 +2520,7 @@ describe("FANBOX interpretation", () => {
     expect(interpreter.canInterpret({ evidence, sourceRecords: records })).toBe(
       true,
     );
-    const batch = interpreter.interpret({ evidence, sourceRecords: records });
+    const [batch] = interpreter.interpret({ evidence, sourceRecords: records });
     const proposal = new FanboxExactRecognizer().recognize({
       evidence,
       basis: { kind: "source-interpretation", interpretation: batch },
@@ -2270,7 +2596,7 @@ describe("FANBOX interpretation", () => {
       snapshot("/library/25.01.01 post"),
     );
 
-    const batch = interpreter.interpret({
+    const [batch] = interpreter.interpret({
       evidence,
       sourceRecords: records,
     });
@@ -2388,7 +2714,7 @@ describe("FANBOX interpretation", () => {
       snapshot("/library/20.12.29 post"),
     );
 
-    const batch = interpreter.interpret({ evidence, sourceRecords: records });
+    const [batch] = interpreter.interpret({ evidence, sourceRecords: records });
 
     expect(batch.sourceArtifacts).toEqual([
       expect.objectContaining({
@@ -2442,7 +2768,7 @@ describe("FANBOX interpretation", () => {
       snapshot("/library/25.01.01 post"),
     );
 
-    const batch = interpreter.interpret({ evidence, sourceRecords: records });
+    const [batch] = interpreter.interpret({ evidence, sourceRecords: records });
 
     expect(
       batch.sourceArtifacts.some((item) => item.role === "asset.primary-cover"),
@@ -2478,7 +2804,7 @@ describe("FANBOX interpretation", () => {
       snapshot("/library/25.01.01 post"),
     );
 
-    const batch = interpreter.interpret({ evidence, sourceRecords: records });
+    const [batch] = interpreter.interpret({ evidence, sourceRecords: records });
 
     expect(batch.metadata).toEqual([]);
   });
@@ -2506,7 +2832,7 @@ describe("FANBOX interpretation", () => {
       snapshot("/library/20.12.29 post"),
     );
 
-    const batch = interpreter.interpret({ evidence, sourceRecords: records });
+    const [batch] = interpreter.interpret({ evidence, sourceRecords: records });
 
     expect(
       batch.metadata.some((item) => item.property === "asset.summary"),
@@ -2627,16 +2953,112 @@ function jsonResponse(body: unknown) {
   };
 }
 
+type ScriptedRequest = (
+  address: string,
+  init: { readonly headers: Readonly<Record<string, string>> },
+) => Promise<{
+  readonly ok: boolean;
+  readonly status: number;
+  readonly headers: { get(name: string): string | null };
+  arrayBuffer(): Promise<ArrayBuffer>;
+}>;
+
+function scriptedClosedGet(
+  request: ScriptedRequest,
+): Parameters<typeof createScriptedFanboxProductAssembly>[0] {
+  return async ({ endpoint, privateContext }) => {
+    let response: Awaited<ReturnType<ScriptedRequest>>;
+    try {
+      response = await request(fanboxEndpointAddress(endpoint), {
+        headers:
+          endpoint.kind === "post-detail" && endpoint.access === "public"
+            ? { "User-Agent": privateContext.userAgent }
+            : {
+                Cookie: privateContext.cookies
+                  .map((cookie) => `${cookie.name}=${cookie.value}`)
+                  .join("; "),
+                "User-Agent": privateContext.userAgent,
+              },
+      });
+    } catch {
+      throw new FanboxSessionTransportFault("network-failure");
+    }
+    const mediaType = response.headers.get("content-type");
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const maximumBytes =
+      endpoint.kind === "login-status" ? 1024 : 2 * 1024 * 1024;
+    if (bytes.byteLength > maximumBytes)
+      return { kind: "response-limit", status: response.status, mediaType };
+    const rejectedNonJson =
+      (response.status < 200 || response.status >= 300) &&
+      mediaType?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json";
+    const normalized = rejectedNonJson
+      ? new TextDecoder().decode(bytes).toLowerCase()
+      : "";
+    if (
+      response.headers.get("cf-mitigated") === "challenge" ||
+      normalized.includes("challenge-platform") ||
+      normalized.includes("_cf_chl_opt") ||
+      normalized.includes("cf-chl")
+    )
+      return {
+        kind: "cloudflare-challenge",
+        status: response.status,
+        mediaType,
+        cfMitigated:
+          response.headers.get("cf-mitigated") === "challenge"
+            ? "challenge"
+            : null,
+      };
+    return {
+      kind: "response",
+      status: response.status,
+      mediaType,
+      body: bytes,
+    };
+  };
+}
+
+function scriptedCollector(options: {
+  readonly creatorId?: string;
+  readonly creatorIds?: () => readonly string[];
+  readonly privateConfiguration?: string;
+  readonly privateConfigurationForExecution?: (input: {
+    readonly creatorId: string;
+    readonly context: SourceCollectionExecutionContext | undefined;
+  }) => string | undefined;
+  readonly request?: ScriptedRequest;
+}): SourceCollector {
+  const assembly = createScriptedFanboxProductAssembly(
+    scriptedClosedGet(
+      options.request ??
+        (async () => {
+          throw new Error("unscripted FANBOX request");
+        }),
+    ),
+  );
+  return assembly.createCollector({
+    creatorIds:
+      options.creatorIds ??
+      (() => (options.creatorId === undefined ? [] : [options.creatorId])),
+    privateConfigurationForExecution:
+      options.privateConfigurationForExecution ??
+      (() => options.privateConfiguration),
+  });
+}
+
 function collectorForDetail(input: {
   readonly type: string;
   readonly body: unknown;
   readonly publishedDatetime?: string;
-}): FanboxCollector {
+}): SourceCollector {
   const publishedDatetime =
     input.publishedDatetime ?? "2025-01-01T00:11:17+09:00";
-  return new FanboxCollector({
+  return scriptedCollector({
     creatorId: "customudon",
-    cookieHeader: "FANBOXSESSID=test-private-session",
+    privateConfiguration: testPrivateConfiguration(
+      "FANBOXSESSID=test-private-session",
+    ),
     request: async (address) =>
       jsonResponse(
         address.includes("post.info")
@@ -2679,7 +3101,7 @@ function knownFanboxPostEvidence() {
 }
 
 function expectSummaryOnlyDetailFailure(
-  result: Awaited<ReturnType<FanboxCollector["collect"]>>,
+  result: Awaited<ReturnType<SourceCollector["collect"]>>,
 ): void {
   expect(result.records).toEqual([
     expect.objectContaining({

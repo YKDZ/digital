@@ -856,6 +856,28 @@ export class ProductBangumiSourceConnection {
   }
 
   private requireClientConfiguration(): BangumiClientConfiguration {
+    const stored = this.privateState.read("bangumi-oauth-client");
+    if (stored.status === "usable") {
+      const value = stored.value as Partial<BangumiClientConfiguration> | null;
+      if (
+        value &&
+        typeof value.clientId === "string" &&
+        nonBlank(value.clientId) &&
+        typeof value.clientSecret === "string" &&
+        nonBlank(value.clientSecret) &&
+        typeof value.redirectUri === "string" &&
+        allowedRedirectUri(value.redirectUri)
+      ) {
+        return {
+          clientId: value.clientId,
+          clientSecret: value.clientSecret,
+          redirectUri: value.redirectUri,
+        };
+      }
+      throw new Error("Bangumi OAuth 客户端配置不可用");
+    }
+    if (stored.status !== "missing")
+      throw new Error("Bangumi OAuth 客户端配置不可用");
     const clientId = nonBlank(this.environment.DIGITAL_BANGUMI_CLIENT_ID);
     const clientSecret = nonBlank(
       this.environment.DIGITAL_BANGUMI_CLIENT_SECRET,
@@ -870,6 +892,26 @@ export class ProductBangumiSourceConnection {
       throw new Error("Bangumi OAuth 客户端配置不可用");
     }
     return { clientId, clientSecret, redirectUri };
+  }
+
+  configureClient(input: BangumiClientConfiguration): void {
+    if (
+      !nonBlank(input.clientId) ||
+      !nonBlank(input.clientSecret) ||
+      !allowedRedirectUri(input.redirectUri)
+    )
+      throw new Error("请填写有效的 Bangumi 应用信息与回调地址");
+    // 更换应用后旧授权不能继续使用；复用连接自身的撤销与并发控制。
+    this.revoke(this.inspect().version);
+    this.privateState.write({
+      key: "bangumi-oauth-client",
+      value: {
+        clientId: input.clientId.trim(),
+        clientSecret: input.clientSecret.trim(),
+        redirectUri: input.redirectUri.trim(),
+      },
+      failureMessage: "无法保存 Bangumi 应用配置",
+    });
   }
 
   private readConnection(): ReadBangumiConnectionRecord {

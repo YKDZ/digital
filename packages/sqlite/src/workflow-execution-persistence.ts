@@ -5,7 +5,11 @@ import type {
 } from "@digital/application";
 import {
   assertAssetRefreshSelection,
-  decodeAssetRefreshWorkflowInput,
+  decodeObservedMaterialAssociationCheckpoint,
+  decodeSourceAssociationDecisionCheckpoint,
+  decodeWorkflowExecutionInput,
+  validateSourceAssociationDecisionEnvelope,
+  validateSourceAssociationDecisionPriorExecution,
 } from "@digital/application";
 import { and, eq, isNull } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-sqlite";
@@ -34,7 +38,8 @@ type ExecutionRow = {
   readonly selection_intent:
     | "scan-now"
     | "metadata-refresh"
-    | "directed-recognition";
+    | "directed-recognition"
+    | "source-enrichment";
   readonly information_requirement_json: string;
   readonly snapshot_json: string | null;
   readonly status: WorkflowExecution["status"];
@@ -68,6 +73,8 @@ type ExecutionRow = {
   readonly audit_json: string | null;
   /** NULL 表示工作流执行未被明确取消。 */
   readonly cancellation_json?: string | null;
+  readonly material_association_json?: string | null;
+  readonly source_association_decision_json?: string | null;
 };
 
 /**
@@ -136,12 +143,27 @@ export class WorkflowExecutionPersistence {
       .get();
     const executionRow =
       row === undefined ? undefined : executionRowFromDrizzle(row);
-    return executionRow === undefined
-      ? undefined
-      : {
-          execution: executionFromRow(executionRow),
-          auditJson: executionRow.audit_json,
-        };
+    if (executionRow === undefined) return undefined;
+    const execution = executionFromRow(executionRow);
+    const priorExecutionId =
+      execution.workflowInput?.version === "source-association-decision-input/1"
+        ? execution.workflowInput.priorExecutionId
+        : undefined;
+    const priorRow =
+      priorExecutionId === undefined
+        ? undefined
+        : query
+            .select()
+            .from(workflowExecutions)
+            .where(eq(workflowExecutions.id, priorExecutionId))
+            .get();
+    const prior =
+      priorRow === undefined
+        ? undefined
+        : executionFromRow(executionRowFromDrizzle(priorRow));
+    if (!validateSourceAssociationDecisionPriorExecution(execution, prior))
+      throw new Error("Source Association Decision prior execution is invalid");
+    return { execution, auditJson: executionRow.audit_json };
   }
 
   /**
@@ -268,6 +290,8 @@ function drizzleExecutionValues(execution: WorkflowExecution) {
     workflowInputJson: row.workflow_input_json,
     auditJson: executionAuditJson(executionFromColumns(row)),
     cancellationJson: row.cancellation_json,
+    materialAssociationJson: row.material_association_json,
+    sourceAssociationDecisionJson: row.source_association_decision_json,
   };
 }
 
@@ -357,6 +381,14 @@ function executionColumnRow(execution: WorkflowExecution) {
       execution.cancellation === undefined
         ? null
         : JSON.stringify(execution.cancellation),
+    material_association_json:
+      execution.materialAssociation === undefined
+        ? (execution.materialAssociationInvalid?.raw ?? null)
+        : JSON.stringify(execution.materialAssociation),
+    source_association_decision_json:
+      execution.sourceAssociationDecision === undefined
+        ? (execution.sourceAssociationDecisionInvalid?.raw ?? null)
+        : JSON.stringify(execution.sourceAssociationDecision),
   } satisfies ExecutionRow;
 }
 
@@ -397,6 +429,8 @@ function executionRowFromDrizzle(
     workflow_input_json: row.workflowInputJson,
     audit_json: row.auditJson,
     cancellation_json: row.cancellationJson,
+    material_association_json: row.materialAssociationJson,
+    source_association_decision_json: row.sourceAssociationDecisionJson,
   };
 }
 
@@ -414,7 +448,72 @@ function executionFromRow(row: ExecutionRow): WorkflowExecution {
     decodeExecutionColumns(row),
   );
   assertPlannedAssetIdentities(execution);
+  assertDurableSourceFailureCodes(execution);
   return execution;
+}
+
+function assertDurableSourceFailureCodes(execution: WorkflowExecution): void {
+  for (const disposition of execution.dispositions) {
+    const codes = disposition.sourceFailureCodes;
+    if (codes === undefined) continue;
+    if (!Array.isArray(codes) || codes.length > 16)
+      throw new Error("Malformed Workflow Execution source failure codes");
+    for (const item of codes) {
+      if (
+        typeof item !== "object" ||
+        item === null ||
+        !hasExactSourceFailureKeys(item, ["capability", "code"]) ||
+        typeof item.code !== "string" ||
+        item.code.length === 0 ||
+        new TextEncoder().encode(item.code).byteLength > 128 ||
+        typeof item.capability !== "object" ||
+        item.capability === null ||
+        !hasExactSourceFailureKeys(item.capability, [
+          "capabilityId",
+          "capabilityVersion",
+          "contractVersion",
+          "identity",
+          "implementationVersion",
+          "kind",
+          "interpretationContractVersions",
+        ]) ||
+        ![
+          item.capability.capabilityId,
+          item.capability.capabilityVersion,
+          item.capability.contractVersion,
+          item.capability.identity,
+          item.capability.implementationVersion,
+          item.capability.kind,
+        ].every(
+          (value: unknown) =>
+            typeof value === "string" &&
+            value.trim().length > 0 &&
+            value.length <= 240,
+        ) ||
+        !Array.isArray(item.capability.interpretationContractVersions) ||
+        item.capability.interpretationContractVersions.length === 0 ||
+        !item.capability.interpretationContractVersions.every(
+          (value: unknown) =>
+            typeof value === "string" &&
+            value.trim().length > 0 &&
+            value.length <= 240,
+        )
+      )
+        throw new Error("Malformed Workflow Execution source failure codes");
+    }
+  }
+}
+
+function hasExactSourceFailureKeys(
+  value: object,
+  expected: readonly string[],
+): boolean {
+  const actual = Object.keys(value).toSorted();
+  const allowed = expected.toSorted();
+  return (
+    actual.length === allowed.length &&
+    actual.every((key, index) => key === allowed[index])
+  );
 }
 
 function assertPlannedAssetIdentities(execution: WorkflowExecution): void {
@@ -446,10 +545,62 @@ function workflowInputFromJson(
       },
     };
   }
-  const decoded = decodeAssetRefreshWorkflowInput(parsed);
+  const decoded = decodeWorkflowExecutionInput(parsed);
   return decoded.valid
     ? { workflowInput: decoded.input }
     : { workflowInputInvalid: { raw, reason: decoded.reason } };
+}
+
+function materialAssociationFromJson(
+  raw: string | null | undefined,
+): Pick<
+  WorkflowExecution,
+  "materialAssociation" | "materialAssociationInvalid"
+> {
+  if (raw == null) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {
+      materialAssociationInvalid: {
+        raw,
+        reason: "观察材料关联检查点 JSON 损坏",
+      },
+    };
+  }
+  const decoded = decodeObservedMaterialAssociationCheckpoint(parsed);
+  return decoded.valid
+    ? { materialAssociation: decoded.checkpoint }
+    : {
+        materialAssociationInvalid: { raw, reason: decoded.reason },
+      };
+}
+
+function sourceAssociationDecisionFromJson(
+  raw: string | null | undefined,
+): Pick<
+  WorkflowExecution,
+  "sourceAssociationDecision" | "sourceAssociationDecisionInvalid"
+> {
+  if (raw == null) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {
+      sourceAssociationDecisionInvalid: {
+        raw,
+        reason: "来源关联决策检查点 JSON 损坏",
+      },
+    };
+  }
+  const decoded = decodeSourceAssociationDecisionCheckpoint(parsed);
+  return decoded.valid
+    ? { sourceAssociationDecision: decoded.value }
+    : {
+        sourceAssociationDecisionInvalid: { raw, reason: decoded.reason },
+      };
 }
 
 function executionFromColumns(row: ExecutionRow): WorkflowExecution {
@@ -536,6 +687,10 @@ function decodeExecutionColumns(row: ExecutionRow): DecodedExecutionColumns {
               row.source_enrichments_json,
             ) as NonNullable<WorkflowExecution["sourceEnrichments"]>,
           }),
+      ...materialAssociationFromJson(row.material_association_json),
+      ...sourceAssociationDecisionFromJson(
+        row.source_association_decision_json,
+      ),
       ...workflowInput,
       ...(legacyFilesystemSelection
         ? {
@@ -603,10 +758,17 @@ function executionFromAudit(
   decodedColumns: DecodedExecutionColumns,
 ): WorkflowExecution {
   const { execution: fromColumns, legacySelections } = decodedColumns;
+  const checked = () => {
+    if (!validateSourceAssociationDecisionEnvelope(fromColumns))
+      throw new Error(
+        "Source Association Decision workflow input conflicts with checkpoint",
+      );
+    return fromColumns;
+  };
   // 0031 专门添加可空列，使既有耐久执行继续通过旧列表示重新打开。短期预发布默认标记
   // 使用相同的受限回退。
   if (auditJson === null || auditJson === workflowExecutionAuditLegacyMarker)
-    return fromColumns;
+    return checked();
 
   let parsed: unknown;
   try {
@@ -628,19 +790,37 @@ function executionFromAudit(
     Array.isArray(envelope.payload)
   )
     throw new Error("Workflow execution audit_json payload must be an object");
-  if (fromColumns.workflowInputInvalid !== undefined) {
+  if (
+    fromColumns.workflowInputInvalid !== undefined ||
+    fromColumns.materialAssociationInvalid !== undefined ||
+    fromColumns.sourceAssociationDecisionInvalid !== undefined
+  ) {
     // 只有损坏输入坐标不参与审计比较。其他所有列仍必须匹配原始完整审计，因此畸形封装
     // 不能掩盖无关的耐久行篡改。
-    const {
-      workflowInputInvalid: _invalidInput,
-      workflowInput: _columnInput,
-      ...columnCoordinates
-    } = fromColumns;
+    const columnCoordinates = {
+      ...fromColumns,
+    } as Record<string, unknown>;
     const auditCoordinates = {
       ...(envelope.payload as Record<string, unknown>),
     };
-    delete auditCoordinates.workflowInput;
-    delete auditCoordinates.workflowInputInvalid;
+    if (fromColumns.workflowInputInvalid !== undefined) {
+      delete columnCoordinates.workflowInput;
+      delete columnCoordinates.workflowInputInvalid;
+      delete auditCoordinates.workflowInput;
+      delete auditCoordinates.workflowInputInvalid;
+    }
+    if (fromColumns.materialAssociationInvalid !== undefined) {
+      delete columnCoordinates.materialAssociation;
+      delete columnCoordinates.materialAssociationInvalid;
+      delete auditCoordinates.materialAssociation;
+      delete auditCoordinates.materialAssociationInvalid;
+    }
+    if (fromColumns.sourceAssociationDecisionInvalid !== undefined) {
+      delete columnCoordinates.sourceAssociationDecision;
+      delete columnCoordinates.sourceAssociationDecisionInvalid;
+      delete auditCoordinates.sourceAssociationDecision;
+      delete auditCoordinates.sourceAssociationDecisionInvalid;
+    }
     for (const [key, legacySelection] of Object.entries(legacySelections)) {
       if (
         canonicalJson((envelope.payload as Record<string, unknown>)[key]) !==
@@ -656,7 +836,7 @@ function executionFromAudit(
       throw new Error(
         "Workflow execution audit_json conflicts with persisted columns",
       );
-    return fromColumns;
+    return checked();
   }
   if (
     envelope.payload === undefined ||
@@ -665,7 +845,7 @@ function executionFromAudit(
     throw new Error(
       "Workflow execution audit_json conflicts with persisted columns",
     );
-  return fromColumns;
+  return checked();
 }
 
 /** 由执行审计 CAS 与适配器持有的规范事实检查共同使用。 */
