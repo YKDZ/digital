@@ -3,6 +3,7 @@ import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import type { AssetRefreshInspection } from "@digital/application";
 import { captureRawFilesystemSnapshot } from "@digital/test-support";
 
 import {
@@ -295,11 +296,9 @@ const journey: CliJourney = {
         readonly value: string;
         readonly sourceRecordIds: readonly string[];
       }[];
-      readonly entities?: readonly {
-        readonly kind: string;
-        readonly identityNamespace: string;
-        readonly label: string;
-      }[];
+      readonly currentRelatedEntities?: NonNullable<
+        AssetRefreshInspection["accepted"]
+      >["currentRelatedEntities"];
       readonly relationships?: readonly {
         readonly participants: readonly { readonly role: string }[];
         readonly sourceRecordIds: readonly string[];
@@ -431,24 +430,27 @@ const journey: CliJourney = {
       );
     }
     assert.ok(
-      accepted.entities?.some(
+      accepted.currentRelatedEntities?.some(
         (entity) =>
-          entity.kind === "entity" &&
+          entity.kind.status === "ordinary" &&
           entity.identityNamespace === "dlsite.circle" &&
           entity.label === oracle.projection.circle.label,
       ),
     );
     assert.ok(
-      accepted.entities?.some(
+      accepted.currentRelatedEntities?.some(
         (entity) =>
-          entity.kind === "persona" &&
+          entity.kind.status === "effective" &&
+          entity.kind.kind === "persona" &&
           entity.label === oracle.projection.credits.voice[0],
       ),
     );
     assert.deepEqual(
       accepted.relationships
         ?.flatMap((relationship) =>
-          relationship.participants.map((participant) => participant.role),
+          relationship.participants
+            .filter(({ role }) => role !== "asset")
+            .map((participant) => participant.role),
         )
         .toSorted(),
       oracle.projection.relationshipRoles.toSorted(),
@@ -518,7 +520,9 @@ const journey: CliJourney = {
           readonly artifactId: string;
           readonly role: string;
         }[];
-        readonly entities?: readonly { readonly id: string }[];
+        readonly currentRelatedEntities?: NonNullable<
+          AssetRefreshInspection["accepted"]
+        >["currentRelatedEntities"];
         readonly relationships?: readonly {
           readonly participants: readonly {
             readonly entityId: string;
@@ -704,8 +708,10 @@ const journey: CliJourney = {
       "applied identity projection must retain every observed material location",
     );
     assert.equal(
-      new Set(projectedAccepted.entities?.map((entity) => entity.id)).size,
-      projectedAccepted.entities?.length,
+      new Set(
+        projectedAccepted.currentRelatedEntities?.map((entity) => entity.id),
+      ).size,
+      projectedAccepted.currentRelatedEntities?.length,
     );
     assert.ok(
       projectedAccepted.relationships?.every(
