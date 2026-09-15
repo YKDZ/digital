@@ -168,9 +168,132 @@ export const entities = sqliteTable(
   "entities",
   {
     id: text().notNull(),
-    kind: text().notNull(),
   },
   (table) => [primaryKey({ name: "entities_pk", columns: [table.id] })],
+);
+
+/** 来源和人工种类断言都是事实；实体本身刻意没有判别列。 */
+export const entityKindAssertions = sqliteTable(
+  "entity_kind_assertions",
+  {
+    id: text().notNull(),
+    entityId: text("entity_id").notNull(),
+    kind: text().notNull(),
+    basis: text().notNull(),
+    sourceRecordIdsJson: text("source_record_ids_json").notNull().default("[]"),
+    actorId: text("actor_id"),
+    producerJson: text("producer_json"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.id] }),
+    index("entity_kind_assertions_entity").on(table.entityId),
+    check(
+      "entity_kind_assertions_kind",
+      sql`kind IN ('digital-asset', 'person', 'persona')`,
+    ),
+  ],
+);
+
+export const entityKindDecisions = sqliteTable(
+  "entity_kind_decisions",
+  {
+    id: text().notNull(),
+    entityId: text("entity_id").notNull(),
+    selectedKind: text("selected_kind"),
+    basis: text().notNull(),
+    replacesDecisionId: text("replaces_decision_id"),
+    actorId: text("actor_id"),
+    operation: text().notNull().default("select"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.id] }),
+    index("entity_kind_decisions_entity").on(table.entityId),
+    check(
+      "entity_kind_decisions_kind",
+      sql`selected_kind IS NULL OR selected_kind IN ('digital-asset', 'person', 'persona')`,
+    ),
+  ],
+);
+
+/** 本地实体无需外部身份也可被明确寻址。 */
+export const localEntityNames = sqliteTable(
+  "local_entity_names",
+  {
+    entityId: text("entity_id").notNull(),
+    label: text().notNull(),
+    actorId: text("actor_id").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.entityId] }),
+    index("local_entity_names_label").on(table.label),
+  ],
+);
+
+/** 本地身份提交的窄幂等坐标；后续种类决定绝不改变原提交内容。 */
+export const localEntityCommitments = sqliteTable(
+  "local_entity_commitments",
+  {
+    actorId: text("actor_id").notNull(),
+    commitmentId: text("commitment_id").notNull(),
+    entityId: text("entity_id").notNull(),
+    label: text().notNull(),
+    submittedKind: text("submitted_kind").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.actorId, table.commitmentId] }),
+    check(
+      "local_entity_commitments_kind",
+      sql`submitted_kind IN ('entity', 'person', 'persona')`,
+    ),
+  ],
+);
+
+/** 来源实体种类的不可变支持；当前性由每个谱系的末叶投影。 */
+export const entityKindSourceSupports = sqliteTable(
+  "entity_kind_source_supports",
+  {
+    id: text().notNull(),
+    entityId: text("entity_id").notNull(),
+    sourceSubjectId: text("source_subject_id").notNull(),
+    sourceIdentity: text("source_identity").notNull(),
+    nativeAddress: text("native_address").notNull(),
+    coverageId: text("coverage_id").notNull(),
+    sourceRecordId: text("source_record_id").notNull(),
+    assertionId: text("assertion_id"),
+    predecessorId: text("predecessor_id"),
+    operation: text().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.id] }),
+    uniqueIndex("entity_kind_source_support_predecessor").on(
+      table.predecessorId,
+    ),
+    index("entity_kind_source_support_scope").on(
+      table.entityId,
+      table.sourceSubjectId,
+      table.sourceIdentity,
+      table.nativeAddress,
+      table.coverageId,
+    ),
+    check(
+      "entity_kind_source_support_operation",
+      sql`operation IN ('assert', 'retract')`,
+    ),
+  ],
+);
+
+/** 当前部署的单一本地用户与普通 Person 实体的显式绑定。 */
+export const localUsers = sqliteTable(
+  "local_users",
+  {
+    userId: text("user_id").notNull(),
+    personId: text("person_id").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId] }),
+    uniqueIndex("local_users_person").on(table.personId),
+    foreignKey({ columns: [table.personId], foreignColumns: [entities.id] }),
+  ],
 );
 
 export const sourceAssociations = sqliteTable(
@@ -442,6 +565,34 @@ export const artifactRevisions = sqliteTable(
   ],
 );
 
+/** 当前用户对精确产物修订版的播放状态。 */
+export const artifactInteractionStates = sqliteTable(
+  "artifact_interaction_states",
+  {
+    userId: text("user_id").notNull(),
+    revisionId: text("revision_id").notNull(),
+    positionMilliseconds: integer("position_milliseconds").notNull(),
+    completed: integer().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.revisionId] }),
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [localUsers.userId],
+    }),
+    foreignKey({
+      columns: [table.revisionId],
+      foreignColumns: [artifactRevisions.id],
+    }),
+    check(
+      "artifact_interaction_states_position",
+      sql`position_milliseconds >= 0`,
+    ),
+    check("artifact_interaction_states_completed", sql`completed IN (0, 1)`),
+    index("artifact_interaction_states_revision").on(table.revisionId),
+  ],
+);
+
 /** 渐进确认把普通修订版证据绑定到当时已有的观察；它不是选择 token 或授权状态。 */
 export const observedRevisionConfirmations = sqliteTable(
   "observed_revision_confirmations",
@@ -469,6 +620,7 @@ export const currentFileObservations = sqliteTable(
   "current_file_observations",
   {
     locationId: text("location_id").notNull(),
+    address: text().notNull(),
     snapshotId: text("snapshot_id").notNull(),
     observedAt: text("observed_at").notNull(),
     size: integer().notNull(),
@@ -481,6 +633,7 @@ export const currentFileObservations = sqliteTable(
       columns: [table.locationId],
     }),
     index("current_file_observations_snapshot").on(table.snapshotId),
+    uniqueIndex("current_file_observations_address").on(table.address),
   ],
 );
 
@@ -554,6 +707,10 @@ export const artifactAssociations = sqliteTable(
   "artifact_associations",
   {
     id: text().notNull(),
+    targetKind: text("target_kind").notNull(),
+    targetEntityId: text("target_entity_id"),
+    targetArtifactId: text("target_artifact_id"),
+    targetRevisionId: text("target_revision_id"),
     subjectId: text("subject_id").notNull(),
     artifactId: text("artifact_id").notNull(),
     role: text().notNull(),
@@ -564,6 +721,12 @@ export const artifactAssociations = sqliteTable(
   },
   (table) => [
     primaryKey({ name: "artifact_associations_pk", columns: [table.id] }),
+    check(
+      "artifact_associations_target",
+      sql.raw(
+        "(target_kind = 'entity' AND target_entity_id IS NOT NULL AND target_artifact_id IS NULL AND target_revision_id IS NULL) OR (target_kind = 'artifact-revision' AND target_entity_id IS NULL AND target_artifact_id IS NOT NULL AND target_revision_id IS NOT NULL)",
+      ),
+    ),
     index("artifact_associations_subject").on(table.subjectId),
     index("artifact_associations_source_association_role").on(
       table.subjectId,
@@ -594,6 +757,10 @@ export const metadataAssertions = sqliteTable(
   "metadata_assertions",
   {
     id: integer().primaryKey({ autoIncrement: true }),
+    targetKind: text("target_kind").notNull(),
+    targetEntityId: text("target_entity_id"),
+    targetArtifactId: text("target_artifact_id"),
+    targetRevisionId: text("target_revision_id"),
     subjectId: text("subject_id").notNull(),
     property: text().notNull(),
     value: text().notNull(),
@@ -604,8 +771,15 @@ export const metadataAssertions = sqliteTable(
     qualifiersJson: text("qualifiers_json").notNull().default("[]"),
     producerJson: text("producer_json"),
     authoredByJson: text("authored_by_json"),
+    recognitionDecisionId: text("recognition_decision_id"),
   },
   (table) => [
+    check(
+      "metadata_assertions_target",
+      sql.raw(
+        "(target_kind = 'entity' AND target_entity_id IS NOT NULL AND target_artifact_id IS NULL AND target_revision_id IS NULL) OR (target_kind = 'artifact-revision' AND target_entity_id IS NULL AND target_artifact_id IS NOT NULL AND target_revision_id IS NOT NULL)",
+      ),
+    ),
     index("metadata_assertions_subject_property").on(
       table.subjectId,
       table.property,
@@ -639,20 +813,122 @@ export const entityRelationships = sqliteTable(
   "entity_relationships",
   {
     id: text().notNull(),
-    subjectId: text("subject_id").notNull(),
-    participantId: text("participant_id").notNull(),
     type: text().notNull(),
-    role: text().notNull(),
+    participantsJson: text("participants_json").notNull(),
     sourceRecordIdsJson: text("source_record_ids_json").notNull(),
-    isCurrent: integer("is_current").notNull().default(1),
     qualifiersJson: text("qualifiers_json").notNull().default("[]"),
     producerJson: text("producer_json"),
   },
   (table) => [
     primaryKey({ name: "entity_relationships_pk", columns: [table.id] }),
-    index("entity_relationships_subject").on(table.subjectId),
-    index("entity_relationships_participant").on(table.participantId),
-    index("entity_relationships_subject_type").on(table.subjectId, table.type),
+  ],
+);
+
+export const entityRelationshipParticipants = sqliteTable(
+  "entity_relationship_participants",
+  {
+    relationshipId: text("relationship_id").notNull(),
+    entityId: text("entity_id").notNull(),
+    role: text().notNull(),
+    mentionIdsJson: text("mention_ids_json").notNull().default("[]"),
+  },
+  (table) => [
+    primaryKey({
+      name: "entity_relationship_participants_pk",
+      columns: [table.relationshipId, table.entityId, table.role],
+    }),
+    index("entity_relationship_participants_entity").on(table.entityId),
+    index("entity_relationship_participants_relationship").on(
+      table.relationshipId,
+    ),
+  ],
+);
+
+/** 仅追加的人工关系决定；决定头是可清除的投影指针，来源事实保持不变。 */
+export const relationshipDecisions = sqliteTable(
+  "relationship_decisions",
+  {
+    id: text().notNull(),
+    coordinateJson: text("coordinate_json").notNull(),
+    kind: text().notNull(),
+    relationshipIdsJson: text("relationship_ids_json").notNull().default("[]"),
+    manualRelationshipId: text("manual_relationship_id"),
+    actorId: text("actor_id").notNull(),
+  },
+  (table) => [
+    primaryKey({ name: "relationship_decisions_pk", columns: [table.id] }),
+  ],
+);
+
+export const relationshipDecisionHeads = sqliteTable(
+  "relationship_decision_heads",
+  {
+    coordinateKey: text("coordinate_key").notNull(),
+    decisionId: text("decision_id").notNull(),
+  },
+  (table) => [
+    primaryKey({
+      name: "relationship_decision_heads_pk",
+      columns: [table.coordinateKey],
+    }),
+  ],
+);
+
+/** 人工关系是由决定支持的不可变事实，绝不是伪造的来源记录。 */
+export const relationshipManualSupports = sqliteTable(
+  "relationship_manual_supports",
+  {
+    relationshipId: text("relationship_id").notNull(),
+    decisionId: text("decision_id").notNull(),
+  },
+  (table) => [
+    primaryKey({
+      name: "relationship_manual_supports_pk",
+      columns: [table.relationshipId],
+    }),
+    index("relationship_manual_supports_decision").on(table.decisionId),
+  ],
+);
+
+/** 仅追加的相关实体身份合并；事实的原始主体不随之改写。 */
+export const entityIdentityMerges = sqliteTable(
+  "entity_identity_merges",
+  {
+    id: text().notNull(),
+    retainedEntityId: text("retained_entity_id").notNull(),
+    mergedEntityId: text("merged_entity_id").notNull(),
+    actorId: text("actor_id").notNull(),
+    commitmentId: text("commitment_id").notNull(),
+    impactFingerprint: text("impact_fingerprint").notNull(),
+  },
+  (table) => [
+    primaryKey({ name: "entity_identity_merges_pk", columns: [table.id] }),
+    uniqueIndex("entity_identity_merges_commitment").on(
+      table.actorId,
+      table.commitmentId,
+    ),
+  ],
+);
+
+/** 撤销只指向一条精确合并，不回滚后续事实。 */
+export const entityIdentityMergeRetractions = sqliteTable(
+  "entity_identity_merge_retractions",
+  {
+    id: text().notNull(),
+    mergeId: text("merge_id").notNull(),
+    actorId: text("actor_id").notNull(),
+    commitmentId: text("commitment_id").notNull(),
+  },
+  (table) => [
+    primaryKey({
+      name: "entity_identity_merge_retractions_pk",
+      columns: [table.id],
+    }),
+    uniqueIndex("entity_identity_merge_retractions_merge").on(table.mergeId),
+    uniqueIndex("entity_identity_merge_retractions_commitment").on(
+      table.actorId,
+      table.commitmentId,
+    ),
   ],
 );
 
@@ -687,11 +963,150 @@ export const entityResolutionDecisions = sqliteTable(
     rule: text().notNull(),
     sourceRecordIdsJson: text("source_record_ids_json").notNull(),
     producerJson: text("producer_json"),
+    basis: text().notNull().default("source"),
+    replacesDecisionId: text("replaces_decision_id"),
+    actorId: text("actor_id"),
+    operation: text().notNull().default("select"),
   },
   (table) => [
     primaryKey({ name: "entity_resolution_decisions_pk", columns: [table.id] }),
     index("entity_resolution_decisions_mention").on(table.mentionId),
     index("entity_resolution_decisions_entity").on(table.entityId),
+  ],
+);
+
+/** 格式观察产生的本地实体；刻意不借用外部来源身份列。 */
+export const observedEntities = sqliteTable(
+  "observed_entities",
+  {
+    id: text().notNull(),
+    assetId: text("asset_id").notNull(),
+    artifactId: text("artifact_id").notNull(),
+    producerJson: text("producer_json").notNull(),
+    coverageId: text("coverage_id").notNull(),
+    occurrenceSlot: text("occurrence_slot").notNull(),
+    preservedValue: text("preserved_value").notNull(),
+    label: text().notNull(),
+    locator: text().notNull(),
+  },
+  (table) => [
+    primaryKey({ name: "observed_entities_pk", columns: [table.id] }),
+    uniqueIndex("observed_entities_local_identity").on(
+      table.assetId,
+      table.artifactId,
+      table.producerJson,
+      table.coverageId,
+      table.occurrenceSlot,
+      table.preservedValue,
+    ),
+  ],
+);
+
+export const observedEntityMentions = sqliteTable(
+  "observed_entity_mentions",
+  {
+    id: text().notNull(),
+    entityId: text("entity_id").notNull(),
+    revisionId: text("revision_id").notNull(),
+    sourceSlot: text("source_slot").notNull(),
+    field: text().notNull(),
+    role: text().notNull(),
+    label: text().notNull(),
+    locator: text().notNull(),
+  },
+  (table) => [
+    primaryKey({ name: "observed_entity_mentions_pk", columns: [table.id] }),
+    index("observed_entity_mentions_entity").on(table.entityId),
+  ],
+);
+
+export const observedEntityResolutions = sqliteTable(
+  "observed_entity_resolutions",
+  {
+    mentionId: text("mention_id").notNull(),
+    entityId: text("entity_id").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.mentionId, table.entityId] })],
+);
+
+export const observedEntityGraphSupports = sqliteTable(
+  "observed_entity_graph_supports",
+  {
+    id: text().notNull(),
+    recognitionDecisionId: text("recognition_decision_id").notNull(),
+    assetId: text("asset_id").notNull(),
+    artifactId: text("artifact_id").notNull(),
+    revisionId: text("revision_id").notNull(),
+    producerJson: text("producer_json").notNull(),
+    coverageId: text("coverage_id").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.id] }),
+    foreignKey({
+      columns: [table.recognitionDecisionId],
+      foreignColumns: [recognitionDecisions.id],
+    }),
+    foreignKey({ columns: [table.assetId], foreignColumns: [entities.id] }),
+    foreignKey({ columns: [table.artifactId], foreignColumns: [artifacts.id] }),
+    foreignKey({
+      columns: [table.revisionId],
+      foreignColumns: [artifactRevisions.id],
+    }),
+    uniqueIndex("observed_entity_graph_supports_exact").on(
+      table.recognitionDecisionId,
+      table.artifactId,
+      table.revisionId,
+      table.producerJson,
+      table.coverageId,
+    ),
+    index("observed_entity_graph_supports_current").on(
+      table.assetId,
+      table.recognitionDecisionId,
+    ),
+  ],
+);
+
+/** 一份观察图精确拥有的实体；同一 Artifact 的不同 revision 绝不共享成员边界。 */
+export const observedEntityGraphEntities = sqliteTable(
+  "observed_entity_graph_entities",
+  {
+    graphId: text("graph_id").notNull(),
+    entityId: text("entity_id").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.graphId, table.entityId] }),
+    foreignKey({
+      columns: [table.graphId],
+      foreignColumns: [observedEntityGraphSupports.id],
+    }),
+    foreignKey({
+      columns: [table.entityId],
+      foreignColumns: [observedEntities.id],
+    }),
+    index("observed_entity_graph_entities_entity").on(table.entityId),
+  ],
+);
+
+export const observedEntityGraphRelationships = sqliteTable(
+  "observed_entity_graph_relationships",
+  {
+    graphId: text("graph_id").notNull(),
+    relationshipId: text("relationship_id").notNull(),
+    sourceSlot: text("source_slot").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.graphId, table.relationshipId] }),
+    foreignKey({
+      columns: [table.graphId],
+      foreignColumns: [observedEntityGraphSupports.id],
+    }),
+    foreignKey({
+      columns: [table.relationshipId],
+      foreignColumns: [entityRelationships.id],
+    }),
+    index("observed_entity_graph_relationships_relationship").on(
+      table.relationshipId,
+    ),
   ],
 );
 
@@ -943,6 +1358,7 @@ export const relationshipLifecycles = sqliteTable(
     sourceRecordId: text("source_record_id").notNull(),
     sourceSlot: text("source_slot").notNull().default(""),
     predecessorRelationshipId: text("predecessor_relationship_id"),
+    sourceSubjectId: text("source_subject_id").notNull().default(""),
   },
   (table) => [
     primaryKey({
@@ -950,6 +1366,7 @@ export const relationshipLifecycles = sqliteTable(
       columns: [table.relationshipId],
     }),
     index("relationship_lifecycles_scope_slot").on(
+      table.sourceSubjectId,
       table.sourceIdentity,
       table.nativeAddress,
       table.coverageId,
@@ -1024,16 +1441,6 @@ export const currentSourceAssociations = sqliteTable(
     associationId: text("association_id").notNull(),
   },
   (table) => [primaryKey({ columns: [table.subjectId, table.associationId] })],
-);
-
-export const metadataPolicyEnrollments = sqliteTable(
-  "metadata_policy_enrollments",
-  {
-    subjectId: text("subject_id").notNull(),
-    policyId: text("policy_id").notNull(),
-    executionId: text("execution_id").notNull(),
-  },
-  (table) => [primaryKey({ columns: [table.subjectId, table.policyId] })],
 );
 
 /** 领域持有的来源刷新运行权威；执行只保留 ID。 */
@@ -1148,6 +1555,13 @@ export const catalogueSchema = {
   sourceRecords,
   recognitionProposals,
   entities,
+  entityKindAssertions,
+  entityKindDecisions,
+  entityKindSourceSupports,
+  localEntityCommitments,
+  localEntityNames,
+  localUsers,
+  artifactInteractionStates,
   sourceAssociations,
   sourceAssociationChangeProposals,
   sourceAssociationDecisions,
@@ -1170,8 +1584,20 @@ export const catalogueSchema = {
   metadataAssertions,
   sourcedEntities,
   entityRelationships,
+  entityRelationshipParticipants,
+  relationshipDecisions,
+  relationshipDecisionHeads,
+  relationshipManualSupports,
+  entityIdentityMerges,
+  entityIdentityMergeRetractions,
   entityMentions,
   entityResolutionDecisions,
+  observedEntities,
+  observedEntityMentions,
+  observedEntityResolutions,
+  observedEntityGraphSupports,
+  observedEntityGraphEntities,
+  observedEntityGraphRelationships,
   sourceLineageHeads,
   sourceRefreshChanges,
   changeImpactPreviews,
@@ -1189,7 +1615,6 @@ export const catalogueSchema = {
   artifactAssociationSupersessions,
   artifactAssociationRetractions,
   currentSourceAssociations,
-  metadataPolicyEnrollments,
   sourceRefreshRuns,
   sourceRefreshScopes,
   sourceRefreshChangeSets,

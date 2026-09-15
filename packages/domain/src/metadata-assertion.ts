@@ -1,10 +1,15 @@
 import type { CapabilityCoordinate } from "./index.ts";
 
-export type MetadataAssertion = {
-  /**
-   * 本断言描述的同一提议中，一个由来源解析的实体。省略时刻意表示已接受数字资产。
-   */
-  readonly subjectId?: string;
+/** 描述性事实明确指向实体，或一个已经物化的精确产物修订版。 */
+export type DescriptionTarget =
+  | { readonly kind: "entity"; readonly entityId: string }
+  | {
+      readonly kind: "artifact-revision";
+      readonly artifactId: string;
+      readonly revisionId: string;
+    };
+
+type MetadataAssertionFields = {
   readonly property: string;
   /** 稳定来源契约槽位；仅属性相等绝不隐含 lineage。 */
   readonly sourceSlot: string;
@@ -31,4 +36,16 @@ export type MetadataAssertion = {
     readonly revisionId: string;
     readonly locator: string;
   };
+};
+
+/** 来源解释阶段尚未分配接受实体，因此只允许指向同批次的来源实体。 */
+export type MetadataAssertionCandidate = MetadataAssertionFields & {
+  readonly subjectId?: string;
+};
+
+/** 已接受和持久化的元数据断言；描述目标不可省略。 */
+export type MetadataAssertion = MetadataAssertionFields & {
+  readonly target: DescriptionTarget;
+  /** 本地事实提升到实体目标时，保留证明代表关系的识别决定。 */
+  readonly recognitionDecisionId?: string;
 };

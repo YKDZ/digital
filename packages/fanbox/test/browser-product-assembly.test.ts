@@ -597,9 +597,9 @@ describe("FANBOX browser product assembly", () => {
       }),
     ).rejects.toThrow("FANBOX 来源连接验证失败");
     expect(renderer.serverKills).toBe(1);
-    await expect(stat(renderer.launchOptions!.env.HOME!)).rejects.toMatchObject(
-      { code: "ENOENT" },
-    );
+    await expect(stat(renderer.launchOptions!.env.HOME)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
     await assembly.close();
   });
 
@@ -956,7 +956,7 @@ describe("FANBOX browser product assembly", () => {
         );
         if (pending === "disposer")
           await expect(transaction).rejects.toThrow("FANBOX 来源连接验证失败");
-        if (pending === "operation") renderer.releaseNewContext!();
+        if (pending === "operation") renderer.releaseNewContext();
         else renderer.releaseContextClose!();
         await Promise.resolve();
         await Promise.resolve();

@@ -9,12 +9,16 @@ describe("作品封面与文件图片归属", () => {
       metadata: [{ property: "asset.title", value: "音声作品" }],
       artifactAssociations: [
         {
-          subjectId: "script-book",
+          target: { kind: "entity", entityId: "script-book" },
           artifactId: "script-page",
           role: "asset.primary-cover",
         },
         {
-          subjectId: "audio-work",
+          target: {
+            kind: "artifact-revision",
+            artifactId: "script-pdf",
+            revisionId: "script-revision",
+          },
           artifactId: "script-page",
           role: "asset.material-image",
           observedArtifactPart: {
@@ -25,6 +29,9 @@ describe("作品封面与文件图片归属", () => {
         },
       ],
       artifactRevisions: [{ id: "script-revision", artifactId: "script-pdf" }],
+      currentLocationRevisions: [
+        { locationId: "script-pdf-location", revisionId: "script-revision" },
+      ],
       locations: [
         {
           artifactId: "script-page",
@@ -32,6 +39,7 @@ describe("作品封面与文件图片归属", () => {
           address: "/managed/script.png",
         },
         {
+          id: "script-pdf-location",
           artifactId: "script-pdf",
           kind: "observed",
           address: "/media/台本.pdf",
@@ -51,17 +59,18 @@ describe("作品封面与文件图片归属", () => {
 
     const withOwnCover = projectAssetView({
       id: "audio-work",
+      primaryCoverArtifactId: "official-cover",
       metadata: [],
       artifactAssociations: [
         ...withoutOwnCover.files!.flatMap(() => [
           {
-            subjectId: "other-work",
+            target: { kind: "entity", entityId: "other-work" },
             artifactId: "other-cover",
             role: "asset.primary-cover",
           },
         ]),
         {
-          subjectId: "audio-work",
+          target: { kind: "entity", entityId: "audio-work" },
           artifactId: "official-cover",
           role: "asset.primary-cover",
         },
@@ -88,7 +97,11 @@ describe("作品封面与文件图片归属", () => {
       metadata: [],
       artifactAssociations: [
         {
-          subjectId: "book",
+          target: {
+            kind: "artifact-revision",
+            artifactId: "book-pdf",
+            revisionId: "old-revision",
+          },
           artifactId: "old-page",
           role: "asset.material-image",
           observedArtifactPart: {
@@ -99,8 +112,12 @@ describe("作品封面与文件图片归属", () => {
         },
       ],
       artifactRevisions: [{ id: "current-revision", artifactId: "book-pdf" }],
+      currentLocationRevisions: [
+        { locationId: "book-pdf-location", revisionId: "current-revision" },
+      ],
       locations: [
         {
+          id: "book-pdf-location",
           artifactId: "book-pdf",
           kind: "observed",
           address: "/media/book.pdf",
@@ -114,18 +131,34 @@ describe("作品封面与文件图片归属", () => {
     });
 
     expect(view.cover).toBeUndefined();
-    expect(view.files).toEqual([{ name: "book.pdf", format: "PDF" }]);
+    expect(view.files).toEqual([
+      {
+        name: "book.pdf",
+        format: "PDF",
+        revisionId: "current-revision",
+      },
+    ]);
   });
 
   it("明确单文件承载整项内容时同一精确图片可同时服务作品与文件", () => {
     const view = projectAssetView({
       id: "single-book",
+      primaryCoverArtifactId: "page-image",
       metadata: [],
       artifactAssociations: [
         {
-          subjectId: "single-book",
+          target: { kind: "entity", entityId: "single-book" },
           artifactId: "page-image",
           role: "asset.primary-cover",
+        },
+        {
+          target: {
+            kind: "artifact-revision",
+            artifactId: "single-pdf",
+            revisionId: "single-revision",
+          },
+          artifactId: "page-image",
+          role: "asset.material-image",
           observedArtifactPart: {
             artifactId: "single-pdf",
             revisionId: "single-revision",
@@ -134,8 +167,12 @@ describe("作品封面与文件图片归属", () => {
         },
       ],
       artifactRevisions: [{ id: "single-revision", artifactId: "single-pdf" }],
+      currentLocationRevisions: [
+        { locationId: "single-pdf-location", revisionId: "single-revision" },
+      ],
       locations: [
         {
+          id: "single-pdf-location",
           artifactId: "single-pdf",
           kind: "observed",
           address: "/media/single.pdf",

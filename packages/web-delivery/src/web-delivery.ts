@@ -47,6 +47,7 @@ import type {
 } from "./catalogue.ts";
 import type { SettingsSnapshot } from "./catalogue.ts";
 import { libraryItems, selectLibraryPage } from "./library-query.ts";
+import { createRelationshipApi } from "./relationship-api.ts";
 
 export async function intakeSnapshot(input: {
   readonly rootId?: string;
@@ -122,11 +123,11 @@ export async function updateIntake(value: unknown): Promise<IntakeContent> {
   return intakeContent(
     await application().prepareLocalContent({
       executionId,
-      relativePaths: input.relativePaths as string[],
-      ...(input.name === undefined ? {} : { name: input.name as string }),
+      relativePaths: input.relativePaths,
+      ...(input.name === undefined ? {} : { name: input.name }),
       ...(input.classification === undefined
         ? {}
-        : { classification: input.classification as string }),
+        : { classification: input.classification }),
     }),
   );
 }
@@ -327,7 +328,10 @@ export function createWebDelivery(
   const catalogueAutomation = createCatalogueAutomation(application);
   activeCatalogueAutomation = catalogueAutomation;
   return {
-    api: createApi(),
+    api: createApi().route(
+      "/relationships",
+      createRelationshipApi(() => application.workflow),
+    ),
     startCatalogueAutomation: catalogueAutomation.start,
     catalogueReady: catalogueAutomation.ready,
     catalogueReadinessFailure: catalogueAutomation.failure,
@@ -366,8 +370,7 @@ function createCatalogueAutomation(
     },
     ready(): boolean {
       return (
-        automationStart !== undefined &&
-        application.automation.recoveryReady === true
+        automationStart !== undefined && application.automation.recoveryReady
       );
     },
     failure(): string | undefined {
@@ -1073,16 +1076,53 @@ function assetViewFactsForAccepted(
 ): AssetViewFacts {
   return {
     id: accepted.entity.id,
+    primaryCoverArtifactId: accepted.primaryCoverArtifactId,
     sourceAssociation: accepted.recognitionSourceAssociation,
     sourceAssociations: accepted.sourceAssociations,
     metadata: accepted.effectiveMetadata,
     sourceArtifactCandidates: accepted.sourceArtifactCandidates,
-    entities: accepted.entities,
+    currentRelatedEntities: accepted.currentRelatedEntities,
     relationships: accepted.relationships,
     artifactAssociations: accepted.artifactAssociations,
     artifactRevisions: accepted.artifactRevisions,
+    ...(accepted.currentLocationRevisions === undefined
+      ? {}
+      : { currentLocationRevisions: accepted.currentLocationRevisions }),
+    blobs: accepted.blobs,
     locations: accepted.locations,
   };
+}
+
+async function withCurrentFileDownloads(
+  facts: AssetViewFacts,
+): Promise<AssetViewFacts> {
+  const locations = await Promise.all(
+    facts.locations.map(async (location) => {
+      if (location.kind !== "observed" || location.id === undefined)
+        return location;
+      const observedDownload =
+        await configuredProductApplication().observedFileDownloadForLocation(
+          location.id,
+        );
+      if (observedDownload !== undefined)
+        return {
+          ...location,
+          byteLength: observedDownload.byteLength,
+          downloadUrl: `/api/observed-file-downloads/${encodeURIComponent(observedDownload.selectionId)}`,
+        };
+      const revisions = (facts.artifactRevisions ?? []).filter(
+        (revision) => revision.artifactId === location.artifactId,
+      );
+      const revision = revisions.length === 1 ? revisions[0] : undefined;
+      return revision === undefined
+        ? location
+        : {
+            ...location,
+            downloadUrl: `/api/artifact-downloads/${encodeURIComponent(revision.id)}`,
+          };
+    }),
+  );
+  return { ...facts, locations };
 }
 
 /**
@@ -1160,7 +1200,9 @@ export async function catalogueSubject(
     (entry) => entry.view.id === id || entry.subjectIds.includes(id),
   );
   if (item === undefined) return undefined;
-  const assets = await catalogueViewsForSubjects(item.subjectIds);
+  const assets = await catalogueViewsForSubjects(item.subjectIds, {
+    withFileDownloads: true,
+  });
   const asset = assets.find((view) => view.id === item.view.id);
   if (asset === undefined) return undefined;
   return {
@@ -1169,7 +1211,10 @@ export async function catalogueSubject(
   };
 }
 
-async function catalogueViewsForSubjects(subjectIds: readonly string[]) {
+async function catalogueViewsForSubjects(
+  subjectIds: readonly string[],
+  options: { readonly withFileDownloads?: boolean } = {},
+) {
   const facts: AssetViewFacts[] = [];
   for (let offset = 0; offset < subjectIds.length; offset += 100) {
     const batch = subjectIds.slice(offset, offset + 100);
@@ -1177,9 +1222,37 @@ async function catalogueViewsForSubjects(subjectIds: readonly string[]) {
       limit: batch.length,
       subjectIds: batch,
     });
-    facts.push(...page.items.map(assetViewFactsForAccepted));
+    for (const accepted of page.items) {
+      const viewFacts = assetViewFactsForAccepted(accepted);
+      facts.push(
+        options.withFileDownloads === true
+          ? await withCurrentFileDownloads(viewFacts)
+          : viewFacts,
+      );
+    }
   }
-  return projectCatalogueAssets(facts);
+  return await projectCatalogueAssetsForCurrentUser(facts);
+}
+
+async function projectCatalogueAssetsForCurrentUser(
+  facts: readonly AssetViewFacts[],
+): Promise<CatalogueSnapshot["assets"]> {
+  const revisionIds = facts.flatMap((fact) =>
+    (fact.artifactRevisions ?? []).map((revision) => revision.id),
+  );
+  const interactionStates =
+    await configuredProductApplication().interactions.read(revisionIds);
+  return projectCatalogueAssets(
+    facts.map((fact) => ({ ...fact, interactionStates })),
+  );
+}
+
+export async function saveCurrentPlaybackInteraction(input: {
+  readonly artifactRevisionId: string;
+  readonly positionMilliseconds: number;
+  readonly completed: boolean;
+}): Promise<void> {
+  await configuredProductApplication().interactions.save(input);
 }
 
 function folderName(directory: string): string {
@@ -1403,7 +1476,7 @@ export async function catalogueSurface(
     return {
       surface: input.surface,
       configured,
-      assets: projectCatalogueAssets(facts),
+      assets: await projectCatalogueAssetsForCurrentUser(facts),
       pagination:
         page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor },
     };
@@ -1463,7 +1536,7 @@ export async function catalogueSnapshot(
   );
   return {
     configured: true,
-    assets: projectCatalogueAssets(facts),
+    assets: await projectCatalogueAssetsForCurrentUser(facts),
     executions: history.items
       .map(deliveryExecution)
       .filter((item): item is NonNullable<typeof item> => item !== undefined),
@@ -1498,6 +1571,7 @@ export async function startRefresh(input: {
   readonly directedSourceAddress?: string;
   readonly directedSourceIdentity?: string;
   readonly directedSourceInput?: Readonly<Record<string, string>>;
+  readonly acceptTrusted?: boolean;
 }): Promise<{ readonly id: string }> {
   return await startRefreshWith(application(), input, executions());
 }
@@ -1643,6 +1717,22 @@ export async function retrySourceAssociationDecision(executionId: string) {
       },
     });
   });
+}
+
+export async function cancelExecution(executionId: string, value: unknown) {
+  const input = settingsObject(value);
+  if (Object.keys(input).some((key) => key !== "requestedBy"))
+    throw new Error("取消请求包含不支持的字段");
+  const result = await application().cancel({
+    executionId,
+    requestedBy: settingsText(input, "requestedBy"),
+    requestedAt: new Date().toISOString(),
+  });
+  return {
+    id: result.execution.id,
+    status: result.execution.status,
+    outcome: result.execution.outcome,
+  };
 }
 
 export async function startRecognitionRetraction(value: unknown) {
@@ -1825,7 +1915,7 @@ export async function startRefreshWith(
     await subject.scanObservedScope({
       registrationId: observedRootId,
       relativeScope: input.relativeScope ?? ".",
-      acceptTrusted: true,
+      acceptTrusted: input.acceptTrusted ?? true,
       // scan 被接受前不存在专门 View；General Asset View 持有这个有界初始需求。
       informationRequirement: generalAssetViewInformationRequirement,
       onExecutionStarted(execution) {

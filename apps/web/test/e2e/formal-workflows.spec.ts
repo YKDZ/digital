@@ -85,48 +85,49 @@ for (const viewport of [
   }) => {
     await page.setViewportSize(viewport);
     await mockCatalogue(page, frierenCatalogue());
-    let requestBody: unknown;
-    await page.route("**/api/refresh", async (route) => {
-      requestBody = await route.request().postDataJSON();
-      await route.fulfill({
-        status: 201,
-        json: { id: "frieren-29-rescrape" },
-      });
-    });
-
-    await page.goto("/series/bangumi-series%3Afrieren-work-1", {
+    const seriesPath = "/series/bangumi-series%3Afrieren-work-1";
+    const secondSeasonPath = `${seriesPath}?season=frieren-work-2`;
+    await page.goto(secondSeasonPath, {
       waitUntil: "domcontentloaded",
     });
     await expect(page.getByTestId("bangumi-detail")).toBeVisible();
-    await expect(page.getByTestId("bangumi-episode")).toHaveCount(28);
+    await expect(page.getByTestId("bangumi-episode-card")).toHaveCount(10);
+    await page.reload();
+    await expect(page.getByTestId("bangumi-episode-card")).toHaveCount(10);
+
+    await page.goto(seriesPath, { waitUntil: "domcontentloaded" });
+    await expect(page.getByTestId("bangumi-episode-card")).toHaveCount(28);
 
     await page.getByRole("tab", { name: "葬送的芙莉莲 第二季" }).click();
-    await expect(page.getByTestId("bangumi-episode")).toHaveCount(10);
+    await expect(page).toHaveURL(secondSeasonPath);
+    await expect(page.getByTestId("bangumi-episode-card")).toHaveCount(10);
+    await page.reload();
+    await expect(page.getByTestId("bangumi-episode-card")).toHaveCount(10);
+    await page.goBack();
+    await expect(page.getByTestId("bangumi-episode-card")).toHaveCount(28);
+    await page.goForward();
+    await expect(page.getByTestId("bangumi-episode-card")).toHaveCount(10);
     await expect(page.getByText("本地可用")).toHaveCount(0);
     const episode29 = page
-      .getByTestId("bangumi-episode")
-      .filter({ hasText: "连续第 29 集" });
+      .getByTestId("bangumi-episode-card")
+      .filter({ hasText: "第 29 集" });
     await expect(episode29).toContainText("第 1 集");
-    await expect(episode29.getByRole("link").first()).toHaveAttribute(
-      "href",
-      "/assets/frieren-29",
-    );
-    await episode29.getByRole("button", { name: "重新刮削" }).click();
+    await expect(episode29).toHaveCount(1);
+    await expect(episode29).toHaveAttribute("href", "/assets/frieren-29");
 
-    expect(requestBody).toEqual({
-      target: { subjectId: "frieren-29" },
-      operation: "rescrape",
-    });
-
-    await episode29.getByRole("link").first().click();
+    await episode29.click();
     await expect(page).toHaveURL("/assets/frieren-29");
     await expect(page.getByTestId("bangumi-episode-detail")).toBeVisible();
     await expect(page.getByRole("heading", { name: "第 29 集" })).toBeVisible();
-    await expect(page.getByTestId("bangumi-episode")).toHaveCount(0);
+    await page.reload();
+    await expect(page.getByTestId("bangumi-episode-detail")).toBeVisible();
+    await expect(page.getByText("连续第 29 集")).toBeVisible();
     await expect(page.getByText("本地可用")).toHaveCount(0);
     await expect(
       page.getByRole("link", { name: "返回葬送的芙莉莲 第二季" }),
-    ).toHaveAttribute("href", "/series/bangumi-series%3Afrieren-work-1");
+    ).toHaveAttribute("href", secondSeasonPath);
+    await page.getByRole("link", { name: "返回葬送的芙莉莲 第二季" }).click();
+    await expect(page.getByTestId("bangumi-episode-card")).toHaveCount(10);
   });
 }
 

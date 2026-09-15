@@ -183,10 +183,10 @@ it.each([
       consumer: {
         contractVersion: "consumer-playback/1",
         supportsByteRanges: true,
-        media: [{ mediaType, codecs: [...codecs].reverse() }],
+        media: [{ mediaType, codecs: [...codecs].toReversed() }],
       },
       preferences: {},
-      format: { mediaType, container, codecs: [...codecs].reverse() },
+      format: { mediaType, container, codecs: [...codecs].toReversed() },
       deployment: {
         direct: { contractVersion: "direct-playback/1" },
         processors: [],

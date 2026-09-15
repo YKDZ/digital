@@ -47,9 +47,12 @@ function seedContent(
       sourceArtifacts: [],
     },
   };
+  database.prepare("INSERT INTO entities (id) VALUES (?)").run(id);
   database
-    .prepare("INSERT INTO entities (id, kind) VALUES (?, 'digital-asset')")
-    .run(id);
+    .prepare(
+      "INSERT INTO entity_kind_assertions (id, entity_id, kind, basis) VALUES (?, ?, 'digital-asset', 'recognition')",
+    )
+    .run(`kind-${id}`, id);
   database
     .prepare(
       "INSERT INTO recognition_proposals (id, execution_id, basis_json, rule_results_json) VALUES (?, ?, ?, '[]')",
@@ -88,9 +91,10 @@ function seedContent(
   for (const item of metadata) {
     const result = database
       .prepare(
-        "INSERT INTO metadata_assertions (subject_id, property, value, source_record_ids_json, source_slot) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO metadata_assertions (target_kind, target_entity_id, subject_id, property, value, source_record_ids_json, source_slot) VALUES ('entity', ?, ?, ?, ?, ?, ?)",
       )
       .run(
+        id,
         id,
         item.property,
         item.value,

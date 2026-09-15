@@ -542,7 +542,7 @@ function stableBusinessProjection(
     covers: accepted.artifactAssociations
       .filter((association) => association.role === "asset.primary-cover")
       .map((association) => association.observedArtifactPart?.locator),
-    entityCount: accepted.entities?.length ?? 0,
+    entityCount: accepted.currentRelatedEntities?.length ?? 0,
     relationshipCount: accepted.relationships?.length ?? 0,
   };
 }
@@ -728,7 +728,7 @@ const journey: CliJourney = {
             ? undefined
             : state.officialProjections.get(publication.official.isbn),
         );
-        assert.deepEqual(accepted.entities ?? [], []);
+        assert.deepEqual(accepted.currentRelatedEntities ?? [], []);
         assert.deepEqual(accepted.entityMentions ?? [], []);
         assert.deepEqual(accepted.relationships ?? [], []);
         const stable = stableBusinessProjection(value, accepted);

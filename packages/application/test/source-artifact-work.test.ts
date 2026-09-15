@@ -129,7 +129,7 @@ describe("checkpointed source-artifact work", () => {
     });
     expect(projected.associations).toEqual([
       expect.objectContaining({
-        subjectId: "work",
+        target: { kind: "entity", entityId: "work" },
         role: "asset.primary-cover",
         sourceRecordIds: ["record"],
       }),

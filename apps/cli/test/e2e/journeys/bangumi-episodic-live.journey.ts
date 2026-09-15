@@ -326,7 +326,8 @@ export function assertBangumiAcceptedEpisodeSet(
     const position = (property: string, label: string): string => {
       const matches = accepted.metadata.filter(
         (metadata) =>
-          metadata.subjectId === accepted.entity.id &&
+          metadata.target.kind === "entity" &&
+          metadata.target.entityId === accepted.entity.id &&
           metadata.property === property,
       );
       assert.equal(matches.length, 1, `episode must retain one ${label}`);
@@ -370,7 +371,7 @@ export function assertBangumiAcceptedEpisodeSet(
       "observed writeback material must not become a primary cover",
     );
     const expectedSubjects = oracle.subjects;
-    const entities = accepted.entities ?? [];
+    const entities = accepted.currentRelatedEntities ?? [];
     assert.deepEqual(
       entities
         .map((entity) => `${entity.identityNamespace}:${entity.sourceKey}`)
@@ -398,11 +399,28 @@ export function assertBangumiAcceptedEpisodeSet(
     const memberships = relationships.filter(
       (relationship) =>
         relationship.type === "asset.membership" &&
-        relationship.role === "bangumi.subject.ordinary-episode",
+        relationship.participants.some(
+          (participant) =>
+            participant.role === "bangumi.subject.ordinary-episode",
+        ),
     );
     assert.equal(memberships.length, 1);
-    assert.equal(memberships[0]!.subjectId, accepted.entity.id);
-    assert.equal(memberships[0]!.participantId, seasonEntity.id);
+    assert.equal(
+      memberships[0]!.participants.some(
+        (participant) =>
+          participant.entityId === accepted.entity.id &&
+          participant.role === "asset",
+      ),
+      true,
+    );
+    assert.equal(
+      memberships[0]!.participants.some(
+        (participant) =>
+          participant.entityId === seasonEntity.id &&
+          participant.role === "bangumi.subject.ordinary-episode",
+      ),
+      true,
+    );
     assert.equal(
       memberships[0]!.sourceSlot,
       `bangumi.subject.ordinary-episode:${seasonSubject.sourceAddress}:${expected.sourceAddress}`,
@@ -431,7 +449,9 @@ export function assertBangumiAcceptedEpisodeSet(
     const sequels = relationships.filter(
       (relationship) =>
         relationship.type === "bangumi.subject.related" &&
-        relationship.role === "bangumi.subject.sequel",
+        relationship.participants.some(
+          (participant) => participant.role === "bangumi.subject.sequel",
+        ),
     );
     assert.equal(
       sequels.length,
@@ -448,11 +468,18 @@ export function assertBangumiAcceptedEpisodeSet(
       )!;
       const sequel = sequels.find(
         (relationship) =>
-          relationship.subjectId === predecessor.id &&
-          relationship.participantId === successor.id,
+          relationship.participants.some(
+            (participant) =>
+              participant.entityId === predecessor.id &&
+              participant.role === "bangumi.subject.predecessor",
+          ) &&
+          relationship.participants.some(
+            (participant) =>
+              participant.entityId === successor.id &&
+              participant.role === "bangumi.subject.sequel",
+          ),
       );
       assert.ok(sequel, "reviewed Bangumi season sequel relation is missing");
-      assert.notEqual(sequel.subjectId, sequel.participantId);
       assert.equal(
         sequel.sourceSlot,
         `bangumi.subject.sequel:${expectedSubjects[index - 1]!.sourceAddress}:${expectedSubjects[index]!.sourceAddress}`,
@@ -494,7 +521,7 @@ function stableAcceptedIdentity(
     entity: accepted.entity,
     recognitionSourceAssociation: accepted.recognitionSourceAssociation,
     sourceAssociations: accepted.sourceAssociations,
-    entities: (accepted.entities ?? [])
+    entities: (accepted.currentRelatedEntities ?? [])
       .map((entity) => ({
         id: entity.id,
         identityNamespace: entity.identityNamespace,
@@ -516,31 +543,29 @@ function stableAcceptedIdentity(
     artifactAssociations: accepted.artifactAssociations
       .map((association) => ({
         id: association.id,
-        subjectId: association.subjectId,
+        target: association.target,
         artifactId: association.artifactId,
         role: association.role,
       }))
       .toSorted((left, right) => left.id.localeCompare(right.id)),
     metadata: accepted.metadata
       .map((metadata) => ({
-        subjectId: metadata.subjectId,
+        target: metadata.target,
         property: metadata.property,
         value: metadata.value,
         sourceSlot: metadata.sourceSlot,
         sourceRecordIds: metadata.sourceRecordIds,
       }))
       .toSorted((left, right) =>
-        `${left.subjectId ?? ""}:${left.property}:${left.sourceSlot}`.localeCompare(
-          `${right.subjectId ?? ""}:${right.property}:${right.sourceSlot}`,
+        `${JSON.stringify(left.target)}:${left.property}:${left.sourceSlot}`.localeCompare(
+          `${JSON.stringify(right.target)}:${right.property}:${right.sourceSlot}`,
         ),
       ),
     relationships: (accepted.relationships ?? [])
       .map((relationship) => ({
         id: relationship.id,
-        subjectId: relationship.subjectId,
-        participantId: relationship.participantId,
+        participants: relationship.participants,
         type: relationship.type,
-        role: relationship.role,
         sourceSlot: relationship.sourceSlot,
         sourceRecordIds: relationship.sourceRecordIds,
         qualifiers: relationship.qualifiers,

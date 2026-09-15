@@ -308,7 +308,7 @@ function stableBusinessProjection(value: AssetRefreshInspection): unknown {
       covers: accepted.artifactAssociations
         .filter((association) => association.role === "asset.primary-cover")
         .map((association) => association.observedArtifactPart?.locator),
-      entityCount: accepted.entities?.length ?? 0,
+      entityCount: accepted.currentRelatedEntities?.length ?? 0,
       mentionCount: accepted.entityMentions?.length ?? 0,
       relationshipCount: accepted.relationships?.length ?? 0,
     };
@@ -352,7 +352,7 @@ function stablePublicationProjection(value: AssetRefreshInspection): unknown {
         locator: observedArtifactPart?.locator,
         hasSourceProvenance: (sourceRecordIds?.length ?? 0) > 0,
       })),
-    entityCount: accepted.entities?.length ?? 0,
+    entityCount: accepted.currentRelatedEntities?.length ?? 0,
     relationshipCount: accepted.relationships?.length ?? 0,
   };
 }
@@ -616,7 +616,7 @@ const journey: CliJourney = {
       assert.equal(coverBlob?.mediaType, publication.cover.mediaType);
       assert.ok((coverBlob?.byteLength ?? 0) > 0);
       assert.ok((coverBlob?.byteLength ?? 0) <= 16 * 1024 * 1024);
-      assert.deepEqual(accepted.entities ?? [], []);
+      assert.deepEqual(accepted.currentRelatedEntities ?? [], []);
       assert.deepEqual(accepted.entityMentions ?? [], []);
       assert.deepEqual(accepted.relationships ?? [], []);
     }

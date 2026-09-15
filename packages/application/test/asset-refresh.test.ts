@@ -7,6 +7,8 @@ import {
   reviewSourceRefreshChangeSet,
   stageSourceRefreshChangeSet,
   validateSourceInterpretationBatch,
+  type MetadataAssertion,
+  type SourceInterpretationBatch,
 } from "@digital/domain";
 import {
   InMemoryObservedFilesystemCapability,
@@ -61,6 +63,16 @@ type RefreshFixturePersistence = WorkflowExecutionCommands &
   ChangeImpactCommands &
   AutomationQueries &
   AutomationCommands;
+
+function bindSourceMetadata(
+  metadata: SourceInterpretationBatch["metadata"],
+  assetId: string,
+): readonly MetadataAssertion[] {
+  return metadata.map(({ subjectId, ...assertion }) => ({
+    ...assertion,
+    target: { kind: "entity", entityId: subjectId ?? assetId },
+  }));
+}
 
 const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
 const primaryCoverRequirement = {
@@ -417,6 +429,17 @@ function refreshFixture(options?: {
   readonly formatEvidenceProducerSpoof?: boolean;
   readonly sourceOmitsTitle?: boolean;
   readonly sourceRelationshipQualifiers?: boolean;
+  /** 产生不依赖采用资产的完整来源关系，用于来源事实坐标测试。 */
+  readonly fullSourceRelationship?: boolean;
+  /** 让测试来源记录以地址决定来源身份。 */
+  readonly sourceFactIdentityForAddress?: (
+    address: string | undefined,
+  ) => string;
+  /** 完整来源关系夹具的独立来源入口地址。 */
+  readonly sourceFactEpisodeAddresses?: {
+    readonly second: string;
+    readonly third: string;
+  };
   readonly sourceAssociationOutcome?: "accepted" | "contradicted";
   /** 一次采集形成两个可独立选择的来源产品解释。 */
   readonly multipleSourceInterpretations?: boolean;
@@ -426,7 +449,8 @@ function refreshFixture(options?: {
   readonly sourceInterpretationFault?:
     | "empty"
     | "unknown-record"
-    | "duplicate-address";
+    | "duplicate-address"
+    | "undeclared-relationship";
   readonly sourceEnrichmentFails?: boolean;
   readonly sourceEnrichmentSucceeds?: boolean;
   /** 允许来源关联候选解释器伪造其生产者。 */
@@ -646,7 +670,7 @@ function refreshFixture(options?: {
           disposition.key,
       );
       if (matches.length !== 1) return false;
-      const scope = matches[0]!;
+      const scope = matches[0];
       return (
         scope.state === "terminal" &&
         (scope.outcome === "failed" || scope.outcome === "stale") &&
@@ -910,6 +934,10 @@ function refreshFixture(options?: {
               metadata: [
                 ...input.accepted.metadata,
                 {
+                  target: {
+                    kind: "entity" as const,
+                    entityId: input.accepted.entity.id,
+                  },
                   property: "user.note",
                   sourceSlot: "user.note",
                   value: "keep me",
@@ -932,10 +960,11 @@ function refreshFixture(options?: {
                 ...(input.accepted.relationships ?? []),
                 {
                   id: "foreign-relationship",
-                  subjectId: input.accepted.entity.id,
-                  participantId: "foreign-entity",
+                  participants: [
+                    { entityId: input.accepted.entity.id, role: "asset" },
+                    { entityId: "foreign-entity", role: "other.role" },
+                  ],
                   type: "asset.contribution" as const,
-                  role: "other.role",
                   sourceSlot: "other.relationship",
                   sourceRecordIds: ["other-record"],
                 },
@@ -954,7 +983,10 @@ function refreshFixture(options?: {
                 ...input.accepted.artifactAssociations,
                 {
                   id: "user-artifact-association",
-                  subjectId: input.accepted.entity.id,
+                  target: {
+                    kind: "entity" as const,
+                    entityId: input.accepted.entity.id,
+                  },
                   artifactId: "user-artifact",
                   role: "future.unknown-role",
                   sourceRecordIds: ["user-record"],
@@ -962,13 +994,7 @@ function refreshFixture(options?: {
               ],
             }
           : input.accepted;
-      const enrolled =
-        input.metadataPolicyIds === undefined
-          ? acceptedValue
-          : {
-              ...acceptedValue,
-              metadataPolicyIds: input.metadataPolicyIds,
-            };
+      const enrolled = acceptedValue;
       const currentSources =
         options?.multiAssociationRefresh === true
           ? {
@@ -1259,7 +1285,10 @@ function refreshFixture(options?: {
           : {
               accepted: {
                 ...prior,
-                metadata: submission.interpretation.metadata,
+                metadata: bindSourceMetadata(
+                  submission.interpretation.metadata,
+                  submission.assetId,
+                ),
               },
             }),
       });
@@ -1546,7 +1575,10 @@ function refreshFixture(options?: {
             if (prior !== undefined && interpretation !== undefined) {
               const refreshed = {
                 ...prior,
-                metadata: interpretation.metadata,
+                metadata: bindSourceMetadata(
+                  interpretation.metadata,
+                  prior.entity.id,
+                ),
               };
               const index = accepted.indexOf(prior);
               accepted[index] = refreshed;
@@ -1844,6 +1876,7 @@ function refreshFixture(options?: {
                                 ...exact,
                                 explanation: "independent boundary",
                                 sourceAddress:
+                                  options?.sourceFactEpisodeAddresses?.second ??
                                   "https://source.example/other-work",
                               },
                             ],
@@ -1859,6 +1892,7 @@ function refreshFixture(options?: {
                                 ...exact,
                                 explanation: "independent boundary",
                                 sourceAddress:
+                                  options?.sourceFactEpisodeAddresses?.third ??
                                   "https://source.example/third-work",
                               },
                             ],
@@ -2128,15 +2162,19 @@ function refreshFixture(options?: {
           await options?.collectionBarrier?.();
           const record = {
             id:
-              options?.sharedSourceArtifact === true ||
-              options?.sharedImplicitSourceArtifact === true
-                ? "shared-record"
-                : options?.independentEvidence === true &&
-                    evidence.sourceAddress ===
-                      "https://source.example/other-work"
-                  ? "other-record"
-                  : "record",
-            sourceIdentity: "source",
+              options?.fullSourceRelationship === true
+                ? `full-relationship-${evidence.sourceAddress ?? "work"}`
+                : options?.sharedSourceArtifact === true ||
+                    options?.sharedImplicitSourceArtifact === true
+                  ? "shared-record"
+                  : options?.independentEvidence === true &&
+                      evidence.sourceAddress ===
+                        "https://source.example/other-work"
+                    ? "other-record"
+                    : "record",
+            sourceIdentity:
+              options?.sourceFactIdentityForAddress?.(evidence.sourceAddress) ??
+              "source",
             nativeAddress:
               evidence.sourceAddress ?? "https://source.example/work",
             mediaType: "application/json",
@@ -2428,6 +2466,35 @@ function refreshFixture(options?: {
     ],
     sourceInterpreters: [
       {
+        relationshipDefinitions: [
+          {
+            id: "fixture.contribution",
+            type: "asset.contribution",
+            label: "测试署名",
+            roles: [],
+            additionalRoles: { label: "角色" },
+            qualifiers: [
+              { key: "character", label: "角色名" },
+              { key: "source.order", label: "来源顺序" },
+            ],
+          },
+          {
+            id: "fixture.membership",
+            type: "asset.membership",
+            label: "测试归属",
+            roles: [],
+            additionalRoles: { label: "角色" },
+            qualifiers: [],
+          },
+          {
+            id: "fixture.sequel",
+            type: "bangumi.subject.related",
+            label: "测试续作",
+            roles: [],
+            additionalRoles: { label: "角色" },
+            qualifiers: [],
+          },
+        ],
         capability: {
           capabilityId: "interpreter",
           get capabilityVersion() {
@@ -2456,7 +2523,7 @@ function refreshFixture(options?: {
             id: "interpretation",
             producer: this.capability,
             sourceRecordIds: sourceRecords.map((record) => record.id),
-            sourceIdentity: "source",
+            sourceIdentity: sourceRecords[0]?.sourceIdentity ?? "source",
             sourceAddress:
               sourceRecords[0]?.nativeAddress ??
               evidence[0]?.sourceAddress ??
@@ -2550,65 +2617,118 @@ function refreshFixture(options?: {
                         ]
                       : []),
                   ],
-            ...(options?.sharedSourceArtifact === true ||
-            options?.sharedCandidateWithDifferentServingSemantics === true ||
-            options?.sourceRelationshipQualifiers === true
+            ...(options?.fullSourceRelationship === true
               ? {
                   entities: [
                     {
-                      id:
-                        options?.sourceRelationshipQualifiers === true
-                          ? "credited-person"
-                          : options?.sharedCandidateWithDifferentServingSemantics ===
-                                true &&
-                              evidence[0]?.sourceAddress ===
-                                "https://source.example/other-work"
-                            ? "other-work"
-                            : "shared-work",
-                      kind:
-                        options?.sourceRelationshipQualifiers === true
-                          ? ("person" as const)
-                          : ("entity" as const),
-                      sourceIdentity: "source",
-                      sourceKey:
-                        options?.sourceRelationshipQualifiers === true
-                          ? "credited-person"
-                          : options?.sharedCandidateWithDifferentServingSemantics ===
-                                true &&
-                              evidence[0]?.sourceAddress ===
-                                "https://source.example/other-work"
-                            ? "other-work"
-                            : "shared-work",
-                      identityNamespace:
-                        options?.sourceRelationshipQualifiers === true
-                          ? "source.person"
-                          : "source.work",
-                      label:
-                        options?.sourceRelationshipQualifiers === true
-                          ? "Credited person"
-                          : "Shared work",
+                      id: "bangumi-subject",
+                      kind: "entity" as const,
+                      sourceIdentity:
+                        sourceRecords[0]?.sourceIdentity ?? "source",
+                      sourceKey: "subject",
+                      identityNamespace: "bangumi.subject",
+                      label: "Season one",
+                      sourceRecordIds: sourceRecords.map((record) => record.id),
+                    },
+                    {
+                      id: "bangumi-sequel",
+                      kind: "entity" as const,
+                      sourceIdentity:
+                        sourceRecords[0]?.sourceIdentity ?? "source",
+                      sourceKey: "sequel",
+                      identityNamespace: "bangumi.subject",
+                      label: "Season two",
                       sourceRecordIds: sourceRecords.map((record) => record.id),
                     },
                   ],
                 }
-              : {}),
-            ...(options?.sourceRelationshipQualifiers === true
+              : options?.sharedSourceArtifact === true ||
+                  options?.sharedCandidateWithDifferentServingSemantics ===
+                    true ||
+                  options?.sourceRelationshipQualifiers === true
+                ? {
+                    entities: [
+                      {
+                        id:
+                          options?.sourceRelationshipQualifiers === true
+                            ? "credited-person"
+                            : options?.sharedCandidateWithDifferentServingSemantics ===
+                                  true &&
+                                evidence[0]?.sourceAddress ===
+                                  "https://source.example/other-work"
+                              ? "other-work"
+                              : "shared-work",
+                        kind:
+                          options?.sourceRelationshipQualifiers === true
+                            ? ("person" as const)
+                            : ("entity" as const),
+                        sourceIdentity: "source",
+                        sourceKey:
+                          options?.sourceRelationshipQualifiers === true
+                            ? "credited-person"
+                            : options?.sharedCandidateWithDifferentServingSemantics ===
+                                  true &&
+                                evidence[0]?.sourceAddress ===
+                                  "https://source.example/other-work"
+                              ? "other-work"
+                              : "shared-work",
+                        identityNamespace:
+                          options?.sourceRelationshipQualifiers === true
+                            ? "source.person"
+                            : "source.work",
+                        label:
+                          options?.sourceRelationshipQualifiers === true
+                            ? "Credited person"
+                            : "Shared work",
+                        sourceRecordIds: sourceRecords.map(
+                          (record) => record.id,
+                        ),
+                      },
+                    ],
+                  }
+                : {}),
+            ...(options?.fullSourceRelationship === true
               ? {
                   relationships: [
                     {
-                      participantId: "credited-person",
-                      type: "asset.contribution",
-                      role: "cast",
-                      sourceSlot: "source.cast.0",
-                      sourceRecordIds: sourceRecords.map((record) => record.id),
-                      qualifiers: [
-                        { key: "character", value: "Character" },
-                        { key: "source.order", value: "0" },
+                      participants: [
+                        {
+                          entityId: "bangumi-subject",
+                          role: "bangumi.subject.predecessor",
+                        },
+                        {
+                          entityId: "bangumi-sequel",
+                          role: "bangumi.subject.sequel",
+                        },
                       ],
+                      sourceSubjectId: "bangumi-subject",
+                      type: "bangumi.subject.related",
+                      sourceSlot: "bangumi.subject.related",
+                      sourceRecordIds: sourceRecords.map((record) => record.id),
                     },
                   ],
                 }
-              : {}),
+              : options?.sourceRelationshipQualifiers === true
+                ? {
+                    relationships: [
+                      {
+                        participants: [
+                          { entityId: "credited-person", role: "cast" },
+                        ],
+                        subjectRole: "asset",
+                        type: "asset.contribution",
+                        sourceSlot: "source.cast.0",
+                        sourceRecordIds: sourceRecords.map(
+                          (record) => record.id,
+                        ),
+                        qualifiers: [
+                          { key: "character", value: "Character" },
+                          { key: "source.order", value: "0" },
+                        ],
+                      },
+                    ],
+                  }
+                : {}),
           };
           if (
             options?.multipleSourceInterpretations === true &&
@@ -2640,6 +2760,39 @@ function refreshFixture(options?: {
               ];
             if (options?.sourceInterpretationFault === "duplicate-address")
               return [batch, { ...batch, id: "duplicate-address-batch" }];
+            if (
+              options?.sourceInterpretationFault === "undeclared-relationship"
+            )
+              return [
+                {
+                  ...batch,
+                  entities: [
+                    {
+                      id: "unknown-participant",
+                      kind: "entity" as const,
+                      sourceIdentity: "source",
+                      sourceKey: "unknown-participant",
+                      identityNamespace: "fixture.entity",
+                      label: "参与者",
+                      sourceRecordIds: batch.sourceRecordIds,
+                    },
+                  ],
+                  relationships: [
+                    {
+                      type: "fixture.undeclared",
+                      subjectRole: "asset",
+                      sourceSlot: "fixture.undeclared",
+                      participants: [
+                        {
+                          entityId: "unknown-participant",
+                          role: "participant",
+                        },
+                      ],
+                      sourceRecordIds: batch.sourceRecordIds,
+                    },
+                  ],
+                },
+              ];
           }
           return [batch];
         },
@@ -2963,7 +3116,7 @@ function refreshFixture(options?: {
                     },
                   ]),
             ],
-            enroll: () =>
+            select: () =>
               options?.metadataPolicyConflict === true
                 ? ["ordinary-test", "ordinary-test-competing"]
                 : ["ordinary-test"],
@@ -3132,7 +3285,7 @@ function refreshFixture(options?: {
                       acquisitionReference: "opaque-provider-reference",
                       mediaType: "application/octet-stream",
                       selectionEvidence:
-                        options.publicCandidateSelectionEvidence as never,
+                        options.publicCandidateSelectionEvidence,
                     },
                     interpretationSourceRecordIds: ["record"],
                     sourceRecords: [],
@@ -3393,7 +3546,10 @@ function refreshFixture(options?: {
                 ],
                 metadata: [
                   ...current.metadata,
-                  ...input.interpretation.metadata,
+                  ...bindSourceMetadata(
+                    input.interpretation.metadata,
+                    input.assetId,
+                  ),
                 ],
                 metadataSourceRecords: [
                   ...(current.metadataSourceRecords ?? []),
@@ -3791,7 +3947,7 @@ describe("Asset Refresh acceptance", () => {
       recognitionBasis: "observed-evidence",
     });
     await scanFixtureObservedScope(subject.workflow, { acceptTrusted: true });
-    const assetId = subject.accepted[0]!.entity.id;
+    const assetId = subject.accepted[0].entity.id;
 
     const refreshed = await subject.workflow.refreshMetadata({
       selection: {
@@ -4151,6 +4307,42 @@ describe("Asset Refresh acceptance", () => {
         }),
       ]),
     );
+  });
+
+  it("projects a complete Bangumi fact by its source coordinate, not its adopting episode address", async () => {
+    const subject = refreshFixture({
+      fullSourceRelationship: true,
+      independentEvidence: true,
+      thirdIndependentBoundary: true,
+      sourceAddressForSnapshotVersion: () =>
+        "https://bangumi.example/episode/one",
+      sourceFactEpisodeAddresses: {
+        second: "https://bangumi.example/episode/two",
+        third: "https://bangumi.example/episode/foreign-source",
+      },
+      sourceFactIdentityForAddress: (address) =>
+        address === "https://bangumi.example/episode/foreign-source"
+          ? "other-bangumi"
+          : "bangumi",
+    });
+
+    const result = await refreshFixtureObservedScope(subject.workflow, {
+      directory: "/observed/work",
+      acceptTrusted: true,
+      informationRequirement: primaryCoverRequirement,
+    });
+
+    expect(result.execution.outcome).toBe("accepted");
+    const relationships = subject.accepted.flatMap(
+      (accepted) => accepted.relationships ?? [],
+    );
+    const bangumiRelationshipIds = relationships
+      .filter((relationship) => relationship.type === "bangumi.subject.related")
+      .map((relationship) => relationship.id);
+    expect(bangumiRelationshipIds).toHaveLength(3);
+    expect(bangumiRelationshipIds[0]).toBe(bangumiRelationshipIds[1]);
+    expect(bangumiRelationshipIds[2]).not.toBe(bangumiRelationshipIds[0]);
+    expect(new Set(bangumiRelationshipIds).size).toBe(2);
   });
 
   it("freezes only capabilities that actually participate in a filesystem refresh", async () => {
@@ -5649,7 +5841,7 @@ describe("Asset Refresh acceptance", () => {
       expect.arrayContaining([
         expect.objectContaining({
           role: "asset.primary-cover",
-          subjectId: "shared-work",
+          target: { kind: "entity", entityId: "shared-work" },
         }),
       ]),
     );
@@ -5693,8 +5885,18 @@ describe("Asset Refresh acceptance", () => {
       ),
     );
     expect(covers).toEqual([
-      expect.objectContaining({ subjectId: subject.accepted[0].entity.id }),
-      expect.objectContaining({ subjectId: subject.accepted[1].entity.id }),
+      expect.objectContaining({
+        target: {
+          kind: "entity",
+          entityId: subject.accepted[0].entity.id,
+        },
+      }),
+      expect.objectContaining({
+        target: {
+          kind: "entity",
+          entityId: subject.accepted[1].entity.id,
+        },
+      }),
     ]);
     expect(new Set(covers.map((cover) => cover?.id)).size).toBe(2);
   });
@@ -6178,6 +6380,35 @@ describe("Asset Refresh acceptance", () => {
         }),
       ]),
     );
+  });
+
+  it("ignores snapshot-local object tokens when comparing an unchanged recognition boundary", async () => {
+    const observedFile = {
+      relativePath: "book.epub",
+      size: 12,
+      objectIdentity: {
+        version: "filesystem-object-identity/2" as const,
+        kind: "snapshot-local" as const,
+        value: "first-observation-token",
+      },
+    };
+    const subject = refreshFixture({
+      objectIdentityContract: { kind: "snapshot-local" },
+      observedFiles: [observedFile],
+    });
+    await refreshFixtureObservedScope(subject.workflow, {
+      directory: "/observed/work",
+      acceptTrusted: true,
+    });
+    observedFile.objectIdentity.value = "second-observation-token";
+
+    const repeated = await refreshFixtureObservedScope(subject.workflow, {
+      directory: "/observed/work",
+      acceptTrusted: true,
+    });
+
+    expect(repeated.execution.outcome).toBe("no-change");
+    expect(subject.accepted).toHaveLength(1);
   });
 
   it("fails closed when exact observed Artifact evidence names multiple current Assets", async () => {
@@ -7239,7 +7470,7 @@ describe("Asset Refresh acceptance", () => {
         ...input,
         sourceFailureCodes: [
           {
-            capability: { ...codes[0]!.capability, identity: "   " },
+            capability: { ...codes[0].capability, identity: "   " },
             code: "transport-failure",
           },
         ],
@@ -8570,7 +8801,7 @@ describe("Asset Refresh acceptance", () => {
     );
   });
 
-  it("enrolls an accepted subject through configured product policy and exposes explainable Effective Metadata", async () => {
+  it("selects the configured product policy from current facts and exposes explainable Effective Metadata", async () => {
     const subject = refreshFixture({ metadataPolicyConfigured: true });
 
     const inspected = await refreshFixtureObservedScope(subject.workflow, {
@@ -8578,7 +8809,7 @@ describe("Asset Refresh acceptance", () => {
       acceptTrusted: true,
     });
 
-    expect(subject.accepted[0]?.metadataPolicyIds).toEqual(["ordinary-test"]);
+    expect(subject.accepted[0]).not.toHaveProperty("metadataPolicyIds");
     expect(inspected.accepted?.effectiveMetadata).toEqual([
       expect.objectContaining({
         property: "asset.title",
@@ -8864,7 +9095,7 @@ describe("Asset Refresh acceptance", () => {
     });
     expect(subject.accepted).toHaveLength(1);
     const stored = [...subject.changePreviews.values()][0];
-    const current = subject.accepted[0]!;
+    const current = subject.accepted[0];
     const oldCoverId = current.artifactAssociations.find(
       (association) => association.role === "asset.primary-cover",
     )?.artifactId;
@@ -8896,7 +9127,10 @@ describe("Asset Refresh acceptance", () => {
     );
     expect(stored.projected.relationships).toEqual([
       expect.objectContaining({
-        role: "cast",
+        participants: expect.arrayContaining([
+          { entityId: current.entity.id, role: "asset" },
+          { entityId: "credited-person", role: "cast" },
+        ]),
         producer: expect.objectContaining({ capabilityId: "interpreter" }),
         qualifiers: [
           { key: "character", value: "Character" },
@@ -8916,7 +9150,7 @@ describe("Asset Refresh acceptance", () => {
         confirmedBy: "reviewer",
       }),
     ).resolves.toMatchObject({ status: "applied" });
-    const applied = subject.accepted[0]!;
+    const applied = subject.accepted[0];
     const appliedCoverId = applied.artifactAssociations.find(
       ({ role }) => role === "asset.primary-cover",
     )?.artifactId;
@@ -9023,7 +9257,7 @@ describe("Asset Refresh acceptance", () => {
       acceptTrusted: true,
     });
     const prepared = await subject.workflow.prepareConflictedEstablishment({
-      assetId: subject.accepted[0]!.entity.id,
+      assetId: subject.accepted[0].entity.id,
       sourceIdentity: "source",
       sourceInput: { address: "https://source.example/mixed-work" },
       initiatedBy: "reviewer",
@@ -9059,7 +9293,7 @@ describe("Asset Refresh acceptance", () => {
       directory: "/observed/work",
       acceptTrusted: true,
     });
-    const current = subject.accepted[0]!;
+    const current = subject.accepted[0];
     const preview = await subject.workflow.prepareRecognitionRetraction({
       assetId: current.entity.id,
       predecessorDecisionId: current.recognitionDecision.id,
@@ -9086,7 +9320,7 @@ describe("Asset Refresh acceptance", () => {
       directory: "/observed/work",
       acceptTrusted: true,
     });
-    const current = subject.accepted[0]!;
+    const current = subject.accepted[0];
     const staleArtifact = { id: "stale-source-artifact" };
     const staleAssociation = {
       id: "stale-source-artifact-association",
@@ -9161,7 +9395,7 @@ describe("Asset Refresh acceptance", () => {
     });
 
     const prepared = await subject.workflow.prepareConflictedEstablishment({
-      assetId: subject.accepted[0]!.entity.id,
+      assetId: subject.accepted[0].entity.id,
       sourceIdentity: "source",
       sourceInput: { address: "https://source.example/other-work" },
       initiatedBy: "reviewer",
@@ -9206,7 +9440,7 @@ describe("Asset Refresh acceptance", () => {
       acceptTrusted: true,
     });
     const prepared = await subject.workflow.prepareConflictedEstablishment({
-      assetId: subject.accepted[0]!.entity.id,
+      assetId: subject.accepted[0].entity.id,
       sourceIdentity: "source",
       sourceInput: { address: "https://source.example/multiple" },
       initiatedBy: "reviewer",
@@ -9225,7 +9459,7 @@ describe("Asset Refresh acceptance", () => {
 
     const selected = await subject.workflow.selectSourceAssociationCandidate({
       executionId: prepared.executionId,
-      candidateReference: prepared.candidates[1]!.reference,
+      candidateReference: prepared.candidates[1].reference,
     });
     expect(selected.state).toBe("awaiting-confirmation");
     expect(selected.preview?.evidenceComparison.sourceCandidates).toHaveLength(
@@ -9260,7 +9494,7 @@ describe("Asset Refresh acceptance", () => {
     });
 
     const prepared = await subject.workflow.prepareConflictedEstablishment({
-      assetId: subject.accepted[0]!.entity.id,
+      assetId: subject.accepted[0].entity.id,
       sourceIdentity: "source",
       sourceInput: { address: "https://source.example/fault" },
       initiatedBy: "reviewer",
@@ -9279,6 +9513,7 @@ describe("Asset Refresh acceptance", () => {
   it.each([
     ["unknown-record", "来源解释引用了本次未保留的 Source Record"],
     ["duplicate-address", "同一来源解释器不得重复解释同一来源地址"],
+    ["undeclared-relationship", "关系类型尚未声明"],
   ] as const)(
     "rejects a %s source interpretation before it can become a candidate",
     async (sourceInterpretationFault, reason) => {
@@ -9294,7 +9529,7 @@ describe("Asset Refresh acceptance", () => {
 
       await expect(
         subject.workflow.prepareConflictedEstablishment({
-          assetId: subject.accepted[0]!.entity.id,
+          assetId: subject.accepted[0].entity.id,
           sourceIdentity: "source",
           sourceInput: { address: "https://source.example/fault" },
           initiatedBy: "reviewer",
@@ -9323,7 +9558,7 @@ describe("Asset Refresh acceptance", () => {
 
     await expect(
       subject.workflow.prepareConflictedEstablishment({
-        assetId: subject.accepted[0]!.entity.id,
+        assetId: subject.accepted[0].entity.id,
         sourceIdentity: "source",
         sourceInput: { address: "https://source.example/other-work" },
         initiatedBy: "reviewer",
@@ -9341,7 +9576,7 @@ describe("Asset Refresh acceptance", () => {
       acceptTrusted: true,
     });
     const first = await subject.workflow.prepareConflictedEstablishment({
-      assetId: subject.accepted[0]!.entity.id,
+      assetId: subject.accepted[0].entity.id,
       sourceIdentity: "source",
       sourceInput: { address: "https://source.example/retry-work" },
       initiatedBy: "reviewer",
@@ -9373,14 +9608,14 @@ describe("Asset Refresh acceptance", () => {
 
     await expect(
       subject.workflow.prepareConflictedEstablishment({
-        assetId: subject.accepted[0]!.entity.id,
+        assetId: subject.accepted[0].entity.id,
         sourceIdentity: "source",
         sourceInput: { address: "https://source.example/host-work" },
         initiatedBy: "reviewer",
         onHostCheckpoint() {
           throw shutdown;
         },
-      } as never),
+      }),
     ).rejects.toBe(shutdown);
     expect(subject.collectionCalls()).toBe(callsBefore);
   });
@@ -9410,16 +9645,16 @@ describe("Asset Refresh acceptance", () => {
     });
     armed = true;
     const preparing = subject.workflow.prepareConflictedEstablishment({
-      assetId: subject.accepted[0]!.entity.id,
+      assetId: subject.accepted[0].entity.id,
       sourceIdentity: "source",
       sourceInput: { address: "https://source.example/concurrent-work" },
       initiatedBy: "reviewer",
     });
     await collectionEntered;
     subject.accepted[0] = {
-      ...subject.accepted[0]!,
+      ...subject.accepted[0],
       metadata: [
-        ...subject.accepted[0]!.metadata,
+        ...subject.accepted[0].metadata,
         {
           property: "user.note",
           value: "added while collecting",
@@ -9461,7 +9696,7 @@ describe("Asset Refresh acceptance", () => {
     });
 
     const result = await subject.workflow.prepareConflictedEstablishment({
-      assetId: subject.accepted[0]!.entity.id,
+      assetId: subject.accepted[0].entity.id,
       sourceIdentity: "source",
       sourceInput: { address: "https://source.example/concurrent-baseline" },
       initiatedBy: "reviewer",
@@ -9569,7 +9804,9 @@ describe("Asset Refresh acceptance", () => {
       expect.arrayContaining([
         expect.objectContaining({
           id: "foreign-relationship",
-          role: "other.role",
+          participants: expect.arrayContaining([
+            { entityId: "foreign-entity", role: "other.role" },
+          ]),
         }),
       ]),
     );

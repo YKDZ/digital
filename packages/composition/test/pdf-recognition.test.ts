@@ -69,9 +69,9 @@ it("可信自动接受不会接受带有效 ISBN 的 PDF 反证提案", async ()
     try {
       const persisted = await catalogue.inspectExecution(result.execution.id);
       expect(persisted?.workItemInspections).toHaveLength(1);
-      expect(persisted!.workItemInspections![0]!.accepted).toBeUndefined();
+      expect(persisted!.workItemInspections![0].accepted).toBeUndefined();
       expect(
-        persisted!.workItemInspections![0]!.proposal!.ruleResults,
+        persisted!.workItemInspections![0].proposal!.ruleResults,
       ).toMatchObject([
         {
           capabilityId: "pdf.local-publication-recognizer",
@@ -300,7 +300,7 @@ it("从上级检查 RJ 目录时台本与音轨属于同一音声，重扫不另
         version: "asset-refresh-selection/1",
         subjects: [
           {
-            subjectId: accepted[0]!.entity.id,
+            subjectId: accepted[0].entity.id,
             explanations: [{ path: ["test", "rj-directory"] }],
           },
         ],
@@ -709,11 +709,10 @@ it("通过真实产品把另一观察根的完整普通文件和 PDF 关联到�
     });
     expect(admitted.execution.outcome).toBe("accepted");
     const beforeCatalogue = await workflow.listCurrentCatalogue();
-    const targetId = beforeCatalogue[0]!.entity.id;
-    const originalAssociations =
-      beforeCatalogue[0]!.artifactAssociations.length;
-    const originalSources = beforeCatalogue[0]!.sourceAssociations;
-    const originalMetadata = beforeCatalogue[0]!.metadata;
+    const targetId = beforeCatalogue[0].entity.id;
+    const originalAssociations = beforeCatalogue[0].artifactAssociations.length;
+    const originalSources = beforeCatalogue[0].sourceAssociations;
+    const originalMetadata = beforeCatalogue[0].metadata;
     const materialRegistration =
       await workflow.observedRootRegistrations.create({
         displayName: "Supplemental material",
@@ -764,7 +763,7 @@ it("通过真实产品把另一观察根的完整普通文件和 PDF 关联到�
     });
     expect(prepared.files).toHaveLength(4);
     expect(
-      (await workflow.listCurrentCatalogue())[0]!.artifactAssociations,
+      (await workflow.listCurrentCatalogue())[0].artifactAssociations,
     ).toHaveLength(originalAssociations);
 
     const confirmed = await workflow.confirmObservedMaterialAssociation({
@@ -788,13 +787,11 @@ it("通过真实产品把另一观察根的完整普通文件和 PDF 关联到�
         .status,
     ).toBe("accepted");
     const [current] = await workflow.listCurrentCatalogue();
-    expect(current!.entity.id).toBe(targetId);
-    expect(current!.sourceAssociations).toEqual(originalSources);
-    expect(current!.metadata).toEqual(originalMetadata);
-    expect(current!.artifactAssociations).toHaveLength(
-      originalAssociations + 3,
-    );
-    const copiedMaterials = current!.locations
+    expect(current.entity.id).toBe(targetId);
+    expect(current.sourceAssociations).toEqual(originalSources);
+    expect(current.metadata).toEqual(originalMetadata);
+    expect(current.artifactAssociations).toHaveLength(originalAssociations + 3);
+    const copiedMaterials = current.locations
       .filter(
         (location) =>
           location.address.endsWith("/notes.txt") ||
@@ -806,7 +803,7 @@ it("通过真实产品把另一观察根的完整普通文件和 PDF 关联到�
     expect(
       new Set([
         ...copiedMaterials,
-        ...current!.locations
+        ...current.locations
           .filter((location) =>
             location.address.endsWith("/notes-independent.txt"),
           )
@@ -932,7 +929,7 @@ it("确认期硬链接 alias 拆分使观察材料关联过期且不产生部分
     const accepted = await workflow.confirmLocalContent({
       executionId: initialReview.executionId,
     });
-    const before = (await workflow.listCurrentCatalogue())[0]!;
+    const before = (await workflow.listCurrentCatalogue())[0];
     const prepared = await workflow.prepareObservedMaterialAssociation({
       targetAssetId: accepted.content.entity.id,
       registrationId: root.id,
@@ -947,7 +944,7 @@ it("确认期硬链接 alias 拆分使观察材料关联过期且不产生部分
       confirmedBy: "confirm-person",
     });
     expect(result.status).toBe("stale");
-    const after = (await workflow.listCurrentCatalogue())[0]!;
+    const after = (await workflow.listCurrentCatalogue())[0];
     expect(after.artifacts).toEqual(before.artifacts);
     expect(after.artifactAssociations).toEqual(before.artifactAssociations);
     expect(after.metadata).toEqual(before.metadata);
@@ -983,7 +980,7 @@ it("观察材料等待确认在重开后保持，确认恢复续行且畸形检�
       acceptTrusted: true,
     });
     expect(initial.execution.outcome).toBe("accepted");
-    const targetId = (await workflow.listCurrentCatalogue())[0]!.entity.id;
+    const targetId = (await workflow.listCurrentCatalogue())[0].entity.id;
     await writeFile(path.join(observed, "appendix.txt"), "recovery material");
     const prepared = await workflow.prepareObservedMaterialAssociation({
       targetAssetId: targetId,
@@ -1113,7 +1110,7 @@ it("观察材料原子提交故障时不留下部分领域事实并可重试", a
       relativeScope: ".",
       acceptTrusted: true,
     });
-    const before = (await workflow.listCurrentCatalogue())[0]!;
+    const before = (await workflow.listCurrentCatalogue())[0];
     await writeFile(path.join(observed, "appendix.txt"), "rollback material");
     const prepared = await workflow.prepareObservedMaterialAssociation({
       targetAssetId: before.entity.id,

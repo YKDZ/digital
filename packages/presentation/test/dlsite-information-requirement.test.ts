@@ -16,7 +16,6 @@ describe("DLsite Asset View information requirement", () => {
         { property: "asset.declared-language", necessity: "optional" },
         { property: "asset.content-classification", necessity: "optional" },
         { property: "dlsite.product.price-jpy", necessity: "optional" },
-        { property: "asset.series-position", necessity: "optional" },
       ],
       artifactRoles: [
         {

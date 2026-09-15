@@ -1,13 +1,17 @@
-import type { AcceptedRecognition, MetadataPolicy } from "@digital/domain";
+import type { MetadataPolicy, SourceAssociation } from "@digital/domain";
 
 export type MetadataPolicyDefinition = Omit<MetadataPolicy, "subjectIds">;
 
-/**
- * 组合层提供定义，以及从已接受解释到明确策略登记的产品映射。Application 只协调并
- * 持久化这些不透明标识符。
- */
+/** 组合层按当前已接受事实选择产品策略；选择结果不是耐久领域事实。 */
 export type MetadataPolicyConfiguration = {
   readonly version: string;
   readonly policies: readonly MetadataPolicyDefinition[];
-  enroll(accepted: AcceptedRecognition): readonly string[];
+  readonly artifactAssociationRules?: readonly {
+    readonly usageContext: string;
+    readonly role: string;
+    readonly preferredSourceIdentities: readonly string[];
+  }[];
+  select(accepted: {
+    readonly sourceAssociations: readonly SourceAssociation[];
+  }): readonly string[];
 };

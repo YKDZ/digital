@@ -18,7 +18,7 @@ import { matchesReviewedCatalogueSchema } from "./schema-contract.ts";
 import { canonicalJson } from "./workflow-execution-persistence.ts";
 
 export const productionCatalogueMigrationHead =
-  "20260909000000_current_file_observation_supports";
+  "20260915000000_named_relationship_snapshots";
 export const productionCatalogueMigrationPlan = [
   {
     id: "20260820000000_v1_catalogue_baseline",
@@ -56,9 +56,54 @@ export const productionCatalogueMigrationPlan = [
       "10453ffe9e48d3a925a294ae2f88656be7ad4e9b34ae891b56b6749e9832c10c",
   },
   {
-    id: productionCatalogueMigrationHead,
+    id: "20260908000000_current_user_interactions",
+    checksum:
+      "f38d3d1a6a1e16ed98081e21ec99f7c3e56fa15f705ccc1686b761b5f2900424",
+  },
+  {
+    id: "20260909000000_current_file_observation_supports",
     checksum:
       "71c7e999e5b76b3983fbadf6b404a217c25823a8d116126dadcbd3349edf4394",
+  },
+  {
+    id: "20260910000000_description_targets",
+    checksum:
+      "3ac373d5c3df37bb273a861cb9110c600e5231f1bf27bede5d06989b7d6f7364",
+  },
+  {
+    id: "20260913010000_named_relationship_participants",
+    checksum:
+      "44b251bdd24c119cf3e6a946831890a86e506bb09ea7b16254fa07cefd6f11b7",
+  },
+  {
+    id: "20260913020000_entity_kind_assertions",
+    checksum:
+      "82a9a4e75702cde19ea45c80eb507c966ea43055fdb6a883af3e743663b7c8c2",
+  },
+  {
+    id: "20260913030000_entity_kind_lifecycles",
+    checksum:
+      "bd6998c459bfd1bad7dd33d6f4b0091bb005ad99d909ecd5f724a981ee5cb10a",
+  },
+  {
+    id: "20260913035000_observed_entity_graph",
+    checksum:
+      "340a0789e19fc3c800ad674e27bb862674db2313a42b0523644ff3835d518ab2",
+  },
+  {
+    id: "20260913040000_effective_relationship_decisions",
+    checksum:
+      "edd166f906da5f4453ca4e2ec21101e4849aada49bd6d2bb0882719376a912a1",
+  },
+  {
+    id: "20260913050000_entity_identity_merges",
+    checksum:
+      "d70617a53f869449007dc548c71c4ca00f95b2976ea3ab357d58e20145bb9129",
+  },
+  {
+    id: productionCatalogueMigrationHead,
+    checksum:
+      "d6341f130ae1f9f1c81bf4b79be0f56c54bb9afa2bec2439d6ccbf40f21e064a",
   },
 ] as const;
 
@@ -174,6 +219,13 @@ export async function inspectProductionCatalogueReadiness(options: {
           "Catalogue 结构或完整性不符合已审阅 schema；从离线备份恢复或联系部署维护者",
       };
     }
+    if (!hasValidDefaultLocalUserBinding(database)) {
+      return {
+        state: "catalogue-integrity-failed",
+        message:
+          "Catalogue 本地用户身份不完整或冲突；重新运行匹配版本的部署工具或从离线备份恢复",
+      };
+    }
     if (
       !hasValidObservedMaterialCheckpoints(database) ||
       !hasValidObservedMaterialSupports(database) ||
@@ -194,6 +246,31 @@ export async function inspectProductionCatalogueReadiness(options: {
   } finally {
     database?.close();
   }
+}
+
+function hasValidDefaultLocalUserBinding(database: DatabaseSync): boolean {
+  const bindings = database
+    .prepare(
+      `SELECT local_users.user_id AS userId,
+              local_users.person_id AS personId,
+              entity_kind_assertions.kind AS kind
+       FROM local_users
+       LEFT JOIN entities ON entities.id = local_users.person_id
+       LEFT JOIN entity_kind_assertions
+         ON entity_kind_assertions.entity_id = entities.id
+        AND entity_kind_assertions.kind = 'person'`,
+    )
+    .all() as Array<{
+    readonly userId: string;
+    readonly personId: string;
+    readonly kind: string | null;
+  }>;
+  return (
+    bindings.length === 1 &&
+    bindings[0]?.userId === "local-user" &&
+    bindings[0]?.personId === "person:local-user" &&
+    bindings[0]?.kind === "person"
+  );
 }
 
 function hasValidSourceAssociationState(database: DatabaseSync): boolean {
@@ -588,7 +665,8 @@ function hasValidObservedMaterialSupports(database: DatabaseSync): boolean {
       LEFT JOIN workflow_executions AS execution
         ON execution.id = proposal.execution_id
       WHERE association.id IS NULL OR decision.id IS NULL OR proposal.id IS NULL
-        OR association.subject_id <> decision.asset_id
+        OR association.target_kind <> 'entity'
+        OR association.target_entity_id <> decision.asset_id
         OR NOT (
           (json_extract(execution.material_association_json, '$.version') =
              'observed-material-association-checkpoint/1'
@@ -623,7 +701,8 @@ function hasValidObservedMaterialSupports(database: DatabaseSync): boolean {
               AND EXISTS (
                 SELECT 1 FROM json_each(json_extract(execution.material_association_json, '$.submission.artifactAssociations')) AS submitted_association
                 WHERE json_extract(submitted_association.value, '$.id') = association.id
-                  AND json_extract(submitted_association.value, '$.subjectId') = association.subject_id
+                  AND json_extract(submitted_association.value, '$.target.kind') = association.target_kind
+                  AND json_extract(submitted_association.value, '$.target.entityId') = association.target_entity_id
                   AND json_extract(submitted_association.value, '$.artifactId') = association.artifact_id
                   AND json_extract(submitted_association.value, '$.role') = association.role
               )

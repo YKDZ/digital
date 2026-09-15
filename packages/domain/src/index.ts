@@ -1,11 +1,23 @@
-import type { MetadataAssertion } from "./metadata-assertion.ts";
+import type {
+  DescriptionTarget,
+  MetadataAssertion,
+  MetadataAssertionCandidate,
+} from "./metadata-assertion.ts";
 
 export * from "./effective-metadata.ts";
+export * from "./effective-artifact-association.ts";
 export * from "./metadata-assertion.ts";
 export * from "./source-refresh-run.ts";
 
 /** 开放词汇。角色属于关联，绝不属于产物。 */
 export type ArtifactRole = string;
+
+/** 用户对一个明确产物修订版的播放交互；绝不沿资产、关系或修订版继承。 */
+export type AssetInteractionState = {
+  readonly artifactRevisionId: string;
+  readonly positionMilliseconds: number;
+  readonly completed: boolean;
+};
 
 export type CapabilityCoordinate = {
   readonly capabilityId: string;
@@ -71,7 +83,88 @@ export type RecognitionEvidence = {
       readonly locator: string;
       readonly mediaType: string;
     }[];
+    /**
+     * 格式能力明确解释的局部实体图。核心只保存中立的出现、角色和限定项，
+     * 不认识任何格式自己的字段词汇。
+     */
+    readonly entityGraph?: ObservedEntityGraphCandidate;
   };
+};
+
+/**
+ * 由一个格式检查结果提出的局部实体图。键只在这一批观察内有效；Application 在
+ * 绑定资产、产物和精确修订版后才分配耐久标识。
+ */
+export type ObservedEntityGraphCandidate = {
+  readonly observedArtifactReference: string;
+  readonly producer: CapabilityCoordinate;
+  readonly coverage: { readonly id: string; readonly completeness: "complete" };
+  readonly entities: readonly {
+    readonly key: string;
+    readonly occurrenceSlot: string;
+    readonly label: string;
+    readonly preservedValue: string;
+    readonly locator: string;
+  }[];
+  readonly mentions: readonly {
+    readonly key: string;
+    readonly entityKey: string;
+    readonly sourceSlot: string;
+    readonly field: string;
+    readonly role: string;
+    readonly label: string;
+    readonly locator: string;
+  }[];
+  readonly resolutions: readonly {
+    readonly mentionKey: string;
+    readonly entityKey: string;
+  }[];
+  readonly relationships: readonly {
+    readonly sourceSlot: string;
+    readonly type: string;
+    readonly subjectRole: string;
+    readonly participants: readonly {
+      readonly entityKey: string;
+      readonly role: string;
+      readonly mentionKeys: readonly string[];
+    }[];
+    readonly qualifiers: readonly {
+      readonly key: string;
+      readonly value: string;
+    }[];
+    readonly locator: string;
+  }[];
+};
+
+/** 已绑定资产、产物及修订版的观察图信封；不代表外部来源记录。 */
+export type AcceptedObservedEntityGraph = {
+  readonly assetId: string;
+  readonly artifactId: string;
+  readonly revisionId: string;
+  readonly producer: CapabilityCoordinate;
+  readonly coverageId: string;
+  readonly complete: true;
+  readonly entities: readonly {
+    readonly id: string;
+    readonly occurrenceSlot: string;
+    readonly label: string;
+    readonly preservedValue: string;
+    readonly locator: string;
+  }[];
+  readonly mentions: readonly {
+    readonly id: string;
+    readonly entityId: string;
+    readonly sourceSlot: string;
+    readonly field: string;
+    readonly role: string;
+    readonly label: string;
+    readonly locator: string;
+  }[];
+  readonly resolutions: readonly {
+    readonly mentionId: string;
+    readonly entityId: string;
+  }[];
+  readonly relationships: readonly EntityRelationship[];
 };
 
 /** 对生命周期由其他位置持有的证据作出的类型化耐久引用。 */
@@ -159,7 +252,7 @@ export type EntityResolutionDecision = {
   readonly id: string;
   readonly mentionId: string;
   readonly entityId: string;
-  readonly rule: "source-field-role-exact";
+  readonly rule: "source-field-role-exact" | "manual";
   readonly sourceRecordIds: readonly string[];
   readonly producer?: CapabilityCoordinate;
 };
@@ -175,7 +268,7 @@ export type SourceInterpretationBatch = {
    * 用于建立识别的来源记录，包括不描述所投影来源主体的记录。
    */
   readonly recognitionEvidenceReferences?: readonly RecognitionEvidenceReference[];
-  readonly metadata: readonly MetadataAssertion[];
+  readonly metadata: readonly MetadataAssertionCandidate[];
   readonly sourceArtifacts: readonly SourceArtifactCandidate[];
   /** 在任何来源范围解析前的精确署名／社团出现。 */
   readonly entityMentions?: readonly EntityMention[];
@@ -246,6 +339,8 @@ export type RecognitionProposal = {
   readonly observedArtifactRevisions?: readonly ObservedArtifactRevisionCandidate[];
   /** 人工材料提案把每个不透明观察引用固定投影为一个产物角色。 */
   readonly observedArtifactAssociations?: readonly ObservedArtifactAssociationCandidate[];
+  /** 仅来自格式检查器的中立观察图候选。 */
+  readonly observedEntityGraphs?: readonly ObservedEntityGraphCandidate[];
 };
 
 export type ObservedArtifactAssociationCandidate = {
@@ -255,8 +350,68 @@ export type ObservedArtifactAssociationCandidate = {
 
 export type Entity = {
   readonly id: string;
+  /** 当前可解释种类投影；身份本身不以此字段固定。 */
   readonly kind: "digital-asset" | "entity" | "person" | "persona";
 };
+
+/** Core 拥有这套封闭词汇；提供方原生标签不得进入。 */
+export type EntityKind = "digital-asset" | "person" | "persona";
+
+export type EntityKindAssertion = {
+  readonly id: string;
+  readonly entityId: string;
+  readonly kind: EntityKind;
+  readonly basis: "source" | "manual" | "legacy-migration";
+  readonly sourceRecordIds?: readonly string[];
+  /** 人工断言保留明确操作者，自动断言保留产生它的能力。 */
+  readonly actorId?: string;
+  readonly producer?: CapabilityCoordinate;
+};
+
+/** 可清除、可修订的解释；它不会重写身份主张。 */
+export type EntityKindDecision = {
+  readonly id: string;
+  readonly entityId: string;
+  readonly selectedKind?: EntityKind;
+  readonly basis: "manual" | "automatic";
+  readonly replacesDecisionId?: string;
+  /** 人工决定不能只以 basis: manual 代替其操作者。 */
+  readonly actorId?: string;
+};
+
+export type EffectiveEntityKind =
+  | { readonly status: "ordinary" }
+  | {
+      readonly status: "effective";
+      readonly kind: EntityKind;
+      readonly basis: "assertion" | "decision";
+    }
+  | { readonly status: "conflict"; readonly kinds: readonly EntityKind[] };
+
+/** 当前已接受图中的相关实体；种类只能来自唯一的生效投影。 */
+export type CurrentRelatedEntity = Omit<SourcedEntity, "kind"> & {
+  readonly kind: EffectiveEntityKind;
+};
+
+/** 唯一种类投影规则：当前选择优先，否则由当前断言推导。 */
+export function deriveEffectiveEntityKind(input: {
+  readonly assertions: readonly EntityKindAssertion[];
+  readonly decision?: EntityKindDecision;
+}): EffectiveEntityKind {
+  if (input.decision?.selectedKind !== undefined)
+    return {
+      status: "effective",
+      kind: input.decision.selectedKind,
+      basis: "decision",
+    };
+  const kinds = [
+    ...new Set(input.assertions.map((assertion) => assertion.kind)),
+  ].toSorted();
+  if (kinds.length === 0) return { status: "ordinary" };
+  if (kinds.length === 1)
+    return { status: "effective", kind: kinds[0]!, basis: "assertion" };
+  return { status: "conflict", kinds };
+}
 
 export type DigitalAsset = Entity & {
   readonly kind: "digital-asset";
@@ -273,14 +428,22 @@ export type SourcedEntity = Entity & {
   readonly producer?: CapabilityCoordinate;
 };
 
-/** 一条可遍历来源关系，以资产作为其声明主体。 */
+/** 一条关系事实中的具名实体参与。 */
+export type EntityRelationshipParticipant = {
+  readonly entityId: string;
+  readonly role: string;
+  /** 支持此参与的已解析来源出现；不成为图节点。 */
+  readonly mentionIds?: readonly string[];
+};
+
+/** 一条可从每个具名参与者遍历的来源关系事实。 */
 export type EntityRelationship = {
   readonly id: string;
-  readonly subjectId: string;
-  readonly participantId: string;
+  readonly participants: readonly EntityRelationshipParticipant[];
+  /** 来源生命周期的明确所属实体；不是关系的二元主体。 */
+  readonly sourceSubjectId?: string;
   /** 开放关系词汇；语义与约束属于证据／能力。 */
   readonly type: string;
-  readonly role: string;
   /** 一个覆盖 lineage 内的稳定来源契约槽位。 */
   readonly sourceSlot: string;
   readonly sourceRecordIds: readonly string[];
@@ -294,15 +457,32 @@ export type EntityRelationship = {
 
 export type ProposedEntityRelationship = Omit<
   EntityRelationship,
-  "id" | "subjectId"
+  "id" | "participants"
 > & {
-  /**
-   * 本提议中一个由来源解析的实体。省略时刻意表示已接受数字资产，从而保留普通单主体路径。
-   */
-  readonly subjectId?: string;
-  /** 支持已解析参与者的来源出现。 */
-  readonly participantMentionIds?: readonly string[];
+  /** 已由解释器解析的具名参与者；产品在采用时补入当前数字资产参与者。 */
+  readonly participants: readonly [
+    EntityRelationshipParticipant,
+    ...EntityRelationshipParticipant[],
+  ];
+  /** 当前采用的数字资产在该来源事实中的具名角色；省略表示参与者已经完整。 */
+  readonly subjectRole?: string;
+  /** 来源／扩展对该关系类型声明的最低参与角色。 */
+  readonly requiredRoles?: readonly string[];
 };
+
+export {
+  deriveEffectiveRelationships,
+  relationshipCoordinateKey,
+  type EffectiveRelationshipInput,
+  type RelationshipDecision,
+  type RelationshipSemanticCoordinate,
+} from "./effective-relationship.ts";
+export {
+  deriveEffectiveEntityIdentity,
+  type EffectiveEntityIdentity,
+  type EntityIdentityMerge,
+  type EntityIdentityMergeRetraction,
+} from "./effective-entity-identity.ts";
 
 export type SourceAssociation = {
   readonly id: string;
@@ -573,7 +753,7 @@ export type ArtifactRevision = {
 
 export type ArtifactAssociation = {
   readonly id: string;
-  readonly subjectId: string;
+  readonly target: DescriptionTarget;
   readonly artifactId: string;
   readonly role: ArtifactRole;
   /** 本地声明关联中为空；来源持有事实中填充。 */
@@ -628,7 +808,8 @@ export function validateObservedMaterialAssociationAudit(
     if (
       item.support.associationId !== audit.association.id ||
       item.support.recognitionDecisionId !== item.decision.id ||
-      item.decision.assetId !== audit.association.subjectId ||
+      audit.association.target.kind !== "entity" ||
+      item.decision.assetId !== audit.association.target.entityId ||
       item.decision.proposalId !== item.proposal.id ||
       item.projection.associationId !== audit.association.id ||
       item.projection.artifactId !== audit.association.artifactId ||
@@ -757,7 +938,8 @@ export function validateObservedMaterialAssociationSubmission(
         revision?.artifactId !== projection.artifactId ||
         revision.blobDigest !== revisionCandidate.blob.digest ||
         association?.artifactId !== projection.artifactId ||
-        association.subjectId !== decision.assetId ||
+        association.target.kind !== "entity" ||
+        association.target.entityId !== decision.assetId ||
         association.role !== "asset.material-delivered"
       );
     }) ||
@@ -772,7 +954,8 @@ export function validateObservedMaterialAssociationSubmission(
     submission.artifactAssociations.some(
       (association) =>
         !association.id ||
-        association.subjectId !== decision.assetId ||
+        association.target.kind !== "entity" ||
+        association.target.entityId !== decision.assetId ||
         association.role !== "asset.material-delivered" ||
         !artifactIds.has(association.artifactId) ||
         association.sourceAssociationId !== undefined ||
@@ -878,11 +1061,81 @@ export type AcceptedRecognition = {
   readonly entityMentions?: readonly EntityMention[];
   readonly entityResolutionDecisions?: readonly EntityResolutionDecision[];
   readonly relationships?: readonly EntityRelationship[];
+  /** 不依赖 SourceRecord 的本地格式实体图支持。 */
+  readonly observedEntityGraphs?: readonly AcceptedObservedEntityGraph[];
 };
+
+function validateObservedEntityGraphCandidates(
+  graphs: readonly ObservedEntityGraphCandidate[],
+): void {
+  for (const graph of graphs) {
+    const entityKeys = new Set(graph.entities.map((entity) => entity.key));
+    const mentionKeys = new Set(graph.mentions.map((mention) => mention.key));
+    if (
+      !graph.observedArtifactReference ||
+      !graph.coverage.id ||
+      graph.coverage.completeness !== "complete" ||
+      !graph.producer.capabilityId ||
+      !graph.producer.capabilityVersion ||
+      !graph.producer.contractVersion ||
+      entityKeys.size !== graph.entities.length ||
+      mentionKeys.size !== graph.mentions.length ||
+      graph.entities.some(
+        (entity) =>
+          !entity.key ||
+          !entity.occurrenceSlot ||
+          !entity.label ||
+          !entity.preservedValue ||
+          !entity.locator,
+      ) ||
+      graph.mentions.some(
+        (mention) =>
+          !mention.key ||
+          !entityKeys.has(mention.entityKey) ||
+          !mention.sourceSlot ||
+          !mention.field ||
+          !mention.role ||
+          !mention.label ||
+          !mention.locator,
+      ) ||
+      graph.resolutions.some(
+        (resolution) =>
+          !mentionKeys.has(resolution.mentionKey) ||
+          !entityKeys.has(resolution.entityKey),
+      ) ||
+      graph.relationships.some(
+        (relationship) =>
+          !relationship.sourceSlot ||
+          !relationship.type ||
+          !relationship.subjectRole ||
+          !relationship.locator ||
+          relationship.participants.length === 0 ||
+          relationship.participants.some(
+            (participant) =>
+              !entityKeys.has(participant.entityKey) ||
+              !participant.role ||
+              participant.mentionKeys.length === 0 ||
+              !participant.mentionKeys.every((key) => mentionKeys.has(key)),
+          ) ||
+          new Set(
+            relationship.participants.map(
+              (participant) =>
+                `${participant.entityKey}\u0000${participant.role}`,
+            ),
+          ).size !== relationship.participants.length ||
+          relationship.qualifiers.some(
+            (qualifier) => !qualifier.key || !qualifier.value,
+          ),
+      )
+    )
+      throw new Error("Observed entity graph candidate is invalid");
+  }
+}
 
 export function validateRecognitionProposal(
   proposal: RecognitionProposal,
 ): RecognitionProposal {
+  validateObservedEntityGraphCandidates(proposal.observedEntityGraphs ?? []);
   if (proposal.basis.kind === "manual-boundary") {
     const basis = proposal.basis;
     if (
@@ -1241,17 +1494,42 @@ export function validateSourceInterpretationBatch(
   for (const relationship of batch.relationships ?? []) {
     if (
       relationship.type.length === 0 ||
-      relationship.role.length === 0 ||
       relationship.sourceSlot.length === 0 ||
       relationshipSlots.has(relationship.sourceSlot) ||
-      !entityIds.has(relationship.participantId) ||
-      (relationship.subjectId !== undefined &&
-        !entityIds.has(relationship.subjectId)) ||
       !hasProvenance(relationship.sourceRecordIds) ||
-      (relationship.participantMentionIds !== undefined &&
-        (relationship.participantMentionIds.length === 0 ||
-          !relationship.participantMentionIds.every((id) =>
-            decidedMentions.has(id),
+      relationship.participants.length === 0 ||
+      (relationship.subjectRole === undefined &&
+        (relationship.participants.length < 2 ||
+          relationship.sourceSubjectId === undefined)) ||
+      (relationship.sourceSubjectId !== undefined &&
+        (!entityIds.has(relationship.sourceSubjectId) ||
+          !relationship.participants.some(
+            (participant) =>
+              participant.entityId === relationship.sourceSubjectId,
+          ))) ||
+      relationship.participants.some(
+        (participant) =>
+          participant.entityId.length === 0 ||
+          participant.role.length === 0 ||
+          !entityIds.has(participant.entityId) ||
+          (participant.mentionIds !== undefined &&
+            (participant.mentionIds.length === 0 ||
+              !participant.mentionIds.every((id) => decidedMentions.has(id)))),
+      ) ||
+      new Set(
+        relationship.participants.map(
+          (item) => `${item.entityId}\u0000${item.role}`,
+        ),
+      ).size !== relationship.participants.length ||
+      (relationship.requiredRoles !== undefined &&
+        (relationship.requiredRoles.length === 0 ||
+          relationship.requiredRoles.some(
+            (role) =>
+              role.length === 0 ||
+              (relationship.subjectRole !== role &&
+                !relationship.participants.some(
+                  (participant) => participant.role === role,
+                )),
           )))
     ) {
       throw new Error(
@@ -1449,6 +1727,60 @@ function validateRecognitionFactShape(accepted: AcceptedRecognition): void {
   const revisions = new Map(
     accepted.artifactRevisions.map((revision) => [revision.id, revision]),
   );
+  for (const graph of accepted.observedEntityGraphs ?? []) {
+    if (
+      graph.assetId !== accepted.entity.id ||
+      !artifactIds.has(graph.artifactId) ||
+      revisions.get(graph.revisionId)?.artifactId !== graph.artifactId ||
+      !graph.complete ||
+      !graph.coverageId ||
+      !graph.producer.capabilityId ||
+      !graph.producer.capabilityVersion ||
+      !graph.producer.contractVersion
+    )
+      throw new Error(
+        "Observed entity graph requires its exact artifact revision support",
+      );
+    const entityIds = new Set(graph.entities.map((entity) => entity.id));
+    const mentionIds = new Set(graph.mentions.map((mention) => mention.id));
+    if (
+      entityIds.size !== graph.entities.length ||
+      mentionIds.size !== graph.mentions.length ||
+      graph.entities.some(
+        (entity) =>
+          !entity.id ||
+          !entity.occurrenceSlot ||
+          !entity.label ||
+          !entity.preservedValue ||
+          !entity.locator,
+      ) ||
+      graph.mentions.some(
+        (mention) =>
+          !entityIds.has(mention.entityId) ||
+          !mention.sourceSlot ||
+          !mention.field ||
+          !mention.role ||
+          !mention.label ||
+          !mention.locator,
+      ) ||
+      graph.resolutions.some(
+        (resolution) =>
+          !mentionIds.has(resolution.mentionId) ||
+          !entityIds.has(resolution.entityId),
+      ) ||
+      graph.relationships.some(
+        (relationship) =>
+          relationship.sourceRecordIds.length !== 0 ||
+          relationship.participants.length < 2 ||
+          relationship.participants.some(
+            (participant) =>
+              !entityIds.has(participant.entityId) &&
+              participant.entityId !== accepted.entity.id,
+          ),
+      )
+    )
+      throw new Error("Observed entity graph contains invalid local facts");
+  }
   for (const location of accepted.locations) {
     if (!artifactIds.has(location.artifactId)) {
       throw new Error("Location references an unknown Artifact");
@@ -1484,16 +1816,29 @@ function validateRecognitionFactShape(accepted: AcceptedRecognition): void {
     (accepted.entities ?? []).map((entity) => entity.id),
   );
   for (const association of accepted.artifactAssociations) {
-    if (!entityIds.has(association.subjectId)) {
-      throw new Error("Artifact Association references an unresolved Entity");
-    }
-    if (
-      association.subjectId !== accepted.entity.id &&
-      (!sourcedEntityIds.has(association.subjectId) ||
-        association.sourceRecordIds === undefined)
+    if (association.target.kind === "entity") {
+      if (!entityIds.has(association.target.entityId))
+        throw new Error(
+          `Artifact Association references unresolved Entity ${association.target.entityId}`,
+        );
+      if (
+        association.target.entityId !== accepted.entity.id &&
+        (!sourcedEntityIds.has(association.target.entityId) ||
+          association.sourceRecordIds === undefined)
+      )
+        throw new Error(
+          "Artifact Association target must be a sourced resolved Entity with provenance",
+        );
+    } else if (
+      revisions.get(association.target.revisionId)?.artifactId !==
+        association.target.artifactId ||
+      association.observedArtifactPart?.artifactId !==
+        association.target.artifactId ||
+      association.observedArtifactPart.revisionId !==
+        association.target.revisionId
     ) {
       throw new Error(
-        "Artifact Association target must be a sourced resolved Entity with provenance",
+        "Artifact Association revision target must match observed-part provenance",
       );
     }
   }
@@ -1530,8 +1875,16 @@ function validateRecognitionFactShape(accepted: AcceptedRecognition): void {
   }
   for (const relationship of accepted.relationships ?? []) {
     if (
-      !entityIds.has(relationship.subjectId) ||
-      !entityIds.has(relationship.participantId) ||
+      relationship.participants.length < 2 ||
+      relationship.participants.some(
+        (participant) =>
+          !entityIds.has(participant.entityId) || participant.role.length === 0,
+      ) ||
+      new Set(
+        relationship.participants.map(
+          (item) => `${item.entityId}\u0000${item.role}`,
+        ),
+      ).size !== relationship.participants.length ||
       !hasKnownProvenance(relationship.sourceRecordIds)
     ) {
       throw new Error(
@@ -1549,8 +1902,9 @@ function validateRecognitionFactShape(accepted: AcceptedRecognition): void {
         assertion.sourceRecordIds.length !== 0 ||
         assertion.observedArtifactPart !== undefined ||
         assertion.producer !== undefined ||
-        (assertion.subjectId !== undefined &&
-          assertion.subjectId !== accepted.entity.id) ||
+        assertion.target.kind !== "entity" ||
+        assertion.target.entityId !== accepted.entity.id ||
+        assertion.recognitionDecisionId !== undefined ||
         !basis.metadata.some(
           (item) =>
             item.property === assertion.property &&
@@ -1570,8 +1924,18 @@ function validateRecognitionFactShape(accepted: AcceptedRecognition): void {
         (!artifactIds.has(localPart.artifactId) ||
           revisions.get(localPart.revisionId)?.artifactId !==
             localPart.artifactId ||
-          localPart.locator.length === 0)) ||
-      (assertion.subjectId !== undefined && !entityIds.has(assertion.subjectId))
+          localPart.locator.length === 0 ||
+          (assertion.target.kind === "artifact-revision"
+            ? assertion.target.artifactId !== localPart.artifactId ||
+              assertion.target.revisionId !== localPart.revisionId ||
+              assertion.recognitionDecisionId !== undefined
+            : assertion.target.entityId !== accepted.entity.id ||
+              assertion.recognitionDecisionId !==
+                accepted.recognitionDecision.id))) ||
+      (localPart === undefined &&
+        (assertion.target.kind !== "entity" ||
+          !entityIds.has(assertion.target.entityId) ||
+          assertion.recognitionDecisionId !== undefined))
     ) {
       throw new Error(
         "Metadata Assertion requires source or observed-part provenance",

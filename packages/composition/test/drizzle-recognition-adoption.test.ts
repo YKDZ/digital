@@ -354,7 +354,7 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
     artifactAssociations: [
       {
         id: "local-epub-association",
-        subjectId: "local-asset",
+        target: { kind: "entity", entityId: "local-asset" },
         artifactId: "local-epub-artifact",
         role: "asset.material-delivered",
       },
@@ -501,6 +501,11 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
     artifactAssociations: [],
     metadata: [
       {
+        target: {
+          kind: "artifact-revision",
+          artifactId: "local-epub-artifact",
+          revisionId: "local-epub-revision-2",
+        },
         property: "asset.title",
         sourceSlot: "epub.opf.title",
         value: "本地标题第二版",
@@ -1541,7 +1546,6 @@ it("uses shipped TMDB collection and interpretation while OMDb enrichment establ
       acceptedAssetId: baseline.accepted.entity.id,
     },
     accepted: baseline.accepted,
-    metadataPolicyIds: ["ordinary-film-metadata"],
   });
 
   const initial = await omdbSourceResult({
@@ -2326,10 +2330,12 @@ it("scopes complete OMDb omissions to one subject record chain while retaining o
     entities: [bSecondary],
     relationships: [
       {
-        subjectId: bSecondary.id,
-        participantId: bSecondary.id,
+        participants: [
+          { entityId: bSecondary.id, role: "asset" },
+          { entityId: bSecondary.id, role: "secondary" },
+        ],
+        sourceSubjectId: bSecondary.id,
         type: "asset.related",
-        role: "secondary",
         sourceSlot: "omdb.movie.secondary-relationship",
         sourceRecordIds: [firstBRecord.record.id],
       },
@@ -2444,7 +2450,7 @@ it("scopes complete OMDb omissions to one subject record chain while retaining o
              FROM entity_relationships relationship
              JOIN relationship_lifecycles lifecycle
                ON lifecycle.relationship_id = relationship.id
-             WHERE relationship.subject_id = ? AND lifecycle.source_slot = ?
+             WHERE lifecycle.source_subject_id = ? AND lifecycle.source_slot = ?
            )`,
         )
         .get("lineage-b-secondary", "omdb.movie.secondary-relationship"),
@@ -2541,7 +2547,7 @@ it("uses only Drizzle writes when a checkpointed OMDb artifact commits to its cu
         artifactAssociations: expect.arrayContaining([
           expect.objectContaining({
             id: "omdb-managed-association",
-            subjectId: "omdb-film",
+            target: { kind: "entity", entityId: "omdb-film" },
             sourceAssociationId: "omdb-association",
             sourceRecordIds: [source.record.id],
           }),
@@ -3416,7 +3422,7 @@ it("does not merge two source identities merely because their accepted titles ma
     expect(
       database
         .prepare(
-          "SELECT COUNT(*) AS count FROM entities WHERE kind = 'digital-asset'",
+          "SELECT COUNT(*) AS count FROM entity_kind_assertions WHERE kind = 'digital-asset'",
         )
         .get(),
     ).toEqual({ count: 2 });
@@ -3886,8 +3892,8 @@ it("keeps equal title, managed path, and Blob as independent identity facts", as
     blobs: 1,
     currentSourceArtifactCandidateLineages: 2,
     currentSourceAssociations: 2,
-    // 两个数字资产，加上第一部作品独立获取的演职员事实。
-    entities: 3,
+    // 本地 Person、两个数字资产，加上第一部作品独立获取的演职员事实。
+    entities: 4,
     locations: 2,
     metadataAssertions: 2,
     recognitionDecisions: 2,
@@ -3926,8 +3932,7 @@ function adoptionFactCounts(root: string) {
           (SELECT count(*) FROM relationship_sources) AS relationshipSources,
           (SELECT count(*) FROM relationship_lifecycles) AS relationshipLifecycles,
           (SELECT count(*) FROM entity_mentions) AS entityMentions,
-          (SELECT count(*) FROM entity_resolution_decisions) AS entityResolutionDecisions,
-          (SELECT count(*) FROM metadata_policy_enrollments) AS metadataPolicyEnrollments`,
+          (SELECT count(*) FROM entity_resolution_decisions) AS entityResolutionDecisions`,
       )
       .get();
   } finally {
@@ -3998,7 +4003,7 @@ function emptyAdoptionFactCounts() {
     blobs: 0,
     currentSourceArtifactCandidateLineages: 0,
     currentSourceAssociations: 0,
-    entities: 0,
+    entities: 1,
     entityMentions: 0,
     entityRelationships: 0,
     entityResolutionDecisions: 0,
@@ -4006,7 +4011,6 @@ function emptyAdoptionFactCounts() {
     metadataAssertionLifecycles: 0,
     metadataAssertionSources: 0,
     metadataAssertions: 0,
-    metadataPolicyEnrollments: 0,
     recognitionDecisions: 0,
     recognitionProposals: 0,
     relationshipLifecycles: 0,
@@ -4888,7 +4892,10 @@ function omdbAcceptedRecognition(
     blobs: [],
     artifactRevisions: [],
     artifactAssociations: [],
-    metadata: source.interpretation.metadata,
+    metadata: source.interpretation.metadata.map((assertion) => ({
+      ...assertion,
+      target: { kind: "entity" as const, entityId: "omdb-film" },
+    })),
   };
 }
 
@@ -4914,7 +4921,7 @@ function omdbAcceptedRecognitionForAsset(input: {
             sourceRecordIds: [input.source.record.id],
           },
         ];
-  const metadata = [
+  const interpretationMetadata = [
     ...input.source.interpretation.metadata,
     ...(input.secondary === undefined
       ? []
@@ -4931,7 +4938,7 @@ function omdbAcceptedRecognitionForAsset(input: {
   const interpretation: SourceInterpretationBatch = {
     ...input.source.interpretation,
     id: `${input.proposalId}-interpretation`,
-    metadata,
+    metadata: interpretationMetadata,
     ...(secondary.length === 0 ? {} : { entities: secondary }),
   };
   const ruleResults = [
@@ -4980,7 +4987,13 @@ function omdbAcceptedRecognitionForAsset(input: {
     blobs: [],
     artifactRevisions: [],
     artifactAssociations: [],
-    metadata,
+    metadata: interpretationMetadata.map((assertion) => ({
+      ...assertion,
+      target: {
+        kind: "entity" as const,
+        entityId: assertion.subjectId ?? input.assetId,
+      },
+    })),
     ...(secondary.length === 0 ? {} : { entities: secondary }),
   };
 }
@@ -5094,7 +5107,10 @@ async function tmdbAcceptedRecognitionFromShippedAdapter(): Promise<{
       blobs: [],
       artifactRevisions: [],
       artifactAssociations: [],
-      metadata: interpretation.metadata,
+      metadata: interpretation.metadata.map((assertion) => ({
+        ...assertion,
+        target: { kind: "entity" as const, entityId: "tmdb-film" },
+      })),
     },
   };
 }
@@ -5207,7 +5223,10 @@ function tmdbAcceptedRecognition(): {
       blobs: [],
       artifactRevisions: [],
       artifactAssociations: [],
-      metadata: interpretation.metadata,
+      metadata: interpretation.metadata.map((assertion) => ({
+        ...assertion,
+        target: { kind: "entity" as const, entityId: "tmdb-film" },
+      })),
     },
   };
 }
@@ -5266,7 +5285,6 @@ function omdbEnrichmentExecution(input: {
         },
         evidence: omdbEvidence,
         fulfilledArtifactRoles: [],
-        metadataPolicyIds: [],
         stage: input.stage,
         sourceAssociation: input.recognitionSourceAssociation,
         interpretation: input.source.interpretation,
@@ -5305,7 +5323,6 @@ function omdbCandidateEnrichmentCheckpoint(
     },
     evidence: omdbEvidence,
     fulfilledArtifactRoles: [],
-    metadataPolicyIds: [],
   };
 }
 
@@ -5386,7 +5403,7 @@ function omdbManagedArtifactFacts(input: {
     associations: [
       {
         id: associationId,
-        subjectId: input.subjectId,
+        target: { kind: "entity" as const, entityId: input.subjectId },
         artifactId,
         role: "asset.primary-cover",
         sourceRecordIds: [input.sourceRecordId],
@@ -5552,12 +5569,15 @@ function acceptedRecognition(): AcceptedRecognition {
     artifactAssociations: [
       {
         id: "dlsite-cover-association",
-        subjectId: "dlsite-work",
+        target: { kind: "entity", entityId: "dlsite-work" },
         artifactId: "dlsite-cover",
         role: "asset.primary-cover",
       },
     ],
-    metadata: interpretation.metadata,
+    metadata: interpretation.metadata.map((assertion) => ({
+      ...assertion,
+      target: { kind: "entity" as const, entityId: "dlsite-work" },
+    })),
     entities: [
       {
         id: "dlsite-voice",
@@ -5574,10 +5594,11 @@ function acceptedRecognition(): AcceptedRecognition {
     relationships: [
       {
         id: "dlsite-voice-relationship",
-        subjectId: "dlsite-work",
-        participantId: "dlsite-voice",
+        participants: [
+          { entityId: "dlsite-work", role: "asset" },
+          { entityId: "dlsite-voice", role: "voice" },
+        ],
         type: "asset.contribution",
-        role: "voice",
         sourceSlot: "dlsite.credit.voice",
         sourceRecordIds: ["dlsite-record"],
       },
@@ -5667,12 +5688,15 @@ function continuityConflictRecognition(): AcceptedRecognition {
     artifactAssociations: [
       {
         id: "dlsite-cover-association",
-        subjectId: "dlsite-continuity-work",
+        target: { kind: "entity", entityId: "dlsite-continuity-work" },
         artifactId: "dlsite-continuity-cover",
         role: "asset.primary-cover",
       },
     ],
-    metadata: proposal.basis.interpretation.metadata,
+    metadata: proposal.basis.interpretation.metadata.map((assertion) => ({
+      ...assertion,
+      target: { kind: "entity" as const, entityId: "dlsite-continuity-work" },
+    })),
     entities: [],
     entityMentions: [],
     entityResolutionDecisions: [],
@@ -5749,11 +5773,14 @@ function independentlyAcceptedRecognition(): AcceptedRecognition {
     artifactAssociations: [
       {
         id: "dlsite-independent-cover-association",
-        subjectId: "dlsite-independent-work",
+        target: { kind: "entity", entityId: "dlsite-independent-work" },
         artifactId: "dlsite-independent-cover",
         role: "asset.primary-cover",
       },
     ],
-    metadata: proposal.basis.interpretation.metadata,
+    metadata: proposal.basis.interpretation.metadata.map((assertion) => ({
+      ...assertion,
+      target: { kind: "entity" as const, entityId: "dlsite-independent-work" },
+    })),
   };
 }

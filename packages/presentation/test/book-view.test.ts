@@ -27,6 +27,7 @@ describe("Book View", () => {
     const [view] = projectCatalogue([
       {
         id: "book-asset",
+        primaryCoverArtifactId: "cover",
         sourceAssociation: {
           sourceIdentity: "nbinet",
           nativeAddress:
@@ -41,7 +42,11 @@ describe("Book View", () => {
           { property: "book.publication-date", value: "2017" },
         ],
         artifactAssociations: [
-          { artifactId: "cover", role: "asset.primary-cover" },
+          {
+            target: { kind: "entity", entityId: "book-asset" },
+            artifactId: "cover",
+            role: "asset.primary-cover",
+          },
         ],
         locations: [
           {

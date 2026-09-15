@@ -17,17 +17,30 @@ describe("formal asset view", () => {
           value: "2025-01-01T00:00:00Z",
         },
       ],
-      entities: [{ id: "creator", label: "创作者" }],
+      currentRelatedEntities: [
+        {
+          id: "creator",
+          label: "创作者",
+          kind: { status: "ordinary" },
+          sourceIdentity: "test",
+          sourceKey: "creator",
+          identityNamespace: "test.creator",
+        },
+      ],
       relationships: [
         {
-          participantId: "creator",
-          role: "fanbox.post.creator",
+          participants: [{ entityId: "creator", role: "fanbox.post.creator" }],
           type: "asset.contribution",
         },
       ],
       artifactAssociations: [
-        { artifactId: "cover", role: "asset.primary-cover" },
+        {
+          target: { kind: "entity", entityId: "asset-1" },
+          artifactId: "cover",
+          role: "asset.primary-cover",
+        },
       ],
+      primaryCoverArtifactId: "cover",
       locations: [
         { artifactId: "cover", kind: "managed", address: "/managed/cover.jpg" },
       ],
@@ -77,21 +90,63 @@ describe("formal asset view", () => {
           },
         },
       ],
-      entities: [{ id: "creator", label: "Custom_Udon" }],
+      currentRelatedEntities: [
+        {
+          id: "creator",
+          label: "Custom_Udon",
+          kind: { status: "ordinary" },
+          sourceIdentity: "test",
+          sourceKey: "creator",
+          identityNamespace: "test.creator",
+        },
+      ],
       relationships: [
         {
-          participantId: "creator",
-          role: "fanbox.post.creator",
+          participants: [{ entityId: "creator", role: "fanbox.post.creator" }],
           type: "asset.contribution",
         },
       ],
       artifactAssociations: [],
-      locations: [{ artifactId: "local", kind: "observed", address: "/post" }],
+      locations: [
+        {
+          artifactId: "poster",
+          kind: "observed",
+          address: "/library/post/poster.jpg",
+          byteLength: 10,
+          downloadUrl: "/download/poster",
+        },
+        {
+          artifactId: "video",
+          kind: "observed",
+          address: "/library/post/video/bonus.mp4",
+          byteLength: 42,
+          downloadUrl: "/download/video",
+        },
+      ],
     });
 
     expect(view).toMatchObject({
       cardComponent: "fanbox",
       detailComponent: "fanbox",
+      fileTree: [
+        {
+          name: "poster.jpg",
+          format: "JPG",
+          byteLength: 10,
+          downloadUrl: "/download/poster",
+        },
+        {
+          name: "video",
+          children: [
+            {
+              name: "bonus.mp4",
+              format: "MP4",
+              byteLength: 42,
+              downloadUrl: "/download/video",
+            },
+          ],
+        },
+      ],
       fanbox: {
         title: "年始の挨拶",
         creator: "Custom_Udon",
@@ -120,33 +175,56 @@ describe("formal asset view", () => {
         { property: "asset.introduction", value: "紹介文" },
         { property: "asset.declared-language", value: "JPN" },
         { property: "dlsite.product.price-jpy", value: "0" },
-        { property: "asset.series-position", value: "2" },
       ],
-      entities: [
-        { id: "circle", label: "サークル" },
-        { id: "voice", label: "声優" },
-        { id: "series", label: "シリーズ" },
+      currentRelatedEntities: [
+        {
+          id: "circle",
+          label: "サークル",
+          kind: { status: "ordinary" },
+          sourceIdentity: "test",
+          sourceKey: "circle",
+          identityNamespace: "test.circle",
+        },
+        {
+          id: "voice",
+          label: "声優",
+          kind: { status: "ordinary" },
+          sourceIdentity: "test",
+          sourceKey: "voice",
+          identityNamespace: "test.voice",
+        },
+        {
+          id: "series",
+          label: "シリーズ",
+          kind: { status: "ordinary" },
+          sourceIdentity: "test",
+          sourceKey: "series",
+          identityNamespace: "test.series",
+        },
       ],
       relationships: [
         {
-          participantId: "circle",
-          role: "circle",
+          participants: [{ entityId: "circle", role: "circle" }],
           type: "asset.contribution",
         },
         {
-          participantId: "voice",
-          role: "voice",
+          participants: [{ entityId: "voice", role: "voice" }],
           type: "asset.contribution",
         },
         {
-          participantId: "series",
-          role: "dlsite.series.member",
+          participants: [{ entityId: "series", role: "dlsite.series.member" }],
           type: "asset.membership",
+          qualifiers: [{ key: "asset.membership.position", value: "2" }],
         },
       ],
       artifactAssociations: [
-        { artifactId: "cover", role: "asset.primary-cover" },
+        {
+          target: { kind: "entity", entityId: "asset-dlsite" },
+          artifactId: "cover",
+          role: "asset.primary-cover",
+        },
       ],
+      primaryCoverArtifactId: "cover",
       locations: [
         { artifactId: "cover", kind: "managed", address: "/managed/cover.jpg" },
       ],
@@ -183,8 +261,13 @@ describe("formal asset view", () => {
         { property: "book.publication-date", value: "2017" },
       ],
       artifactAssociations: [
-        { artifactId: "cover", role: "asset.primary-cover" },
+        {
+          target: { kind: "entity", entityId: "asset-book" },
+          artifactId: "cover",
+          role: "asset.primary-cover",
+        },
       ],
+      primaryCoverArtifactId: "cover",
       locations: [
         { artifactId: "cover", kind: "managed", address: "/managed/cover.jpg" },
         {

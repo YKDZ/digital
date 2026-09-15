@@ -31,6 +31,7 @@ describe("Film View", () => {
   it("selects a film component from its accepted source association and projects display roles", () => {
     const view = projectAssetView({
       id: "film-209764",
+      primaryCoverArtifactId: "poster",
       sourceAssociations: [
         {
           sourceIdentity: "tmdb",
@@ -57,30 +58,43 @@ describe("Film View", () => {
         { property: "asset.awards", value: "4 wins & 13 nominations" },
         { property: "asset.box-office", value: "$4,133" },
       ],
-      entities: [
-        { id: "director", label: "金秉祐" },
-        { id: "cast-1", label: "河正宇" },
-        { id: "cast-2", label: "李璟荣" },
+      currentRelatedEntities: [
+        {
+          id: "director",
+          label: "金秉祐",
+          kind: { status: "effective", kind: "person", basis: "assertion" },
+        },
+        {
+          id: "cast-1",
+          label: "河正宇",
+          kind: { status: "effective", kind: "person", basis: "assertion" },
+        },
+        {
+          id: "cast-2",
+          label: "李璟荣",
+          kind: { status: "effective", kind: "person", basis: "assertion" },
+        },
       ],
       relationships: [
         {
-          participantId: "director",
-          role: "director",
+          participants: [{ entityId: "director", role: "director" }],
           type: "asset.contribution",
         },
         {
-          participantId: "cast-1",
-          role: "cast",
+          participants: [{ entityId: "cast-1", role: "cast" }],
           type: "asset.contribution",
         },
         {
-          participantId: "cast-2",
-          role: "cast",
+          participants: [{ entityId: "cast-2", role: "cast" }],
           type: "asset.contribution",
         },
       ],
       artifactAssociations: [
-        { artifactId: "poster", role: "asset.primary-cover" },
+        {
+          target: { kind: "entity", entityId: "film-209764" },
+          artifactId: "poster",
+          role: "asset.primary-cover",
+        },
       ],
       locations: [
         {

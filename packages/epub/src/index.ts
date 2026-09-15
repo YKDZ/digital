@@ -8,6 +8,7 @@ import {
   type ObservedArtifactPartAcquirer,
   type Recognizer,
   type RecognitionCandidateContext,
+  type RelationshipTypeDefinition,
 } from "@digital/application";
 import type {
   CapabilityCoordinate,
@@ -18,6 +19,17 @@ import type {
 
 const maximumArchiveMemberBytes = 32 * 1024 * 1024;
 const maximumDeflateCompressionRatio = 100;
+
+const seriesRelationship = {
+  id: "epub.series-membership",
+  type: "asset.membership",
+  label: "属于系列",
+  roles: [
+    { role: "asset", label: "作品", minimum: 1, maximum: 1 },
+    { role: "series", label: "系列", minimum: 1, maximum: 1 },
+  ],
+  qualifiers: [{ key: "position", label: "系列顺序" }],
+} as const satisfies RelationshipTypeDefinition;
 
 const directoryCapability = declareCapability({
   identity: "epub.publication-inspection",
@@ -71,6 +83,7 @@ export type EpubPublication = {
     readonly sourceKey: string;
     readonly value: string;
     readonly locator: string;
+    readonly collectionType?: LocatedText;
     readonly groupPosition?: LocatedText;
   }[];
   readonly cover?: {
@@ -132,6 +145,8 @@ export function inspectEpubPublication(bytes: Uint8Array): EpubPublication {
       if (meta.value === undefined) return [];
       const groupPosition =
         id === undefined ? undefined : refinedMeta(opf, id, "group-position");
+      const collectionType =
+        id === undefined ? undefined : refinedMeta(opf, id, "collection-type");
       return [
         {
           sourceKey: id ?? `mention-${index + 1}`,
@@ -149,6 +164,18 @@ export function inspectEpubPublication(bytes: Uint8Array): EpubPublication {
                     rootfile,
                     `@refines='#${id}'`,
                     "group-position",
+                  ),
+                },
+              }),
+          ...(collectionType === undefined
+            ? {}
+            : {
+                collectionType: {
+                  value: collectionType,
+                  locator: metaLocator(
+                    rootfile,
+                    `@refines='#${id}'`,
+                    "collection-type",
                   ),
                 },
               }),
@@ -233,6 +260,17 @@ export function inspectEpubPublication(bytes: Uint8Array): EpubPublication {
  * EPUB 集成拥有容器解释。它选择显式的单文件作品边界，而不是把父目录变成图书。
  */
 export class EpubPublicationInspector implements ArtifactFormatInspector {
+  readonly relationshipDefinitions = [
+    seriesRelationship,
+    {
+      id: "epub.contribution",
+      type: "asset.contribution",
+      label: "EPUB 创作署名",
+      roles: [{ role: "asset", label: "作品", minimum: 1, maximum: 1 }],
+      additionalRoles: { label: "署名角色" },
+      qualifiers: [],
+    },
+  ];
   readonly capability = directoryCapability;
   async inspect(input: {
     readonly observedArtifactReference: string;
@@ -339,6 +377,14 @@ export class EpubPublicationInspector implements ArtifactFormatInspector {
                   ]),
             ]),
           ],
+          ...(() => {
+            const entityGraph = epubObservedEntityGraph(
+              publication,
+              input.observedArtifactReference,
+              this.capability,
+            );
+            return entityGraph === undefined ? {} : { entityGraph };
+          })(),
           parts:
             publication.cover === undefined
               ? []
@@ -353,6 +399,120 @@ export class EpubPublicationInspector implements ArtifactFormatInspector {
       },
     ];
   }
+}
+
+function epubObservedEntityGraph(
+  publication: EpubPublication,
+  observedArtifactReference: string,
+  producer: typeof directoryCapability,
+) {
+  const contributors = publication.contributorFacts.flatMap((fact, index) => {
+    if (fact.declaredRole === undefined) return [];
+    const ordinal = indexWithinRole(publication.contributorFacts, index);
+    const key = `contributor:${fact.role}:${ordinal}`;
+    const mentionKey = `${key}:mention`;
+    const sourceSlot = `opf.${fact.role}.${ordinal}`;
+    return [
+      {
+        entity: {
+          key,
+          occurrenceSlot: sourceSlot,
+          label: fact.value,
+          preservedValue: fact.value,
+          locator: fact.locator,
+        },
+        mention: {
+          key: mentionKey,
+          entityKey: key,
+          sourceSlot,
+          field: "contributor",
+          role: fact.declaredRole.value,
+          label: fact.value,
+          locator: fact.locator,
+        },
+        relationship: {
+          sourceSlot,
+          type: "asset.contribution",
+          subjectRole: "asset",
+          participants: [
+            {
+              entityKey: key,
+              role: fact.declaredRole.value,
+              mentionKeys: [mentionKey],
+            },
+          ],
+          qualifiers: [],
+          locator: fact.declaredRole.locator,
+        },
+      },
+    ];
+  });
+  const series = publication.collectionFacts.flatMap((fact) => {
+    if (fact.collectionType?.value !== "series") return [];
+    const key = `series:${fact.sourceKey}`;
+    const mentionKey = `${key}:mention`;
+    const sourceSlot = `opf.collection.${fact.sourceKey}`;
+    return [
+      {
+        entity: {
+          key,
+          occurrenceSlot: sourceSlot,
+          label: fact.value,
+          preservedValue: fact.value,
+          locator: fact.locator,
+        },
+        mention: {
+          key: mentionKey,
+          entityKey: key,
+          sourceSlot,
+          field: "collection",
+          role: "series",
+          label: fact.value,
+          locator: fact.locator,
+        },
+        relationship: {
+          sourceSlot,
+          type: seriesRelationship.type,
+          subjectRole: seriesRelationship.roles[0].role,
+          participants: [
+            {
+              entityKey: key,
+              role: seriesRelationship.roles[1].role,
+              mentionKeys: [mentionKey],
+            },
+          ],
+          qualifiers:
+            fact.groupPosition === undefined
+              ? []
+              : [
+                  {
+                    key: seriesRelationship.qualifiers[0].key,
+                    value: fact.groupPosition.value,
+                  },
+                ],
+          locator: fact.locator,
+        },
+      },
+    ];
+  });
+  const facts = [...contributors, ...series];
+  // 即使这一修订版没有受支持的关系，完整覆盖信封仍必须存在：它是上个完整
+  // 修订版中同一 coverage 的关系可被撤回的唯一正向证据。
+  return {
+    observedArtifactReference,
+    producer,
+    coverage: {
+      id: "epub.opf.relationships",
+      completeness: "complete" as const,
+    },
+    entities: facts.map((fact) => fact.entity),
+    mentions: facts.map((fact) => fact.mention),
+    resolutions: facts.map((fact) => ({
+      mentionKey: fact.mention.key,
+      entityKey: fact.entity.key,
+    })),
+    relationships: facts.map((fact) => fact.relationship),
+  };
 }
 
 /** 无有效 ISBN 的单 EPUB 修订版只形成观察依据提案。 */

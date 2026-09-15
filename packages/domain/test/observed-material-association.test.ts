@@ -107,13 +107,13 @@ describe("observed material association", () => {
     artifactAssociations: [
       {
         id: "association-pdf",
-        subjectId: "asset-existing",
+        target: { kind: "entity", entityId: "asset-existing" },
         artifactId: "artifact-pdf",
         role: "asset.material-delivered",
       },
       {
         id: "association-text",
-        subjectId: "asset-existing",
+        target: { kind: "entity", entityId: "asset-existing" },
         artifactId: "artifact-text",
         role: "asset.material-delivered",
       },
@@ -158,8 +158,8 @@ describe("observed material association", () => {
       (value: ObservedMaterialAssociationSubmission) => ({
         ...value,
         artifactAssociations: [
-          { ...value.artifactAssociations[0]!, role: "asset.cover" },
-          value.artifactAssociations[1]!,
+          { ...value.artifactAssociations[0], role: "asset.cover" },
+          value.artifactAssociations[1],
         ],
       }),
     ],
@@ -168,8 +168,11 @@ describe("observed material association", () => {
       (value: ObservedMaterialAssociationSubmission) => ({
         ...value,
         artifactAssociations: [
-          { ...value.artifactAssociations[0]!, subjectId: "asset-other" },
-          value.artifactAssociations[1]!,
+          {
+            ...value.artifactAssociations[0],
+            target: { kind: "entity" as const, entityId: "asset-other" },
+          },
+          value.artifactAssociations[1],
         ],
       }),
     ],
@@ -218,8 +221,8 @@ describe("observed material association", () => {
     expect(() =>
       validateObservedMaterialAssociationSubmission({
         ...value,
-        artifactAssociations: [value.artifactAssociations[0]!],
-        supports: [value.supports[0]!],
+        artifactAssociations: [value.artifactAssociations[0]],
+        supports: [value.supports[0]],
       }),
     ).toThrow();
   });

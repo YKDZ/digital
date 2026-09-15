@@ -2,10 +2,29 @@ import { describe, expect, it } from "vitest";
 
 import {
   deriveEffectiveMetadata,
+  type EffectiveMetadataInput,
+  type MetadataAssertion,
   type MetadataPolicy,
   type MetadataPolicyRule,
   validateMetadataPolicy,
 } from "../src/index.ts";
+
+const assetTarget = { kind: "entity", entityId: "asset-1" } as const;
+
+function deriveAssetMetadata(
+  input: Omit<EffectiveMetadataInput, "target" | "metadata"> & {
+    readonly metadata: readonly Omit<MetadataAssertion, "target">[];
+  },
+) {
+  return deriveEffectiveMetadata({
+    ...input,
+    target: assetTarget,
+    metadata: input.metadata.map((assertion) => ({
+      ...assertion,
+      target: assetTarget,
+    })),
+  });
+}
 
 const exactRule: MetadataPolicyRule = {
   property: "asset.title",
@@ -33,8 +52,7 @@ function policy(rules: readonly MetadataPolicyRule[]): MetadataPolicy {
 }
 
 function derive(rules: readonly MetadataPolicyRule[]) {
-  return deriveEffectiveMetadata({
-    subjectId: "asset-1",
+  return deriveAssetMetadata({
     metadataUsageContext: "asset.ordinary",
     policies: [policy(rules)],
     sourceRecords: [
@@ -59,6 +77,123 @@ function derive(rules: readonly MetadataPolicyRule[]) {
 }
 
 describe("Effective Metadata", () => {
+  it("单值语境不会从同一优先来源的不同值中任选首项", () => {
+    const projection = deriveAssetMetadata({
+      metadataUsageContext: "asset.ordinary",
+      policies: [policy([exactRule])],
+      sourceRecords: [{ id: "preferred-record", sourceIdentity: "preferred" }],
+      metadata: [
+        {
+          property: "asset.title",
+          sourceSlot: "preferred.title.0",
+          value: "第一个标题",
+          sourceRecordIds: ["preferred-record"],
+        },
+        {
+          property: "asset.title",
+          sourceSlot: "preferred.title.1",
+          value: "第二个标题",
+          sourceRecordIds: ["preferred-record"],
+        },
+      ],
+    });
+
+    expect(projection.values).toEqual([]);
+    expect(projection.conflicts).toEqual([
+      expect.objectContaining({
+        kind: "metadata-value-conflict",
+        property: "asset.title",
+        metadataUsageContext: "asset.ordinary",
+        candidates: [
+          expect.objectContaining({ value: "第一个标题" }),
+          expect.objectContaining({ value: "第二个标题" }),
+        ],
+      }),
+    ]);
+  });
+
+  it("语义相同的多来源断言形成一个保留全部贡献来源的值", () => {
+    const projection = deriveAssetMetadata({
+      metadataUsageContext: "asset.ordinary",
+      policies: [policy([exactRule])],
+      sourceRecords: [
+        { id: "preferred-record", sourceIdentity: "preferred" },
+        { id: "fallback-record", sourceIdentity: "fallback" },
+      ],
+      metadata: [
+        {
+          property: "asset.title",
+          sourceSlot: "preferred.title",
+          value: "同一标题",
+          sourceRecordIds: ["preferred-record"],
+        },
+        {
+          property: "asset.title",
+          sourceSlot: "fallback.title",
+          value: "同一标题",
+          sourceRecordIds: ["fallback-record"],
+        },
+      ],
+    });
+
+    expect(projection.conflicts).toEqual([]);
+    expect(projection.values).toEqual([
+      expect.objectContaining({
+        value: "同一标题",
+        sourceRecordIds: ["preferred-record", "fallback-record"],
+        contributingAssertions: [
+          expect.objectContaining({ sourceSlot: "preferred.title" }),
+          expect.objectContaining({ sourceSlot: "fallback.title" }),
+        ],
+        alternatives: [],
+      }),
+    ]);
+  });
+
+  it("未排序来源给出不同单值时形成冲突而不按来源名任选", () => {
+    const projection = deriveAssetMetadata({
+      metadataUsageContext: "asset.ordinary",
+      policies: [
+        policy([
+          {
+            property: "asset.title",
+            preferredSourceIdentities: ["absent"],
+            cardinality: "one",
+          },
+        ]),
+      ],
+      sourceRecords: [
+        { id: "alpha-record", sourceIdentity: "alpha" },
+        { id: "zeta-record", sourceIdentity: "zeta" },
+      ],
+      metadata: [
+        {
+          property: "asset.title",
+          sourceSlot: "alpha.title",
+          value: "甲标题",
+          sourceRecordIds: ["alpha-record"],
+        },
+        {
+          property: "asset.title",
+          sourceSlot: "zeta.title",
+          value: "乙标题",
+          sourceRecordIds: ["zeta-record"],
+        },
+      ],
+    });
+
+    expect(projection.values).toEqual([]);
+    expect(projection.conflicts).toEqual([
+      expect.objectContaining({
+        kind: "metadata-value-conflict",
+        candidates: [
+          expect.objectContaining({ value: "甲标题" }),
+          expect.objectContaining({ value: "乙标题" }),
+        ],
+      }),
+    ]);
+  });
+
   it("applies an exact property rule before matching patterns and the default regardless of rule order", () => {
     const exactFirst = derive([exactRule, patternRule, defaultRule]);
     const exactLast = derive([defaultRule, patternRule, exactRule]);
@@ -94,6 +229,7 @@ describe("Effective Metadata", () => {
           property: "asset.title",
           value: "Preferred title",
           selectedAssertion: {
+            target: assetTarget,
             property: "asset.title",
             sourceSlot: "preferred.title",
             value: "Preferred title",
@@ -128,8 +264,7 @@ describe("Effective Metadata", () => {
   });
 
   it("explains every absent preferred source before selecting an available fallback", () => {
-    const projection = deriveEffectiveMetadata({
-      subjectId: "asset-1",
+    const projection = deriveAssetMetadata({
       metadataUsageContext: "asset.ordinary",
       policies: [
         policy([
@@ -168,8 +303,7 @@ describe("Effective Metadata", () => {
   });
 
   it("keeps many-valued assertions and their native qualifiers separate", () => {
-    const projection = deriveEffectiveMetadata({
-      subjectId: "asset-1",
+    const projection = deriveAssetMetadata({
       metadataUsageContext: "asset.ordinary",
       policies: [
         policy([
@@ -217,8 +351,7 @@ describe("Effective Metadata", () => {
   });
 
   it("selects a preferred source's complete many-valued group and preserves lower-source alternatives", () => {
-    const projection = deriveEffectiveMetadata({
-      subjectId: "asset-1",
+    const projection = deriveAssetMetadata({
       metadataUsageContext: "asset.ordinary",
       policies: [
         policy([
@@ -285,15 +418,6 @@ describe("Effective Metadata", () => {
     for (const selected of projection.values) {
       expect(selected.alternatives).toEqual([
         expect.objectContaining({
-          value: "Drama",
-          sourceIdentity: "omdb",
-          exclusion: {
-            kind: "source-preference",
-            selectedSource: "tmdb",
-            disagreesWithSelected: false,
-          },
-        }),
-        expect.objectContaining({
           value: "Mystery",
           sourceIdentity: "omdb",
           exclusion: {
@@ -304,11 +428,20 @@ describe("Effective Metadata", () => {
         }),
       ]);
     }
+    expect(projection.values[0]).toEqual(
+      expect.objectContaining({
+        value: "Drama",
+        sourceRecordIds: ["tmdb-record", "omdb-record"],
+        contributingAssertions: [
+          expect.objectContaining({ sourceSlot: "tmdb.movie.genre.0" }),
+          expect.objectContaining({ sourceSlot: "omdb.movie.genre.0" }),
+        ],
+      }),
+    );
   });
 
-  it("selects a deterministic fallback source's complete many-valued group", () => {
-    const projection = deriveEffectiveMetadata({
-      subjectId: "asset-1",
+  it("全部首选来源缺失时保留所有未排序的多值而不按来源名选择", () => {
+    const projection = deriveAssetMetadata({
       metadataUsageContext: "asset.ordinary",
       policies: [
         policy([
@@ -356,39 +489,34 @@ describe("Effective Metadata", () => {
         "Drama",
         "catalogue",
         {
-          kind: "preferred-source-absent-fallback",
+          kind: "preferred-sources-absent-unranked",
           absentPreferredSources: ["tmdb", "omdb"],
-          selectedFallbackSource: "catalogue",
         },
       ],
       [
         "Thriller",
         "catalogue",
         {
-          kind: "preferred-source-absent-fallback",
+          kind: "preferred-sources-absent-unranked",
           absentPreferredSources: ["tmdb", "omdb"],
-          selectedFallbackSource: "catalogue",
+        },
+      ],
+      [
+        "Mystery",
+        "untrusted",
+        {
+          kind: "preferred-sources-absent-unranked",
+          absentPreferredSources: ["tmdb", "omdb"],
         },
       ],
     ]);
-    for (const selected of projection.values) {
-      expect(selected.alternatives).toEqual([
-        expect.objectContaining({
-          value: "Mystery",
-          sourceIdentity: "untrusted",
-          exclusion: {
-            kind: "deterministic-assertion-order",
-            selectedSource: "catalogue",
-            disagreesWithSelected: true,
-          },
-        }),
-      ]);
-    }
+    expect(
+      projection.values.every((selected) => selected.alternatives.length === 0),
+    ).toBe(true);
   });
 
   it("returns a no-value conflict when incomparable policies control the same property", () => {
-    const projection = deriveEffectiveMetadata({
-      subjectId: "asset-1",
+    const projection = deriveAssetMetadata({
       metadataUsageContext: "asset.ordinary",
       policies: [
         policy([exactRule]),

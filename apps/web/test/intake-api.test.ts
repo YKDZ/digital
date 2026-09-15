@@ -8,6 +8,96 @@ import { expect, it, vi } from "vitest";
 
 import { prepareWebProductData } from "./prepare-catalogue";
 
+it("出版物详情提供首次确认后可下载的当前文件", async () => {
+  const temporary = await mkdtemp(
+    path.join(tmpdir(), "digital-disposable-publication-download-"),
+  );
+  const data = path.join(temporary, "data");
+  const observed = path.join(temporary, "observed");
+  const bytes = new TextEncoder().encode("publication bytes");
+  await mkdir(observed, { recursive: true });
+  await writeFile(path.join(observed, "publication.txt"), bytes);
+  await prepareWebProductData(data);
+  const product = runProduct(
+    { productDataDirectory: data, environment: {} },
+    { start: createWebDelivery },
+  );
+  try {
+    const { api } = product.result;
+    const post = (route: string, body: object) =>
+      api.request(route, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    const root = await (
+      await post("/settings/roots", {
+        action: "create",
+        displayName: "出版物",
+        containerPath: observed,
+        symlinkMode: "do-not-follow",
+        allowedTargetRootIds: [],
+      })
+    ).json();
+    const refresh = await (
+      await post("/refresh", {
+        observedRootId: root.id,
+        relativeScope: ".",
+      })
+    ).json();
+    await expect
+      .poll(
+        async () =>
+          (
+            await (
+              await api.request(
+                `/intake?rootId=${root.id}&executionId=${refresh.id}`,
+              )
+            ).json()
+          ).execution?.status,
+      )
+      .toMatch(/completed|failed/u);
+    const preview = await (
+      await post("/intake", {
+        action: "prepare",
+        executionId: refresh.id,
+        relativePaths: ["publication.txt"],
+        classification: "book",
+        name: "测试出版物",
+      })
+    ).json();
+    const saved = await (
+      await post("/intake", {
+        action: "confirm",
+        executionId: preview.executionId,
+      })
+    ).json();
+
+    const detail = await (
+      await api.request(`/catalogue/${saved.asset.id}`)
+    ).json();
+    expect(detail.asset.book.files).toEqual([
+      expect.objectContaining({
+        name: "publication.txt",
+        format: "TXT",
+        byteLength: bytes.byteLength,
+        downloadUrl: expect.stringMatching(
+          /^\/api\/observed-file-downloads\/observed-file-selection_1_[a-f0-9]{64}$/u,
+        ),
+      }),
+    ]);
+
+    const download = await api.request(
+      detail.asset.book.files[0].downloadUrl.replace(/^\/api/u, ""),
+    );
+    expect(download.status).toBe(200);
+    await expect(download.bytes()).resolves.toEqual(bytes);
+  } finally {
+    await product.close();
+    await rm(temporary, { recursive: true, force: true });
+  }
+}, 30_000);
+
 it("Web HTTP 通过同一产品接口准备、检查并确认观察材料关联", async () => {
   const temporary = await mkdtemp(
     path.join(tmpdir(), "digital-disposable-web-material-association-"),
@@ -340,6 +430,10 @@ it("HTTP 交付公开真实来源要求并通过产品用例补充来源", async
       expect.objectContaining({
         sourceIdentity: "nbinet",
         fields: [expect.objectContaining({ key: "isbn", required: true })],
+      }),
+      expect.objectContaining({
+        sourceIdentity: "tmdb",
+        fields: [expect.objectContaining({ key: "movie", required: true })],
       }),
       expect.objectContaining({
         sourceIdentity: "taiwan-kadokawa",

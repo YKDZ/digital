@@ -81,9 +81,13 @@ function accepted(): AcceptedRecognition {
     artifactAssociations: [
       {
         id: "cover-association",
-        subjectId: "asset",
+        target: {
+          kind: "artifact-revision",
+          artifactId: "epub",
+          revisionId: "epub-revision",
+        },
         artifactId: "cover",
-        role: "asset.primary-cover",
+        role: "asset.material-image",
         observedArtifactPart: {
           artifactId: "epub",
           revisionId: "epub-revision",
@@ -93,6 +97,11 @@ function accepted(): AcceptedRecognition {
     ],
     metadata: [
       {
+        target: {
+          kind: "artifact-revision",
+          artifactId: "epub",
+          revisionId: "epub-revision",
+        },
         property: "asset.title",
         sourceSlot: "epub.opf.title",
         value: "本地标题",
@@ -453,9 +462,9 @@ describe("识别依据", () => {
     expect(validateRecognitionProposal(proposal)).toBe(proposal);
     if (proposal.basis.kind !== "observed-evidence")
       throw new Error("测试提案缺少观察证据依据");
-    expect(
-      proposal.basis.evidence[0]!.inspection!.identifiers[0]!.locators,
-    ).toBe(locators);
+    expect(proposal.basis.evidence[0].inspection!.identifiers[0].locators).toBe(
+      locators,
+    );
   });
 
   it.each([

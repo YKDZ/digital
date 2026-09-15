@@ -476,11 +476,17 @@ describe("DLsite collection and interpretation", () => {
     );
     expect(batch.relationships ?? []).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ role: "circle" }),
-        expect.objectContaining({ role: "voice" }),
+        expect.objectContaining({
+          participants: [expect.objectContaining({ role: "circle" })],
+        }),
+        expect.objectContaining({
+          participants: [expect.objectContaining({ role: "voice" })],
+        }),
         expect.objectContaining({
           type: "asset.membership",
-          role: "dlsite.series.member",
+          participants: [
+            expect.objectContaining({ role: "dlsite.series.member" }),
+          ],
         }),
       ]),
     );
@@ -495,6 +501,41 @@ describe("DLsite collection and interpretation", () => {
       ]),
     );
     expect(batch.entityResolutionDecisions).toHaveLength(4);
+    const [repeated] = interpreter.interpret({
+      evidence: [evidence],
+      sourceRecords: [json, html],
+    });
+    expect(repeated!.entityMentions?.map(({ id }) => id)).toEqual(
+      batch.entityMentions?.map(({ id }) => id),
+    );
+    expect(
+      repeated!.entities?.find(({ sourceKey }) => sourceKey === "RG123")?.id,
+    ).toBe(batch.entities?.find(({ sourceKey }) => sourceKey === "RG123")?.id);
+    const otherEvidence = {
+      ...evidence,
+      sourceAddress: evidence.sourceAddress.replace("RJ01668691", "RJ01668692"),
+    };
+    const [otherWork] = interpreter.interpret({
+      evidence: [otherEvidence],
+      sourceRecords: [
+        {
+          ...json,
+          nativeAddress: otherEvidence.sourceAddress,
+          body: json.body.replace("RJ01668691", "RJ01668692"),
+        },
+        { ...html, nativeAddress: otherEvidence.sourceAddress },
+      ],
+    });
+    expect(
+      otherWork!.entityMentions?.find(({ field }) => field === "voice")?.id,
+    ).not.toBe(
+      batch.entityMentions?.find(({ field }) => field === "voice")?.id,
+    );
+    expect(
+      batch.entityMentions?.find(({ field }) => field === "voice")?.id,
+    ).not.toBe(
+      batch.entityMentions?.find(({ field }) => field === "scenario")?.id,
+    );
     expect(proposal.ruleResults[0]).toMatchObject({
       capabilityId: "dlsite.exact-recognizer",
       ruleId: "exact-official-product-address",
@@ -682,7 +723,9 @@ describe("DLsite collection and interpretation", () => {
     expect(batch.relationships).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          role: "dlsite.series.member",
+          participants: [
+            expect.objectContaining({ role: "dlsite.series.member" }),
+          ],
           sourceRecordIds: ["html"],
         }),
       ]),

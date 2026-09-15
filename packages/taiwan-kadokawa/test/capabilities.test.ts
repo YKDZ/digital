@@ -209,7 +209,7 @@ describe("台灣角川 ISBN 產品頁來源", () => {
     });
     const evidence = directed(source);
     const collected = await source.collector.collect(evidence);
-    const record = collected.records[0]!;
+    const record = collected.records[0];
     const product = {
       "@type": "Product",
       name: "終將成為妳 關於佐伯沙彌香 (1)",
@@ -254,14 +254,14 @@ describe("台灣角川 ISBN 產品頁來源", () => {
     });
     expect(batch).toMatchObject({
       sourceAddress: address,
-      sourceRecordIds: [collected.records[0]!.id],
+      sourceRecordIds: [collected.records[0].id],
     });
     expect(batch.metadata).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           property: "book.isbn-13",
           value: isbn,
-          sourceRecordIds: [collected.records[0]!.id],
+          sourceRecordIds: [collected.records[0].id],
         }),
         expect.objectContaining({
           property: "asset.title",
@@ -288,11 +288,27 @@ describe("台灣角川 ISBN 產品頁來源", () => {
     expect(batch.metadata.map((fact) => fact.property)).not.toEqual(
       expect.arrayContaining(["book.series", "book.volume", "commerce.price"]),
     );
+    expect(batch.entities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: "入間人間",
+          identityNamespace: "taiwan-kadokawa.contributor.occurrence-local",
+        }),
+      ]),
+    );
+    expect(batch.relationships).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "asset.contribution",
+          participants: [expect.objectContaining({ role: "book.contributor" })],
+        }),
+      ]),
+    );
     expect(batch.sourceArtifacts).toEqual([
       expect.objectContaining({
         role: "asset.primary-cover",
         acquisitionReference: cover,
-        sourceRecordId: collected.records[0]!.id,
+        sourceRecordId: collected.records[0].id,
         producer: source.interpreter.capability,
       }),
     ]);
@@ -306,7 +322,7 @@ describe("台灣角川 ISBN 產品頁來源", () => {
       evidence: [evidence],
       sourceRecords: [
         {
-          ...collected.records[0]!,
+          ...collected.records[0],
           body: page({
             description: "作者資訊：入間人間 上市日期：2020-01-22",
           }),
@@ -325,7 +341,7 @@ describe("台灣角川 ISBN 產品頁來源", () => {
       evidence: [evidence],
       sourceRecords: [
         {
-          ...collected.records[0]!,
+          ...collected.records[0],
           body: page({
             products: [
               {
@@ -524,7 +540,7 @@ describe("台灣角川 ISBN 產品頁來源", () => {
         interpretation: { ...batch, sourceAddress: secondAddress },
       }),
     ).toBe(false);
-    const candidate = batch.sourceArtifacts[0]!;
+    const candidate = batch.sourceArtifacts[0];
     await expect(
       source.artifactAcquirer.acquire(candidate),
     ).resolves.toMatchObject({
@@ -561,7 +577,7 @@ describe("台灣角川 ISBN 產品頁來源", () => {
       evidence: [evidence],
       sourceRecords: collected.records,
     });
-    const candidate = batch.sourceArtifacts[0]!;
+    const candidate = batch.sourceArtifacts[0];
     for (const failedResponse of [
       response(new Uint8Array([1]), {
         status: 404,

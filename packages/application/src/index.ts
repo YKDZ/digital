@@ -9,6 +9,7 @@ import {
   type CapabilityCoordinate,
   type CreateSourceRefreshRunInput,
   type DigitalAsset,
+  deriveEffectiveArtifactAssociation,
   deriveEffectiveMetadata,
   type EffectiveMetadata,
   type EvidenceComparison,
@@ -16,6 +17,7 @@ import {
   type MetadataAssertion,
   type MetadataPolicy,
   type MetadataPolicyConflict,
+  type MetadataValueConflict,
   type ObservedMaterialAssociationSubmission,
   type ObservedMaterialAssociationAudit,
   type ObservedMaterialAssociationProjection,
@@ -25,6 +27,10 @@ import {
   type RecognitionProposal,
   type RecognitionProposalDraft,
   type RecognitionRuleResult,
+  type EntityRelationship,
+  type EntityRelationshipParticipant,
+  type EffectiveEntityKind,
+  type SourcedEntity,
   type SourceAssociation,
   type SourceAssociationChangeProposal,
   type SourceAssociationDecision,
@@ -32,6 +38,7 @@ import {
   type SourceCoverageScope,
   type SourceRefreshRun,
   type ObservedArtifactPartCandidate,
+  type ObservedEntityGraphCandidate,
   type SourceInterpretationBatch,
   type SourceRecord,
   recognitionSourceInterpretation,
@@ -83,6 +90,11 @@ import {
   ObservedRootUnavailable,
 } from "./observed-root-registrations.ts";
 import {
+  type RelationshipTypeDefinition,
+  validateDeclaredRelationships,
+  validateRelationshipDefinition,
+} from "./relationship-definition.ts";
+import {
   CheckpointedSourceArtifactWork,
   projectManagedSourceArtifacts,
   SourceArtifactAcquisitionEffectFailure,
@@ -106,6 +118,8 @@ export * from "./source-connection.ts";
 export * from "./asset-refresh-selection.ts";
 export * from "./artifact-byte-access.ts";
 export * from "./playback-plan.ts";
+export * from "./current-user-interaction.ts";
+export * from "./relationship-definition.ts";
 export * from "./application-artifact-byte-access.ts";
 export {
   deriveEffectiveMetadata,
@@ -339,21 +353,26 @@ export type SourceAssociationInterpreter = {
 };
 
 /** 主识别关联以及当前适用的所有来源。 */
+/** 当前观察与确认相交的交付选择坐标；不是产物修订版的领域 head。 */
+export type CurrentLocationRevisionSelection = {
+  readonly locationId: string;
+  readonly revisionId: string;
+};
+
 export type AcceptedAssetState = AcceptedRecognition & {
+  /** 当前读取的相关实体种类只能来自生效投影。 */
+  readonly currentRelatedEntities?: readonly import("@digital/domain").CurrentRelatedEntity[];
   readonly artifactAssociationRecognitionSupports?: readonly {
     readonly associationId: string;
     readonly recognitionDecisionId: string;
   }[];
-  /**
-   * 该明确主体的不透明产品策略登记。定义仍由组合层持有；持久化只保存耐久适用性。
-   */
-  readonly metadataPolicyIds?: readonly string[];
   /** 推导带来源标签值所需的当前来源记录。 */
   readonly metadataSourceRecords?: readonly {
     readonly id: string;
     readonly sourceIdentity: string;
     readonly nativeAddress?: string;
   }[];
+  readonly currentLocationRevisions?: readonly CurrentLocationRevisionSelection[];
 };
 
 /**
@@ -395,6 +414,7 @@ export type AssetStateProjection = {
   readonly locations: readonly Location[];
   readonly blobs: readonly Blob[];
   readonly artifactRevisions: readonly import("@digital/domain").ArtifactRevision[];
+  readonly currentLocationRevisions?: readonly CurrentLocationRevisionSelection[];
   readonly artifactAssociations: readonly ArtifactAssociation[];
   readonly primaryCoverArtifactId?: string;
 };
@@ -437,7 +457,7 @@ export type PublicAssetStateProjection = Omit<
   readonly locations: readonly Pick<Location, "id" | "artifactId" | "kind">[];
   readonly artifactAssociations: readonly (Pick<
     ArtifactAssociation,
-    "id" | "subjectId" | "artifactId" | "role"
+    "id" | "target" | "artifactId" | "role"
   > &
     Partial<Pick<ArtifactAssociation, "sourceAssociationId">>)[];
 };
@@ -500,6 +520,11 @@ export type ChangeImpactPreview = {
   readonly current: AssetStateProjection;
   /** 变更后由同一应用投影推导的完整状态。 */
   readonly projected: AssetStateProjection;
+  /**
+   * 仅供 durable supersession apply 重建下一份已接受观察图；交付 DTO 刻意不公开它。
+   * 当前性仍由 successor RecognitionDecision 唯一决定。
+   */
+  readonly projectedObservedEntityGraphs?: AcceptedRecognition["observedEntityGraphs"];
   readonly blockingConditions: readonly string[];
   readonly rejectedBy?: string;
   readonly status: "awaiting-confirmation" | "rejected" | "applied" | "stale";
@@ -1246,7 +1271,6 @@ type SourceEnrichmentCheckpointBase = {
     readonly role: string;
     readonly count: number;
   }[];
-  readonly metadataPolicyIds: readonly string[];
 };
 
 type InterpretedSourceEnrichmentCheckpoint = SourceEnrichmentCheckpointBase & {
@@ -1873,7 +1897,7 @@ export function decodeSourceAssociationDecisionCheckpoint(value: unknown):
           "sourceIdentity",
           "sourceRecordIds",
         ]) ||
-        !["accepted", "contradicted"].includes(candidate.outcome as string) ||
+        !["accepted", "contradicted"].includes(candidate.outcome) ||
         !isNonEmptyString(candidate.explanation) ||
         !isNonEmptyString(candidate.nativeAddress) ||
         !isNonEmptyString(candidate.sourceIdentity) ||
@@ -2598,16 +2622,34 @@ function isStrictProposedRelationship(value: unknown): boolean {
     isStringRecord(value) &&
     hasExactKeys(
       value,
-      ["participantId", "role", "sourceRecordIds", "sourceSlot", "type"],
-      ["participantMentionIds", "producer", "qualifiers", "subjectId"],
+      ["participants", "sourceRecordIds", "sourceSlot", "type"],
+      [
+        "producer",
+        "qualifiers",
+        "requiredRoles",
+        "sourceSubjectId",
+        "subjectRole",
+      ],
     ) &&
-    [value.participantId, value.role, value.sourceSlot, value.type].every(
-      isNonEmptyString,
+    isNonEmptyString(value.sourceSlot) &&
+    isNonEmptyString(value.type) &&
+    Array.isArray(value.participants) &&
+    value.participants.length > 0 &&
+    value.participants.every(
+      (participant) =>
+        isStringRecord(participant) &&
+        hasExactKeys(participant, ["entityId", "role"], ["mentionIds"]) &&
+        isNonEmptyString(participant.entityId) &&
+        isNonEmptyString(participant.role) &&
+        (participant.mentionIds === undefined ||
+          isStrictStringArray(participant.mentionIds)),
     ) &&
     isStrictStringArray(value.sourceRecordIds) &&
-    (value.participantMentionIds === undefined ||
-      isStrictStringArray(value.participantMentionIds)) &&
-    (value.subjectId === undefined || isNonEmptyString(value.subjectId)) &&
+    (value.requiredRoles === undefined ||
+      isStrictStringArray(value.requiredRoles)) &&
+    (value.sourceSubjectId === undefined ||
+      isNonEmptyString(value.sourceSubjectId)) &&
+    (value.subjectRole === undefined || isNonEmptyString(value.subjectRole)) &&
     (value.producer === undefined ||
       isStrictCapabilityCoordinate(value.producer)) &&
     isStrictQualifiers(value.qualifiers)
@@ -2656,7 +2698,7 @@ export function isExactLegacySourceEnrichmentAuthorityCheckpoint(
     new Set(value.metadataPolicyIds).size !== value.metadataPolicyIds.length
   )
     return false;
-  const interpretation = value.interpretation as SourceInterpretationBatch;
+  const interpretation = value.interpretation;
   const evidence = value.evidence as RecognitionEvidence;
   const sourceAssociation = value.sourceAssociation;
   const associationValid = (candidate: unknown): boolean =>
@@ -3273,7 +3315,7 @@ function hasStrictObservedMaterialSubmissionShape(value: unknown): boolean {
         isStringRecord(item) &&
         hasExactKeys(
           item,
-          ["id", "subjectId", "artifactId", "role"],
+          ["id", "target", "artifactId", "role"],
           [
             "sourceRecordIds",
             "sourceAssociationId",
@@ -3281,9 +3323,11 @@ function hasStrictObservedMaterialSubmissionShape(value: unknown): boolean {
             "observedArtifactPart",
           ],
         ) &&
-        [item.id, item.subjectId, item.artifactId, item.role].every(
-          isNonEmptyString,
-        ) &&
+        [item.id, item.artifactId, item.role].every(isNonEmptyString) &&
+        isStringRecord(item.target) &&
+        hasExactKeys(item.target, ["kind", "entityId"]) &&
+        item.target.kind === "entity" &&
+        isNonEmptyString(item.target.entityId) &&
         (item.sourceRecordIds === undefined ||
           (Array.isArray(item.sourceRecordIds) &&
             item.sourceRecordIds.every(isNonEmptyString) &&
@@ -3506,7 +3550,7 @@ export function decodeObservedMaterialAssociationCheckpoint(value: unknown):
       .map((projection) => projection.observedArtifactReference)
       .toSorted();
     if (
-      snapshot.complete !== true ||
+      !snapshot.complete ||
       new Set(snapshotReferences).size !== snapshotReferences.length ||
       JSON.stringify(inputReferences) !== JSON.stringify(snapshotReferences) ||
       JSON.stringify(inputReferences) !==
@@ -3723,6 +3767,7 @@ export type AssetRefreshInspection = {
     | "recognitionDecision"
     | "sourceAssociations"
     | "recognitionSourceAssociation"
+    | "entities"
   > & {
     readonly sourceAssociations: readonly {
       readonly sourceIdentity: string;
@@ -3733,8 +3778,18 @@ export type AssetRefreshInspection = {
       readonly nativeAddress: string;
     };
     readonly sourceArtifactCandidates?: readonly PublicSourceArtifactCandidate[];
-    readonly effectiveMetadata: readonly EffectiveMetadata[];
-    readonly metadataPolicyConflicts: readonly MetadataPolicyConflict[];
+    readonly currentLocationRevisions?: readonly CurrentLocationRevisionSelection[];
+    readonly effectiveMetadata: readonly (EffectiveMetadata & {
+      /** 非根实体的展示值保留其明确描述目标。 */
+      readonly subjectId?: string;
+    })[];
+    readonly primaryCoverArtifactId?: string;
+    readonly metadataPolicyConflicts: readonly (
+      | MetadataPolicyConflict
+      | MetadataValueConflict
+    )[];
+    /** 当前相关实体的种类由种类断言、来源支持与决定共同投影。 */
+    readonly currentRelatedEntities?: readonly import("@digital/domain").CurrentRelatedEntity[];
     readonly recognitionExplanation: string;
   };
   /** 多边界执行中可独立检查的结果。 */
@@ -3778,6 +3833,7 @@ export type FilesystemPackageInterpreter = {
  */
 export type ArtifactFormatInspector = {
   readonly capability: CapabilityCoordinate;
+  readonly relationshipDefinitions?: readonly RelationshipTypeDefinition[];
   inspect(input: {
     /** 不透明观察器引用；Application 绝不解释其语法。 */
     readonly observedArtifactReference: string;
@@ -3901,6 +3957,7 @@ export type SourceCollector = {
 
 export type SourceInterpreter = {
   readonly capability: CapabilityCoordinate;
+  readonly relationshipDefinitions?: readonly RelationshipTypeDefinition[];
   canInterpret(input: {
     readonly evidence: readonly import("@digital/domain").RecognitionEvidence[];
     readonly sourceRecords: readonly SourceRecord[];
@@ -3983,7 +4040,12 @@ function actualProducer(
 function bindRecognitionEvidenceToProducer(
   evidence: RecognitionEvidence,
   producer: CapabilityCoordinate,
+  relationshipDefinitions: readonly RelationshipTypeDefinition[] = [],
 ): RecognitionEvidence {
+  validateDeclaredRelationships(
+    relationshipDefinitions,
+    evidence.inspection?.entityGraph?.relationships ?? [],
+  );
   return {
     ...evidence,
     producer: actualProducer(
@@ -3997,22 +4059,30 @@ function bindRecognitionEvidenceToProducer(
 function bindRecognitionEvidenceOutputToProducer(
   output: readonly RecognitionEvidence[],
   producer: CapabilityCoordinate,
+  relationshipDefinitions?: readonly RelationshipTypeDefinition[],
 ): readonly RecognitionEvidence[];
 function bindRecognitionEvidenceOutputToProducer(
   output: AssetRefreshWorkPlan,
   producer: CapabilityCoordinate,
+  relationshipDefinitions?: readonly RelationshipTypeDefinition[],
 ): AssetRefreshWorkPlan;
 function bindRecognitionEvidenceOutputToProducer(
   output: readonly RecognitionEvidence[] | AssetRefreshWorkPlan,
   producer: CapabilityCoordinate,
+  relationshipDefinitions?: readonly RelationshipTypeDefinition[],
 ): readonly RecognitionEvidence[] | AssetRefreshWorkPlan;
 function bindRecognitionEvidenceOutputToProducer(
   output: readonly RecognitionEvidence[] | AssetRefreshWorkPlan,
   producer: CapabilityCoordinate,
+  relationshipDefinitions: readonly RelationshipTypeDefinition[] = [],
 ): readonly RecognitionEvidence[] | AssetRefreshWorkPlan {
   if (!isAssetRefreshWorkPlan(output)) {
     return output.map((evidence) =>
-      bindRecognitionEvidenceToProducer(evidence, producer),
+      bindRecognitionEvidenceToProducer(
+        evidence,
+        producer,
+        relationshipDefinitions,
+      ),
     );
   }
   return {
@@ -4029,7 +4099,11 @@ function bindRecognitionEvidenceOutputToProducer(
             ),
           }),
       evidence: item.evidence.map((evidence) =>
-        bindRecognitionEvidenceToProducer(evidence, producer),
+        bindRecognitionEvidenceToProducer(
+          evidence,
+          producer,
+          relationshipDefinitions,
+        ),
       ),
     })),
   };
@@ -4172,18 +4246,18 @@ function safeSourceFailureAffects(
   return {
     ...(affects.recognition === undefined
       ? {}
-      : { recognition: affects.recognition as boolean }),
+      : { recognition: affects.recognition }),
     ...(affects.metadataProperties === undefined
       ? {}
       : {
-          metadataProperties: affects.metadataProperties as readonly string[],
+          metadataProperties: affects.metadataProperties,
         }),
     ...(affects.artifactRoles === undefined
       ? {}
-      : { artifactRoles: affects.artifactRoles as readonly string[] }),
+      : { artifactRoles: affects.artifactRoles }),
     ...(affects.relationshipTypes === undefined
       ? {}
-      : { relationshipTypes: affects.relationshipTypes as readonly string[] }),
+      : { relationshipTypes: affects.relationshipTypes }),
   };
 }
 
@@ -4298,6 +4372,10 @@ async function interpretRetainedSourceRecords(input: {
     await input.beforeInterpret(interpreter.capability);
     const addresses = new Set<string>();
     for (const raw of interpreter.interpret(input)) {
+      validateDeclaredRelationships(
+        interpreter.relationshipDefinitions ?? [],
+        raw.relationships ?? [],
+      );
       const interpretation = retainInterpretationProvenance(interpreter, raw);
       validateSourceInterpretationBatch(interpretation);
       if (
@@ -4626,7 +4704,6 @@ type CataloguePersistenceOperations = {
       Location,
       "artifactId" | "address"
     >[];
-    readonly metadataPolicyIds?: readonly string[];
     readonly resumeClaim?: { readonly token: string; readonly now: string };
   }): Promise<void>;
   freezeObservedMaterialAssociationTarget: ObservedMaterialAssociationPersistence["freezeObservedMaterialAssociationTarget"];
@@ -4852,6 +4929,291 @@ export type AssetRefreshReuseQueries = Pick<
   | "findAcceptedForWorkItem"
 >;
 
+/** 普通实体遍历所需的产品安全节点身份。 */
+export type PublicRelationshipParticipantEntity = Pick<
+  SourcedEntity,
+  "id" | "label"
+> & {
+  /** 关系可读，但冲突实体不能被伪装成某一静态种类。 */
+  readonly kind: import("@digital/domain").EffectiveEntityKind;
+} & Partial<
+    Pick<SourcedEntity, "sourceIdentity" | "sourceKey" | "identityNamespace">
+  >;
+
+/** 一项可公开检查的关系事实；记录、槽位和能力坐标留在持久化边界。 */
+export type PublicCatalogueEntityRelationship = {
+  readonly id: string;
+  readonly participants: readonly Pick<
+    EntityRelationshipParticipant,
+    "entityId" | "role"
+  >[];
+  readonly type: string;
+  readonly qualifiers?: EntityRelationship["qualifiers"];
+  readonly sources: readonly Pick<
+    SourceAssociation,
+    "sourceIdentity" | "nativeAddress"
+  >[];
+};
+
+/** 从一个普通实体读取仍由当前来源支持的已收录关系事实。 */
+export type CatalogueEntityRelationshipFacts = {
+  /** 被查询的实体；即使没有邻接关系也会明确返回。 */
+  readonly entity: PublicRelationshipParticipantEntity;
+  /** 当前代表的原属成员，仅供 Application 汇集既有资料投影。 */
+  readonly memberIds: readonly string[];
+  /** 此实体仍有效的具名关系事实。 */
+  readonly relationships: readonly PublicCatalogueEntityRelationship[];
+  /** 原属成员的当前资料事实及来源归属；不以关系邻接作为资料发现条件。 */
+  readonly metadataAccepted: readonly {
+    readonly subjectId: string;
+    readonly accepted: AcceptedAssetState;
+    readonly execution: WorkflowExecution;
+  }[];
+  /** 经每项关系连接到的当前已收录内容。 */
+  readonly accepted: readonly {
+    readonly subjectId: string;
+    readonly accepted: AcceptedAssetState;
+    readonly execution: WorkflowExecution;
+  }[];
+};
+
+export type RelationshipTraversalQueries = {
+  findCurrentRelationshipParticipant(
+    entityId: string,
+  ): Promise<CatalogueEntityRelationshipFacts | undefined>;
+};
+
+/** 有界的公开关系操作。它只使用稳定的实体标识和声明角色，绝不使用展示标签或来源快照。 */
+export type RelationshipChange = {
+  readonly kind: "select" | "fix" | "exclude" | "clear";
+  readonly definitionId?: string;
+  readonly relationshipIds?: readonly string[];
+  readonly relationship?: {
+    readonly type: string;
+    readonly participants: readonly EntityRelationshipParticipant[];
+    readonly qualifiers?: EntityRelationship["qualifiers"];
+  };
+};
+
+export type RelationshipChangePreview = {
+  readonly baseline: string;
+  readonly changes: readonly RelationshipChange[];
+  readonly relationships: readonly PublicCatalogueEntityRelationship[];
+};
+
+export type RelationshipDecisionPersistence = {
+  previewRelationshipChange(input: {
+    readonly changes: readonly RelationshipChange[];
+  }): Promise<RelationshipChangePreview>;
+  applyRelationshipChange(input: {
+    readonly id: string;
+    readonly actorId: string;
+    readonly preview: RelationshipChangePreview;
+  }): Promise<"applied" | "stale">;
+};
+
+/** 公开身份操作刻意与关系编写分离。 */
+export type RelatedEntityIdentity = {
+  readonly id: string;
+  readonly label: string;
+  /** 公开诚实的生效投影；冲突绝不伪装成普通实体。 */
+  readonly kind: import("@digital/domain").EffectiveEntityKind;
+  readonly identity: "local" | "source";
+};
+
+export type EntityIdentityMergePreview = {
+  readonly retainedEntityId: string;
+  readonly mergedEntityId: string;
+  readonly members: readonly string[];
+  /** 采用后以代表身份可见的当前关系；事实本身不会被复制。 */
+  readonly relationshipIds: readonly string[];
+  /** 原属成员的当前资料；采用不会迁移这些事实。 */
+  readonly metadata: readonly {
+    readonly entityId: string;
+    readonly property: string;
+    readonly value: string;
+  }[];
+  /** 合并后资料冲突的最小公开影响摘要；不泄露来源坐标或原始断言。 */
+  readonly metadataConflicts: readonly PublicMetadataConflict[];
+  /** Application 资料策略投影的不可解释预演坐标。 */
+  readonly metadataPolicyBaseline: string;
+  readonly effectiveKind: EffectiveEntityKind;
+  readonly baseline: string;
+  readonly mergeId?: string;
+};
+
+/** 供用户确认影响的资料冲突摘要，不包含候选断言、来源或来源记录。 */
+export type PublicMetadataConflict = {
+  readonly subjectId: string;
+  readonly property: string;
+  readonly reason: "policy-conflict" | "multiple-values";
+  readonly cardinality: "one" | "conflicting";
+  readonly metadataUsageContext: string;
+};
+
+function canonicalMetadataImpact(metadata: {
+  readonly entityId: string;
+  readonly property: string;
+  readonly value: string;
+}): {
+  readonly entityId: string;
+  readonly property: string;
+  readonly value: string;
+} {
+  return {
+    entityId: metadata.entityId,
+    property: metadata.property,
+    value: metadata.value,
+  };
+}
+
+function canonicalMetadataConflictImpact(conflict: PublicMetadataConflict): {
+  readonly subjectId: string;
+  readonly property: string;
+  readonly reason: "policy-conflict" | "multiple-values";
+  readonly cardinality: "one" | "conflicting";
+  readonly metadataUsageContext: string;
+} {
+  return {
+    subjectId: conflict.subjectId,
+    property: conflict.property,
+    reason: conflict.reason,
+    cardinality: conflict.cardinality,
+    metadataUsageContext: conflict.metadataUsageContext,
+  };
+}
+
+function canonicalEffectiveKindImpact(kind: EffectiveEntityKind): object {
+  switch (kind.status) {
+    case "ordinary":
+      return { status: "ordinary" };
+    case "effective":
+      return { status: "effective", kind: kind.kind, basis: kind.basis };
+    case "conflict":
+      return { status: "conflict", kinds: [...kind.kinds].toSorted() };
+  }
+}
+
+/** 仅比较用户已确认的合并影响；持久化事实基线仍由 SQLite 自行比较。 */
+function entityIdentityMergeImpact(
+  preview: EntityIdentityMergePreview,
+): string {
+  return JSON.stringify({
+    retainedEntityId: preview.retainedEntityId,
+    mergedEntityId: preview.mergedEntityId,
+    members: [...preview.members].toSorted(),
+    relationshipIds: [...preview.relationshipIds].toSorted(),
+    metadata: preview.metadata
+      .map(canonicalMetadataImpact)
+      .toSorted((left, right) =>
+        JSON.stringify(left).localeCompare(JSON.stringify(right)),
+      ),
+    metadataConflicts: preview.metadataConflicts
+      .map(canonicalMetadataConflictImpact)
+      .toSorted((left, right) =>
+        JSON.stringify(left).localeCompare(JSON.stringify(right)),
+      ),
+    effectiveKind: canonicalEffectiveKindImpact(preview.effectiveKind),
+    metadataPolicyBaseline: preview.metadataPolicyBaseline,
+    factsBaseline: preview.baseline,
+  });
+}
+
+function entityIdentityMergeImpactFingerprint(
+  preview: EntityIdentityMergePreview,
+): string {
+  return createHash("sha256")
+    .update(entityIdentityMergeImpact(preview))
+    .digest("hex");
+}
+
+export type EntityMentionResolution = {
+  readonly mentionId: string;
+  readonly label: string;
+  readonly entityId?: string;
+  readonly basis?: "source" | "manual";
+  readonly decisionId?: string;
+  readonly actorId?: string;
+  readonly sourceRecordIds: readonly string[];
+  readonly baseline: string;
+};
+
+export type RelatedEntityIdentityPersistence = {
+  createLocalRelatedEntity(input: {
+    /** 用户一次本地身份提交的不可变坐标；同一坐标可安全重放。 */
+    readonly commitmentId: string;
+    readonly id: string;
+    readonly label: string;
+    readonly kind: "entity" | "person" | "persona";
+    readonly actorId: string;
+  }): Promise<RelatedEntityIdentity>;
+  findRelatedEntities(label: string): Promise<readonly RelatedEntityIdentity[]>;
+  previewEntityIdentityMerge(input: {
+    readonly retainedEntityId: string;
+    readonly mergedEntityId: string;
+  }): Promise<EntityIdentityMergePreview>;
+  /** 只读取身份合并的持久提交坐标；不形成通用幂等层。 */
+  findEntityIdentityMergeReplay(input: {
+    readonly actorId: string;
+    readonly commitmentId: string;
+  }): Promise<
+    | {
+        readonly retainedEntityId: string;
+        readonly mergedEntityId: string;
+        readonly impactFingerprint: string;
+      }
+    | undefined
+  >;
+  applyEntityIdentityMerge(input: {
+    readonly id: string;
+    readonly commitmentId: string;
+    readonly actorId: string;
+    readonly preview: EntityIdentityMergePreview;
+    /** Application 已规范化的用户确认影响及 SQLite 事实基线指纹。 */
+    readonly impactFingerprint: string;
+  }): Promise<"applied" | "stale">;
+  undoEntityIdentityMerge(input: {
+    readonly id: string;
+    readonly commitmentId: string;
+    readonly actorId: string;
+    readonly preview: EntityIdentityMergePreview;
+  }): Promise<"applied" | "stale">;
+  resolveEntityMentionManually(input: {
+    readonly id: string;
+    readonly mentionId: string;
+    readonly entityId: string;
+    readonly actorId: string;
+    readonly baseline: string;
+  }): Promise<"applied" | "stale">;
+  inspectEntityMentionResolution(
+    mentionId: string,
+  ): Promise<EntityMentionResolution>;
+  retractEntityMentionResolution(input: {
+    readonly id: string;
+    readonly mentionId: string;
+    readonly actorId: string;
+    readonly baseline: string;
+  }): Promise<"applied" | "stale">;
+  previewEntityKindDecision(input: {
+    readonly entityId: string;
+    readonly selectedKind?: "person" | "persona";
+  }): Promise<{
+    readonly entityId: string;
+    /** 采用时必须回传这个覆盖断言及当前决定的基线。 */
+    readonly baseline: string;
+    readonly currentDecisionId?: string;
+    readonly selectedKind?: "person" | "persona";
+    readonly effective: import("@digital/domain").EffectiveEntityKind;
+  }>;
+  applyEntityKindDecision(input: {
+    readonly id: string;
+    readonly entityId: string;
+    readonly selectedKind?: "person" | "persona";
+    readonly actorId: string;
+    readonly baseline: string;
+  }): Promise<"applied" | "stale">;
+};
+
 /**
  * 权威当前 Catalogue 投影的游标输入。游标对交付层刻意保持不透明；只有签发它的查询
  * 可以在后续请求中解释它。
@@ -4897,11 +5259,10 @@ export type CurrentCatalogueIndexFacts = Pick<
   AcceptedAssetState,
   | "entity"
   | "metadata"
-  | "metadataPolicyIds"
   | "metadataSourceRecords"
   | "sourceAssociations"
   | "recognitionSourceAssociation"
-  | "entities"
+  | "currentRelatedEntities"
   | "relationships"
 > & { readonly additionOrder: number };
 
@@ -4911,7 +5272,7 @@ export type CurrentCatalogueIndexEntry = Pick<
   | "sourceAssociations"
   | "recognitionSourceAssociation"
   | "effectiveMetadata"
-  | "entities"
+  | "currentRelatedEntities"
   | "relationships"
 > & { readonly additionOrder: number };
 
@@ -5299,6 +5660,10 @@ export type AssetRefreshWorkflowPorts = {
   readonly executionQueries: WorkflowExecutionQueries;
   readonly recoveryLease: WorkflowRecoveryLease;
   readonly reuseQueries: AssetRefreshReuseQueries;
+  /** 关系读取与资产复用各有窄用途，避免把实体查询伪装成资产加载。 */
+  readonly relationshipTraversalQueries?: RelationshipTraversalQueries;
+  readonly relatedEntityIdentity?: RelatedEntityIdentityPersistence;
+  readonly relationshipDecisionPersistence?: RelationshipDecisionPersistence;
   /** 测试／旧版组合仍只公开历史时可选。 */
   readonly currentCatalogueQueries?: CurrentCatalogueQueries;
   /** 测试／旧版组合仍只公开完整历史时可选。 */
@@ -5848,13 +6213,14 @@ function sourceRefreshInterpretationForRecord(
   const relationships = (interpretation.relationships ?? []).filter(
     (relationship) =>
       belongsOnlyToRecord(relationship.sourceRecordIds) &&
-      entityIds.has(relationship.participantId) &&
-      (relationship.subjectId === undefined ||
-        entityIds.has(relationship.subjectId)) &&
-      (relationship.participantMentionIds === undefined ||
-        relationship.participantMentionIds.every((mentionId) =>
-          resolvedMentionIds.has(mentionId),
-        )),
+      relationship.participants.every(
+        (participant) =>
+          entityIds.has(participant.entityId) &&
+          (participant.mentionIds === undefined ||
+            participant.mentionIds.every((mentionId) =>
+              resolvedMentionIds.has(mentionId),
+            )),
+      ),
   );
   const scoped: SourceInterpretationBatch = {
     id: `${interpretation.id}:source-record:${sourceRecordId}`,
@@ -6037,21 +6403,39 @@ function requiredFilesystemDirectory(execution: WorkflowExecution): string {
 function effectiveMetadataForAccepted(
   accepted: Pick<
     AcceptedAssetState,
-    "entity" | "metadata" | "metadataPolicyIds" | "metadataSourceRecords"
+    "entity" | "metadata" | "metadataSourceRecords" | "sourceAssociations"
   >,
   sourceRecords: readonly Pick<SourceRecord, "id" | "sourceIdentity">[],
   metadataUsageContext: string,
   configuration: MetadataPolicyConfiguration | undefined,
 ) {
-  const enrolledDefinitions = (accepted.metadataPolicyIds ?? []).flatMap(
-    (policyId) =>
-      configuration?.policies.filter(
-        (definition) =>
-          definition.id === policyId &&
-          definition.metadataUsageContext === metadataUsageContext,
-      ) ?? [],
+  if (configuration !== undefined && configuration.version.length === 0)
+    throw new Error("Metadata Policy configuration version is empty");
+  const definitions = new Map(
+    (configuration?.policies ?? []).map((definition) => [
+      definition.id,
+      definition,
+    ]),
   );
-  const policies: readonly MetadataPolicy[] = enrolledDefinitions.map(
+  if (definitions.size !== (configuration?.policies.length ?? 0))
+    throw new Error("Metadata Policy configuration has duplicate identifiers");
+  for (const definition of definitions.values())
+    validateMetadataPolicy({ ...definition, subjectIds: [accepted.entity.id] });
+  const selected = configuration?.select(accepted) ?? [];
+  const selectedIds = [...new Set(selected)];
+  if (selectedIds.length !== selected.length)
+    throw new Error("Metadata Policy selection contains duplicate identifiers");
+  const selectedDefinitions = selectedIds.flatMap((policyId) => {
+    const definition = definitions.get(policyId);
+    if (definition === undefined)
+      throw new Error(
+        `Metadata Policy selection references unknown policy ${policyId}`,
+      );
+    return definition.metadataUsageContext === metadataUsageContext
+      ? [definition]
+      : [];
+  });
+  const policies: readonly MetadataPolicy[] = selectedDefinitions.map(
     (definition) => ({
       ...definition,
       subjectIds: [accepted.entity.id],
@@ -6065,12 +6449,162 @@ function effectiveMetadataForAccepted(
       records.findIndex((candidate) => candidate.id === record.id) === index,
   );
   return deriveEffectiveMetadata({
-    subjectId: accepted.entity.id,
+    target: { kind: "entity", entityId: accepted.entity.id },
     metadataUsageContext,
     policies,
     sourceRecords: provenance,
     metadata: accepted.metadata,
   });
+}
+
+/**
+ * 已接受资产携带的来源实体也可以拥有展示元数据。它们不是根资产的别名，因此逐个目标
+ * 推导后保留主体编号；没有针对这些从属实体选择根资产策略。
+ */
+function effectiveRelatedEntityMetadataForAccepted(
+  accepted: Pick<
+    AcceptedAssetState,
+    "entity" | "entities" | "metadata" | "metadataSourceRecords"
+  >,
+  sourceRecords: readonly Pick<SourceRecord, "id" | "sourceIdentity">[],
+  metadataUsageContext: string,
+): readonly (EffectiveMetadata & { readonly subjectId: string })[] {
+  const provenance = [
+    ...(accepted.metadataSourceRecords ?? []),
+    ...sourceRecords,
+  ].filter(
+    (record, index, records) =>
+      records.findIndex((candidate) => candidate.id === record.id) === index,
+  );
+  return (accepted.entities ?? []).flatMap((entity) =>
+    entity.id === accepted.entity.id
+      ? []
+      : deriveEffectiveMetadata({
+          target: { kind: "entity", entityId: entity.id },
+          metadataUsageContext,
+          sourceRecords: provenance,
+          metadata: accepted.metadata,
+        }).values.map((value) => ({ ...value, subjectId: entity.id })),
+  );
+}
+
+function selectedIdentityMetadataPolicies(
+  accepted: Pick<AcceptedAssetState, "entity" | "sourceAssociations">,
+  configuration: MetadataPolicyConfiguration | undefined,
+  representativeId: string,
+): readonly MetadataPolicy[] {
+  if (configuration === undefined) return [];
+  if (configuration.version.length === 0)
+    throw new Error("Metadata Policy configuration version is empty");
+  const definitions = new Map(
+    configuration.policies.map((definition) => [definition.id, definition]),
+  );
+  if (definitions.size !== configuration.policies.length)
+    throw new Error("Metadata Policy configuration has duplicate identifiers");
+  const selected = configuration.select(accepted);
+  if (new Set(selected).size !== selected.length)
+    throw new Error("Metadata Policy selection contains duplicate identifiers");
+  return selected.flatMap((policyId) => {
+    const definition = definitions.get(policyId);
+    if (definition === undefined)
+      throw new Error(
+        `Metadata Policy selection references unknown policy ${policyId}`,
+      );
+    if (definition.metadataUsageContext !== "asset.ordinary") return [];
+    const policy = { ...definition, subjectIds: [representativeId] };
+    return [validateMetadataPolicy(policy)];
+  });
+}
+
+/**
+ * 身份合并只折叠资料的读取视图：断言与来源仍保留原属实体，投影时才映射到当前代表。
+ * 这里不引入资料优先级，继续交给既有 asset.ordinary 投影器产生值、冲突和依据。
+ */
+function effectiveIdentityMemberMetadata(
+  facts: readonly Pick<
+    CatalogueEntityRelationshipFacts["metadataAccepted"][number],
+    "accepted"
+  >[],
+  memberIds: readonly string[],
+  representativeId: string,
+  configuration: MetadataPolicyConfiguration | undefined,
+): {
+  readonly values: readonly (EffectiveMetadata & {
+    readonly subjectId: string;
+  })[];
+  readonly conflicts: readonly PublicMetadataConflict[];
+  readonly policyBaseline: string;
+} {
+  const accepted = [
+    ...new Map(
+      facts.map((fact) => [fact.accepted.entity.id, fact.accepted]),
+    ).values(),
+  ];
+  const metadata = accepted.flatMap((item) =>
+    item.metadata.flatMap((assertion) =>
+      assertion.target.kind === "entity" &&
+      memberIds.includes(assertion.target.entityId)
+        ? [
+            {
+              ...assertion,
+              target: { kind: "entity" as const, entityId: representativeId },
+            },
+          ]
+        : [],
+    ),
+  );
+  const sourceRecords = [
+    ...new Map(
+      accepted
+        .flatMap((item) => item.metadataSourceRecords ?? [])
+        .map((record) => [record.id, record]),
+    ).values(),
+  ];
+  const policies = [
+    ...new Map(
+      accepted
+        .flatMap((item) =>
+          selectedIdentityMetadataPolicies(
+            item,
+            configuration,
+            representativeId,
+          ),
+        )
+        .map((policy) => [policy.id, policy]),
+    ).values(),
+  ];
+  const projection = deriveEffectiveMetadata({
+    target: { kind: "entity", entityId: representativeId },
+    metadataUsageContext: "asset.ordinary",
+    policies,
+    sourceRecords,
+    metadata,
+  });
+  return {
+    values: projection.values.map((value) => ({
+      ...value,
+      subjectId: representativeId,
+    })),
+    conflicts: projection.conflicts.map((conflict) => ({
+      subjectId: representativeId,
+      property: conflict.property,
+      reason:
+        conflict.kind === "policy-conflict"
+          ? ("policy-conflict" as const)
+          : ("multiple-values" as const),
+      cardinality: conflict.kind === "policy-conflict" ? "conflicting" : "one",
+      metadataUsageContext: conflict.metadataUsageContext,
+    })),
+    policyBaseline: createHash("sha256")
+      .update(
+        JSON.stringify({
+          configurationVersion: configuration?.version,
+          metadataUsageContext: "asset.ordinary",
+          policies,
+        }),
+      )
+      .digest("hex"),
+  };
 }
 
 function publicAccepted(
@@ -6087,6 +6621,20 @@ function publicAccepted(
     metadataUsageContext,
     configuration,
   );
+  const coverRule = configuration?.artifactAssociationRules?.find(
+    (rule) =>
+      rule.usageContext === metadataUsageContext &&
+      rule.role === "asset.primary-cover",
+  );
+  const effectiveCover = deriveEffectiveArtifactAssociation({
+    target: { kind: "entity", entityId: accepted.entity.id },
+    role: "asset.primary-cover",
+    associations: accepted.artifactAssociations,
+    sourceAssociations: accepted.sourceAssociations,
+    ...(coverRule === undefined
+      ? {}
+      : { preferredSourceIdentities: coverRule.preferredSourceIdentities }),
+  });
   return {
     entity: accepted.entity,
     sourceAssociations: accepted.sourceAssociations.map((association) => ({
@@ -6109,11 +6657,26 @@ function publicAccepted(
     locations: accepted.locations,
     blobs: accepted.blobs,
     artifactRevisions: accepted.artifactRevisions,
+    ...(accepted.currentLocationRevisions === undefined
+      ? {}
+      : { currentLocationRevisions: accepted.currentLocationRevisions }),
     artifactAssociations: accepted.artifactAssociations,
     metadata: accepted.metadata,
-    effectiveMetadata: effectiveMetadata.values,
+    effectiveMetadata: [
+      ...effectiveMetadata.values,
+      ...effectiveRelatedEntityMetadataForAccepted(
+        accepted,
+        sourceRecords,
+        metadataUsageContext,
+      ),
+    ],
+    ...(effectiveCover === undefined || "kind" in effectiveCover
+      ? {}
+      : { primaryCoverArtifactId: effectiveCover.association.artifactId }),
     metadataPolicyConflicts: effectiveMetadata.conflicts,
-    ...(accepted.entities === undefined ? {} : { entities: accepted.entities }),
+    ...(accepted.currentRelatedEntities === undefined
+      ? {}
+      : { currentRelatedEntities: accepted.currentRelatedEntities }),
     ...(accepted.entityMentions === undefined
       ? {}
       : { entityMentions: accepted.entityMentions }),
@@ -6434,9 +6997,9 @@ function publicChangeImpactPreview(
         withoutPrivateProvenance,
       ),
       artifactAssociations: projection.artifactAssociations.map(
-        ({ id, subjectId, artifactId, role, sourceAssociationId }) => ({
+        ({ id, target, artifactId, role, sourceAssociationId }) => ({
           id,
-          subjectId,
+          target,
           artifactId,
           role,
           ...(sourceAssociationId === undefined ? {} : { sourceAssociationId }),
@@ -6517,7 +7080,7 @@ function assetStateProjection(
 
 function acceptedConcurrencyFingerprint(accepted: AcceptedAssetState): string {
   const sort = <T>(values: readonly T[]) =>
-    [...values].sort((left, right) =>
+    [...values].toSorted((left, right) =>
       JSON.stringify(left).localeCompare(JSON.stringify(right)),
     );
   return JSON.stringify({
@@ -6701,7 +7264,10 @@ function projectSourceInterpretationFacts(
   return {
     metadata: interpretation.metadata.map((assertion) => ({
       ...withProducer(assertion),
-      subjectId: assertion.subjectId ?? assetId,
+      target: {
+        kind: "entity" as const,
+        entityId: assertion.subjectId ?? assetId,
+      },
     })),
     entities: (interpretation.entities ?? []).map(withProducer),
     entityMentions: (interpretation.entityMentions ?? []).map(withProducer),
@@ -6710,8 +7276,13 @@ function projectSourceInterpretationFacts(
     ).map(withProducer),
     relationships: (interpretation.relationships ?? []).map((relationship) => ({
       ...withProducer(relationship),
-      id: relationshipId(relationship, assetId),
-      subjectId: relationship.subjectId ?? assetId,
+      id: relationshipId(relationship, interpretation.sourceIdentity),
+      participants: [
+        ...(relationship.subjectRole === undefined
+          ? []
+          : [{ entityId: assetId, role: relationship.subjectRole }]),
+        ...relationship.participants,
+      ],
     })),
   };
 }
@@ -6830,14 +7401,26 @@ export class AssetRefreshWorkflow {
       accepted.map(async ({ subjectId, accepted: state }) => ({
         subjectId,
         metadata: state.metadata
-          .filter((fact) => fact.subjectId === subjectId)
+          .filter(
+            (fact) =>
+              fact.target.kind === "entity" &&
+              fact.target.entityId === subjectId,
+          )
           .map(({ property }) => ({ property })),
         relationships: (state.relationships ?? [])
-          .filter((fact) => fact.subjectId === subjectId)
+          .filter((fact) =>
+            fact.participants.some(
+              (participant) => participant.entityId === subjectId,
+            ),
+          )
           .map(({ type }) => ({ type })),
         artifactAssociations: await Promise.all(
           state.artifactAssociations
-            .filter((association) => association.subjectId === subjectId)
+            .filter(
+              (association) =>
+                association.target.kind === "entity" &&
+                association.target.entityId === subjectId,
+            )
             .map(async ({ artifactId, role }) => {
               const managed = state.locations.filter(
                 (location) =>
@@ -7650,10 +8233,12 @@ export class AssetRefreshWorkflow {
               selectedSnapshot,
               accepted,
             ),
-            supports: accepted.artifactAssociations.map((association) => ({
-              associationId: association.id,
-              recognitionDecisionId: accepted.recognitionDecision.id,
-            })),
+            supports: accepted.artifactAssociations
+              .filter(({ target }) => target.kind === "entity")
+              .map((association) => ({
+                associationId: association.id,
+                recognitionDecisionId: accepted.recognitionDecision.id,
+              })),
           };
           validateObservedMaterialAssociationSubmission(submission);
           const waiting: WorkflowExecution = {
@@ -8058,6 +8643,7 @@ export class AssetRefreshWorkflow {
                 byteSource: formatSource,
               }),
               inspector.capability,
+              inspector.relationshipDefinitions,
             ),
           );
         } finally {
@@ -8141,7 +8727,7 @@ export class AssetRefreshWorkflow {
       async (bound) => {
         if (
           bound.resolvedSelection.filesystemScopes[0]?.observedRoot
-            ?.configVersion !== scope.observedRoot!.configVersion
+            ?.configVersion !== scope.observedRoot.configVersion
         )
           throw new Error("文件位置已变化，请重新检查");
         return await this.checkLocalContentFiles(bound.scope, selected);
@@ -8245,7 +8831,7 @@ export class AssetRefreshWorkflow {
       async (bound) => {
         if (
           bound.resolvedSelection.filesystemScopes[0]?.observedRoot
-            ?.configVersion !== scope.observedRoot!.configVersion
+            ?.configVersion !== scope.observedRoot.configVersion
         )
           throw new Error("文件位置已变化，请重新检查");
         const currentEvidence = await this.checkLocalContentFiles(
@@ -8316,7 +8902,6 @@ export class AssetRefreshWorkflow {
             expectedExecution: initial,
             execution: finished,
             accepted,
-            metadataPolicyIds: this.metadataPolicyIdsFor(accepted),
             expectedUnassignedMaterials: accepted.locations.filter(
               (location) => location.kind === "observed",
             ),
@@ -8384,6 +8969,7 @@ export class AssetRefreshWorkflow {
                 byteSource: source,
               }),
               inspector.capability,
+              inspector.relationshipDefinitions,
             ),
           );
       } catch (cause) {
@@ -8454,7 +9040,7 @@ export class AssetRefreshWorkflow {
       status: accepted === undefined ? "proposed" : "accepted",
       relativePaths: selected.files.map((file) => file.relativePath),
       content: publicAccepted(
-        { ...value, metadataPolicyIds: this.metadataPolicyIdsFor(value) },
+        value,
         [],
         "asset.ordinary",
         this.ports.metadataPolicyConfiguration,
@@ -8762,6 +9348,311 @@ export class AssetRefreshWorkflow {
       this.ports.metadataPolicyConfiguration,
       await this.publicSourceArtifactCandidates(current.accepted),
     );
+  }
+
+  /**
+   * 公开从任一实体读取同一关系所连接的已收录内容；返回的是普通产品安全投影，
+   * 不把持久化表或来源记录暴露给交付层。
+   */
+  async inspectCurrentCatalogueEntity(entityId: string): Promise<
+    | {
+        readonly entity: PublicRelationshipParticipantEntity;
+        readonly relationships: readonly PublicCatalogueEntityRelationship[];
+        readonly metadata: readonly (EffectiveMetadata & {
+          readonly subjectId: string;
+        })[];
+        readonly metadataConflicts: readonly PublicMetadataConflict[];
+        readonly accepted: readonly NonNullable<
+          AssetRefreshInspection["accepted"]
+        >[];
+      }
+    | undefined
+  > {
+    const found =
+      await this.ports.relationshipTraversalQueries?.findCurrentRelationshipParticipant(
+        entityId,
+      );
+    if (found === undefined) return undefined;
+    const projected = await Promise.all(
+      found.accepted.map(async ({ accepted }) =>
+        publicAccepted(
+          accepted,
+          [],
+          "asset.ordinary",
+          this.ports.metadataPolicyConfiguration,
+          await this.publicSourceArtifactCandidates(accepted),
+        ),
+      ),
+    );
+    const metadataProjection = effectiveIdentityMemberMetadata(
+      found.metadataAccepted,
+      found.memberIds,
+      found.entity.id,
+      this.ports.metadataPolicyConfiguration,
+    );
+    const title = metadataProjection.values.find(
+      (value) =>
+        value.subjectId === found.entity.id && value.property === "asset.title",
+    )?.value;
+    return {
+      entity:
+        typeof title === "string"
+          ? { ...found.entity, label: title }
+          : found.entity,
+      relationships: found.relationships,
+      // 公开读取必须沿用产品资料策略，不能把原始断言当成当前展示资料。
+      metadata: metadataProjection.values,
+      metadataConflicts: metadataProjection.conflicts,
+      accepted: projected.filter(
+        (item): item is NonNullable<AssetRefreshInspection["accepted"]> =>
+          item !== undefined,
+      ),
+    };
+  }
+
+  /** 类型声明来自已部署模块，读取不触发来源连接或采集。 */
+  relationshipTypeDefinitions(): readonly RelationshipTypeDefinition[] {
+    return [
+      ...this.ports.sourceInterpreters,
+      ...(this.ports.formatInspectors ?? []),
+    ].flatMap((provider) => provider.relationshipDefinitions ?? []);
+  }
+
+  /** 建立本地相关身份而不虚构来源身份。 */
+  async createLocalRelatedEntity(input: {
+    readonly commitmentId: string;
+    readonly label: string;
+    readonly kind: "entity" | "person" | "persona";
+    readonly actorId: string;
+  }): Promise<RelatedEntityIdentity> {
+    if (input.label.trim().length === 0)
+      throw new Error("相关实体名称不能为空");
+    if (input.commitmentId.trim().length === 0)
+      throw new Error("本地身份提交坐标不能为空");
+    const identity = this.requireRelatedEntityIdentity();
+    return await identity.createLocalRelatedEntity({
+      id: `related-entity_${createHash("sha256")
+        .update(`${input.actorId}\u0000${input.commitmentId}`)
+        .digest("hex")}`,
+      commitmentId: input.commitmentId,
+      label: input.label,
+      kind: input.kind,
+      actorId: input.actorId,
+    });
+  }
+
+  async findRelatedEntities(
+    label: string,
+  ): Promise<readonly RelatedEntityIdentity[]> {
+    return await this.requireRelatedEntityIdentity().findRelatedEntities(label);
+  }
+
+  async previewEntityIdentityMerge(input: {
+    readonly retainedEntityId: string;
+    readonly mergedEntityId: string;
+  }): Promise<EntityIdentityMergePreview> {
+    const preview =
+      await this.requireRelatedEntityIdentity().previewEntityIdentityMerge(
+        input,
+      );
+    const traversal = this.ports.relationshipTraversalQueries;
+    const facts =
+      traversal === undefined
+        ? []
+        : await Promise.all(
+            preview.members.map(
+              async (memberId) =>
+                await traversal.findCurrentRelationshipParticipant(memberId),
+            ),
+          );
+    const metadataProjection = effectiveIdentityMemberMetadata(
+      facts.flatMap((found) => found?.metadataAccepted ?? []),
+      preview.members,
+      preview.retainedEntityId,
+      this.ports.metadataPolicyConfiguration,
+    );
+    return {
+      ...preview,
+      metadata: metadataProjection.values.map(
+        ({ subjectId, property, value }) => ({
+          entityId: subjectId,
+          property,
+          value,
+        }),
+      ),
+      metadataConflicts: metadataProjection.conflicts,
+      metadataPolicyBaseline: metadataProjection.policyBaseline,
+    };
+  }
+
+  async applyEntityIdentityMerge(input: {
+    readonly commitmentId: string;
+    readonly actorId: string;
+    readonly preview: EntityIdentityMergePreview;
+  }): Promise<"applied" | "stale"> {
+    const identity = this.requireRelatedEntityIdentity();
+    const impactFingerprint = entityIdentityMergeImpactFingerprint(
+      input.preview,
+    );
+    const replay = await identity.findEntityIdentityMergeReplay({
+      actorId: input.actorId,
+      commitmentId: input.commitmentId,
+    });
+    if (replay !== undefined) {
+      if (
+        replay.retainedEntityId !== input.preview.retainedEntityId ||
+        replay.mergedEntityId !== input.preview.mergedEntityId ||
+        replay.impactFingerprint !== impactFingerprint
+      )
+        throw new Error("身份合并提交坐标与既有内容冲突");
+      return "applied";
+    }
+    const current = await this.previewEntityIdentityMerge({
+      retainedEntityId: input.preview.retainedEntityId,
+      mergedEntityId: input.preview.mergedEntityId,
+    });
+    if (entityIdentityMergeImpactFingerprint(current) !== impactFingerprint)
+      return "stale";
+    return await identity.applyEntityIdentityMerge({
+      id: id("entity-identity-merge"),
+      ...input,
+      impactFingerprint,
+    });
+  }
+
+  async undoEntityIdentityMerge(input: {
+    readonly commitmentId: string;
+    readonly actorId: string;
+    readonly preview: EntityIdentityMergePreview;
+  }): Promise<"applied" | "stale"> {
+    return await this.requireRelatedEntityIdentity().undoEntityIdentityMerge({
+      id: id("entity-identity-merge-retraction"),
+      ...input,
+    });
+  }
+
+  /** 预演与采用使用同一份持久化生效投影。 */
+  async previewRelationshipChange(input: {
+    readonly changes: readonly RelationshipChange[];
+  }): Promise<RelationshipChangePreview> {
+    this.validateRelationshipChanges(input.changes);
+    const persistence = this.ports.relationshipDecisionPersistence;
+    if (persistence === undefined) throw new Error("关系更正能力尚未配置");
+    const preview = await persistence.previewRelationshipChange(input);
+    // 合并投影可能把原本不同的参与者收敛为同一实体，仍须走既有结构校验。
+    this.validateRelationshipChanges(preview.changes);
+    return preview;
+  }
+
+  async applyRelationshipChange(input: {
+    readonly actorId: string;
+    readonly preview: RelationshipChangePreview;
+  }): Promise<"applied" | "stale"> {
+    this.validateRelationshipChanges(input.preview.changes);
+    const persistence = this.ports.relationshipDecisionPersistence;
+    if (persistence === undefined) throw new Error("关系更正能力尚未配置");
+    return await persistence.applyRelationshipChange({
+      id: id("relationship-decision"),
+      actorId: input.actorId,
+      preview: input.preview,
+    });
+  }
+
+  private validateRelationshipChanges(
+    changes: readonly RelationshipChange[],
+  ): void {
+    if (changes.length === 0) throw new Error("关系更正不能为空");
+    for (const change of changes) {
+      if (change.kind !== "fix") continue;
+      const relationship = change.relationship;
+      if (relationship === undefined || relationship.type.trim().length === 0)
+        throw new Error("更正关系必须包含类型和参与者");
+      if (
+        relationship.participants.length < 2 ||
+        relationship.participants.some(
+          ({ entityId, role }) =>
+            entityId.trim().length === 0 || role.trim().length === 0,
+        ) ||
+        new Set(
+          relationship.participants.map(
+            ({ entityId, role }) => `${entityId}\u0000${role}`,
+          ),
+        ).size !== relationship.participants.length ||
+        relationship.qualifiers?.some(
+          ({ key, value }) =>
+            key.trim().length === 0 || value.trim().length === 0,
+        )
+      )
+        throw new Error("更正关系结构无效");
+      const definition = this.relationshipTypeDefinitions().find(
+        (item) => item.id === change.definitionId,
+      );
+      if (definition === undefined) throw new Error("关系类型尚未声明");
+      validateRelationshipDefinition(definition, relationship);
+    }
+  }
+
+  /** 人工与来源解析共用同一个可读取的当前指称投影。 */
+  async resolveEntityMentionManually(input: {
+    readonly mentionId: string;
+    readonly entityId: string;
+    readonly actorId: string;
+    readonly baseline: string;
+  }): Promise<"applied" | "stale"> {
+    return await this.requireRelatedEntityIdentity().resolveEntityMentionManually(
+      {
+        id: id("manual-entity-resolution"),
+        ...input,
+      },
+    );
+  }
+
+  async inspectEntityMentionResolution(
+    mentionId: string,
+  ): Promise<EntityMentionResolution> {
+    return await this.requireRelatedEntityIdentity().inspectEntityMentionResolution(
+      mentionId,
+    );
+  }
+
+  async retractEntityMentionResolution(input: {
+    readonly mentionId: string;
+    readonly actorId: string;
+    readonly baseline: string;
+  }): Promise<"applied" | "stale"> {
+    return await this.requireRelatedEntityIdentity().retractEntityMentionResolution(
+      {
+        id: id("manual-entity-resolution-retraction"),
+        ...input,
+      },
+    );
+  }
+
+  async previewEntityKindDecision(input: {
+    readonly entityId: string;
+    readonly selectedKind?: "person" | "persona";
+  }) {
+    return await this.requireRelatedEntityIdentity().previewEntityKindDecision(
+      input,
+    );
+  }
+
+  async applyEntityKindDecision(input: {
+    readonly entityId: string;
+    readonly selectedKind?: "person" | "persona";
+    readonly actorId: string;
+    readonly baseline: string;
+  }): Promise<"applied" | "stale"> {
+    return await this.requireRelatedEntityIdentity().applyEntityKindDecision({
+      id: id("entity-kind-decision"),
+      ...input,
+    });
+  }
+
+  private requireRelatedEntityIdentity(): RelatedEntityIdentityPersistence {
+    if (this.ports.relatedEntityIdentity === undefined)
+      throw new Error("相关实体身份能力未配置");
+    return this.ports.relatedEntityIdentity;
   }
 
   /** 精确更正入口即使在身份未决后也可检查稳定资产与来源历史。 */
@@ -10367,7 +11258,6 @@ export class AssetRefreshWorkflow {
             role,
             count,
           })),
-          metadataPolicyIds: target.accepted.metadataPolicyIds ?? [],
         };
       },
     );
@@ -11300,6 +12190,7 @@ export class AssetRefreshWorkflow {
           evidence = bindRecognitionEvidenceOutputToProducer(
             evidence,
             inspector.capability,
+            inspector.relationshipDefinitions,
           );
           if (evidence.length === 0) continue;
           formatInterpretation.push({
@@ -12075,7 +12966,6 @@ export class AssetRefreshWorkflow {
           expectedExecution: lastPersistedExecution,
           execution: acceptedExecution,
           accepted,
-          metadataPolicyIds: this.metadataPolicyIdsFor(accepted),
         });
       } else {
         validateReevaluatedRecognition({
@@ -12813,14 +13703,27 @@ export class AssetRefreshWorkflow {
           }
         }
         if (currentAccepted !== undefined) {
+          const predecessorSnapshotFiles =
+            currentAccepted.execution.snapshot?.files ?? itemSnapshot.files;
+          const predecessorMatches = plan.relativePaths.map((selected) =>
+            predecessorSnapshotFiles.filter(
+              ({ relativePath }) =>
+                relativePath === selected ||
+                relativePath.endsWith(`/${selected}`),
+            ),
+          );
+          const currentObservedFiles = predecessorMatches.every(
+            (matches) => matches.length === 1,
+          )
+            ? predecessorMatches.map(([match], index) => ({
+                ...match!,
+                relativePath: plan.relativePaths[index]!,
+              }))
+            : [];
           const sameIdentity = sameRecognitionIdentity(
             currentAccepted.accepted,
             proposal,
-            (
-              currentAccepted.execution.snapshot?.files ?? itemSnapshot.files
-            ).filter(({ relativePath }) =>
-              plan.relativePaths.includes(relativePath),
-            ),
+            currentObservedFiles,
             itemSnapshot.files.filter(({ relativePath }) =>
               plan.relativePaths.includes(relativePath),
             ),
@@ -13083,7 +13986,6 @@ export class AssetRefreshWorkflow {
             expectedExecution: lastPersistedExecution,
             execution,
             accepted,
-            metadataPolicyIds: this.metadataPolicyIdsFor(accepted),
             ...(resumeClaim === undefined ? {} : { resumeClaim }),
           });
         } else {
@@ -13595,7 +14497,7 @@ export class AssetRefreshWorkflow {
         "asset.ordinary",
         this.ports.metadataPolicyConfiguration,
       ).values,
-      entities: item.entities ?? [],
+      currentRelatedEntities: item.currentRelatedEntities ?? [],
       relationships: item.relationships ?? [],
     }));
   }
@@ -14873,15 +15775,27 @@ export class AssetRefreshWorkflow {
             proposedInterpretation,
             input.current.entity.id,
           );
-    const projectedArtifactGraph = projectSupportedArtifactGraph({
-      current: input.current,
-      endingRecognitionDecisionId: input.current.recognitionDecision.id,
-      endingSourceRecordIds: currentSourceRecordIds,
-      retainDeliveredMaterials: true,
-      ...(currentRecognitionAssociation === undefined
-        ? {}
-        : { endingSourceAssociationId: currentRecognitionAssociation.id }),
-    });
+    const projectedArtifactGraph =
+      proposedInterpretation === undefined &&
+      projectedRecognition.observedEntityGraphs !== undefined
+        ? {
+            artifacts: projectedRecognition.artifacts,
+            locations: projectedRecognition.locations,
+            blobs: projectedRecognition.blobs,
+            artifactRevisions: projectedRecognition.artifactRevisions,
+            artifactAssociations: projectedRecognition.artifactAssociations,
+          }
+        : projectSupportedArtifactGraph({
+            current: input.current,
+            endingRecognitionDecisionId: input.current.recognitionDecision.id,
+            endingSourceRecordIds: currentSourceRecordIds,
+            retainDeliveredMaterials: true,
+            ...(currentRecognitionAssociation === undefined
+              ? {}
+              : {
+                  endingSourceAssociationId: currentRecognitionAssociation.id,
+                }),
+          });
     blockingConditions.push(
       ...otherLegacyArtifactBlockers(
         input.current,
@@ -15053,6 +15967,12 @@ export class AssetRefreshWorkflow {
           ],
           ...projectedArtifactGraph,
         },
+        ...(projectedRecognition.observedEntityGraphs === undefined
+          ? {}
+          : {
+              projectedObservedEntityGraphs:
+                projectedRecognition.observedEntityGraphs,
+            }),
         blockingConditions,
         status: "awaiting-confirmation",
       },
@@ -15764,7 +16684,6 @@ export class AssetRefreshWorkflow {
             expectedExecution: lastPersistedExecution,
             execution: finished,
             accepted,
-            metadataPolicyIds: this.metadataPolicyIdsFor(accepted),
             resumeClaim: mutationClaim(),
           });
           return await this.inspectResumedPublic(finished.id);
@@ -16100,10 +17019,12 @@ export class AssetRefreshWorkflow {
               selectedSnapshot,
               accepted,
             ),
-            supports: accepted.artifactAssociations.map((association) => ({
-              associationId: association.id,
-              recognitionDecisionId: accepted.recognitionDecision.id,
-            })),
+            supports: accepted.artifactAssociations
+              .filter(({ target }) => target.kind === "entity")
+              .map((association) => ({
+                associationId: association.id,
+                recognitionDecisionId: accepted.recognitionDecision.id,
+              })),
           };
           validateObservedMaterialAssociationSubmission(submission);
           const waiting: WorkflowExecution = {
@@ -16662,36 +17583,6 @@ export class AssetRefreshWorkflow {
     }
   }
 
-  private metadataPolicyIdsFor(
-    accepted: AcceptedRecognition,
-  ): readonly string[] {
-    const configuration = this.ports.metadataPolicyConfiguration;
-    if (configuration === undefined) return [];
-    if (configuration.version.length === 0)
-      throw new Error("Metadata Policy configuration version is empty");
-    const definitions = new Map(
-      configuration.policies.map((policy) => [policy.id, policy]),
-    );
-    if (definitions.size !== configuration.policies.length)
-      throw new Error(
-        "Metadata Policy configuration has duplicate identifiers",
-      );
-    const enrolled = [...new Set(configuration.enroll(accepted))];
-    for (const definition of configuration.policies) {
-      validateMetadataPolicy({
-        ...definition,
-        subjectIds: [accepted.entity.id],
-      });
-    }
-    for (const policyId of enrolled) {
-      if (!definitions.has(policyId))
-        throw new Error(
-          `Metadata Policy enrollment references unknown policy ${policyId}`,
-        );
-    }
-    return enrolled;
-  }
-
   private async transition(
     expected: WorkflowExecution,
     next: WorkflowExecution,
@@ -16853,9 +17744,12 @@ export class AssetRefreshWorkflow {
     for (const requested of requirement.relationshipTypes) {
       if (
         requested.necessity === "required" &&
-        !(accepted.relationships ?? []).some(
-          (relationship) => relationship.type === requested.type,
-        )
+        ![
+          ...(accepted.relationships ?? []),
+          ...(accepted.observedEntityGraphs ?? []).flatMap(
+            (graph) => graph.relationships,
+          ),
+        ].some((relationship) => relationship.type === requested.type)
       )
         return false;
     }
@@ -17375,7 +18269,9 @@ function selectSourceArtifacts(
       (candidate) => candidate.role === requested.role,
     );
     const observedCandidates = proposal.observedArtifactParts?.filter(
-      (candidate) => candidate.role === requested.role,
+      (candidate) =>
+        observedArtifactPartAssociationRole(proposal, candidate) ===
+        requested.role,
     );
     if (
       requested.necessity === "required" &&
@@ -17514,9 +18410,7 @@ function attachObservedFormatFacts(
   const selectedEvidence = new Set(
     proposal.basis.kind === "manual-boundary"
       ? proposal.basis.evidence
-      : proposal.ruleResults
-          .filter((result) => result.outcome === "satisfied")
-          .flatMap((result) => result.evidence),
+      : evidence,
   );
   const inspections = evidence
     .filter((item) => selectedEvidence.has(item))
@@ -17548,6 +18442,16 @@ function attachObservedFormatFacts(
       blob: inspection.revision,
       producer,
     })),
+    observedEntityGraphs: inspections.flatMap(({ inspection, producer }) =>
+      inspection.entityGraph === undefined
+        ? []
+        : [
+            {
+              ...inspection.entityGraph,
+              producer,
+            } satisfies ObservedEntityGraphCandidate,
+          ],
+    ),
   };
 }
 
@@ -17610,23 +18514,41 @@ function withObservedMaterialImageRequirement(
   };
 }
 
-function observedArtifactPartAssociationRole(
+function observedArtifactPartRepresentsEntity(
   proposal: RecognitionProposal,
   candidate: ObservedArtifactPartCandidate,
-): string {
-  if (candidate.role !== "asset.material-image") return candidate.role;
+): boolean {
+  if (candidate.role !== "asset.material-image") return false;
   const isExplicitSingleMaterial =
     proposal.basis.kind === "manual-boundary" &&
     proposal.basis.materialReferences.length === 1 &&
     proposal.basis.materialReferences[0] ===
       candidate.observedArtifactReference;
+  const observedRevisions =
+    proposal.basis.kind === "observed-evidence"
+      ? proposal.basis.artifactRevisions
+      : (proposal.observedArtifactRevisions ?? []);
+  const isRecognitionEvidenceForCandidate = proposal.ruleResults.some(
+    (result) =>
+      result.evidence.some(
+        (evidence) =>
+          evidence.inspection?.observedArtifactReference ===
+          candidate.observedArtifactReference,
+      ),
+  );
   const isRecognizedSingleRevision =
-    proposal.basis.kind === "observed-evidence" &&
-    recognitionSourceInterpretation(proposal) === undefined &&
-    proposal.basis.artifactRevisions.length === 1 &&
-    proposal.basis.artifactRevisions[0]?.observedArtifactReference ===
-      candidate.observedArtifactReference;
-  return isExplicitSingleMaterial || isRecognizedSingleRevision
+    observedRevisions.length === 1 &&
+    observedRevisions[0]?.observedArtifactReference ===
+      candidate.observedArtifactReference &&
+    isRecognitionEvidenceForCandidate;
+  return isExplicitSingleMaterial || isRecognizedSingleRevision;
+}
+
+function observedArtifactPartAssociationRole(
+  proposal: RecognitionProposal,
+  candidate: ObservedArtifactPartCandidate,
+): string {
+  return observedArtifactPartRepresentsEntity(proposal, candidate)
     ? "asset.primary-cover"
     : candidate.role;
 }
@@ -17636,12 +18558,12 @@ function observedPartAssociationsRequireReconciliation(
   current: AcceptedRecognition,
 ): boolean {
   const expected = (proposal.observedArtifactParts ?? [])
-    .map((candidate) =>
-      JSON.stringify([
-        observedArtifactPartAssociationRole(proposal, candidate),
-        candidate.locator,
-      ]),
-    )
+    .flatMap((candidate) => [
+      JSON.stringify([candidate.role, candidate.locator]),
+      ...(observedArtifactPartRepresentsEntity(proposal, candidate)
+        ? [JSON.stringify(["asset.primary-cover", candidate.locator])]
+        : []),
+    ])
     .toSorted();
   const actual = current.artifactAssociations
     .filter((association) => association.observedArtifactPart !== undefined)
@@ -17819,9 +18741,12 @@ function assertInterpretationSatisfiesInformationRequirement(
   for (const requested of requirement.relationshipTypes) {
     if (
       requested.necessity === "required" &&
-      !(interpretation?.relationships ?? []).some(
-        (relationship) => relationship.type === requested.type,
-      )
+      ![
+        ...(interpretation?.relationships ?? []),
+        ...(proposal.observedEntityGraphs ?? []).flatMap(
+          (graph) => graph.relationships,
+        ),
+      ].some((relationship) => relationship.type === requested.type)
     )
       throw new Error(`缺少必需的关系类型：${requested.type}`);
   }
@@ -17944,7 +18869,13 @@ function recognitionMaterialBoundary(
         };
   return JSON.stringify({
     observedFiles:
-      proposal.basis.kind === "source-interpretation" ? [] : observedFiles,
+      proposal.basis.kind === "source-interpretation"
+        ? []
+        : observedFiles.map(({ relativePath, size, modifiedAt }) => ({
+            relativePath,
+            size,
+            modifiedAt,
+          })),
     basis:
       proposal.basis.kind === "source-interpretation"
         ? { kind: proposal.basis.kind, sourceMaterial }
@@ -17962,30 +18893,35 @@ function recognitionMaterialBoundary(
                 proposal.basis.artifactRevisions,
               ),
             },
+    // 观察证据提议已在 basis 中完整携带格式元数据、组成部分和修订版；再次比较其
+    // 派生投影会让旧持久化提议因缺少重复字段而被误判为身份变化。来源解释提议没有
+    // 这份观察 basis，仍须比较其附带的本地格式投影。
     observedArtifactParts:
-      proposal.basis.kind === "source-interpretation" && !compareSourceFacts
+      proposal.basis.kind !== "source-interpretation" || !compareSourceFacts
         ? []
         : (proposal.observedArtifactParts ?? []).map(
             ({ id: _id, producer: _producer, ...item }) => item,
           ),
     observedMetadata:
-      proposal.basis.kind === "source-interpretation" && !compareSourceFacts
+      proposal.basis.kind !== "source-interpretation" || !compareSourceFacts
         ? []
         : (proposal.observedMetadata ?? []).map(
             ({ producer: _producer, ...item }) => item,
           ),
     observedArtifactRevisions:
-      proposal.basis.kind === "source-interpretation" && !compareSourceFacts
+      proposal.basis.kind !== "source-interpretation" || !compareSourceFacts
         ? []
         : (proposal.observedArtifactRevisions ?? []).map(
             ({ producer: _producer, ...item }) => item,
           ),
     observedArtifactAssociations:
-      proposal.observedArtifactAssociations ??
-      observedFiles.map(({ relativePath: observedArtifactReference }) => ({
-        observedArtifactReference,
-        role: "asset.material-delivered",
-      })),
+      proposal.observedArtifactAssociations !== undefined &&
+      proposal.observedArtifactAssociations.length > 0
+        ? proposal.observedArtifactAssociations
+        : observedFiles.map(({ relativePath: observedArtifactReference }) => ({
+            observedArtifactReference,
+            role: "asset.material-delivered",
+          })),
   });
 }
 
@@ -18056,7 +18992,8 @@ function observedMaterialAssociationProjections(
     );
     const association = accepted.artifactAssociations.find(
       (item) =>
-        item.subjectId === accepted.entity.id &&
+        item.target.kind === "entity" &&
+        item.target.entityId === accepted.entity.id &&
         item.artifactId === location?.artifactId &&
         item.role === candidate.role,
     );
@@ -18203,7 +19140,8 @@ function createAcceptedRecognition(options: {
         localByObjectIdentity.set(identity, createdArtifact);
       const association = options.current?.artifactAssociations.find(
         (candidate) =>
-          candidate.subjectId === asset.id &&
+          candidate.target.kind === "entity" &&
+          candidate.target.entityId === asset.id &&
           candidate.artifactId === createdArtifact.id &&
           candidate.role === "asset.material-delivered" &&
           (candidate.sourceRecordIds === undefined ||
@@ -18211,7 +19149,7 @@ function createAcceptedRecognition(options: {
           candidate.observedArtifactPart === undefined,
       ) ?? {
         id: observedArtifactAssociationId(asset.id, createdArtifact.id),
-        subjectId: asset.id,
+        target: { kind: "entity" as const, entityId: asset.id },
         artifactId: createdArtifact.id,
         role: "asset.material-delivered" as const,
       };
@@ -18326,15 +19264,11 @@ function createAcceptedRecognition(options: {
       throw new Error(
         "Observed Artifact Part requires a progressively hashed parent Artifact Revision",
       );
-    const associationRole = observedArtifactPartAssociationRole(
-      proposal,
-      part.candidate,
-    );
     const materializationKey = createHash("sha256")
       .update(
         JSON.stringify({
           digest: part.blob.digest,
-          role: associationRole,
+          role: part.candidate.role,
           origin: origin.id,
           locator: part.candidate.locator,
         }),
@@ -18359,9 +19293,13 @@ function createAcceptedRecognition(options: {
       },
       association: {
         id: `artifact-association_${materializationKey}`,
-        subjectId: asset.id,
+        target: {
+          kind: "artifact-revision" as const,
+          artifactId: parentRevision.artifactId,
+          revisionId: parentRevision.revisionId,
+        },
         artifactId: artifact.id,
-        role: associationRole,
+        role: part.candidate.role,
         producer: part.producer,
         observedArtifactPart: {
           artifactId: origin.id,
@@ -18369,6 +19307,23 @@ function createAcceptedRecognition(options: {
           locator: part.candidate.locator,
         },
       },
+      entityAssociation: observedArtifactPartRepresentsEntity(
+        proposal,
+        part.candidate,
+      )
+        ? {
+            id: `artifact-association_${materializationKey}_entity-cover`,
+            target: { kind: "entity" as const, entityId: asset.id },
+            artifactId: artifact.id,
+            role: "asset.primary-cover",
+            producer: part.producer,
+            observedArtifactPart: {
+              artifactId: origin.id,
+              revisionId: parentRevision.revisionId,
+              locator: part.candidate.locator,
+            },
+          }
+        : undefined,
     };
   });
   const observedMetadata: MetadataAssertion[] = (
@@ -18382,6 +19337,11 @@ function createAcceptedRecognition(options: {
         `Observed metadata requires a progressively hashed parent Artifact Revision for ${candidate.observedArtifactReference}; materialized parents: ${[...observedRevisionByReference.keys()].join(",")}`,
       );
     return {
+      target: {
+        kind: "artifact-revision" as const,
+        artifactId: parent.artifactId,
+        revisionId: parent.revisionId,
+      },
       property: candidate.property,
       sourceSlot: candidate.sourceSlot,
       value: candidate.value,
@@ -18409,6 +19369,83 @@ function createAcceptedRecognition(options: {
     (recognitionSourceAssociation === undefined
       ? []
       : [recognitionSourceAssociation]);
+  const sourceMetadata: readonly MetadataAssertion[] =
+    interpretation?.metadata.map(({ subjectId, ...assertion }) => ({
+      ...assertion,
+      target: {
+        kind: "entity" as const,
+        entityId: subjectId ?? asset.id,
+      },
+    })) ?? [];
+  const observedEntityGraphs = (proposal.observedEntityGraphs ?? []).map(
+    (candidate) => {
+      const parent = observedRevisionByReference.get(
+        candidate.observedArtifactReference,
+      );
+      if (parent === undefined)
+        throw new Error(
+          "Observed entity graph requires a progressively hashed parent Artifact Revision",
+        );
+      const entityIdByKey = new Map(
+        candidate.entities.map((entity) => [
+          entity.key,
+          `observed-entity_${sha256(new TextEncoder().encode(JSON.stringify([asset.id, parent.artifactId, candidate.producer, candidate.coverage.id, entity.occurrenceSlot, entity.preservedValue])))}`,
+        ]),
+      );
+      const mentionIdByKey = new Map(
+        candidate.mentions.map((mention) => [
+          mention.key,
+          `observed-mention_${sha256(new TextEncoder().encode(JSON.stringify([entityIdByKey.get(mention.entityKey), parent.revisionId, mention.sourceSlot, mention.label])))}`,
+        ]),
+      );
+      return {
+        assetId: asset.id,
+        artifactId: parent.artifactId,
+        revisionId: parent.revisionId,
+        producer: candidate.producer,
+        coverageId: candidate.coverage.id,
+        complete: true as const,
+        entities: candidate.entities.map((entity) => ({
+          id: entityIdByKey.get(entity.key)!,
+          occurrenceSlot: entity.occurrenceSlot,
+          label: entity.label,
+          preservedValue: entity.preservedValue,
+          locator: entity.locator,
+        })),
+        mentions: candidate.mentions.map((mention) => ({
+          id: mentionIdByKey.get(mention.key)!,
+          entityId: entityIdByKey.get(mention.entityKey)!,
+          sourceSlot: mention.sourceSlot,
+          field: mention.field,
+          role: mention.role,
+          label: mention.label,
+          locator: mention.locator,
+        })),
+        resolutions: candidate.resolutions.map((resolution) => ({
+          mentionId: mentionIdByKey.get(resolution.mentionKey)!,
+          entityId: entityIdByKey.get(resolution.entityKey)!,
+        })),
+        relationships: candidate.relationships.map((relationship) => ({
+          id: `observed-relationship_${sha256(new TextEncoder().encode(JSON.stringify([asset.id, parent.artifactId, candidate.producer, candidate.coverage.id, relationship.sourceSlot, parent.revisionId, relationship.type, relationship.subjectRole, relationship.participants, relationship.qualifiers])))}`,
+          participants: [
+            { entityId: asset.id, role: relationship.subjectRole },
+            ...relationship.participants.map((participant) => ({
+              entityId: entityIdByKey.get(participant.entityKey)!,
+              role: participant.role,
+              mentionIds: participant.mentionKeys.map(
+                (mentionKey) => mentionIdByKey.get(mentionKey)!,
+              ),
+            })),
+          ],
+          type: relationship.type,
+          sourceSlot: relationship.sourceSlot,
+          sourceRecordIds: [],
+          producer: candidate.producer,
+          qualifiers: relationship.qualifiers,
+        })),
+      };
+    },
+  );
   return {
     proposal,
     entity: asset,
@@ -18449,14 +19486,18 @@ function createAcceptedRecognition(options: {
       ...localAssociations,
       ...managed.associations,
       ...localParts.map((item) => item.association),
+      ...localParts.flatMap((item) =>
+        item.entityAssociation === undefined ? [] : [item.entityAssociation],
+      ),
     ],
     metadata: [
-      ...(interpretation?.metadata ?? []),
+      ...sourceMetadata,
       ...observedMetadata,
       ...(proposal.basis.kind !== "manual-boundary"
         ? []
         : proposal.basis.metadata.map((assertion) => ({
             ...assertion,
+            target: { kind: "entity" as const, entityId: asset.id },
             sourceSlot: assertion.property,
             sourceRecordIds: [],
             authoredBy: {
@@ -18473,11 +19514,17 @@ function createAcceptedRecognition(options: {
     entityResolutionDecisions: interpretation?.entityResolutionDecisions ?? [],
     relationships: (interpretation?.relationships ?? []).map(
       (relationship) => ({
-        id: relationshipId(relationship, asset.id),
+        id: relationshipId(relationship, interpretation?.sourceIdentity ?? ""),
         ...relationship,
-        subjectId: relationship.subjectId ?? asset.id,
+        participants: [
+          ...(relationship.subjectRole === undefined
+            ? []
+            : [{ entityId: asset.id, role: relationship.subjectRole }]),
+          ...relationship.participants,
+        ],
       }),
     ),
+    ...(observedEntityGraphs.length === 0 ? {} : { observedEntityGraphs }),
   };
 }
 
@@ -18589,20 +19636,21 @@ function observedLocationId(artifactId: string, address: string): string {
 }
 
 /**
- * 资产范围关系是接受过程内的事实；而来源实体之间的明确关系可以由一个包中的多个资产
- * 投影。为后者赋予语义身份，使持久化只记录一次，而不是为每一集制造一条关系。
+ * 完整来源实体关系只由其来源事实本身形成稳定身份，不能随采用它的资产镜像复制。
  */
 function relationshipId(
   relationship: NonNullable<SourceInterpretationBatch["relationships"]>[number],
-  fallbackSubjectId: string,
+  sourceIdentity: string,
 ): string {
-  if (relationship.subjectId === undefined) return id("entity-relationship");
+  if (relationship.subjectRole !== undefined) return id("entity-relationship");
   const semanticKey = [
-    relationship.subjectId ?? fallbackSubjectId,
-    relationship.participantId,
+    ...relationship.participants
+      .map((participant) => `${participant.entityId}:${participant.role}`)
+      .toSorted(),
     relationship.type,
-    relationship.role,
     relationship.sourceSlot,
+    sourceIdentity,
+    relationship.sourceSubjectId ?? "",
   ].join("\u0000");
   return `entity-relationship_${sha256(new TextEncoder().encode(semanticKey))}`;
 }

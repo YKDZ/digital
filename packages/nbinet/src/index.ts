@@ -12,8 +12,12 @@ import {
 } from "@digital/application";
 import type {
   CapabilityCoordinate,
+  EntityMention,
+  EntityResolutionDecision,
+  ProposedEntityRelationship,
   RecognitionEvidence,
   RecognitionProposalDraft,
+  SourcedEntity,
   SourceInterpretationBatch,
   SourceRecord,
 } from "@digital/domain";
@@ -205,6 +209,18 @@ export class NbinetCollector implements SourceCollector {
 }
 
 export class NbinetSourceInterpreter implements SourceInterpreter {
+  readonly relationshipDefinitions = [
+    {
+      id: "nbinet.contribution",
+      type: "asset.contribution",
+      label: "图书署名（国家图书馆）",
+      roles: [
+        { role: "asset", label: "作品", minimum: 1, maximum: 1 },
+        { role: "book.contributor", label: "署名者", minimum: 1 },
+      ],
+      qualifiers: [],
+    },
+  ];
   readonly capability = interpreterCapability;
 
   canInterpret(input: {
@@ -278,6 +294,53 @@ export class NbinetSourceInterpreter implements SourceInterpreter {
         ),
       ),
     ];
+    const entities: SourcedEntity[] = [];
+    const entityMentions: EntityMention[] = [];
+    const entityResolutionDecisions: EntityResolutionDecision[] = [];
+    const relationships: ProposedEntityRelationship[] = [];
+    for (const [index, label] of bibliographic.contributors.entries()) {
+      const slot = `nbinet.contributor.${index + 1}`;
+      const sourceKey = `${official.nativeAddress}\u0000${slot}`;
+      const identityNamespace = "nbinet.contributor.occurrence-local";
+      const entityId = relatedEntityId(identityNamespace, sourceKey);
+      const mentionId = relatedEntityId("mention", sourceKey);
+      entities.push({
+        id: entityId,
+        kind: "entity",
+        sourceIdentity: "nbinet",
+        sourceKey,
+        identityNamespace,
+        label,
+        sourceRecordIds: [official.id],
+      });
+      entityMentions.push({
+        id: mentionId,
+        sourceRecordIds: [official.id],
+        sourceIdentity: "nbinet",
+        field: "book.contributor",
+        role: "book.contributor",
+        label,
+        identityNamespace,
+        sourceKey,
+      });
+      entityResolutionDecisions.push({
+        id: relatedEntityId("resolution", mentionId),
+        mentionId,
+        entityId,
+        rule: "source-field-role-exact",
+        sourceRecordIds: [official.id],
+      });
+      relationships.push({
+        participants: [
+          { entityId, role: "book.contributor", mentionIds: [mentionId] },
+        ],
+        subjectRole: "asset",
+        requiredRoles: ["asset", "book.contributor"],
+        type: "asset.contribution",
+        sourceSlot: slot,
+        sourceRecordIds: [official.id],
+      });
+    }
     return [
       {
         id: `source-interpretation_${randomUUID()}`,
@@ -286,10 +349,22 @@ export class NbinetSourceInterpreter implements SourceInterpreter {
         sourceIdentity: "nbinet",
         sourceAddress: canonicalIsbnAddress(isbn),
         metadata,
+        ...(entities.length === 0 ? {} : { entities }),
+        ...(entityMentions.length === 0 ? {} : { entityMentions }),
+        ...(entityResolutionDecisions.length === 0
+          ? {}
+          : { entityResolutionDecisions }),
+        ...(relationships.length === 0 ? {} : { relationships }),
         sourceArtifacts: [],
       },
     ];
   }
+}
+
+function relatedEntityId(namespace: string, value: string): string {
+  return `entity_${createHash("sha256")
+    .update(`${namespace}\u0000${value}`)
+    .digest("hex")}`;
 }
 
 export class NbinetExactIsbnRecognizer implements Recognizer {
@@ -430,7 +505,9 @@ function exactBibliographicRecord(
       return [
         {
           titles: strings(record.pnx?.display?.title),
-          contributors: strings(record.pnx?.display?.creator),
+          contributors: strings(record.pnx?.display?.creator).flatMap(
+            contributorDisplayClaims,
+          ),
           publishers: strings(record.pnx?.display?.publisher),
           dates: strings(record.pnx?.display?.creationdate),
           languages: strings(record.pnx?.display?.language),
@@ -439,6 +516,15 @@ function exactBibliographicRecord(
     },
   );
   return matches.length === 1 ? matches[0] : undefined;
+}
+
+/** NBINet 的展示字段以 `$$Q` 附带权威检索形；逗号前各项才是独立署名。 */
+function contributorDisplayClaims(value: string): readonly string[] {
+  const [display] = value.split("$$Q", 1);
+  return (display ?? "")
+    .split("、")
+    .map((claim) => claim.trim())
+    .filter((claim) => claim.length > 0);
 }
 
 function canonicalIsbnAddress(isbn: string): string {

@@ -17,6 +17,7 @@ import { promisify } from "node:util";
 import type {
   AutomationClock,
   ChangeImpactPreview,
+  MetadataPolicyConfiguration,
   MetadataRefreshPersistence,
   ObservedRootRegistration,
   RecoverySourceRefreshRunCommands,
@@ -35,6 +36,7 @@ import {
   sha256,
   artifactProofConditionalBaseline,
 } from "@digital/application";
+import { DlsiteSourceInterpreter } from "@digital/dlsite";
 import type {
   AcceptedRecognition,
   SourceAssociationChangeProposal,
@@ -207,12 +209,12 @@ it("confirms one current revision at multiple observed Locations without re-offe
       ('location-confirmation-a', 'artifact-confirmation', '/observed/a.bin', 'observed'),
       ('location-confirmation-b', 'artifact-confirmation', '/observed/b.bin', 'observed');
     INSERT INTO current_file_observations (
-      location_id, snapshot_id, observed_at, size, modified_at,
+      location_id, address, snapshot_id, observed_at, size, modified_at,
       conditional_baseline
     ) VALUES
-      ('location-confirmation-a', 'snapshot-current', '2026-08-29T00:00:00.000Z',
+      ('location-confirmation-a', '/observed/a.bin', 'snapshot-current', '2026-08-29T00:00:00.000Z',
        4, '2026-08-29T00:00:00.000Z', '${baselineA}'),
-      ('location-confirmation-b', 'snapshot-current', '2026-08-29T00:00:00.000Z',
+      ('location-confirmation-b', '/observed/b.bin', 'snapshot-current', '2026-08-29T00:00:00.000Z',
        4, '2026-08-29T00:00:00.000Z', '${baselineB}');
   `);
   database.close();
@@ -350,10 +352,10 @@ it("removes a stale current observation when ordinary acceptance carries a compl
     INSERT INTO locations (id, artifact_id, address, kind)
       VALUES ('location', 'artifact', '/observed/missing.bin', 'observed');
     INSERT INTO current_file_observations (
-      location_id, snapshot_id, observed_at, size, modified_at,
+      location_id, address, snapshot_id, observed_at, size, modified_at,
       conditional_baseline
     ) VALUES (
-      'location', 'stale-snapshot', '2026-08-28T00:00:00.000Z', 4,
+      'location', '/observed/missing.bin', 'stale-snapshot', '2026-08-28T00:00:00.000Z', 4,
       '2026-08-28T00:00:00.000Z', '${"6".repeat(64)}'
     );
   `);
@@ -398,6 +400,1883 @@ async function createCatalogue(options?: SqliteCatalogueOptions) {
   return (await createCatalogueWithRoot(options)).catalogue;
 }
 
+it("公开身份旅程建立、选择并在重开后保留本地相关实体和种类决定", async () => {
+  const { root, catalogue } = await createCatalogueWithRoot();
+  const workflow = reevaluationWorkflow(catalogue, {
+    observationVersion: 0,
+    sourceVersion: 0,
+    expanded: false,
+    managedMissing: false,
+    omitCover: false,
+  });
+  const person = await workflow.createLocalRelatedEntity({
+    commitmentId: "person/1",
+    label: "同名作者",
+    kind: "person",
+    actorId: "user:甲",
+  });
+  const series = await workflow.createLocalRelatedEntity({
+    commitmentId: "series/1",
+    label: "同名作者",
+    kind: "entity",
+    actorId: "user:甲",
+  });
+  const personOverride = await workflow.previewEntityKindDecision({
+    entityId: person.id,
+    selectedKind: "persona",
+  });
+  await expect(
+    workflow.applyEntityKindDecision({
+      entityId: person.id,
+      selectedKind: "persona",
+      actorId: "user:甲",
+      baseline: personOverride.baseline,
+    }),
+  ).resolves.toBe("applied");
+  await expect(
+    workflow.createLocalRelatedEntity({
+      commitmentId: "person/1",
+      label: "同名作者",
+      kind: "person",
+      actorId: "user:甲",
+    }),
+  ).resolves.toMatchObject({ id: person.id, identity: "local" });
+  await expect(
+    workflow.createLocalRelatedEntity({
+      commitmentId: "person/1",
+      label: "不同名称",
+      kind: "person",
+      actorId: "user:甲",
+    }),
+  ).rejects.toThrow("本地身份提交坐标与既有内容冲突");
+  const anotherPerson = await workflow.createLocalRelatedEntity({
+    commitmentId: "person/2",
+    label: "同名作者",
+    kind: "person",
+    actorId: "user:甲",
+  });
+  expect(anotherPerson.id).not.toBe(person.id);
+  expect(person.id).not.toBe(series.id);
+  await expect(workflow.findRelatedEntities("同名作者")).resolves.toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        id: person.id,
+        kind: { status: "effective", kind: "persona", basis: "decision" },
+        identity: "local",
+      }),
+      expect.objectContaining({
+        id: series.id,
+        kind: { status: "ordinary" },
+        identity: "local",
+      }),
+    ]),
+  );
+  const preview = await workflow.previewEntityKindDecision({
+    entityId: series.id,
+    selectedKind: "persona",
+  });
+  expect(preview.effective).toEqual({ status: "ordinary" });
+  await expect(
+    workflow.applyEntityKindDecision({
+      entityId: series.id,
+      selectedKind: "persona",
+      actorId: "user:甲",
+      baseline: preview.baseline,
+    }),
+  ).resolves.toBe("applied");
+  const correction = await workflow.previewEntityKindDecision({
+    entityId: series.id,
+    selectedKind: "person",
+  });
+  await expect(
+    workflow.applyEntityKindDecision({
+      entityId: series.id,
+      selectedKind: "persona",
+      actorId: "user:甲",
+      baseline: correction.baseline,
+    }),
+  ).resolves.toBe("applied");
+  await expect(
+    workflow.applyEntityKindDecision({
+      entityId: series.id,
+      selectedKind: "person",
+      actorId: "user:甲",
+      baseline: correction.baseline,
+    }),
+  ).resolves.toBe("stale");
+  const clear = await workflow.previewEntityKindDecision({
+    entityId: series.id,
+  });
+  await expect(
+    workflow.applyEntityKindDecision({
+      entityId: series.id,
+      actorId: "user:甲",
+      baseline: clear.baseline,
+    }),
+  ).resolves.toBe("applied");
+  await expect(workflow.findRelatedEntities("同名作者")).resolves.toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: series.id, kind: { status: "ordinary" } }),
+    ]),
+  );
+  const repeat = await workflow.previewEntityKindDecision({
+    entityId: series.id,
+    selectedKind: "persona",
+  });
+  await expect(
+    workflow.applyEntityKindDecision({
+      entityId: series.id,
+      selectedKind: "persona",
+      actorId: "user:甲",
+      baseline: repeat.baseline,
+    }),
+  ).resolves.toBe("applied");
+  await expect(
+    workflow.inspectCurrentCatalogueEntity(series.id),
+  ).resolves.toMatchObject({
+    entity: {
+      id: series.id,
+      label: "同名作者",
+      kind: { status: "effective", kind: "persona", basis: "decision" },
+    },
+    relationships: [],
+    accepted: [],
+  });
+  catalogue.close();
+  const reopened = SqliteCatalogue.forProductData(root);
+  const reopenedWorkflow = reevaluationWorkflow(reopened, {
+    observationVersion: 0,
+    sourceVersion: 0,
+    expanded: false,
+    managedMissing: false,
+    omitCover: false,
+  });
+  await expect(
+    reopenedWorkflow.createLocalRelatedEntity({
+      commitmentId: "person/1",
+      label: "同名作者",
+      kind: "person",
+      actorId: "user:甲",
+    }),
+  ).resolves.toMatchObject({ id: person.id });
+  await expect(reopened.findRelatedEntities("同名作者")).resolves.toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        id: series.id,
+        kind: { status: "effective", kind: "persona", basis: "decision" },
+      }),
+    ]),
+  );
+  reopened.close();
+});
+
+it("公开关系旅程预演、更正多方关系内序位、重开后保留并可清除", async () => {
+  const { root, catalogue } = await createCatalogueWithRoot();
+  const workflow = reevaluationWorkflow(catalogue, {
+    observationVersion: 0,
+    sourceVersion: 0,
+    expanded: false,
+    managedMissing: false,
+    omitCover: false,
+  });
+  await catalogue.createExecution(execution());
+  await retainSourceRecords(catalogue, "execution", [sourceRecord()]);
+  await acceptRecognition(catalogue, {
+    execution: acceptedExecution(),
+    accepted: accepted(),
+  });
+  const [series, performer] = await Promise.all([
+    workflow.createLocalRelatedEntity({
+      commitmentId: "series",
+      label: "本地系列",
+      kind: "entity",
+      actorId: "user:甲",
+    }),
+    workflow.createLocalRelatedEntity({
+      commitmentId: "performer",
+      label: "表演者",
+      kind: "person",
+      actorId: "user:甲",
+    }),
+  ]);
+  const fix = {
+    kind: "fix" as const,
+    definitionId: "fixture.membership-three",
+    relationship: {
+      type: "asset.membership",
+      participants: [
+        { entityId: series.id, role: "series" },
+        { entityId: "asset", role: "member" },
+        { entityId: performer.id, role: "performer" },
+      ],
+      qualifiers: [{ key: "asset.membership.position", value: "2" }],
+    },
+  };
+  await expect(
+    workflow.previewRelationshipChange({ changes: [fix] }),
+  ).resolves.toMatchObject({
+    relationships: expect.arrayContaining([
+      expect.objectContaining({ type: "asset.membership" }),
+    ]),
+  });
+  const preview = await workflow.previewRelationshipChange({ changes: [fix] });
+  await expect(
+    workflow.applyRelationshipChange({ actorId: "user:甲", preview }),
+  ).resolves.toBe("applied");
+  await expect(
+    workflow.inspectCurrentCatalogueEntity(series.id),
+  ).resolves.toMatchObject({
+    relationships: [
+      expect.objectContaining({
+        type: "asset.membership",
+        participants: expect.arrayContaining([
+          { entityId: "asset", role: "member" },
+          { entityId: performer.id, role: "performer" },
+        ]),
+        qualifiers: [{ key: "asset.membership.position", value: "2" }],
+      }),
+    ],
+    accepted: [expect.any(Object)],
+  });
+  const repeated = await workflow.previewRelationshipChange({ changes: [fix] });
+  await expect(
+    workflow.applyRelationshipChange({ actorId: "user:甲", preview: repeated }),
+  ).resolves.toBe("applied");
+  await expect(
+    workflow.inspectCurrentCatalogueEntity(series.id),
+  ).resolves.toMatchObject({
+    relationships: [expect.objectContaining({ type: "asset.membership" })],
+  });
+  await expect(
+    workflow.previewRelationshipChange({
+      changes: [
+        {
+          ...fix,
+          relationship: {
+            ...fix.relationship,
+            participants: [
+              ...fix.relationship.participants,
+              { entityId: series.id, role: "series" },
+            ],
+          },
+        },
+      ],
+    }),
+  ).rejects.toThrow("更正关系结构无效");
+  await expect(
+    workflow.previewRelationshipChange({
+      changes: [
+        {
+          ...fix,
+          relationship: {
+            ...fix.relationship,
+            qualifiers: [{ key: "", value: "2" }],
+          },
+        },
+      ],
+    }),
+  ).rejects.toThrow("更正关系结构无效");
+  await expect(
+    workflow.previewRelationshipChange({
+      changes: [
+        {
+          ...fix,
+          relationship: {
+            ...fix.relationship,
+            qualifiers: [{ key: "asset.membership.position", value: "" }],
+          },
+        },
+      ],
+    }),
+  ).rejects.toThrow("更正关系结构无效");
+  await expect(
+    workflow.previewRelationshipChange({
+      changes: [
+        {
+          kind: "fix",
+          definitionId: "fixture.membership-three",
+          relationship: {
+            type: "asset.membership",
+            participants: [
+              { entityId: series.id, role: "series" },
+              { entityId: "asset", role: "member" },
+            ],
+          },
+        },
+      ],
+    }),
+  ).rejects.toThrow("关系缺少必需角色");
+  catalogue.close();
+  const reopened = SqliteCatalogue.forProductData(root);
+  const reopenedWorkflow = reevaluationWorkflow(reopened, {
+    observationVersion: 0,
+    sourceVersion: 0,
+    expanded: false,
+    managedMissing: false,
+    omitCover: false,
+  });
+  const current = await reopenedWorkflow.inspectCurrentCatalogueEntity(
+    series.id,
+  );
+  const clear = await reopenedWorkflow.previewRelationshipChange({
+    changes: [
+      { kind: "clear", relationshipIds: [current!.relationships[0]!.id] },
+    ],
+  });
+  await expect(
+    reopenedWorkflow.applyRelationshipChange({
+      actorId: "user:甲",
+      preview: clear,
+    }),
+  ).resolves.toBe("applied");
+  await expect(
+    reopenedWorkflow.inspectCurrentCatalogueEntity(series.id),
+  ).resolves.toMatchObject({ relationships: [] });
+  reopened.close();
+});
+
+it("公开身份合并汇集关系、让新人工关系写入代表并能撤销", async () => {
+  const { root, catalogue } = await createCatalogueWithRoot();
+  const workflow = reevaluationWorkflow(catalogue, {
+    observationVersion: 0,
+    sourceVersion: 0,
+    expanded: false,
+    managedMissing: false,
+    omitCover: false,
+  });
+  await catalogue.createExecution(execution());
+  await retainSourceRecords(catalogue, "execution", [sourceRecord()]);
+  await acceptRecognition(catalogue, {
+    execution: acceptedExecution(),
+    accepted: accepted(),
+  });
+  const [a, b, third] = await Promise.all(
+    [
+      ["identity/a", "甲身份"],
+      ["identity/b", "乙身份"],
+      ["identity/third", "第三方"],
+    ].map(
+      async ([commitmentId, label]) =>
+        await workflow.createLocalRelatedEntity({
+          commitmentId,
+          label,
+          kind: "entity",
+          actorId: "user:甲",
+        }),
+    ),
+  );
+  const oldRelationship = {
+    kind: "fix" as const,
+    definitionId: "fixture.identity-reference",
+    relationship: {
+      type: "identity.reference",
+      participants: [
+        { entityId: b.id, role: "subject" },
+        { entityId: third.id, role: "context" },
+      ],
+    },
+  };
+  const oldPreview = await workflow.previewRelationshipChange({
+    changes: [oldRelationship],
+  });
+  await expect(
+    workflow.applyRelationshipChange({
+      actorId: "user:甲",
+      preview: oldPreview,
+    }),
+  ).resolves.toBe("applied");
+  const staleAfterRelationshipDecision =
+    await workflow.previewEntityIdentityMerge({
+      retainedEntityId: a.id,
+      mergedEntityId: b.id,
+    });
+  const excludeOldRelationship = await workflow.previewRelationshipChange({
+    changes: [
+      {
+        kind: "exclude",
+        relationshipIds: [
+          oldPreview.relationships.find(
+            ({ type }) => type === "identity.reference",
+          )!.id,
+        ],
+      },
+    ],
+  });
+  await workflow.applyRelationshipChange({
+    actorId: "user:甲",
+    preview: excludeOldRelationship,
+  });
+  await expect(
+    workflow.applyEntityIdentityMerge({
+      commitmentId: "identity/stale-relationship",
+      actorId: "user:甲",
+      preview: staleAfterRelationshipDecision,
+    }),
+  ).resolves.toBe("stale");
+  const restoreOldRelationship = await workflow.previewRelationshipChange({
+    changes: [
+      {
+        kind: "select",
+        relationshipIds: [
+          oldPreview.relationships.find(
+            ({ type }) => type === "identity.reference",
+          )!.id,
+        ],
+      },
+    ],
+  });
+  await workflow.applyRelationshipChange({
+    actorId: "user:甲",
+    preview: restoreOldRelationship,
+  });
+  const merge = await workflow.previewEntityIdentityMerge({
+    retainedEntityId: a.id,
+    mergedEntityId: b.id,
+  });
+  const beforeMergeKind = await workflow.previewEntityKindDecision({
+    entityId: b.id,
+    selectedKind: "persona",
+  });
+  expect(merge.members).toEqual(expect.arrayContaining([a.id, b.id]));
+  await expect(
+    workflow.applyEntityIdentityMerge({
+      commitmentId: "identity/merge-a-b",
+      actorId: "user:甲",
+      preview: merge,
+    }),
+  ).resolves.toBe("applied");
+  await expect(
+    workflow.applyEntityIdentityMerge({
+      commitmentId: "identity/merge-a-b-other",
+      actorId: "user:乙",
+      preview: merge,
+    }),
+  ).resolves.toBe("stale");
+  await expect(
+    workflow.applyEntityKindDecision({
+      entityId: b.id,
+      selectedKind: "persona",
+      actorId: "user:甲",
+      baseline: beforeMergeKind.baseline,
+    }),
+  ).resolves.toBe("stale");
+  await expect(
+    workflow.applyEntityIdentityMerge({
+      commitmentId: "identity/merge-a-b",
+      actorId: "user:甲",
+      preview: merge,
+    }),
+  ).resolves.toBe("applied");
+  for (const entityId of [a.id, b.id, third.id])
+    await expect(
+      workflow.inspectCurrentCatalogueEntity(entityId),
+    ).resolves.toMatchObject({
+      relationships: [
+        expect.objectContaining({
+          type: "identity.reference",
+          participants: expect.arrayContaining([
+            { entityId: a.id, role: "subject" },
+            { entityId: third.id, role: "context" },
+          ]),
+        }),
+      ],
+    });
+  await expect(
+    workflow.inspectCurrentCatalogueEntity(b.id),
+  ).resolves.toMatchObject({
+    entity: { id: a.id },
+  });
+  const newManualPreview = await workflow.previewRelationshipChange({
+    changes: [
+      {
+        kind: "fix",
+        definitionId: "fixture.membership",
+        relationship: {
+          type: "asset.membership",
+          participants: [
+            { entityId: b.id, role: "series" },
+            { entityId: "asset", role: "member" },
+          ],
+          qualifiers: [{ key: "asset.membership.position", value: "2" }],
+        },
+      },
+    ],
+  });
+  expect(newManualPreview.changes[0]!.relationship!.participants[0]).toEqual({
+    entityId: a.id,
+    role: "series",
+  });
+  await expect(
+    workflow.applyRelationshipChange({
+      actorId: "user:甲",
+      preview: newManualPreview,
+    }),
+  ).resolves.toBe("applied");
+  catalogue.close();
+  const reopened = SqliteCatalogue.forProductData(root);
+  const reopenedWorkflow = reevaluationWorkflow(reopened, {
+    observationVersion: 0,
+    sourceVersion: 0,
+    expanded: false,
+    managedMissing: false,
+    omitCover: false,
+  });
+  const undo = await reopenedWorkflow.previewEntityIdentityMerge({
+    retainedEntityId: a.id,
+    mergedEntityId: b.id,
+  });
+  expect(undo.mergeId).toBeDefined();
+  await expect(
+    reopenedWorkflow.undoEntityIdentityMerge({
+      commitmentId: "identity/undo-a-b",
+      actorId: "user:甲",
+      preview: undo,
+    }),
+  ).resolves.toBe("applied");
+  const [otherRetained, otherMerged] = await Promise.all(
+    ["identity/undo-other-a", "identity/undo-other-b"].map(
+      async (commitmentId) =>
+        await reopenedWorkflow.createLocalRelatedEntity({
+          commitmentId,
+          label: commitmentId,
+          kind: "entity",
+          actorId: "user:甲",
+        }),
+    ),
+  );
+  const otherMerge = await reopenedWorkflow.previewEntityIdentityMerge({
+    retainedEntityId: otherRetained.id,
+    mergedEntityId: otherMerged.id,
+  });
+  await reopenedWorkflow.applyEntityIdentityMerge({
+    commitmentId: "identity/undo-other-merge",
+    actorId: "user:甲",
+    preview: otherMerge,
+  });
+  const otherUndo = await reopenedWorkflow.previewEntityIdentityMerge({
+    retainedEntityId: otherRetained.id,
+    mergedEntityId: otherMerged.id,
+  });
+  await expect(
+    reopenedWorkflow.undoEntityIdentityMerge({
+      commitmentId: "identity/undo-a-b",
+      actorId: "user:甲",
+      preview: otherUndo,
+    }),
+  ).rejects.toThrow("撤销提交坐标与既有内容冲突");
+  await expect(
+    reopenedWorkflow.undoEntityIdentityMerge({
+      commitmentId: "identity/undo-a-b",
+      actorId: "user:甲",
+      preview: undo,
+    }),
+  ).resolves.toBe("applied");
+  await expect(
+    reopenedWorkflow.inspectCurrentCatalogueEntity(b.id),
+  ).resolves.toMatchObject({
+    entity: { id: b.id },
+    relationships: [expect.objectContaining({ type: "identity.reference" })],
+  });
+  await expect(
+    reopenedWorkflow.inspectCurrentCatalogueEntity(a.id),
+  ).resolves.toMatchObject({
+    entity: { id: a.id },
+    relationships: [expect.objectContaining({ type: "asset.membership" })],
+  });
+  await expect(
+    reopenedWorkflow.inspectCurrentCatalogueEntity(b.id),
+  ).resolves.not.toMatchObject({
+    relationships: expect.arrayContaining([
+      expect.objectContaining({ type: "asset.membership" }),
+    ]),
+  });
+  reopened.close();
+});
+
+it("公开身份合并拒绝数字资产、种类冲突和会折叠坏的既有关系", async () => {
+  const { catalogue } = await createCatalogueWithRoot();
+  const workflow = reevaluationWorkflow(catalogue, {
+    observationVersion: 0,
+    sourceVersion: 0,
+    expanded: false,
+    managedMissing: false,
+    omitCover: false,
+  });
+  await catalogue.createExecution(execution());
+  await retainSourceRecords(catalogue, "execution", [sourceRecord()]);
+  await acceptRecognition(catalogue, {
+    execution: acceptedExecution(),
+    accepted: accepted(),
+  });
+  const [a, b, person, persona] = await Promise.all(
+    [
+      ["unsafe/a", "甲", "entity"],
+      ["unsafe/b", "乙", "entity"],
+      ["unsafe/person", "人物", "person"],
+      ["unsafe/persona", "活动身份", "persona"],
+    ].map(
+      async ([commitmentId, label, kind]) =>
+        await workflow.createLocalRelatedEntity({
+          commitmentId,
+          label,
+          kind: kind as "entity" | "person" | "persona",
+          actorId: "user:甲",
+        }),
+    ),
+  );
+  await expect(
+    workflow.previewEntityIdentityMerge({
+      retainedEntityId: a.id,
+      mergedEntityId: "asset",
+    }),
+  ).rejects.toThrow("数字资产不能进行身份合并");
+  await expect(
+    workflow.previewEntityIdentityMerge({
+      retainedEntityId: person.id,
+      mergedEntityId: persona.id,
+    }),
+  ).rejects.toThrow("种类冲突");
+  const relationship = await workflow.previewRelationshipChange({
+    changes: [
+      {
+        kind: "fix",
+        definitionId: "fixture.identity-ambiguous",
+        relationship: {
+          type: "identity.ambiguous",
+          participants: [
+            { entityId: a.id, role: "subject" },
+            { entityId: b.id, role: "subject" },
+          ],
+        },
+      },
+    ],
+  });
+  await workflow.applyRelationshipChange({
+    actorId: "user:甲",
+    preview: relationship,
+  });
+  await expect(
+    workflow.previewEntityIdentityMerge({
+      retainedEntityId: a.id,
+      mergedEntityId: b.id,
+    }),
+  ).rejects.toThrow("现有关系结构无效");
+  catalogue.close();
+});
+
+it("身份合并只让相关关系更正过期，并拒绝恢复会折叠的人工关系", async () => {
+  const { catalogue } = await createCatalogueWithRoot();
+  const workflow = reevaluationWorkflow(catalogue, {
+    observationVersion: 0,
+    sourceVersion: 0,
+    expanded: false,
+    managedMissing: false,
+    omitCover: false,
+  });
+  const [a, b, c, d] = await Promise.all(
+    ["scoped/a", "scoped/b", "scoped/c", "scoped/d"].map(
+      async (commitmentId) =>
+        await workflow.createLocalRelatedEntity({
+          commitmentId,
+          label: commitmentId,
+          kind: "entity",
+          actorId: "user:甲",
+        }),
+    ),
+  );
+  const unrelatedMerge = await workflow.previewEntityIdentityMerge({
+    retainedEntityId: a.id,
+    mergedEntityId: b.id,
+  });
+  const unrelatedChange = await workflow.previewRelationshipChange({
+    changes: [
+      {
+        kind: "fix",
+        definitionId: "fixture.identity-context",
+        relationship: {
+          type: "identity.context",
+          participants: [
+            { entityId: c.id, role: "subject" },
+            { entityId: d.id, role: "context" },
+          ],
+        },
+      },
+    ],
+  });
+  await workflow.applyRelationshipChange({
+    actorId: "user:甲",
+    preview: unrelatedChange,
+  });
+  await expect(
+    workflow.applyEntityIdentityMerge({
+      commitmentId: "scoped/merge",
+      actorId: "user:甲",
+      preview: unrelatedMerge,
+    }),
+  ).resolves.toBe("applied");
+
+  const [left, right] = await Promise.all(
+    ["restore/left", "restore/right"].map(
+      async (commitmentId) =>
+        await workflow.createLocalRelatedEntity({
+          commitmentId,
+          label: commitmentId,
+          kind: "entity",
+          actorId: "user:甲",
+        }),
+    ),
+  );
+  const unsafe = await workflow.previewRelationshipChange({
+    changes: [
+      {
+        kind: "fix",
+        definitionId: "fixture.identity-ambiguous",
+        relationship: {
+          type: "identity.ambiguous",
+          participants: [
+            { entityId: left.id, role: "subject" },
+            { entityId: right.id, role: "subject" },
+          ],
+        },
+      },
+    ],
+  });
+  await workflow.applyRelationshipChange({
+    actorId: "user:甲",
+    preview: unsafe,
+  });
+  const unsafeId = unsafe.relationships.find(
+    ({ type }) => type === "identity.ambiguous",
+  )!.id;
+  const exclude = await workflow.previewRelationshipChange({
+    changes: [{ kind: "exclude", relationshipIds: [unsafeId] }],
+  });
+  await workflow.applyRelationshipChange({
+    actorId: "user:甲",
+    preview: exclude,
+  });
+  const merge = await workflow.previewEntityIdentityMerge({
+    retainedEntityId: left.id,
+    mergedEntityId: right.id,
+  });
+  await workflow.applyEntityIdentityMerge({
+    commitmentId: "restore/merge",
+    actorId: "user:甲",
+    preview: merge,
+  });
+  await expect(
+    workflow.previewRelationshipChange({
+      changes: [{ kind: "select", relationshipIds: [unsafeId] }],
+    }),
+  ).rejects.toThrow("身份合并会使当前关系结构无效");
+  catalogue.close();
+});
+
+it("孤立身份合并按当前资料投影汇集值与冲突，并在撤销后恢复原属", async () => {
+  const { root, catalogue } = await createCatalogueWithRoot();
+  const base = {
+    observationVersion: 0,
+    sourceVersion: 0,
+    expanded: false,
+    managedMissing: false,
+    omitCover: false,
+    explicitPlan: false,
+    sourceRefreshAuthority: true,
+    omitPersona: true,
+    omitSourceSubjectRelationship: true,
+    sourceSubjectDisplayName: "共同资料名称",
+    metadataPolicyConfiguration: {
+      version: "isolated-identity-metadata/1",
+      policies: [
+        {
+          id: "isolated-identity-alias",
+          metadataUsageContext: "asset.ordinary",
+          rules: [
+            {
+              property: "entity.alias",
+              preferredSourceIdentities: [],
+              cardinality: "one",
+            },
+          ],
+        },
+      ],
+      select: () => ["isolated-identity-alias"],
+    },
+  };
+  const alphaState = {
+    ...base,
+    sourceResolvedSubject: "alpha" as const,
+    sourceSubjectAlias: "甲别名",
+  };
+  const alpha = reevaluationWorkflow(catalogue, alphaState);
+  const beta = reevaluationWorkflow(catalogue, {
+    ...base,
+    sourceResolvedSubject: "beta" as const,
+    sourceSubjectAlias: "乙别名",
+    sourceAddress: "opaque:isolated-identity-beta",
+    sourceRecordPrefix: "isolated-identity-beta-record",
+  });
+  const [alphaScan, betaScan] = await Promise.all([
+    scanFixtureRegisteredObservedScope(alpha, {
+      directory: "/observed/related-refresh",
+      executionId: "isolated-identity-alpha",
+      acceptTrusted: true,
+    }),
+    scanFixtureRegisteredObservedScope(beta, {
+      directory: "/observed/related-lineage-b",
+      executionId: "isolated-identity-beta",
+      acceptTrusted: true,
+    }),
+  ]);
+  await expect(
+    catalogue.inspectExecution(alphaScan.execution.id),
+  ).resolves.toMatchObject({ accepted: expect.any(Object) });
+  await expect(
+    catalogue.inspectExecution(betaScan.execution.id),
+  ).resolves.toMatchObject({ accepted: expect.any(Object) });
+  const alphaId = "reevaluation-source-subject-alpha";
+  const betaId = "reevaluation-source-subject-beta";
+  await expect(
+    alpha.inspectCurrentCatalogueEntity(alphaId),
+  ).resolves.toMatchObject({ relationships: [] });
+  await expect(
+    alpha.inspectCurrentCatalogueEntity(betaId),
+  ).resolves.toMatchObject({ relationships: [] });
+  const preview = await alpha.previewEntityIdentityMerge({
+    retainedEntityId: alphaId,
+    mergedEntityId: betaId,
+  });
+  expect(preview).toMatchObject({
+    metadata: [
+      expect.objectContaining({
+        entityId: alphaId,
+        property: "entity.display-name",
+        value: "共同资料名称",
+      }),
+    ],
+    metadataConflicts: [
+      {
+        subjectId: alphaId,
+        property: "entity.alias",
+        reason: "multiple-values",
+        cardinality: "one",
+        metadataUsageContext: "asset.ordinary",
+      },
+    ],
+  });
+  expect(JSON.stringify(preview.metadataConflicts)).not.toMatch(
+    /candidates|sourceIdentity|sourceRecordIds|sourceSlot|assertion/,
+  );
+  const reorderedPreview = {
+    ...preview,
+    members: [...preview.members].reverse(),
+    relationshipIds: [...preview.relationshipIds].reverse(),
+    metadata: [...preview.metadata]
+      .reverse()
+      .map(({ entityId, property, value }) => ({ value, property, entityId })),
+    metadataConflicts: [...preview.metadataConflicts]
+      .reverse()
+      .map(
+        ({
+          subjectId,
+          property,
+          reason,
+          cardinality,
+          metadataUsageContext,
+        }) => ({
+          metadataUsageContext,
+          cardinality,
+          reason,
+          property,
+          subjectId,
+        }),
+      ),
+    effectiveKind:
+      preview.effectiveKind.status === "ordinary"
+        ? { status: "ordinary" as const }
+        : preview.effectiveKind.status === "effective"
+          ? {
+              basis: preview.effectiveKind.basis,
+              kind: preview.effectiveKind.kind,
+              status: "effective" as const,
+            }
+          : {
+              kinds: [...preview.effectiveKind.kinds].reverse(),
+              status: "conflict" as const,
+            },
+  };
+  const changedPolicyState = {
+    ...alphaState,
+    metadataPolicyConfiguration: {
+      ...base.metadataPolicyConfiguration,
+      version: "isolated-identity-metadata/2",
+      policies: [
+        {
+          ...base.metadataPolicyConfiguration.policies[0]!,
+          rules: [
+            {
+              property: "entity.alias",
+              preferredSourceIdentities: [],
+              cardinality: "many",
+            },
+          ],
+        },
+      ],
+    },
+  };
+  const changedPolicy = reevaluationWorkflow(catalogue, changedPolicyState);
+  await expect(
+    changedPolicy.applyEntityIdentityMerge({
+      commitmentId: "isolated-identity/merge",
+      actorId: "user:甲",
+      preview,
+    }),
+  ).resolves.toBe("stale");
+  const changedPreview = await changedPolicy.previewEntityIdentityMerge({
+    retainedEntityId: alphaId,
+    mergedEntityId: betaId,
+  });
+  await expect(
+    changedPolicy.applyEntityIdentityMerge({
+      commitmentId: "isolated-identity/merge-spliced",
+      actorId: "user:甲",
+      preview: {
+        ...preview,
+        metadataPolicyBaseline: changedPreview.metadataPolicyBaseline,
+      },
+    }),
+  ).resolves.toBe("stale");
+  await expect(
+    changedPolicy.inspectCurrentCatalogueEntity(betaId),
+  ).resolves.toMatchObject({ entity: { id: betaId } });
+  catalogue.close();
+  const reopened = SqliteCatalogue.forProductData(root);
+  const adopted = reevaluationWorkflow(reopened, alphaState);
+  await expect(
+    adopted.applyEntityIdentityMerge({
+      commitmentId: "isolated-identity/merge",
+      actorId: "user:甲",
+      preview: reorderedPreview,
+    }),
+  ).resolves.toBe("applied");
+  const replayedAfterPolicyChange = reevaluationWorkflow(reopened, {
+    ...changedPolicyState,
+  });
+  await expect(
+    replayedAfterPolicyChange.applyEntityIdentityMerge({
+      commitmentId: "isolated-identity/merge",
+      actorId: "user:甲",
+      preview,
+    }),
+  ).resolves.toBe("applied");
+  const changedImpactPreviews = [
+    () => ({ ...preview, retainedEntityId: betaId }),
+    () => ({ ...preview, mergedEntityId: alphaId }),
+    () => ({ ...preview, members: [...preview.members, "tampered-member"] }),
+    () => ({
+      ...preview,
+      relationshipIds: [...preview.relationshipIds, "tampered-relationship"],
+    }),
+    () => ({
+      ...preview,
+      metadata: [
+        ...preview.metadata,
+        {
+          entityId: alphaId,
+          property: "entity.tampered",
+          value: "tampered",
+        },
+      ],
+    }),
+    () => ({
+      ...preview,
+      metadataConflicts: [
+        ...preview.metadataConflicts,
+        {
+          subjectId: alphaId,
+          property: "entity.tampered",
+          reason: "multiple-values" as const,
+          cardinality: "one" as const,
+          metadataUsageContext: "asset.ordinary",
+        },
+      ],
+    }),
+    () => ({ ...preview, effectiveKind: { status: "ordinary" as const } }),
+    () => ({ ...preview, metadataPolicyBaseline: "tampered-policy" }),
+    () => ({ ...preview, baseline: "tampered-facts" }),
+  ];
+  for (const changedPreview of changedImpactPreviews)
+    await expect(
+      replayedAfterPolicyChange.applyEntityIdentityMerge({
+        commitmentId: "isolated-identity/merge",
+        actorId: "user:甲",
+        preview: changedPreview(),
+      }),
+    ).rejects.toThrow("身份合并提交坐标与既有内容冲突");
+  const [fromAlpha, fromBeta] = await Promise.all(
+    [alphaId, betaId].map(async (entityId) => {
+      const current = await adopted.inspectCurrentCatalogueEntity(entityId);
+      expect(current).toMatchObject({
+        entity: { id: alphaId },
+        relationships: [],
+        metadata: [
+          expect.objectContaining({
+            subjectId: alphaId,
+            property: "entity.display-name",
+            value: "共同资料名称",
+          }),
+        ],
+        metadataConflicts: [
+          expect.objectContaining({
+            property: "entity.alias",
+            subjectId: alphaId,
+          }),
+        ],
+      });
+      return current!;
+    }),
+  );
+  expect(fromAlpha.metadata).toEqual(fromBeta.metadata);
+  expect(fromAlpha.metadataConflicts).toEqual(fromBeta.metadataConflicts);
+  expect(preview.metadata).toEqual(
+    fromAlpha.metadata.map(({ subjectId, property, value }) => ({
+      entityId: subjectId,
+      property,
+      value,
+    })),
+  );
+  expect(preview.metadataConflicts).toEqual(fromAlpha.metadataConflicts);
+  const undo = await adopted.previewEntityIdentityMerge({
+    retainedEntityId: alphaId,
+    mergedEntityId: betaId,
+  });
+  await expect(
+    adopted.undoEntityIdentityMerge({
+      commitmentId: "isolated-identity/undo",
+      actorId: "user:甲",
+      preview: undo,
+    }),
+  ).resolves.toBe("applied");
+  for (const [entityId, alias] of [
+    [alphaId, "甲别名"],
+    [betaId, "乙别名"],
+  ] as const)
+    await expect(
+      adopted.inspectCurrentCatalogueEntity(entityId),
+    ).resolves.toMatchObject({
+      entity: { id: entityId },
+      relationships: [],
+      metadata: expect.arrayContaining([
+        expect.objectContaining({
+          subjectId: entityId,
+          property: "entity.alias",
+          value: alias,
+        }),
+      ]),
+      metadataConflicts: [],
+    });
+  reopened.close();
+});
+
+it("公开身份合并不改写来源刷新，并把随后人工关系留在代表", async () => {
+  const { root, catalogue } = await createCatalogueWithRoot();
+  const state = {
+    observationVersion: 0,
+    sourceVersion: 0,
+    expanded: false,
+    managedMissing: false,
+    omitCover: false,
+    explicitPlan: false,
+    sourceRefreshAuthority: true,
+    relatedMention: true,
+    personaKind: "persona" as const,
+  };
+  const workflow = reevaluationWorkflow(catalogue, state);
+  const initial = await scanFixtureRegisteredObservedScope(workflow, {
+    directory: "/observed/related-refresh",
+    executionId: "identity-merge-refresh-initial",
+    acceptTrusted: true,
+  });
+  const subject = (await catalogue.inspectExecution(initial.execution.id))!
+    .accepted!.entity.id;
+  const retained = await workflow.createLocalRelatedEntity({
+    commitmentId: "identity-refresh/retained",
+    label: "保留身份",
+    kind: "entity",
+    actorId: "user:甲",
+  });
+  const beforeMergeMention = await workflow.inspectEntityMentionResolution(
+    "reevaluation-voice-mention",
+  );
+  const beforeMergeManual = await workflow.previewRelationshipChange({
+    changes: [
+      {
+        kind: "fix",
+        definitionId: "fixture.membership",
+        relationship: {
+          type: "asset.membership",
+          participants: [
+            { entityId: "reevaluation-persona", role: "performer" },
+            { entityId: subject, role: "member" },
+          ],
+        },
+      },
+    ],
+  });
+  const staleAfterSourceRefresh = await workflow.previewEntityIdentityMerge({
+    retainedEntityId: retained.id,
+    mergedEntityId: "reevaluation-persona",
+  });
+  state.sourceVersion = 1;
+  await workflow.refreshMetadata({
+    selection: {
+      version: "asset-refresh-selection/1",
+      subjects: [
+        { subjectId: subject, explanations: [{ path: ["身份合并"] }] },
+      ],
+      filesystemScopes: [],
+    },
+    initiatedBy: "user:甲",
+  });
+  await expect(
+    workflow.applyEntityIdentityMerge({
+      commitmentId: "identity-refresh/stale-source",
+      actorId: "user:甲",
+      preview: staleAfterSourceRefresh,
+    }),
+  ).resolves.toBe("stale");
+  const merge = await workflow.previewEntityIdentityMerge({
+    retainedEntityId: retained.id,
+    mergedEntityId: "reevaluation-persona",
+  });
+  await workflow.applyEntityIdentityMerge({
+    commitmentId: "identity-refresh/merge",
+    actorId: "user:甲",
+    preview: merge,
+  });
+  await expect(
+    workflow.applyRelationshipChange({
+      actorId: "user:甲",
+      preview: beforeMergeManual,
+    }),
+  ).resolves.toBe("stale");
+  await expect(
+    workflow.resolveEntityMentionManually({
+      mentionId: beforeMergeMention.mentionId,
+      entityId: "reevaluation-persona",
+      actorId: "user:甲",
+      baseline: beforeMergeMention.baseline,
+    }),
+  ).resolves.toBe("stale");
+  await expect(
+    workflow.inspectEntityMentionResolution("reevaluation-voice-mention"),
+  ).resolves.toMatchObject({
+    basis: "source",
+    entityId: retained.id,
+    sourceRecordIds: ["reevaluation-record-2"],
+  });
+  const manual = await workflow.previewRelationshipChange({
+    changes: [
+      {
+        kind: "fix",
+        definitionId: "fixture.membership",
+        relationship: {
+          type: "asset.membership",
+          participants: [
+            { entityId: "reevaluation-persona", role: "performer" },
+            { entityId: subject, role: "member" },
+          ],
+        },
+      },
+    ],
+  });
+  expect(manual.changes[0]!.relationship!.participants[0]!.entityId).toBe(
+    retained.id,
+  );
+  await workflow.applyRelationshipChange({
+    actorId: "user:甲",
+    preview: manual,
+  });
+  catalogue.close();
+  const reopened = SqliteCatalogue.forProductData(root);
+  const reopenedWorkflow = reevaluationWorkflow(reopened, state);
+  const undo = await reopenedWorkflow.previewEntityIdentityMerge({
+    retainedEntityId: retained.id,
+    mergedEntityId: "reevaluation-persona",
+  });
+  await reopenedWorkflow.undoEntityIdentityMerge({
+    commitmentId: "identity-refresh/undo",
+    actorId: "user:甲",
+    preview: undo,
+  });
+  await expect(
+    reopenedWorkflow.inspectEntityMentionResolution(
+      "reevaluation-voice-mention",
+    ),
+  ).resolves.toMatchObject({
+    basis: "source",
+    entityId: "reevaluation-persona",
+    sourceRecordIds: ["reevaluation-record-2"],
+  });
+  await expect(
+    reopenedWorkflow.inspectCurrentCatalogueEntity(retained.id),
+  ).resolves.toMatchObject({
+    relationships: [expect.objectContaining({ type: "asset.membership" })],
+  });
+  reopened.close();
+});
+
+it("公开交叉旅程保留自动关系、人工更正与指定身份合并的原属", async () => {
+  const { root, catalogue } = await createCatalogueWithRoot();
+  const state = {
+    observationVersion: 0,
+    sourceVersion: 0,
+    expanded: false,
+    managedMissing: false,
+    omitCover: false,
+    explicitPlan: false,
+    sourceRefreshAuthority: true,
+    relatedMention: true,
+    personaKind: "persona" as const,
+  };
+  const workflow = reevaluationWorkflow(catalogue, state);
+  const initial = await scanFixtureRegisteredObservedScope(workflow, {
+    directory: "/observed/related-refresh",
+    executionId: "relationship-integration-initial",
+    acceptTrusted: true,
+  });
+  const assetId = (await catalogue.inspectExecution(initial.execution.id))!
+    .accepted!.entity.id;
+  const retained = await workflow.createLocalRelatedEntity({
+    commitmentId: "relationship-integration/retained",
+    label: "保留身份",
+    kind: "entity",
+    actorId: "user:甲",
+  });
+
+  // 自动来源关系和手工更正均先按 B 的原身份成立。
+  await expect(
+    workflow.inspectCurrentCatalogueEntity("reevaluation-persona"),
+  ).resolves.toMatchObject({
+    entity: { id: "reevaluation-persona" },
+    relationships: [expect.objectContaining({ type: "asset.contribution" })],
+  });
+  const correction = await workflow.previewRelationshipChange({
+    changes: [
+      {
+        kind: "fix",
+        definitionId: "fixture.identity-reference",
+        relationship: {
+          type: "identity.reference",
+          participants: [
+            { entityId: "reevaluation-persona", role: "subject" },
+            { entityId: assetId, role: "context" },
+          ],
+        },
+      },
+    ],
+  });
+  await expect(
+    workflow.applyRelationshipChange({
+      actorId: "user:甲",
+      preview: correction,
+    }),
+  ).resolves.toBe("applied");
+
+  const merge = await workflow.previewEntityIdentityMerge({
+    retainedEntityId: retained.id,
+    mergedEntityId: "reevaluation-persona",
+  });
+  await expect(
+    workflow.applyEntityIdentityMerge({
+      commitmentId: "relationship-integration/merge-b-into-a",
+      actorId: "user:甲",
+      preview: merge,
+    }),
+  ).resolves.toBe("applied");
+
+  // 刷新继续写入 B 的来源谱系；合并后的新人工关系则以 A 为目标。
+  await workflow.refreshMetadata({
+    selection: {
+      version: "asset-refresh-selection/1",
+      subjects: [
+        { subjectId: assetId, explanations: [{ path: ["关系终端集成"] }] },
+      ],
+      filesystemScopes: [],
+    },
+    initiatedBy: "user:甲",
+  });
+  const postMergeManual = await workflow.previewRelationshipChange({
+    changes: [
+      {
+        kind: "fix",
+        definitionId: "fixture.membership",
+        relationship: {
+          type: "asset.membership",
+          participants: [
+            { entityId: "reevaluation-persona", role: "series" },
+            { entityId: assetId, role: "member" },
+          ],
+        },
+      },
+    ],
+  });
+  expect(postMergeManual.changes[0]!.relationship!.participants[0]).toEqual({
+    entityId: retained.id,
+    role: "series",
+  });
+  await expect(
+    workflow.applyRelationshipChange({
+      actorId: "user:甲",
+      preview: postMergeManual,
+    }),
+  ).resolves.toBe("applied");
+  await expect(
+    workflow.inspectCurrentCatalogueEntity("reevaluation-persona"),
+  ).resolves.toMatchObject({
+    entity: { id: retained.id },
+    relationships: expect.arrayContaining([
+      expect.objectContaining({ type: "asset.contribution" }),
+      expect.objectContaining({ type: "identity.reference" }),
+      expect.objectContaining({ type: "asset.membership" }),
+    ]),
+  });
+
+  catalogue.close();
+  const reopened = SqliteCatalogue.forProductData(root);
+  const reopenedWorkflow = reevaluationWorkflow(reopened, state);
+  const undo = await reopenedWorkflow.previewEntityIdentityMerge({
+    retainedEntityId: retained.id,
+    mergedEntityId: "reevaluation-persona",
+  });
+  await expect(
+    reopenedWorkflow.undoEntityIdentityMerge({
+      commitmentId: "relationship-integration/undo-b-into-a",
+      actorId: "user:甲",
+      preview: undo,
+    }),
+  ).resolves.toBe("applied");
+  await expect(
+    reopenedWorkflow.inspectEntityMentionResolution(
+      "reevaluation-voice-mention",
+    ),
+  ).resolves.toMatchObject({
+    basis: "source",
+    entityId: "reevaluation-persona",
+    sourceRecordIds: ["reevaluation-record-2"],
+  });
+  await expect(
+    reopenedWorkflow.inspectCurrentCatalogueEntity("reevaluation-persona"),
+  ).resolves.toMatchObject({
+    entity: { id: "reevaluation-persona" },
+    relationships: expect.arrayContaining([
+      expect.objectContaining({ type: "asset.contribution" }),
+      expect.objectContaining({ type: "identity.reference" }),
+    ]),
+  });
+  await expect(
+    reopenedWorkflow.inspectCurrentCatalogueEntity(retained.id),
+  ).resolves.toMatchObject({
+    entity: { id: retained.id },
+    relationships: [expect.objectContaining({ type: "asset.membership" })],
+  });
+  await expect(
+    reopenedWorkflow.inspectCurrentCatalogueEntity("reevaluation-persona"),
+  ).resolves.not.toMatchObject({
+    relationships: expect.arrayContaining([
+      expect.objectContaining({ type: "asset.membership" }),
+    ]),
+  });
+  reopened.close();
+});
+
+it("公开身份合并按根连接链，并让过期预演与同根环失败", async () => {
+  const { catalogue } = await createCatalogueWithRoot();
+  const workflow = reevaluationWorkflow(catalogue, {
+    observationVersion: 0,
+    sourceVersion: 0,
+    expanded: false,
+    managedMissing: false,
+    omitCover: false,
+  });
+  const [a, b, c, staleLeft, staleRight] = await Promise.all(
+    [
+      "chain/a",
+      "chain/b",
+      "chain/c",
+      "chain/stale-left",
+      "chain/stale-right",
+    ].map(
+      async (commitmentId) =>
+        await workflow.createLocalRelatedEntity({
+          commitmentId,
+          label: commitmentId,
+          kind: "entity",
+          actorId: "user:甲",
+        }),
+    ),
+  );
+  const stale = await workflow.previewEntityIdentityMerge({
+    retainedEntityId: staleLeft.id,
+    mergedEntityId: staleRight.id,
+  });
+  const first = await workflow.previewEntityIdentityMerge({
+    retainedEntityId: a.id,
+    mergedEntityId: b.id,
+  });
+  await workflow.applyEntityIdentityMerge({
+    commitmentId: "chain/first",
+    actorId: "user:甲",
+    preview: first,
+  });
+  await expect(
+    workflow.applyEntityIdentityMerge({
+      commitmentId: "chain/stale",
+      actorId: "user:甲",
+      preview: stale,
+    }),
+  ).resolves.toBe("stale");
+  const second = await workflow.previewEntityIdentityMerge({
+    retainedEntityId: b.id,
+    mergedEntityId: c.id,
+  });
+  expect(second).toMatchObject({
+    retainedEntityId: a.id,
+    mergedEntityId: c.id,
+  });
+  await workflow.applyEntityIdentityMerge({
+    commitmentId: "chain/second",
+    actorId: "user:甲",
+    preview: second,
+  });
+  await expect(
+    workflow.inspectCurrentCatalogueEntity(c.id),
+  ).resolves.toMatchObject({
+    entity: { id: a.id },
+  });
+  await expect(
+    workflow.previewEntityIdentityMerge({
+      retainedEntityId: c.id,
+      mergedEntityId: a.id,
+    }),
+  ).rejects.toThrow("两个不同当前根");
+  catalogue.close();
+});
+
+it("公开从普通实体返回自身、具名邻接关系和已收录内容，也区分孤立实体", async () => {
+  const { catalogue } = await createCatalogueWithRoot();
+  const workflow = reevaluationWorkflow(catalogue, {
+    observationVersion: 0,
+    sourceVersion: 0,
+    expanded: false,
+    managedMissing: false,
+    omitCover: false,
+  });
+  const isolated = {
+    id: "isolated-persona",
+    kind: "persona" as const,
+    sourceIdentity: "dlsite",
+    sourceKey: "isolated",
+    identityNamespace: "dlsite.credit.isolated",
+    label: "Isolated credited name",
+    sourceRecordIds: ["record"],
+  };
+  const dlsiteRecords = [
+    {
+      ...sourceRecord(),
+      sourceIdentity: "dlsite",
+      nativeAddress:
+        "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html",
+      coverage: {
+        id: "dlsite.product-json",
+        completeness: "complete" as const,
+        authority: "official" as const,
+      },
+      body: JSON.stringify({
+        RJ01668691: {
+          work_name: "First",
+          regist_date: "2026-07-17",
+          maker_id: "RG123",
+          maker_name: "Circle",
+        },
+      }),
+    },
+    {
+      ...sourceRecord(),
+      id: "record-html",
+      sourceIdentity: "dlsite",
+      nativeAddress:
+        "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html",
+      coverage: {
+        id: "dlsite.product-html",
+        completeness: "complete" as const,
+        authority: "official" as const,
+      },
+      body: "<html />",
+    },
+  ];
+  const dlsite = new DlsiteSourceInterpreter().interpret({
+    evidence: [
+      {
+        kind: "directed-source-address",
+        explanation: "test",
+        sourceIdentity: "dlsite",
+        sourceAddress: dlsiteRecords[0].nativeAddress,
+        producer: {
+          capabilityId: "dlsite.exact-directory",
+          capabilityVersion: "1",
+          contractVersion: "1",
+        },
+      },
+    ],
+    sourceRecords: dlsiteRecords,
+  })[0]!;
+  const circle = dlsite.entities!.find(
+    (entity) => entity.sourceKey === "RG123",
+  )!;
+  const circleRelationship = dlsite.relationships!.find(
+    (relationship) => relationship.participants[0]?.role === "circle",
+  )!;
+  const circleMention = dlsite.entityMentions!.find(
+    (mention) => mention.sourceKey === "RG123",
+  )!;
+  const base = accepted();
+  const acceptedWithIsolated = {
+    ...base,
+    sourceAssociations: [
+      {
+        ...base.sourceAssociations[0]!,
+        sourceIdentity: "dlsite",
+        nativeAddress: dlsiteRecords[0].nativeAddress,
+      },
+    ],
+    recognitionSourceAssociation: {
+      ...base.recognitionSourceAssociation,
+      sourceIdentity: "dlsite",
+      nativeAddress: dlsiteRecords[0].nativeAddress,
+    },
+    proposal: {
+      ...base.proposal,
+      basis: {
+        ...base.proposal.basis,
+        interpretation: {
+          ...base.proposal.basis.interpretation,
+          sourceIdentity: "dlsite",
+          sourceAddress: dlsiteRecords[0].nativeAddress,
+          sourceRecordIds: dlsiteRecords.map(({ id }) => id),
+          entities: [circle, isolated],
+          entityMentions: [circleMention],
+          entityResolutionDecisions: dlsite.entityResolutionDecisions!.filter(
+            (decision) => decision.mentionId === circleMention.id,
+          ),
+        },
+      },
+    },
+    entities: [circle, isolated],
+    entityMentions: [circleMention],
+    entityResolutionDecisions: dlsite.entityResolutionDecisions!.filter(
+      (decision) => decision.mentionId === circleMention.id,
+    ),
+    relationships: [
+      {
+        ...base.relationships![0]!,
+        ...circleRelationship,
+        id: "dlsite-circle-asset",
+        participants: [
+          { entityId: "asset", role: "asset" },
+          ...circleRelationship.participants.map(
+            ({ entityId, role, mentionIds }) => ({
+              entityId,
+              role,
+              ...(mentionIds === undefined ? {} : { mentionIds }),
+            }),
+          ),
+        ],
+      },
+    ],
+  };
+  await catalogue.createExecution(execution());
+  await retainSourceRecords(catalogue, "execution", dlsiteRecords);
+  await acceptRecognition(catalogue, {
+    execution: acceptedExecution(),
+    accepted: acceptedWithIsolated,
+  });
+  const localCircle = await workflow.createLocalRelatedEntity({
+    commitmentId: "circle/1",
+    label: "本地社团",
+    kind: "entity",
+    actorId: "user:甲",
+  });
+  const automatic = await workflow.inspectEntityMentionResolution(
+    circleMention.id,
+  );
+  expect(automatic).toMatchObject({ basis: "source", entityId: circle.id });
+  await expect(
+    workflow.resolveEntityMentionManually({
+      mentionId: circleMention.id,
+      entityId: localCircle.id,
+      actorId: "user:甲",
+      baseline: automatic.baseline,
+    }),
+  ).resolves.toBe("applied");
+  await expect(
+    workflow.resolveEntityMentionManually({
+      mentionId: circleMention.id,
+      entityId: localCircle.id,
+      actorId: "user:甲",
+      baseline: automatic.baseline,
+    }),
+  ).resolves.toBe("stale");
+  await expect(
+    workflow.inspectEntityMentionResolution(circleMention.id),
+  ).resolves.toMatchObject({
+    basis: "manual",
+    entityId: localCircle.id,
+    actorId: "user:甲",
+  });
+  await expect(
+    workflow.inspectCurrentCatalogueEntity(localCircle.id),
+  ).resolves.toMatchObject({
+    relationships: expect.arrayContaining([
+      expect.objectContaining({
+        participants: expect.arrayContaining([
+          { entityId: localCircle.id, role: "circle" },
+        ]),
+      }),
+    ]),
+  });
+  const manual = await workflow.inspectEntityMentionResolution(
+    circleMention.id,
+  );
+  await expect(
+    workflow.retractEntityMentionResolution({
+      mentionId: circleMention.id,
+      actorId: "user:甲",
+      baseline: manual.baseline,
+    }),
+  ).resolves.toBe("applied");
+  await expect(
+    workflow.inspectEntityMentionResolution(circleMention.id),
+  ).resolves.toMatchObject({
+    basis: "source",
+    entityId: circle.id,
+  });
+  const second = acceptedFor("asset-2", "record-asset-2");
+  const secondRecord = {
+    ...sourceRecordFor("asset-2"),
+    sourceIdentity: "dlsite",
+    nativeAddress: dlsiteRecords[0].nativeAddress,
+    coverage: dlsiteRecords[0].coverage,
+  };
+  const secondCircle = { ...circle, sourceRecordIds: [secondRecord.id] };
+  const secondAccepted = {
+    ...second,
+    sourceAssociations: [
+      {
+        ...second.sourceAssociations[0]!,
+        sourceIdentity: "dlsite",
+        nativeAddress: secondRecord.nativeAddress,
+      },
+    ],
+    recognitionSourceAssociation: {
+      ...second.recognitionSourceAssociation,
+      sourceIdentity: "dlsite",
+      nativeAddress: secondRecord.nativeAddress,
+    },
+    proposal: {
+      ...second.proposal,
+      basis: {
+        ...second.proposal.basis,
+        interpretation: {
+          ...second.proposal.basis.interpretation,
+          sourceIdentity: "dlsite",
+          sourceAddress: secondRecord.nativeAddress,
+          sourceRecordIds: [secondRecord.id],
+          entities: [secondCircle],
+          entityMentions: [],
+          entityResolutionDecisions: [],
+        },
+      },
+    },
+    entities: [secondCircle],
+    entityMentions: [],
+    entityResolutionDecisions: [],
+    relationships: [
+      {
+        ...second.relationships![0]!,
+        ...circleRelationship,
+        id: "dlsite-circle-asset-2",
+        participants: [
+          { entityId: "asset-2", role: "asset" },
+          { entityId: circle.id, role: "circle" },
+        ],
+        sourceRecordIds: [secondRecord.id],
+      },
+    ],
+  };
+  await catalogue.createExecution(executionFor("execution-asset-2"));
+  await retainSourceRecords(catalogue, "execution-asset-2", [secondRecord]);
+  await acceptRecognition(catalogue, {
+    execution: acceptedExecutionFor("execution-asset-2", "asset-2"),
+    accepted: secondAccepted,
+  });
+
+  const circleInspection = await workflow.inspectCurrentCatalogueEntity(
+    circle.id,
+  );
+  expect(circleInspection).toMatchObject({
+    entity: { id: circle.id, label: "Circle" },
+    relationships: expect.arrayContaining([
+      expect.objectContaining({
+        participants: expect.arrayContaining([
+          { entityId: "asset", role: "asset" },
+          { entityId: circle.id, role: "circle" },
+        ]),
+      }),
+    ]),
+  });
+  expect(circleInspection?.accepted.map(({ entity }) => entity.id)).toEqual(
+    expect.arrayContaining(["asset", "asset-2"]),
+  );
+  const workInspection = await workflow.inspectCurrentCatalogueSubject("asset");
+  const secondWorkInspection =
+    await workflow.inspectCurrentCatalogueSubject("asset-2");
+  expect(workInspection?.relationships.map(({ id }) => id)).toContain(
+    "dlsite-circle-asset",
+  );
+  expect(secondWorkInspection?.relationships.map(({ id }) => id)).toContain(
+    "dlsite-circle-asset-2",
+  );
+  expect(circleInspection?.relationships.map(({ id }) => id)).toEqual(
+    expect.arrayContaining(["dlsite-circle-asset", "dlsite-circle-asset-2"]),
+  );
+  expect(circleInspection?.relationships[0]).toMatchObject({
+    sources: [
+      {
+        sourceIdentity: "dlsite",
+        nativeAddress:
+          "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html",
+      },
+    ],
+  });
+  expect(
+    JSON.stringify({
+      entity: circleInspection?.entity,
+      relationships: circleInspection?.relationships,
+    }),
+  ).not.toMatch(/sourceRecordIds|sourceSlot|producer/);
+  await expect(
+    workflow.inspectCurrentCatalogueEntity("isolated-persona"),
+  ).resolves.toMatchObject({
+    entity: { id: "isolated-persona", label: "Isolated credited name" },
+    relationships: [],
+    accepted: [],
+  });
+  await expect(
+    workflow.inspectCurrentCatalogueEntity("unknown-entity"),
+  ).resolves.toBeUndefined();
+  catalogue.close();
+});
+
+it("persists one local person's exact-revision playback state across restart", async () => {
+  const { root, catalogue } = await createCatalogueWithRoot();
+  const workflow = reevaluationWorkflow(catalogue, {
+    observationVersion: 0,
+    sourceVersion: 0,
+    expanded: false,
+    managedMissing: false,
+    omitCover: false,
+  });
+  const database = new DatabaseSync(path.join(root, "catalogue.sqlite"));
+  database.exec(`
+    INSERT INTO artifacts (id) VALUES ('interaction-artifact');
+    INSERT INTO blobs (digest, media_type, byte_length)
+      VALUES ('${"d".repeat(64)}', 'audio/mpeg', 1);
+    INSERT INTO artifact_revisions (id, artifact_id, blob_digest)
+      VALUES ('revision-old', 'interaction-artifact', '${"d".repeat(64)}'),
+             ('revision-new', 'interaction-artifact', '${"d".repeat(64)}');
+    INSERT INTO entity_kind_assertions (id, entity_id, kind, basis, source_record_ids_json)
+      VALUES ('test-persona-conflict', 'person:local-user', 'persona', 'legacy-migration', '[]');
+  `);
+  database.close();
+
+  await expect(
+    catalogue.savePlaybackInteraction({
+      artifactRevisionId: "revision-old",
+      positionMilliseconds: 7_000,
+      completed: true,
+    }),
+  ).rejects.toThrow("本地用户身份未准备");
+  const person = await workflow.previewEntityKindDecision({
+    entityId: "person:local-user",
+    selectedKind: "person",
+  });
+  await expect(
+    workflow.applyEntityKindDecision({
+      entityId: "person:local-user",
+      selectedKind: "person",
+      actorId: "user:甲",
+      baseline: person.baseline,
+    }),
+  ).resolves.toBe("applied");
+  await catalogue.savePlaybackInteraction({
+    artifactRevisionId: "revision-old",
+    positionMilliseconds: 7_000,
+    completed: true,
+  });
+  const clear = await workflow.previewEntityKindDecision({
+    entityId: "person:local-user",
+  });
+  await expect(
+    workflow.applyEntityKindDecision({
+      entityId: "person:local-user",
+      actorId: "user:甲",
+      baseline: clear.baseline,
+    }),
+  ).resolves.toBe("applied");
+  await expect(
+    catalogue.savePlaybackInteraction({
+      artifactRevisionId: "revision-old",
+      positionMilliseconds: 7_000,
+      completed: true,
+    }),
+  ).rejects.toThrow("本地用户身份未准备");
+  const restore = await workflow.previewEntityKindDecision({
+    entityId: "person:local-user",
+    selectedKind: "person",
+  });
+  await expect(
+    workflow.applyEntityKindDecision({
+      entityId: "person:local-user",
+      selectedKind: "person",
+      actorId: "user:甲",
+      baseline: restore.baseline,
+    }),
+  ).resolves.toBe("applied");
+
+  await catalogue.savePlaybackInteraction({
+    artifactRevisionId: "revision-old",
+    positionMilliseconds: 7_000,
+    completed: true,
+  });
+  catalogue.close();
+
+  const restarted = SqliteCatalogue.forProductData(root);
+  await expect(
+    restarted.readPlaybackInteractions(["revision-new"]),
+  ).resolves.toEqual([]);
+  await expect(
+    restarted.readPlaybackInteractions(["revision-old"]),
+  ).resolves.toEqual([
+    {
+      artifactRevisionId: "revision-old",
+      positionMilliseconds: 7_000,
+      completed: true,
+    },
+  ]);
+  restarted.close();
+});
+
 function fixtureObservedRootRegistration(
   id: string,
   logicalDirectory = path.resolve("/", id),
@@ -437,6 +2316,9 @@ const fixtureObservedDirectories = [
   "/observed/missing-managed",
   "/observed/multi",
   "/observed/reevaluation",
+  "/observed/related-refresh",
+  "/observed/related-lineage-a",
+  "/observed/related-lineage-b",
   "/observed/retraction-provenance",
   "/observed/source-refresh-acquiring",
   "/observed/source-refresh-authority",
@@ -2097,6 +3979,57 @@ describe("SqliteCatalogue lifecycle", () => {
     catalogue.close();
   });
 
+  it("keeps an observed directory package in the current catalogue without inventing a file observation", async () => {
+    const { root, catalogue } = await createCatalogueWithRoot();
+    await catalogue.createExecution(execution());
+    await retainSourceRecords(catalogue, "execution", [sourceRecord()]);
+    await acceptRecognition(catalogue, {
+      execution: acceptedExecution(),
+      accepted: accepted(),
+    });
+
+    const database = new DatabaseSync(path.join(root, "catalogue.sqlite"));
+    database.exec(`
+      INSERT INTO observed_root_registrations (
+        id, display_name, container_path, canonical_path, status, config_version,
+        read_only, symlink_mode, allowed_target_root_ids_json
+      ) VALUES (
+        'package-root', 'Package root', '/observed', '/observed', 'active', 1,
+        1, 'do-not-follow', '[]'
+      );
+      INSERT INTO artifacts (id) VALUES ('package-artifact');
+      INSERT INTO locations (id, artifact_id, address, kind)
+        VALUES ('package-location', 'package-artifact', '/observed/movie', 'observed');
+      INSERT INTO artifact_associations (
+        id, target_kind, target_entity_id, subject_id, artifact_id, role,
+        source_record_ids_json
+      ) VALUES (
+        'package-association', 'entity', 'asset', 'asset', 'package-artifact',
+        'asset.material-delivered', '[]'
+      );
+      INSERT INTO current_file_observation_supports (
+        location_id, observed_root_id, observed_root_version,
+        observed_root_path, authorized_targets_json
+      ) VALUES (
+        'package-location', 'package-root', 1, '/observed', '[]'
+      );
+    `);
+    database.close();
+
+    await expect(catalogue.listCurrentCatalogue()).resolves.toMatchObject([
+      {
+        entity: { id: "asset" },
+        locations: expect.arrayContaining([
+          expect.objectContaining({
+            id: "package-location",
+            address: "/observed/movie",
+          }),
+        ]),
+      },
+    ]);
+    catalogue.close();
+  });
+
   it("pages each current accepted asset once without replaying Workflow History", async () => {
     const { root, catalogue } = await createCatalogueWithRoot();
     for (let index = 0; index < 128; index += 1) {
@@ -2190,6 +4123,110 @@ describe("SqliteCatalogue lifecycle", () => {
     expect(hundred.selectStatements).toBeLessThanOrEqual(
       one.selectStatements + 4,
     );
+    catalogue.close();
+  });
+
+  it("当前目录先筛生效数字资产再按可见项分页", async () => {
+    const { root, catalogue } = await createCatalogueWithRoot();
+    for (const assetId of ["a", "b", "c", "d", "e", "f"] as const) {
+      const executionId = `pagination-${assetId}`;
+      const record = sourceRecordFor(executionId);
+      await catalogue.createExecution(executionFor(executionId));
+      await retainSourceRecords(catalogue, executionId, [record]);
+      await acceptRecognition(catalogue, {
+        execution: acceptedExecutionFor(executionId, assetId),
+        accepted: acceptedFor(assetId, record.id),
+      });
+    }
+    const database = new DatabaseSync(path.join(root, "catalogue.sqlite"));
+    try {
+      // 模拟已迁移的冲突和普通实体，目录读取只能公开 c/e/f 三个有效资产。
+      database
+        .prepare(
+          `INSERT INTO entity_kind_assertions
+             (id, entity_id, kind, basis, source_record_ids_json)
+           VALUES ('pagination-a-person', 'a', 'person', 'legacy-migration', '[]')`,
+        )
+        .run();
+      database
+        .prepare(
+          `INSERT INTO entity_kind_decisions
+             (id, entity_id, selected_kind, basis, replaces_decision_id, actor_id, operation)
+           VALUES ('pagination-b-person', 'b', 'person', 'manual', NULL, 'user:甲', 'select')`,
+        )
+        .run();
+      database
+        .prepare(
+          "UPDATE entity_kind_assertions SET basis = 'source' WHERE entity_id = 'd'",
+        )
+        .run();
+      const cAssociation = database
+        .prepare(
+          `SELECT source_identity, native_address
+             FROM source_associations WHERE subject_id = 'c'`,
+        )
+        .get() as {
+        readonly source_identity: string;
+        readonly native_address: string;
+      };
+      const cHead = {
+        source_identity: cAssociation.source_identity,
+        native_address: cAssociation.native_address,
+        coverage_id: "coverage-1",
+        source_record_id: "record-pagination-c",
+      };
+      database
+        .prepare(
+          `INSERT INTO source_lineage_heads
+             (subject_id, source_identity, native_address, coverage_id, source_record_id)
+           VALUES ('c', ?, ?, ?, ?)`,
+        )
+        .run(
+          cHead.source_identity,
+          cHead.native_address,
+          cHead.coverage_id,
+          cHead.source_record_id,
+        );
+      // 已结束的来源冲突必须保留历史，却不能让 hydration 把恢复后的资产漏掉。
+      database
+        .prepare(
+          `INSERT INTO entity_kind_assertions
+             (id, entity_id, kind, basis, source_record_ids_json)
+           VALUES ('pagination-c-ended-person', 'c', 'person', 'source', ?)`,
+        )
+        .run(JSON.stringify([cHead.source_record_id]));
+      database
+        .prepare(
+          `INSERT INTO entity_kind_source_supports
+             (id, entity_id, source_subject_id, source_identity, native_address,
+              coverage_id, source_record_id, assertion_id, predecessor_id, operation)
+           VALUES ('pagination-c-ended-support', 'c', 'c', ?, ?, ?, ?,
+                   'pagination-c-ended-person', NULL, 'assert'),
+                  ('pagination-c-ended-retraction', 'c', 'c', ?, ?, ?, ?,
+                   NULL, 'pagination-c-ended-support', 'retract')`,
+        )
+        .run(
+          cHead.source_identity,
+          cHead.native_address,
+          cHead.coverage_id,
+          cHead.source_record_id,
+          cHead.source_identity,
+          cHead.native_address,
+          cHead.coverage_id,
+          cHead.source_record_id,
+        );
+    } finally {
+      database.close();
+    }
+    const first = await catalogue.listCurrentCataloguePage({ limit: 2 });
+    expect(first.items.map((item) => item.entity.id)).toEqual(["c", "e"]);
+    expect(first.nextCursor).toEqual(expect.any(String));
+    const second = await catalogue.listCurrentCataloguePage({
+      limit: 2,
+      cursor: first.nextCursor,
+    });
+    expect(second.items.map((item) => item.entity.id)).toEqual(["f"]);
+    expect(second.nextCursor).toBeUndefined();
     catalogue.close();
   });
 
@@ -2862,22 +4899,22 @@ describe("SqliteCatalogue lifecycle", () => {
     const history = new DatabaseSync(path.join(root, "catalogue.sqlite"));
     try {
       const insertMetadata = history.prepare(
-        "INSERT INTO metadata_assertions (subject_id, property, value, source_record_ids_json) VALUES (?, ?, ?, '[]')",
+        "INSERT INTO metadata_assertions (subject_id, target_kind, target_entity_id, property, value, source_record_ids_json) VALUES (?, 'entity', ?, ?, ?, '[]')",
       );
       const insertMetadataLifecycle = history.prepare(
         "INSERT INTO metadata_assertion_lifecycles (assertion_id, source_identity, native_address, coverage_id, source_slot, source_record_id, predecessor_assertion_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
       );
       const insertRelationship = history.prepare(
-        "INSERT INTO entity_relationships (id, subject_id, participant_id, type, role, source_record_ids_json) VALUES (?, ?, ?, ?, ?, '[]')",
+        "INSERT INTO entity_relationships (id, type, participants_json, source_record_ids_json) VALUES (?, ?, ?, '[]')",
       );
       const insertRelationshipLifecycle = history.prepare(
-        "INSERT INTO relationship_lifecycles (relationship_id, source_identity, native_address, coverage_id, source_record_id, source_slot, predecessor_relationship_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO relationship_lifecycles (relationship_id, source_subject_id, source_identity, native_address, coverage_id, source_record_id, source_slot, predecessor_relationship_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       );
       const insertArtifact = history.prepare(
         "INSERT INTO artifacts (id) VALUES (?)",
       );
       const insertArtifactAssociation = history.prepare(
-        "INSERT INTO artifact_associations (id, subject_id, artifact_id, role, source_record_ids_json) VALUES (?, ?, ?, ?, '[]')",
+        "INSERT INTO artifact_associations (id, target_kind, target_entity_id, subject_id, artifact_id, role, source_record_ids_json) VALUES (?, 'entity', ?, ?, ?, ?, '[]')",
       );
       const insertArtifactSupersession = history.prepare(
         "INSERT INTO artifact_association_supersessions (id, predecessor_association_id, successor_association_id) VALUES (?, ?, ?)",
@@ -2886,12 +4923,20 @@ describe("SqliteCatalogue lifecycle", () => {
       for (let index = 0; index < 250; index += 1) {
         const subjectId = `unrelated-subject-${index}`;
         const predecessorMetadata = Number(
-          insertMetadata.run(subjectId, "asset.title", `old-${index}`)
-            .lastInsertRowid,
+          insertMetadata.run(
+            subjectId,
+            subjectId,
+            "asset.title",
+            `old-${index}`,
+          ).lastInsertRowid,
         );
         const successorMetadata = Number(
-          insertMetadata.run(subjectId, "asset.title", `new-${index}`)
-            .lastInsertRowid,
+          insertMetadata.run(
+            subjectId,
+            subjectId,
+            "asset.title",
+            `new-${index}`,
+          ).lastInsertRowid,
         );
         insertMetadataLifecycle.run(
           successorMetadata,
@@ -2906,20 +4951,23 @@ describe("SqliteCatalogue lifecycle", () => {
         const successorRelationship = `unrelated-relationship-new-${index}`;
         insertRelationship.run(
           predecessorRelationship,
-          subjectId,
-          `participant-${index}`,
           "asset.related",
-          "related",
+          JSON.stringify([
+            { entityId: subjectId, role: "asset" },
+            { entityId: `participant-${index}`, role: "related" },
+          ]),
         );
         insertRelationship.run(
           successorRelationship,
-          subjectId,
-          `participant-${index}`,
           "asset.related",
-          "related",
+          JSON.stringify([
+            { entityId: subjectId, role: "asset" },
+            { entityId: `participant-${index}`, role: "related" },
+          ]),
         );
         insertRelationshipLifecycle.run(
           successorRelationship,
+          subjectId,
           "unrelated",
           `unrelated:${index}`,
           `coverage-${index}`,
@@ -2936,11 +4984,13 @@ describe("SqliteCatalogue lifecycle", () => {
         insertArtifactAssociation.run(
           predecessorAssociation,
           subjectId,
+          subjectId,
           predecessorArtifact,
           "asset.primary-cover",
         );
         insertArtifactAssociation.run(
           successorAssociation,
+          subjectId,
           subjectId,
           successorArtifact,
           "asset.primary-cover",
@@ -3648,10 +5698,10 @@ describe("SqliteCatalogue lifecycle", () => {
         database
           .prepare(
             `INSERT INTO artifact_associations (
-              id, subject_id, artifact_id, role, source_record_ids_json
-            ) VALUES (?, ?, ?, ?, '[]')`,
+              id, target_kind, target_entity_id, subject_id, artifact_id, role, source_record_ids_json
+            ) VALUES (?, 'entity', ?, ?, ?, ?, '[]')`,
           )
-          .run(id, "asset", artifactId, "asset.gallery");
+          .run(id, "asset", "asset", artifactId, "asset.gallery");
       }
       database
         .prepare(
@@ -3661,15 +5711,6 @@ describe("SqliteCatalogue lifecycle", () => {
           ) VALUES (?, ?, NULL, ?, '[]')`,
         )
         .run("retract-z-artifact", "z-artifact-association", "proposal");
-      for (const policyId of ["z-policy", "a-policy"] as const) {
-        database
-          .prepare(
-            `INSERT INTO metadata_policy_enrollments (
-              subject_id, policy_id, execution_id
-            ) VALUES (?, ?, ?)`,
-          )
-          .run("asset", policyId, "execution");
-      }
     } finally {
       database.close();
     }
@@ -3687,7 +5728,7 @@ describe("SqliteCatalogue lifecycle", () => {
     expect(
       current[0]?.artifactAssociations.map((association) => association.id),
     ).toEqual(["a-artifact-association", "artifact-association"]);
-    expect(current[0]?.metadataPolicyIds).toEqual(["z-policy", "a-policy"]);
+    expect(current[0]).not.toHaveProperty("metadataPolicyIds");
     catalogue.close();
   });
 
@@ -4179,9 +6220,12 @@ describe("SqliteCatalogue lifecycle", () => {
     const prepared = await prepareDisposableCatalogue({ root });
     const database = new DatabaseSync(prepared.databasePath);
     try {
+      database.prepare("INSERT INTO entities (id) VALUES (?)").run("asset");
       database
-        .prepare("INSERT INTO entities (id, kind) VALUES (?, ?)")
-        .run("asset", "digital-asset");
+        .prepare(
+          "INSERT INTO entity_kind_assertions (id, entity_id, kind, basis, source_record_ids_json) VALUES (?, ?, ?, ?, ?)",
+        )
+        .run("asset-kind", "asset", "digital-asset", "source", "[]");
       database
         .prepare(
           "INSERT INTO recognition_proposals (id, execution_id, basis_json, rule_results_json) VALUES (?, ?, ?, ?)",
@@ -4314,7 +6358,7 @@ describe("SqliteCatalogue lifecycle", () => {
       metadata: [
         ...base.metadata,
         {
-          subjectId: related.id,
+          target: { kind: "entity" as const, entityId: related.id },
           property: "asset.related-only-title",
           sourceSlot: "source.related.title",
           value: "Only related",
@@ -4335,7 +6379,7 @@ describe("SqliteCatalogue lifecycle", () => {
         ...base.artifactAssociations,
         {
           id: "related-observed-association",
-          subjectId: related.id,
+          target: { kind: "entity", entityId: related.id },
           artifactId: "related-observed-artifact",
           role: "asset.primary-cover",
           sourceRecordIds: [sourceRecord.id],
@@ -4345,10 +6389,11 @@ describe("SqliteCatalogue lifecycle", () => {
         ...(base.relationships ?? []),
         {
           id: "related-only-relationship",
-          subjectId: related.id,
-          participantId: related.id,
+          participants: [
+            { entityId: related.id, role: "asset" },
+            { entityId: related.id, role: "related" },
+          ],
           type: "asset.contribution",
-          role: "related",
           sourceSlot: "source.related.relationship",
           sourceRecordIds: [sourceRecord.id],
           qualifiers: [],
@@ -4464,7 +6509,7 @@ describe("SqliteCatalogue lifecycle", () => {
       associations: [
         {
           id: `managed-association-${id}`,
-          subjectId: "asset",
+          target: { kind: "entity", entityId: "asset" },
           artifactId: `managed-artifact-${id}`,
           role: "asset.primary-cover",
           sourceRecordIds: ["record"],
@@ -4765,7 +6810,7 @@ describe("SqliteCatalogue lifecycle", () => {
     };
     const materializedObservedPartAssociation = {
       id: "observed-part-association",
-      subjectId: base.entity.id,
+      target: { kind: "entity" as const, entityId: base.entity.id },
       artifactId: observedPart.id,
       role: "asset.primary-cover" as const,
       producer: observedPartAcquirer,
@@ -4776,6 +6821,11 @@ describe("SqliteCatalogue lifecycle", () => {
       },
     };
     const observedMetadata = {
+      target: {
+        kind: "artifact-revision" as const,
+        artifactId: observedParent.id,
+        revisionId: observedParentRevision.id,
+      },
       property: "asset.title",
       sourceSlot: "format.title",
       value: "Observed local title",
@@ -4798,7 +6848,13 @@ describe("SqliteCatalogue lifecycle", () => {
         ...base.recognitionDecision,
         acceptedRuleResults: ruleResults,
       },
-      metadata: [...interpretation.metadata, observedMetadata],
+      metadata: [
+        ...interpretation.metadata.map((assertion) => ({
+          ...assertion,
+          target: { kind: "entity" as const, entityId: base.entity.id },
+        })),
+        observedMetadata,
+      ],
       entities: base.entities?.map((entity) => ({
         ...entity,
         producer: interpreter,
@@ -5844,12 +7900,15 @@ function accepted(): AcceptedRecognition {
     artifactAssociations: [
       {
         id: "artifact-association",
-        subjectId: "asset",
+        target: { kind: "entity", entityId: "asset" },
         artifactId: "artifact",
         role: "asset.primary-cover",
       },
     ],
-    metadata: interpretation.metadata,
+    metadata: interpretation.metadata.map((assertion) => ({
+      ...assertion,
+      target: { kind: "entity" as const, entityId: "asset" },
+    })),
     entities: [
       {
         id: "persona",
@@ -5866,10 +7925,11 @@ function accepted(): AcceptedRecognition {
     relationships: [
       {
         id: "relationship",
-        subjectId: "asset",
-        participantId: "persona",
+        participants: [
+          { entityId: "asset", role: "asset" },
+          { entityId: "persona", role: "voice" },
+        ],
         type: "asset.contribution",
-        role: "voice",
         sourceSlot: "source.credit.voice",
         sourceRecordIds: ["record"],
         qualifiers: [{ key: "credit-note", value: "official" }],
@@ -6015,12 +8075,12 @@ function acceptedFor(
     artifactAssociations: base.artifactAssociations.map((association) => ({
       ...association,
       id: `${association.id}-${assetId}`,
-      subjectId: assetId,
+      target: { kind: "entity" as const, entityId: assetId },
       artifactId,
     })),
     metadata: base.metadata.map((metadata) => ({
       ...metadata,
-      subjectId: assetId,
+      target: { kind: "entity" as const, entityId: assetId },
       sourceRecordIds: [sourceRecordId],
     })),
     entities: base.entities.map((entity) => ({
@@ -6047,8 +8107,13 @@ function acceptedFor(
     relationships: base.relationships.map((relationship) => ({
       ...relationship,
       id: `${relationship.id}-${assetId}`,
-      subjectId: assetId,
-      participantId: `${relationship.participantId}-${assetId}`,
+      participants: relationship.participants.map((participant) => ({
+        ...participant,
+        entityId:
+          participant.entityId === "asset"
+            ? assetId
+            : `${participant.entityId}-${assetId}`,
+      })),
       sourceRecordIds: [sourceRecordId],
     })),
   };
@@ -6351,6 +8416,26 @@ function recoveryWorkflow(
                       },
                     ],
                     parts: [],
+                    entityGraph: {
+                      observedArtifactReference,
+                      producer: capability("recovery.format-inspector"),
+                      coverage: {
+                        id: "recovery.format.complete",
+                        completeness: "complete",
+                      },
+                      entities: [
+                        {
+                          key: "local-contributor",
+                          occurrenceSlot: "recovery.format.contributor",
+                          label: "Recovery local contributor",
+                          preservedValue: "Recovery local contributor",
+                          locator: "recovery:format:contributor",
+                        },
+                      ],
+                      mentions: [],
+                      resolutions: [],
+                      relationships: [],
+                    },
                   },
                 },
               ],
@@ -6691,7 +8776,10 @@ function sourceRunSeedAccepted(): AcceptedRecognition {
     blobs: [],
     artifactRevisions: [],
     artifactAssociations: [],
-    metadata: interpretation.metadata,
+    metadata: interpretation.metadata.map((assertion) => ({
+      ...assertion,
+      target: { kind: "entity" as const, entityId: base.entity.id },
+    })),
     entities: [],
     entityMentions: [],
     entityResolutionDecisions: [],
@@ -6827,6 +8915,9 @@ function enrichmentCheckpointRecoveryWorkflow(
     sourceEnrichmentPersistence: catalogue,
     changeImpactQueries: catalogue,
     changeImpactCommands: catalogue,
+    relationshipTraversalQueries: catalogue,
+    relatedEntityIdentity: catalogue,
+    relationshipDecisionPersistence: catalogue,
   });
 }
 
@@ -6850,7 +8941,17 @@ function reevaluationWorkflow(
     /** 仅时间戳变化的对象仍可能再次观察到相同字节。 */
     stableObservedByteLength?: boolean;
     sourceResolvedSubject?: "root" | "alpha" | "beta";
+    sourceSubjectDisplayName?: string;
+    sourceSubjectAlias?: string;
+    omitSourceSubjectRelationship?: boolean;
+    metadataPolicyConfiguration?: MetadataPolicyConfiguration;
     reverseSourceResolvedSubjectQualifiers?: boolean;
+    relatedMention?: boolean;
+    personaKind?: "entity" | "person" | "persona";
+    omitPersona?: boolean;
+    sourceCompleteness?: "complete" | "incomplete";
+    sourceAddress?: string;
+    sourceRecordPrefix?: string;
   },
 ): AssetRefreshWorkflow {
   const capability = (capabilityId: string) => ({
@@ -6900,7 +9001,8 @@ function reevaluationWorkflow(
                 const evidence = {
                   kind: "source-address" as const,
                   sourceIdentity: "reevaluation-source",
-                  sourceAddress: "opaque:reevaluation-work",
+                  sourceAddress:
+                    state.sourceAddress ?? "opaque:reevaluation-work",
                   explanation: "exact",
                   producer: capability("reevaluation.directory"),
                 };
@@ -6929,7 +9031,8 @@ function reevaluationWorkflow(
                 {
                   kind: "source-address" as const,
                   sourceIdentity: "reevaluation-source",
-                  sourceAddress: "opaque:reevaluation-work",
+                  sourceAddress:
+                    state.sourceAddress ?? "opaque:reevaluation-work",
                   explanation: "same source identity from observed format",
                   producer: capability("reevaluation.format-inspector"),
                   inspection: {
@@ -6959,7 +9062,7 @@ function reevaluationWorkflow(
         async collect() {
           await state.collectionBarrier?.();
           state.sourceVersion += 1;
-          const recordId = `reevaluation-record-${state.sourceVersion}`;
+          const recordId = `${state.sourceRecordPrefix ?? "reevaluation-record"}-${state.sourceVersion}`;
           const coverageId =
             state.partialSourceRefreshFailure === true
               ? "reevaluation.title"
@@ -6974,7 +9077,8 @@ function reevaluationWorkflow(
                     reason: "description endpoint failed",
                     coverage: {
                       sourceIdentity: "reevaluation-source",
-                      nativeAddress: "opaque:reevaluation-work",
+                      nativeAddress:
+                        state.sourceAddress ?? "opaque:reevaluation-work",
                       coverageId: "reevaluation.description",
                     },
                   },
@@ -6984,7 +9088,8 @@ function reevaluationWorkflow(
               {
                 id: recordId,
                 sourceIdentity: "reevaluation-source",
-                nativeAddress: "opaque:reevaluation-work",
+                nativeAddress:
+                  state.sourceAddress ?? "opaque:reevaluation-work",
                 mediaType: "application/json",
                 acquiredAt: `2026-07-30T00:00:${String(state.sourceVersion).padStart(2, "0")}.000Z`,
                 acquisition: {
@@ -6994,7 +9099,8 @@ function reevaluationWorkflow(
                 },
                 coverage: {
                   id: coverageId,
-                  completeness: "complete" as const,
+                  completeness:
+                    state.sourceCompleteness ?? ("complete" as const),
                   authority: "official" as const,
                 },
                 digest: `reevaluation-record-digest-${state.sourceVersion}`,
@@ -7008,6 +9114,66 @@ function reevaluationWorkflow(
     sourceInterpreters: [
       {
         capability: capability("reevaluation.interpreter"),
+        relationshipDefinitions: [
+          {
+            id: "fixture.contribution",
+            type: "asset.contribution",
+            label: "测试署名",
+            roles: [{ role: "asset", label: "作品", minimum: 1 }],
+            additionalRoles: { label: "署名角色" },
+            qualifiers: [],
+          },
+          {
+            id: "fixture.association",
+            type: "entity.association",
+            label: "测试关联",
+            roles: [],
+            additionalRoles: { label: "角色" },
+            qualifiers: [
+              { key: "kind", label: "含义" },
+              { key: "scope", label: "范围" },
+            ],
+          },
+          {
+            id: "fixture.membership-three",
+            type: "asset.membership",
+            label: "测试三方关系",
+            roles: [
+              { role: "series", label: "系列", minimum: 1 },
+              { role: "member", label: "成员", minimum: 1 },
+              { role: "performer", label: "表演者", minimum: 1 },
+            ],
+            qualifiers: [{ key: "asset.membership.position", label: "顺序" }],
+          },
+          {
+            id: "fixture.membership",
+            type: "asset.membership",
+            label: "测试成员关系",
+            roles: [
+              { role: "series", label: "系列", minimum: 0 },
+              { role: "member", label: "成员", minimum: 1 },
+              { role: "performer", label: "表演者", minimum: 0 },
+            ],
+            qualifiers: [{ key: "asset.membership.position", label: "顺序" }],
+          },
+          ...["reference", "context"].map((suffix) => ({
+            id: `fixture.identity-${suffix}`,
+            type: `identity.${suffix}`,
+            label: "测试身份引用",
+            roles: [
+              { role: "subject", label: "主体", minimum: 1 },
+              { role: "context", label: "上下文", minimum: 1 },
+            ],
+            qualifiers: [],
+          })),
+          {
+            id: "fixture.identity-ambiguous",
+            type: "identity.ambiguous",
+            label: "测试同角色参与",
+            roles: [{ role: "subject", label: "主体", minimum: 2 }],
+            qualifiers: [],
+          },
+        ],
         canInterpret: ({ sourceRecords }) => sourceRecords.length === 1,
         interpret: ({ sourceRecords }) => {
           const recordId = sourceRecords[0].id;
@@ -7024,11 +9190,11 @@ function reevaluationWorkflow(
             state.sourceResolvedSubject !== undefined;
           return [
             {
-              id: `reevaluation-interpretation-${state.sourceVersion}`,
+              id: `${state.sourceRecordPrefix ?? "reevaluation"}-interpretation-${state.sourceVersion}`,
               producer: capability("reevaluation.interpreter"),
               sourceRecordIds: [recordId],
               sourceIdentity: "reevaluation-source",
-              sourceAddress: "opaque:reevaluation-work",
+              sourceAddress: state.sourceAddress ?? "opaque:reevaluation-work",
               metadata: [
                 {
                   property: "asset.title",
@@ -7057,7 +9223,9 @@ function reevaluationWorkflow(
                           : { subjectId: sourceResolvedSubject.id }),
                         property: "entity.display-name",
                         sourceSlot: "reevaluation.source-subject.name",
-                        value: "Stable sourced subject",
+                        value:
+                          state.sourceSubjectDisplayName ??
+                          "Stable sourced subject",
                         sourceRecordIds: [recordId],
                         qualifiers:
                           state.reverseSourceResolvedSubjectQualifiers === true
@@ -7070,18 +9238,35 @@ function reevaluationWorkflow(
                                 { key: "language", value: "en" },
                               ],
                       },
+                      ...(state.sourceSubjectAlias === undefined
+                        ? []
+                        : [
+                            {
+                              ...(sourceResolvedSubject === undefined
+                                ? {}
+                                : { subjectId: sourceResolvedSubject.id }),
+                              property: "entity.alias",
+                              sourceSlot: "reevaluation.source-subject.alias",
+                              value: state.sourceSubjectAlias,
+                              sourceRecordIds: [recordId],
+                            },
+                          ]),
                     ]),
               ],
               entities: [
-                {
-                  id: "reevaluation-persona",
-                  kind: "persona" as const,
-                  sourceIdentity: "reevaluation-source",
-                  sourceKey: "persona",
-                  identityNamespace: "reevaluation.persona",
-                  label: "Stable persona",
-                  sourceRecordIds: [recordId],
-                },
+                ...(state.omitPersona === true
+                  ? []
+                  : [
+                      {
+                        id: "reevaluation-persona",
+                        kind: state.personaKind ?? ("persona" as const),
+                        sourceIdentity: "reevaluation-source",
+                        sourceKey: "persona",
+                        identityNamespace: "reevaluation.persona",
+                        label: "Stable persona",
+                        sourceRecordIds: [recordId],
+                      },
+                    ]),
                 ...(state.expanded
                   ? [
                       {
@@ -7110,34 +9295,69 @@ function reevaluationWorkflow(
                     ]),
               ],
               relationships: [
-                {
-                  participantId: "reevaluation-persona",
-                  type: "asset.contribution" as const,
-                  role: "voice",
-                  sourceSlot: "reevaluation.credit.voice",
-                  sourceRecordIds: [recordId],
-                },
+                ...(state.omitPersona === true
+                  ? []
+                  : [
+                      {
+                        participants: [
+                          {
+                            entityId: "reevaluation-persona",
+                            role: "voice",
+                            ...(state.relatedMention === true
+                              ? { mentionIds: ["reevaluation-voice-mention"] }
+                              : {}),
+                          },
+                        ],
+                        subjectRole: "asset",
+                        type: "asset.contribution" as const,
+                        sourceSlot: "reevaluation.credit.voice",
+                        sourceRecordIds: [recordId],
+                      },
+                    ]),
                 ...(state.expanded
                   ? [
                       {
-                        participantId: "reevaluation-editor",
+                        participants: [
+                          { entityId: "reevaluation-editor", role: "editing" },
+                        ],
+                        subjectRole: "asset",
                         type: "asset.contribution" as const,
-                        role: "editing",
                         sourceSlot: "reevaluation.credit.editing",
                         sourceRecordIds: [recordId],
                       },
                     ]
                   : []),
-                ...(!sourceSubjectFactsEnabled
+                ...(!sourceSubjectFactsEnabled ||
+                state.omitSourceSubjectRelationship === true
                   ? []
                   : [
                       {
                         ...(sourceResolvedSubject === undefined
+                          ? {
+                              participants: [
+                                {
+                                  entityId: "reevaluation-persona",
+                                  role: "related",
+                                },
+                              ],
+                              subjectRole: "asset",
+                            }
+                          : {
+                              participants: [
+                                {
+                                  entityId: sourceResolvedSubject.id,
+                                  role: "source-subject",
+                                },
+                                {
+                                  entityId: "reevaluation-persona",
+                                  role: "related",
+                                },
+                              ],
+                            }),
+                        ...(sourceResolvedSubject === undefined
                           ? {}
-                          : { subjectId: sourceResolvedSubject.id }),
-                        participantId: "reevaluation-persona",
+                          : { sourceSubjectId: sourceResolvedSubject.id }),
                         type: "entity.association",
-                        role: "related",
                         sourceSlot: "reevaluation.source-subject.association",
                         sourceRecordIds: [recordId],
                         qualifiers:
@@ -7153,8 +9373,33 @@ function reevaluationWorkflow(
                       },
                     ]),
               ],
-              entityMentions: [],
-              entityResolutionDecisions: [],
+              entityMentions:
+                state.relatedMention === true
+                  ? [
+                      {
+                        id: "reevaluation-voice-mention",
+                        sourceRecordIds: [recordId],
+                        sourceIdentity: "reevaluation-source",
+                        field: "voice",
+                        role: "voice",
+                        label: "Stable persona",
+                        identityNamespace: "reevaluation.persona",
+                        sourceKey: "persona",
+                      },
+                    ]
+                  : [],
+              entityResolutionDecisions:
+                state.relatedMention === true
+                  ? [
+                      {
+                        id: `reevaluation-voice-resolution-${state.sourceVersion}`,
+                        mentionId: "reevaluation-voice-mention",
+                        entityId: "reevaluation-persona",
+                        rule: "source-field-role-exact" as const,
+                        sourceRecordIds: [recordId],
+                      },
+                    ]
+                  : [],
               sourceArtifacts: state.omitCover
                 ? []
                 : [
@@ -7176,7 +9421,7 @@ function reevaluationWorkflow(
         capability: capability("reevaluation.recognizer"),
         canRecognize: ({ basis }) => basis.kind === "source-interpretation",
         recognize: ({ evidence }) => ({
-          id: `reevaluation-proposal-${state.sourceVersion}`,
+          id: `${state.sourceRecordPrefix ?? "reevaluation"}-proposal-${state.sourceVersion}`,
           ruleResults: [
             {
               capabilityId: "reevaluation.recognizer",
@@ -7264,12 +9509,87 @@ function reevaluationWorkflow(
       : {}),
     changeImpactQueries: catalogue,
     changeImpactCommands: catalogue,
+    relationshipTraversalQueries: catalogue,
+    metadataPolicyConfiguration: state.metadataPolicyConfiguration,
+    relatedEntityIdentity: catalogue,
+    relationshipDecisionPersistence: catalogue,
   });
+}
+
+function crossBasisObservedEntityGraph(
+  observedArtifactReference: string,
+  producer: {
+    readonly capabilityId: string;
+    readonly capabilityVersion: string;
+    readonly contractVersion: string;
+  },
+  graph: "d1" | "d2" | "empty",
+) {
+  if (graph === "empty")
+    return {
+      observedArtifactReference,
+      producer,
+      coverage: { id: "cross-basis.graph", completeness: "complete" as const },
+      entities: [],
+      mentions: [],
+      resolutions: [],
+      relationships: [],
+    };
+  const label = graph === "d1" ? "Observed D1" : "Observed D2";
+  return {
+    observedArtifactReference,
+    producer,
+    coverage: { id: "cross-basis.graph", completeness: "complete" as const },
+    entities: [
+      {
+        key: "contributor",
+        occurrenceSlot: "cross-basis.contributor",
+        label,
+        preservedValue: label,
+        locator: `cross-basis:${graph}:${observedArtifactReference}:contributor`,
+      },
+    ],
+    mentions: [
+      {
+        key: "contributor-mention",
+        entityKey: "contributor",
+        sourceSlot: "cross-basis.contributor",
+        field: "contributor",
+        role: "author",
+        label,
+        locator: `cross-basis:${graph}:${observedArtifactReference}:contributor`,
+      },
+    ],
+    resolutions: [
+      { mentionKey: "contributor-mention", entityKey: "contributor" },
+    ],
+    relationships: [
+      {
+        sourceSlot: "cross-basis.contributor",
+        type: "asset.contribution",
+        subjectRole: "asset",
+        participants: [
+          {
+            entityKey: "contributor",
+            role: "author",
+            mentionKeys: ["contributor-mention"],
+          },
+        ],
+        qualifiers: [],
+        locator: `cross-basis:${graph}:${observedArtifactReference}:contributor`,
+      },
+    ],
+  };
 }
 
 function crossBasisReplacementWorkflow(
   catalogue: SqliteCatalogue,
-  state: { basis: "observed-evidence" | "source-interpretation" },
+  state: {
+    basis: "observed-evidence" | "source-interpretation";
+    observedGraph?: "d1" | "d2" | "empty";
+    observedGeneration?: number;
+    observedArtifactReferences?: readonly string[];
+  },
 ): AssetRefreshWorkflow {
   const capability = (capabilityId: string) => ({
     capabilityId,
@@ -7280,18 +9600,18 @@ function crossBasisReplacementWorkflow(
     capability: capability("cross-basis.observer"),
     async observe({ scope }) {
       return {
-        id: `cross-basis-snapshot:${state.basis}`,
+        id: `cross-basis-snapshot:${state.basis}:${state.observedGeneration ?? 1}`,
         root: scope.logicalLocation,
         complete: true,
         excluded: [],
         observedAt: "2026-08-30T00:00:00.000Z",
-        files: [
-          {
-            relativePath: "work.bin",
+        files: (state.observedArtifactReferences ?? ["work.bin"]).map(
+          (relativePath) => ({
+            relativePath,
             size: 4,
-            modifiedAt: "2026-08-30T00:00:00.000Z",
-          },
-        ],
+            modifiedAt: `2026-08-30T00:00:0${state.observedGeneration ?? 1}.000Z`,
+          }),
+        ),
       };
     },
   });
@@ -7300,23 +9620,46 @@ function crossBasisReplacementWorkflow(
     directoryInterpreters: [
       {
         capability: capability("cross-basis.directory"),
-        interpret: () =>
-          state.basis === "source-interpretation"
-            ? [
+        interpret: () => {
+          if (state.basis === "source-interpretation")
+            return [
+              {
+                kind: "source-address" as const,
+                sourceIdentity: "cross-basis-source",
+                sourceAddress: "opaque:cross-basis-work",
+                explanation: "精确来源地址",
+                producer: capability("cross-basis.directory"),
+              },
+            ];
+          if ((state.observedArtifactReferences?.length ?? 0) > 1)
+            return {
+              workItems: [
                 {
-                  kind: "source-address" as const,
-                  sourceIdentity: "cross-basis-source",
-                  sourceAddress: "opaque:cross-basis-work",
-                  explanation: "精确来源地址",
-                  producer: capability("cross-basis.directory"),
+                  key: "cross-basis-observed-bundle",
+                  relativePaths: state.observedArtifactReferences!,
+                  evidence: [],
                 },
-              ]
-            : [],
+              ],
+            };
+          return [];
+        },
       },
     ],
     formatInspectors: [
       {
         capability: capability("cross-basis.inspector"),
+        relationshipDefinitions: [
+          {
+            id: "cross-basis.contribution",
+            type: "asset.contribution",
+            label: "测试署名",
+            roles: [
+              { role: "asset", label: "作品", minimum: 1, maximum: 1 },
+              { role: "author", label: "作者", minimum: 1 },
+            ],
+            qualifiers: [],
+          },
+        ],
         inspect: ({ observedArtifactReference }) =>
           state.basis === "observed-evidence"
             ? [
@@ -7328,12 +9671,21 @@ function crossBasisReplacementWorkflow(
                     identifiers: [],
                     observedArtifactReference,
                     revision: {
-                      digest: "cross-basis-observed-digest",
+                      digest: `cross-basis-observed-digest-${state.observedGeneration ?? 1}-${observedArtifactReference}`,
                       mediaType: "application/octet-stream",
                       byteLength: 4,
                     },
                     metadata: [],
                     parts: [],
+                    ...(state.observedGraph === undefined
+                      ? {}
+                      : {
+                          entityGraph: crossBasisObservedEntityGraph(
+                            observedArtifactReference,
+                            capability("cross-basis.inspector"),
+                            state.observedGraph,
+                          ),
+                        }),
                   },
                 },
               ]
@@ -7446,7 +9798,7 @@ function crossBasisReplacementWorkflow(
         capability: capability("cross-basis.recognizer"),
         canRecognize: () => true,
         recognize: ({ evidence }) => ({
-          id: `cross-basis-proposal:${state.basis}`,
+          id: `cross-basis-proposal:${state.basis}:${state.observedGeneration ?? 1}`,
           ruleResults: [
             {
               capabilityId: "cross-basis.recognizer",
@@ -7504,6 +9856,9 @@ function crossBasisReplacementWorkflow(
     sourceEnrichmentPersistence: catalogue,
     changeImpactQueries: catalogue,
     changeImpactCommands: catalogue,
+    relationshipTraversalQueries: catalogue,
+    relatedEntityIdentity: catalogue,
+    relationshipDecisionPersistence: catalogue,
   });
 }
 
@@ -7567,6 +9922,7 @@ it("replaces recognition basis in both directions through a reopened Application
     const preview = await catalogue.inspectChangeImpactPreviewForExecution(
       proposed.execution.id,
     );
+    expect(preview?.proposal.observedEntityGraphs ?? []).toHaveLength(0);
     expect(preview?.status).toBe("awaiting-confirmation");
     expect(preview?.proposal.basis.kind).toBe(successor);
     if (preview?.proposal.basis.kind === "source-interpretation")
@@ -7761,6 +10117,570 @@ it("replaces recognition basis in both directions through a reopened Application
 
   await replaceBasis("observed-evidence", "source-interpretation");
   await replaceBasis("source-interpretation", "observed-evidence");
+});
+
+it("adopts only the successor's complete observed graph after SQLite reopen", async () => {
+  const informationRequirement = {
+    metadataUsageContext: "asset.ordinary" as const,
+    metadata: [],
+    artifactRoles: [],
+    relationshipTypes: [],
+  };
+  async function replaceObservedGraph(successor: "d2" | "empty") {
+    const { root, catalogue } = await createCatalogueWithRoot();
+    const state = {
+      basis: "observed-evidence" as const,
+      observedGraph: "d1" as const,
+      observedGeneration: 1,
+    };
+    const workflow = crossBasisReplacementWorkflow(catalogue, state);
+    const initial = await workflow.scanObservedScope({
+      registrationId: "/observed/cross-basis",
+      relativeScope: ".",
+      executionId: `cross-basis-graph-initial:${successor}`,
+      acceptTrusted: true,
+      informationRequirement,
+    });
+    expect(initial.execution.outcome).toBe("accepted");
+    const before = await catalogue.findAcceptedForDirectory(
+      "/observed/cross-basis",
+    );
+    expect(before?.accepted.observedEntityGraphs).toEqual([
+      expect.objectContaining({
+        entities: [expect.objectContaining({ label: "Observed D1" })],
+      }),
+    ]);
+    const observedD1 = (await workflow.findRelatedEntities("Observed D1"))[0]!;
+    const automaticD1 = (await workflow.inspectCurrentCatalogueEntity(
+      observedD1.id,
+    ))!.relationships.find(({ type }) => type === "asset.contribution")!;
+    const excludeD1 = await workflow.previewRelationshipChange({
+      changes: [{ kind: "exclude", relationshipIds: [automaticD1.id] }],
+    });
+    await expect(
+      workflow.applyRelationshipChange({
+        actorId: "user:甲",
+        preview: excludeD1,
+      }),
+    ).resolves.toBe("applied");
+    await expect(
+      workflow.inspectCurrentCatalogueEntity(observedD1.id),
+    ).resolves.toMatchObject({ relationships: [] });
+
+    state.observedGeneration = 2;
+    state.observedGraph = successor;
+    const proposed = await workflow.scanObservedScope({
+      registrationId: "/observed/cross-basis",
+      relativeScope: ".",
+      executionId: `cross-basis-graph-successor:${successor}`,
+      acceptTrusted: true,
+      informationRequirement,
+    });
+    expect(proposed.execution.outcome).toBe("proposal");
+    const preview = await catalogue.inspectChangeImpactPreviewForExecution(
+      proposed.execution.id,
+    );
+    expect(preview?.projectedObservedEntityGraphs).toEqual([
+      expect.objectContaining({
+        entities:
+          successor === "empty"
+            ? []
+            : [expect.objectContaining({ label: "Observed D2" })],
+      }),
+    ]);
+    await expect(
+      catalogue.findAcceptedForDirectory("/observed/cross-basis"),
+    ).resolves.toMatchObject({
+      accepted: {
+        observedEntityGraphs: [
+          expect.objectContaining({
+            entities: [expect.objectContaining({ label: "Observed D1" })],
+          }),
+        ],
+      },
+    });
+
+    const stalePreview = {
+      ...preview!,
+      id: `${preview!.id}:stale`,
+      baselines: preview!.baselines.map((baseline) =>
+        baseline.key === "recognition-decision"
+          ? { ...baseline, value: "not-the-current-decision" }
+          : baseline,
+      ),
+    };
+    await catalogue.saveChangeImpactPreview(stalePreview);
+    await expect(
+      workflow.applyChangeImpactPreview({
+        previewId: stalePreview.id,
+        confirmedBy: "cross-basis-graph-reviewer",
+      }),
+    ).resolves.toMatchObject({ status: "stale" });
+    await expect(
+      catalogue.findAcceptedForDirectory("/observed/cross-basis"),
+    ).resolves.toMatchObject({
+      accepted: {
+        observedEntityGraphs: [
+          expect.objectContaining({
+            entities: [expect.objectContaining({ label: "Observed D1" })],
+          }),
+        ],
+      },
+    });
+
+    if (successor === "d2") {
+      const failureGuard = new DatabaseSync(
+        path.join(root, "catalogue.sqlite"),
+      );
+      failureGuard.exec(`CREATE TRIGGER fail_observed_graph_successor
+        BEFORE UPDATE ON change_impact_previews
+        WHEN NEW.id = '${preview!.id.replaceAll("'", "''")}'
+          AND json_extract(NEW.preview_json, '$.status') = 'applied'
+        BEGIN
+          SELECT RAISE(ABORT, 'forced observed graph successor failure');
+        END`);
+      failureGuard.close();
+      await expect(
+        workflow.applyChangeImpactPreview({
+          previewId: preview!.id,
+          confirmedBy: "cross-basis-graph-reviewer",
+        }),
+      ).rejects.toThrow();
+      await expect(
+        catalogue.findAcceptedForDirectory("/observed/cross-basis"),
+      ).resolves.toMatchObject({
+        accepted: {
+          observedEntityGraphs: [
+            expect.objectContaining({
+              entities: [expect.objectContaining({ label: "Observed D1" })],
+            }),
+          ],
+        },
+      });
+      const removeFailureGuard = new DatabaseSync(
+        path.join(root, "catalogue.sqlite"),
+      );
+      removeFailureGuard.exec("DROP TRIGGER fail_observed_graph_successor");
+      removeFailureGuard.close();
+    }
+
+    catalogue.close();
+    const reopened = SqliteCatalogue.forProductData(root);
+    const resumed = crossBasisReplacementWorkflow(reopened, state);
+    await expect(
+      resumed.applyChangeImpactPreview({
+        previewId: preview!.id,
+        confirmedBy: "cross-basis-graph-reviewer",
+      }),
+    ).resolves.toMatchObject({ status: "applied" });
+    const after = await reopened.findAcceptedForDirectory(
+      "/observed/cross-basis",
+    );
+    expect(after?.accepted.observedEntityGraphs).toEqual([
+      expect.objectContaining({
+        entities:
+          successor === "empty"
+            ? []
+            : [expect.objectContaining({ label: "Observed D2" })],
+      }),
+    ]);
+    expect(after?.accepted.recognitionDecision.id).not.toBe(
+      before?.accepted.recognitionDecision.id,
+    );
+    await expect(
+      resumed.previewRelationshipChange({
+        changes: [{ kind: "clear", relationshipIds: [automaticD1.id] }],
+      }),
+    ).rejects.toThrow("关系决定必须点名当前关系");
+    await expect(resumed.findRelatedEntities("Observed D1")).resolves.toEqual(
+      [],
+    );
+    if (successor === "d2") {
+      const observedD2 = (await resumed.findRelatedEntities("Observed D2"))[0]!;
+      await expect(
+        resumed.inspectCurrentCatalogueEntity(observedD2.id),
+      ).resolves.toMatchObject({
+        relationships: [
+          expect.objectContaining({ type: "asset.contribution" }),
+        ],
+      });
+    }
+    reopened.close();
+  }
+
+  await replaceObservedGraph("d2");
+  await replaceObservedGraph("empty");
+});
+
+it("公开观察身份只在当前图中参与查找、合并与关系查询", async () => {
+  const informationRequirement = {
+    metadataUsageContext: "asset.ordinary" as const,
+    metadata: [],
+    artifactRoles: [],
+    relationshipTypes: [],
+  };
+  const { catalogue } = await createCatalogueWithRoot();
+  const state = {
+    basis: "observed-evidence" as const,
+    observedGraph: "d1" as const,
+    observedGeneration: 1,
+  };
+  const workflow = crossBasisReplacementWorkflow(catalogue, state);
+  const initial = await workflow.scanObservedScope({
+    registrationId: "/observed/cross-basis",
+    relativeScope: ".",
+    executionId: "current-observed-identity-initial",
+    acceptTrusted: true,
+    informationRequirement,
+  });
+  expect(initial.execution.outcome).toBe("accepted");
+
+  const observedD1 = await workflow.findRelatedEntities("Observed D1");
+  expect(observedD1).toEqual([
+    expect.objectContaining({ label: "Observed D1", identity: "local" }),
+  ]);
+  const d1 = observedD1[0]!;
+  await expect(
+    workflow.inspectCurrentCatalogueEntity(d1.id),
+  ).resolves.toMatchObject({
+    relationships: [expect.objectContaining({ type: "asset.contribution" })],
+  });
+  const retained = await workflow.createLocalRelatedEntity({
+    commitmentId: "current-observed-identity/retained",
+    label: "Current observed retained",
+    kind: "entity",
+    actorId: "user:甲",
+  });
+  const merge = await workflow.previewEntityIdentityMerge({
+    retainedEntityId: retained.id,
+    mergedEntityId: d1.id,
+  });
+  await expect(
+    workflow.applyEntityIdentityMerge({
+      commitmentId: "current-observed-identity/merge",
+      actorId: "user:甲",
+      preview: merge,
+    }),
+  ).resolves.toBe("applied");
+
+  state.observedGraph = "d2";
+  state.observedGeneration = 2;
+  const successor = await workflow.scanObservedScope({
+    registrationId: "/observed/cross-basis",
+    relativeScope: ".",
+    executionId: "current-observed-identity-successor",
+    acceptTrusted: true,
+    informationRequirement,
+  });
+  const successorPreview =
+    await catalogue.inspectChangeImpactPreviewForExecution(
+      successor.execution.id,
+    );
+  await expect(
+    workflow.applyChangeImpactPreview({
+      previewId: successorPreview!.id,
+      confirmedBy: "user:甲",
+    }),
+  ).resolves.toMatchObject({ status: "applied" });
+  // 已采用的同一合并仍可按原提交重放，并可定位后撤销；这不让旧 D1 标签重回 find。
+  await expect(
+    workflow.applyEntityIdentityMerge({
+      commitmentId: "current-observed-identity/merge",
+      actorId: "user:甲",
+      preview: merge,
+    }),
+  ).resolves.toBe("applied");
+  const undo = await workflow.previewEntityIdentityMerge({
+    retainedEntityId: retained.id,
+    mergedEntityId: d1.id,
+  });
+  await expect(
+    workflow.undoEntityIdentityMerge({
+      commitmentId: "current-observed-identity/undo",
+      actorId: "user:甲",
+      preview: undo,
+    }),
+  ).resolves.toBe("applied");
+  await expect(
+    workflow.inspectCurrentCatalogueEntity(d1.id),
+  ).resolves.toBeUndefined();
+  await expect(workflow.findRelatedEntities("Observed D1")).resolves.toEqual(
+    [],
+  );
+  catalogue.close();
+
+  for (const successorGraph of ["d2", "empty"] as const) {
+    const historical = await createCatalogueWithRoot();
+    const historicalState = {
+      basis: "observed-evidence" as const,
+      observedGraph: "d1" as const,
+      observedGeneration: 1,
+    };
+    const historicalWorkflow = crossBasisReplacementWorkflow(
+      historical.catalogue,
+      historicalState,
+    );
+    await historicalWorkflow.scanObservedScope({
+      registrationId: "/observed/cross-basis",
+      relativeScope: ".",
+      executionId: `historical-observed-identity-initial:${successorGraph}`,
+      acceptTrusted: true,
+      informationRequirement,
+    });
+    const historicalD1 = (
+      await historicalWorkflow.findRelatedEntities("Observed D1")
+    )[0]!;
+    const persistentCandidate =
+      await historicalWorkflow.createLocalRelatedEntity({
+        commitmentId: `historical-observed-identity/candidate:${successorGraph}`,
+        label: `Current candidate ${successorGraph}`,
+        kind: "entity",
+        actorId: "user:甲",
+      });
+    const staleNewMerge = await historicalWorkflow.previewEntityIdentityMerge({
+      retainedEntityId: persistentCandidate.id,
+      mergedEntityId: historicalD1.id,
+    });
+
+    historicalState.observedGraph = successorGraph;
+    historicalState.observedGeneration = 2;
+    const replacement = await historicalWorkflow.scanObservedScope({
+      registrationId: "/observed/cross-basis",
+      relativeScope: ".",
+      executionId: `historical-observed-identity-successor:${successorGraph}`,
+      acceptTrusted: true,
+      informationRequirement,
+    });
+    const replacementPreview =
+      await historical.catalogue.inspectChangeImpactPreviewForExecution(
+        replacement.execution.id,
+      );
+    historical.catalogue.close();
+
+    const historicalReopened = SqliteCatalogue.forProductData(historical.root);
+    const historicalReopenedWorkflow = crossBasisReplacementWorkflow(
+      historicalReopened,
+      historicalState,
+    );
+    await historicalReopenedWorkflow.applyChangeImpactPreview({
+      previewId: replacementPreview!.id,
+      confirmedBy: "user:甲",
+    });
+    await expect(
+      historicalReopenedWorkflow.findRelatedEntities("Observed D1"),
+    ).resolves.toEqual([]);
+    await expect(
+      historicalReopenedWorkflow.inspectCurrentCatalogueEntity(historicalD1.id),
+    ).resolves.toBeUndefined();
+    await expect(
+      historicalReopenedWorkflow.previewEntityIdentityMerge({
+        retainedEntityId: persistentCandidate.id,
+        mergedEntityId: historicalD1.id,
+      }),
+    ).rejects.toThrow("待合并相关实体不是当前身份");
+    await expect(
+      historicalReopenedWorkflow.applyEntityIdentityMerge({
+        commitmentId: `historical-observed-identity/merge:${successorGraph}`,
+        actorId: "user:甲",
+        preview: staleNewMerge,
+      }),
+    ).rejects.toThrow("待合并相关实体不是当前身份");
+    if (successorGraph === "d2") {
+      const observedD2 =
+        await historicalReopenedWorkflow.findRelatedEntities("Observed D2");
+      expect(observedD2).toEqual([
+        expect.objectContaining({ label: "Observed D2", identity: "local" }),
+      ]);
+      await expect(
+        historicalReopenedWorkflow.inspectCurrentCatalogueEntity(
+          observedD2[0]!.id,
+        ),
+      ).resolves.toMatchObject({
+        relationships: [
+          expect.objectContaining({ type: "asset.contribution" }),
+        ],
+      });
+    }
+    historicalReopened.close();
+  }
+});
+
+it("keeps each observed graph support with its own artifact revision after reopen", async () => {
+  const { root, catalogue } = await createCatalogueWithRoot();
+  const state = {
+    basis: "observed-evidence" as const,
+    observedGraph: "d1" as const,
+    observedGeneration: 1,
+    observedArtifactReferences: ["left.bin", "right.bin"],
+  };
+  const workflow = crossBasisReplacementWorkflow(catalogue, state);
+  const scanned = await workflow.scanObservedScope({
+    registrationId: "/observed/cross-basis",
+    relativeScope: ".",
+    executionId: "cross-basis-two-observed-artifacts",
+    acceptTrusted: true,
+    informationRequirement: {
+      metadataUsageContext: "asset.ordinary",
+      metadata: [],
+      artifactRoles: [],
+      relationshipTypes: [],
+    },
+  });
+  expect(scanned.execution.outcome).toBe("accepted");
+  const assertSeparateArtifactRevisions = async (
+    currentCatalogue: SqliteCatalogue,
+  ) => {
+    const accepted = await currentCatalogue.findAcceptedForDirectory(
+      "/observed/cross-basis",
+    );
+    const graphs = accepted?.accepted.observedEntityGraphs;
+    expect(graphs).toHaveLength(2);
+    expect(new Set(graphs?.map((graph) => graph.artifactId)).size).toBe(2);
+    expect(new Set(graphs?.map((graph) => graph.revisionId)).size).toBe(2);
+    expect(graphs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          entities: [
+            expect.objectContaining({
+              locator: "cross-basis:d1:left.bin:contributor",
+            }),
+          ],
+        }),
+        expect.objectContaining({
+          entities: [
+            expect.objectContaining({
+              locator: "cross-basis:d1:right.bin:contributor",
+            }),
+          ],
+        }),
+      ]),
+    );
+  };
+  await assertSeparateArtifactRevisions(catalogue);
+  catalogue.close();
+
+  const reopened = SqliteCatalogue.forProductData(root);
+  await assertSeparateArtifactRevisions(reopened);
+  reopened.close();
+});
+
+it("keeps one observed artifact's revision graph members isolated after reopen", async () => {
+  const { root, catalogue } = await createCatalogueWithRoot();
+  const base = accepted();
+  const graph = (revisionId: string, label: string) => {
+    const entityId = `observed-${label.toLowerCase()}`;
+    const mentionId = `${entityId}-mention`;
+    const relationshipId = `${entityId}-relationship`;
+    return {
+      assetId: base.entity.id,
+      artifactId: "artifact",
+      revisionId,
+      producer: {
+        capabilityId: "revision-isolation.inspector",
+        capabilityVersion: "1",
+        contractVersion: "1",
+      },
+      coverageId: "revision-isolation.graph",
+      complete: true as const,
+      entities: [
+        {
+          id: entityId,
+          occurrenceSlot: "revision-isolation.contributor",
+          label,
+          preservedValue: label,
+          locator: `revision-isolation:${revisionId}:${label}`,
+        },
+      ],
+      mentions: [
+        {
+          id: mentionId,
+          entityId,
+          sourceSlot: "revision-isolation.contributor",
+          field: "contributor",
+          role: "author",
+          label,
+          locator: `revision-isolation:${revisionId}:${label}`,
+        },
+      ],
+      resolutions: [{ mentionId, entityId }],
+      relationships: [
+        {
+          id: relationshipId,
+          participants: [
+            { entityId: base.entity.id, role: "asset" },
+            { entityId, role: "author", mentionIds: [mentionId] },
+          ],
+          type: "asset.contribution",
+          sourceSlot: "revision-isolation.contributor",
+          sourceRecordIds: [],
+          producer: {
+            capabilityId: "revision-isolation.inspector",
+            capabilityVersion: "1",
+            contractVersion: "1",
+          },
+          qualifiers: [],
+        },
+      ],
+    };
+  };
+  const revisionOne = graph("revision", "Alice");
+  const revisionTwo = graph("revision-two", "Bob");
+  await catalogue.createExecution(execution());
+  await retainSourceRecords(catalogue, "execution", [sourceRecord()]);
+  await acceptRecognition(catalogue, {
+    execution: acceptedExecution(),
+    accepted: {
+      ...base,
+      blobs: [
+        { digest: "digest", mediaType: "image/jpeg", byteLength: 4 },
+        { digest: "digest-two", mediaType: "image/jpeg", byteLength: 4 },
+      ],
+      artifactRevisions: [
+        { id: "revision", artifactId: "artifact", blobDigest: "digest" },
+        {
+          id: "revision-two",
+          artifactId: "artifact",
+          blobDigest: "digest-two",
+        },
+      ],
+      observedEntityGraphs: [revisionOne, revisionTwo],
+    },
+  });
+
+  const assertRevisionMembers = async (current: SqliteCatalogue) => {
+    const found = await current.findAcceptedForSubjects(["asset"]);
+    const graphs = found[0]?.accepted.observedEntityGraphs;
+    expect(
+      graphs
+        ?.map((item) => ({
+          revisionId: item.revisionId,
+          labels: item.entities.map((entity) => entity.label),
+          relationshipIds: item.relationships.map(
+            (relationship) => relationship.id,
+          ),
+        }))
+        .toSorted((left, right) =>
+          left.revisionId.localeCompare(right.revisionId),
+        ),
+    ).toEqual([
+      {
+        revisionId: "revision",
+        labels: ["Alice"],
+        relationshipIds: ["observed-alice-relationship"],
+      },
+      {
+        revisionId: "revision-two",
+        labels: ["Bob"],
+        relationshipIds: ["observed-bob-relationship"],
+      },
+    ]);
+  };
+  await assertRevisionMembers(catalogue);
+  catalogue.close();
+
+  const reopened = SqliteCatalogue.forProductData(root);
+  await assertRevisionMembers(reopened);
+  reopened.close();
 });
 
 function multiRecoveryWorkflow(
@@ -8235,11 +11155,19 @@ describe("SQLite Asset Refresh persistence", () => {
           }),
         },
         metadata: [
-          ...proposal.basis.interpretation.metadata,
+          ...proposal.basis.interpretation.metadata.map((assertion) => ({
+            ...assertion,
+            target: { kind: "entity" as const, entityId: "asset" },
+          })),
           ...(title === undefined
             ? []
             : [
                 {
+                  target: {
+                    kind: "artifact-revision" as const,
+                    artifactId: parentId,
+                    revisionId: parentRevisionId,
+                  },
                   property: "asset.title",
                   sourceSlot: "epub.opf.title",
                   value: title,
@@ -8311,7 +11239,7 @@ describe("SQLite Asset Refresh persistence", () => {
           ? [
               {
                 id: `local-cover-association-${revision}`,
-                subjectId: "asset",
+                target: { kind: "entity" as const, entityId: "asset" },
                 artifactId: coverId,
                 role: "asset.primary-cover",
                 observedArtifactPart: {
@@ -8550,7 +11478,7 @@ describe("SQLite Asset Refresh persistence", () => {
     fact.artifactAssociations = [
       {
         id: "cover-association",
-        subjectId: "asset",
+        target: { kind: "entity" as const, entityId: "asset" },
         artifactId: cover.id,
         role: "asset.primary-cover",
         observedArtifactPart: {
@@ -8563,6 +11491,11 @@ describe("SQLite Asset Refresh persistence", () => {
     fact.metadata = [
       ...fact.metadata,
       {
+        target: {
+          kind: "artifact-revision" as const,
+          artifactId: parent.id,
+          revisionId: "epub-revision",
+        },
         property: "asset.title",
         sourceSlot: "epub.opf.title",
         value: "本地标题",
@@ -8769,6 +11702,7 @@ describe("SQLite Asset Refresh persistence", () => {
       recognitionDecision: current.recognitionDecision,
       metadata: [
         {
+          target: { kind: "entity" as const, entityId: current.entity.id },
           property: "asset.title",
           sourceSlot: "source.title",
           value: "Reevaluated work",
@@ -8800,7 +11734,7 @@ describe("SQLite Asset Refresh persistence", () => {
 
     const database = new DatabaseSync(path.join(root, "catalogue.sqlite"));
     for (const [table, predicate] of [
-      ["entities", "kind = 'digital-asset'"],
+      ["entity_kind_assertions", "kind = 'digital-asset'"],
       ["source_associations", "1 = 1"],
       ["recognition_decisions", "1 = 1"],
     ]) {
@@ -8914,9 +11848,9 @@ describe("SQLite Asset Refresh persistence", () => {
             relationships: [
               {
                 id: "atomic-relationship",
-                participantId: "atomic-persona",
+                participants: [{ entityId: "atomic-persona", role: "voice" }],
+                subjectRole: "asset",
                 type: "asset.contribution",
-                role: "voice",
                 sourceSlot: "source.credit.voice",
                 sourceRecordIds: [nextRecord.id],
               },
@@ -8927,6 +11861,7 @@ describe("SQLite Asset Refresh persistence", () => {
       },
       metadata: [
         {
+          target: { kind: "entity", entityId: current.entity.id },
           property: "asset.title",
           sourceSlot: "source.title",
           value: "Atomic replacement",
@@ -8949,10 +11884,11 @@ describe("SQLite Asset Refresh persistence", () => {
       relationships: [
         {
           id: "atomic-relationship",
-          subjectId: current.entity.id,
-          participantId: "atomic-persona",
+          participants: [
+            { entityId: current.entity.id, role: "asset" },
+            { entityId: "atomic-persona", role: "voice" },
+          ],
           type: "asset.contribution",
-          role: "voice",
           sourceSlot: "source.credit.voice",
           sourceRecordIds: [nextRecord.id],
         },
@@ -8986,7 +11922,7 @@ describe("SQLite Asset Refresh persistence", () => {
       artifactAssociations: [
         {
           id: "atomic-association",
-          subjectId: current.entity.id,
+          target: { kind: "entity" as const, entityId: current.entity.id },
           artifactId: "atomic-artifact",
           role: "asset.primary-cover",
           sourceRecordIds: [nextRecord.id],
@@ -9172,7 +12108,7 @@ describe("SQLite Asset Refresh persistence", () => {
           artifactAssociations: [
             {
               ...accepted().artifactAssociations[0],
-              subjectId: "collision-asset",
+              target: { kind: "entity", entityId: "collision-asset" },
             },
           ],
         },
@@ -9316,8 +12252,18 @@ describe("SQLite Asset Refresh persistence", () => {
         }),
       ]),
       relationships: expect.arrayContaining([
-        expect.objectContaining({ role: "voice" }),
-        expect.objectContaining({ role: "editing" }),
+        expect.objectContaining({
+          participants: expect.arrayContaining([
+            expect.objectContaining({ role: "asset" }),
+            expect.objectContaining({ role: "voice" }),
+          ]),
+        }),
+        expect.objectContaining({
+          participants: expect.arrayContaining([
+            expect.objectContaining({ role: "asset" }),
+            expect.objectContaining({ role: "editing" }),
+          ]),
+        }),
       ]),
     });
     expect(refreshedAccepted?.recognitionSourceAssociation).toEqual(
@@ -9379,7 +12325,7 @@ describe("SQLite Asset Refresh persistence", () => {
       )
       .all();
     expect(artifactsSharingObservedBlob).toEqual(observedArtifacts);
-    expect(count("entities", "kind = 'digital-asset'")).toBe(1);
+    expect(count("entity_kind_assertions", "kind = 'digital-asset'")).toBe(1);
     expect(count("source_associations")).toBe(1);
     expect(count("recognition_decisions")).toBe(1);
     expect(
@@ -9527,6 +12473,437 @@ describe("SQLite Asset Refresh persistence", () => {
         }),
       ]),
     );
+  });
+
+  it("正式来源刷新保持人工指称并在重开撤回到刷新后的自动依据", async () => {
+    const { root, catalogue } = await createCatalogueWithRoot();
+    const state = {
+      observationVersion: 0,
+      sourceVersion: 0,
+      expanded: false,
+      managedMissing: false,
+      omitCover: false,
+      explicitPlan: false,
+      sourceRefreshAuthority: true,
+      relatedMention: true,
+    };
+    const workflow = reevaluationWorkflow(catalogue, state);
+    const initial = await scanFixtureRegisteredObservedScope(workflow, {
+      directory: "/observed/related-refresh",
+      executionId: "related-refresh-initial",
+      acceptTrusted: true,
+    });
+    const subject = (await catalogue.inspectExecution(initial.execution.id))!
+      .accepted!;
+    const local = await workflow.createLocalRelatedEntity({
+      commitmentId: "related-refresh/1",
+      label: "本地声优",
+      kind: "entity",
+      actorId: "user:甲",
+    });
+    const fix = {
+      kind: "fix" as const,
+      definitionId: "fixture.membership",
+      relationship: {
+        type: "asset.membership",
+        participants: [
+          { entityId: subject.entity.id, role: "member" },
+          { entityId: local.id, role: "performer" },
+        ],
+        qualifiers: [{ key: "asset.membership.position", value: "2" }],
+      },
+    };
+    const repeatedFix = await workflow.previewRelationshipChange({
+      changes: [fix, fix],
+    });
+    expect(
+      repeatedFix.relationships.filter(
+        (relationship) => relationship.type === "asset.membership",
+      ),
+    ).toHaveLength(1);
+    await expect(
+      workflow.applyRelationshipChange({
+        actorId: "user:甲",
+        preview: repeatedFix,
+      }),
+    ).resolves.toBe("applied");
+    const automatic = await workflow.inspectEntityMentionResolution(
+      "reevaluation-voice-mention",
+    );
+    await expect(
+      workflow.resolveEntityMentionManually({
+        mentionId: automatic.mentionId,
+        entityId: local.id,
+        actorId: "user:甲",
+        baseline: automatic.baseline,
+      }),
+    ).resolves.toBe("applied");
+    await workflow.refreshMetadata({
+      selection: {
+        version: "asset-refresh-selection/1",
+        subjects: [
+          {
+            subjectId: subject.entity.id,
+            explanations: [{ path: ["相关实体"] }],
+          },
+        ],
+        filesystemScopes: [],
+      },
+      initiatedBy: "user:甲",
+    });
+    await expect(
+      workflow.inspectEntityMentionResolution(automatic.mentionId),
+    ).resolves.toMatchObject({
+      basis: "manual",
+      entityId: local.id,
+    });
+    await expect(
+      workflow.inspectCurrentCatalogueEntity(local.id),
+    ).resolves.toMatchObject({
+      relationships: expect.arrayContaining([
+        expect.objectContaining({
+          type: "asset.membership",
+          qualifiers: [{ key: "asset.membership.position", value: "2" }],
+        }),
+      ]),
+    });
+    await expect(
+      workflow.inspectCurrentCatalogueEntity("reevaluation-persona"),
+    ).resolves.toMatchObject({
+      relationships: [],
+    });
+    catalogue.close();
+    const reopened = SqliteCatalogue.forProductData(root);
+    const reopenedWorkflow = reevaluationWorkflow(reopened, state);
+    const afterReopen = await reopenedWorkflow.inspectEntityMentionResolution(
+      automatic.mentionId,
+    );
+    expect(afterReopen).toMatchObject({ basis: "manual", entityId: local.id });
+    await expect(
+      reopenedWorkflow.inspectCurrentCatalogueEntity(local.id),
+    ).resolves.toMatchObject({
+      relationships: expect.arrayContaining([
+        expect.objectContaining({ type: "asset.membership" }),
+      ]),
+    });
+    const retraction = await reopenedWorkflow.retractEntityMentionResolution({
+      mentionId: automatic.mentionId,
+      actorId: "user:甲",
+      baseline: afterReopen.baseline,
+    });
+    expect(retraction).toBe("applied");
+    await expect(
+      reopenedWorkflow.inspectEntityMentionResolution(automatic.mentionId),
+    ).resolves.toMatchObject({
+      basis: "source",
+      entityId: "reevaluation-persona",
+      sourceRecordIds: ["reevaluation-record-2"],
+    });
+    reopened.close();
+  });
+
+  it("正式来源刷新以当前种类断言取代旧断言并允许人工决定清除", async () => {
+    const { root, catalogue } = await createCatalogueWithRoot();
+    const state = {
+      observationVersion: 0,
+      sourceVersion: 0,
+      expanded: false,
+      managedMissing: false,
+      omitCover: false,
+      explicitPlan: false,
+      sourceRefreshAuthority: true,
+      personaKind: "persona" as const,
+    };
+    const workflow = reevaluationWorkflow(catalogue, state);
+    const initial = await scanFixtureRegisteredObservedScope(workflow, {
+      directory: "/observed/related-refresh",
+      executionId: "kind-refresh-initial",
+      acceptTrusted: true,
+    });
+    const subject = (await catalogue.inspectExecution(initial.execution.id))!
+      .accepted!.entity.id;
+    state.personaKind = "person";
+    await workflow.refreshMetadata({
+      selection: {
+        version: "asset-refresh-selection/1",
+        subjects: [
+          { subjectId: subject, explanations: [{ path: ["种类更正"] }] },
+        ],
+        filesystemScopes: [],
+      },
+      initiatedBy: "user:甲",
+    });
+    await expect(
+      workflow.inspectCurrentCatalogueEntity("reevaluation-persona"),
+    ).resolves.toMatchObject({
+      entity: {
+        kind: { status: "effective", kind: "person", basis: "assertion" },
+      },
+    });
+    const preview = await workflow.previewEntityKindDecision({
+      entityId: "reevaluation-persona",
+      selectedKind: "persona",
+    });
+    await expect(
+      workflow.applyEntityKindDecision({
+        entityId: "reevaluation-persona",
+        selectedKind: "persona",
+        actorId: "user:甲",
+        baseline: preview.baseline,
+      }),
+    ).resolves.toBe("applied");
+    const clear = await workflow.previewEntityKindDecision({
+      entityId: "reevaluation-persona",
+    });
+    await expect(
+      workflow.applyEntityKindDecision({
+        entityId: "reevaluation-persona",
+        actorId: "user:甲",
+        baseline: clear.baseline,
+      }),
+    ).resolves.toBe("applied");
+    state.personaKind = "entity";
+    await workflow.refreshMetadata({
+      selection: {
+        version: "asset-refresh-selection/1",
+        subjects: [
+          { subjectId: subject, explanations: [{ path: ["普通实体"] }] },
+        ],
+        filesystemScopes: [],
+      },
+      initiatedBy: "user:甲",
+    });
+    await expect(
+      workflow.inspectCurrentCatalogueEntity("reevaluation-persona"),
+    ).resolves.toMatchObject({ entity: { kind: { status: "ordinary" } } });
+    catalogue.close();
+    const reopened = SqliteCatalogue.forProductData(root);
+    await expect(
+      reopened.findRelatedEntities("Stable persona"),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: { status: "ordinary" } }),
+      ]),
+    );
+    reopened.close();
+  });
+
+  it("两条来源谱系分别推进同一相关实体的当前种类", async () => {
+    const { root, catalogue } = await createCatalogueWithRoot();
+    const a = {
+      observationVersion: 0,
+      sourceVersion: 0,
+      expanded: false,
+      managedMissing: false,
+      omitCover: false,
+      explicitPlan: false,
+      sourceRefreshAuthority: true,
+      sourceAddress: "opaque:related-lineage-a",
+      sourceRecordPrefix: "related-lineage-a-record",
+      personaKind: "persona" as const,
+    };
+    const b = {
+      observationVersion: 0,
+      sourceVersion: 0,
+      expanded: false,
+      managedMissing: false,
+      omitCover: false,
+      explicitPlan: false,
+      sourceRefreshAuthority: true,
+      sourceAddress: "opaque:related-lineage-b",
+      sourceRecordPrefix: "related-lineage-b-record",
+      personaKind: "persona" as const,
+    };
+    const workflowA = reevaluationWorkflow(catalogue, a);
+    const workflowB = reevaluationWorkflow(catalogue, b);
+    const first = await scanFixtureRegisteredObservedScope(workflowA, {
+      directory: "/observed/related-lineage-a",
+      executionId: "related-lineage-a",
+      acceptTrusted: true,
+    });
+    const second = await scanFixtureRegisteredObservedScope(workflowB, {
+      directory: "/observed/related-lineage-b",
+      executionId: "related-lineage-b",
+      acceptTrusted: true,
+    });
+    expect(
+      (await catalogue.inspectExecution(first.execution.id))?.accepted?.entity
+        .id,
+    ).not.toBe(
+      (await catalogue.inspectExecution(second.execution.id))?.accepted?.entity
+        .id,
+    );
+    const firstSubject = (await catalogue.inspectExecution(first.execution.id))!
+      .accepted!.entity.id;
+    const secondSubject = (await catalogue.inspectExecution(
+      second.execution.id,
+    ))!.accepted!.entity.id;
+    const refresh = async (
+      workflow: AssetRefreshWorkflow,
+      subjectId: string,
+      path: string,
+    ) =>
+      await workflow.refreshMetadata({
+        selection: {
+          version: "asset-refresh-selection/1",
+          subjects: [{ subjectId, explanations: [{ path: [path] }] }],
+          filesystemScopes: [],
+        },
+        initiatedBy: "user:甲",
+      });
+    // 首次刷新建立 B 的当前来源头；下一次同种类支持必须仍令旧预演过期。
+    await refresh(workflowB, secondSubject, "B 建立当前支持");
+    const beforeSameKindSupport = await workflowA.previewEntityKindDecision({
+      entityId: "reevaluation-persona",
+      selectedKind: "person",
+    });
+    await refresh(workflowB, secondSubject, "B 新增同种类支持");
+    await expect(
+      workflowA.applyEntityKindDecision({
+        entityId: "reevaluation-persona",
+        selectedKind: "person",
+        actorId: "user:甲",
+        baseline: beforeSameKindSupport.baseline,
+      }),
+    ).resolves.toBe("stale");
+    a.personaKind = "person";
+    await refresh(workflowA, firstSubject, "A 更正");
+    const current = await workflowA.inspectCurrentCatalogueEntity(
+      "reevaluation-persona",
+    );
+    expect(current?.entity.kind).toEqual({
+      status: "conflict",
+      kinds: expect.arrayContaining(["person", "persona"]),
+    });
+    const relatedKindsInCatalogue = async () =>
+      (
+        (await workflowA.inspect(first.execution.id)).accepted
+          ?.currentRelatedEntities ?? []
+      )
+        .filter((entity) => entity.id === "reevaluation-persona")
+        .map((entity) => entity.kind);
+    expect(await relatedKindsInCatalogue()).toEqual(
+      expect.arrayContaining([
+        {
+          status: "conflict",
+          kinds: expect.arrayContaining(["person", "persona"]),
+        },
+      ]),
+    );
+    const override = await workflowA.previewEntityKindDecision({
+      entityId: "reevaluation-persona",
+      selectedKind: "person",
+    });
+    await expect(
+      workflowA.applyEntityKindDecision({
+        entityId: "reevaluation-persona",
+        selectedKind: "person",
+        actorId: "user:甲",
+        baseline: override.baseline,
+      }),
+    ).resolves.toBe("applied");
+    await expect(
+      workflowA.inspectCurrentCatalogueEntity("reevaluation-persona"),
+    ).resolves.toMatchObject({
+      entity: { kind: { status: "effective", kind: "person" } },
+    });
+    expect(await relatedKindsInCatalogue()).toEqual(
+      expect.arrayContaining([
+        { status: "effective", kind: "person", basis: "decision" },
+      ]),
+    );
+    const clear = await workflowA.previewEntityKindDecision({
+      entityId: "reevaluation-persona",
+    });
+    await expect(
+      workflowA.applyEntityKindDecision({
+        entityId: "reevaluation-persona",
+        actorId: "user:甲",
+        baseline: clear.baseline,
+      }),
+    ).resolves.toBe("applied");
+    await expect(
+      workflowA.inspectCurrentCatalogueEntity("reevaluation-persona"),
+    ).resolves.toMatchObject({
+      entity: {
+        kind: {
+          status: "conflict",
+          kinds: expect.arrayContaining(["person", "persona"]),
+        },
+      },
+    });
+    expect(await relatedKindsInCatalogue()).toEqual(
+      expect.arrayContaining([
+        {
+          status: "conflict",
+          kinds: expect.arrayContaining(["person", "persona"]),
+        },
+      ]),
+    );
+    a.omitPersona = true;
+    const completeMissing = await refresh(
+      workflowA,
+      firstSubject,
+      "A 完整缺失",
+    );
+    const completeMissingRun = completeMissing.sourceRefreshRuns?.[0];
+    expect(completeMissingRun).toMatchObject({
+      phase: "reviewing",
+      changeSets: [{ disposition: "pending" }],
+    });
+    await expect(
+      workflowA.reviewSourceRefreshChangeSet({
+        runId: completeMissingRun!.id,
+        changeSetId: completeMissingRun!.changeSets[0]!.id,
+        disposition: "approved",
+      }),
+    ).resolves.toMatchObject({ phase: "terminal", outcome: "succeeded" });
+    await expect(
+      workflowA.inspectCurrentCatalogueEntity("reevaluation-persona"),
+    ).resolves.toMatchObject({
+      entity: { kind: { status: "effective", kind: "persona" } },
+    });
+    b.omitPersona = true;
+    b.sourceCompleteness = "incomplete";
+    const incompleteMissing = await refresh(
+      workflowB,
+      secondSubject,
+      "B 不完整缺失",
+    );
+    expect(incompleteMissing.sourceRefreshRuns).toMatchObject([
+      {
+        changeSets: [
+          {
+            changes: expect.arrayContaining([
+              expect.objectContaining({ kind: "unchanged" }),
+            ]),
+          },
+        ],
+      },
+    ]);
+    await expect(
+      workflowB.inspectCurrentCatalogueEntity("reevaluation-persona"),
+    ).resolves.toMatchObject({
+      entity: { kind: { status: "effective", kind: "persona" } },
+    });
+    b.sourceCompleteness = undefined;
+    b.omitPersona = false;
+    b.personaKind = "person";
+    await refresh(workflowB, secondSubject, "B 更正");
+    await expect(
+      workflowB.inspectCurrentCatalogueEntity("reevaluation-persona"),
+    ).resolves.toMatchObject({
+      entity: { kind: { status: "effective", kind: "person" } },
+    });
+    catalogue.close();
+    const reopened = SqliteCatalogue.forProductData(root);
+    const reopenedWorkflow = reevaluationWorkflow(reopened, b);
+    await expect(
+      reopenedWorkflow.inspectCurrentCatalogueEntity("reevaluation-persona"),
+    ).resolves.toMatchObject({
+      entity: { kind: { status: "effective", kind: "person" } },
+    });
+    reopened.close();
   });
 
   it("keeps review-gated public metadata refresh in the same durable Change Set path", async () => {
@@ -10329,11 +13706,11 @@ describe("SQLite Asset Refresh persistence", () => {
 
     const repeated = await workflow.refreshMetadata({ selection });
     const stableRecordIds = [
-      firstStable.sourceRecords[0]!.id,
-      repeated.sourceRecords[0]!.id,
+      firstStable.sourceRecords[0].id,
+      repeated.sourceRecords[0].id,
     ].toSorted((left, right) => left.localeCompare(right));
     const stableRelationshipRecordIds = [
-      initial.sourceRecords[0]!.id,
+      initial.sourceRecords[0].id,
       ...stableRecordIds,
     ].toSorted((left, right) => left.localeCompare(right));
     const after = {
@@ -10500,13 +13877,15 @@ describe("SQLite Asset Refresh persistence", () => {
            WHERE assertion.subject_id = ?`,
         ),
         relationships: count(
-          "SELECT COUNT(*) AS count FROM entity_relationships WHERE subject_id = ?",
+          `SELECT COUNT(*) AS count
+           FROM relationship_lifecycles lifecycle
+           WHERE lifecycle.source_subject_id = ?`,
         ),
         relationshipLifecycles: count(
           `SELECT COUNT(*) AS count
            FROM relationship_lifecycles lifecycle
            JOIN entity_relationships relationship ON relationship.id = lifecycle.relationship_id
-           WHERE relationship.subject_id = ?`,
+           WHERE lifecycle.source_subject_id = ?`,
         ),
       };
       database.close();
@@ -10613,7 +13992,9 @@ describe("SQLite Asset Refresh persistence", () => {
         ),
         relationships: count(
           `SELECT COUNT(*) AS count FROM entity_relationships relationship
-           WHERE relationship.subject_id = ?
+           JOIN relationship_lifecycles lifecycle
+             ON lifecycle.relationship_id = relationship.id
+           WHERE lifecycle.source_subject_id = ?
              AND NOT EXISTS (
                SELECT 1 FROM relationship_lifecycles successor
                WHERE successor.predecessor_relationship_id = relationship.id
@@ -10735,7 +14116,7 @@ describe("SQLite Asset Refresh persistence", () => {
           `SELECT COUNT(*) AS count
            FROM relationship_lifecycles lifecycle
            JOIN entity_relationships relationship ON relationship.id = lifecycle.relationship_id
-           WHERE relationship.subject_id = ?
+           WHERE lifecycle.source_subject_id = ?
              AND lifecycle.source_slot = 'reevaluation.source-subject.association'
              AND NOT EXISTS (
                SELECT 1 FROM relationship_lifecycles successor
@@ -10881,7 +14262,7 @@ describe("SQLite Asset Refresh persistence", () => {
           `SELECT lifecycle.predecessor_relationship_id
            FROM relationship_lifecycles lifecycle
            JOIN entity_relationships relationship ON relationship.id = lifecycle.relationship_id
-           WHERE relationship.subject_id = ?
+           WHERE lifecycle.source_subject_id = ?
              AND lifecycle.source_slot = 'reevaluation.source-subject.association'`,
         )
         .get("reevaluation-source-subject-beta"),
@@ -10934,7 +14315,7 @@ describe("SQLite Asset Refresh persistence", () => {
     ]);
     const database = new DatabaseSync(path.join(root, "catalogue.sqlite"));
     for (const [table, predicate] of [
-      ["entities", "kind = 'digital-asset'"],
+      ["entity_kind_assertions", "kind = 'digital-asset'"],
       ["source_associations", "1 = 1"],
       ["recognition_decisions", "1 = 1"],
     ]) {
@@ -11316,6 +14697,7 @@ describe("SQLite Asset Refresh persistence", () => {
       },
       metadata: [
         {
+          target: { kind: "entity", entityId: current.entity.id },
           property: "asset.title",
           sourceSlot: "source.title",
           value: "Cover provenance refresh",
@@ -11483,6 +14865,7 @@ describe("SQLite Asset Refresh persistence", () => {
       },
       metadata: [
         {
+          target: { kind: "entity", entityId: current.entity.id },
           property: "asset.title",
           sourceSlot: "source.title",
           value: "Invalid retraction refresh",
@@ -11853,7 +15236,7 @@ describe("SQLite Asset Refresh persistence", () => {
 
     const selected = await recovered.selectSourceAssociationCandidate({
       executionId: prepared.executionId,
-      candidateReference: awaiting!.candidates[1]!.reference,
+      candidateReference: awaiting!.candidates[1].reference,
     });
     expect(selected.state).toBe("awaiting-confirmation");
     expect(selected.preview?.projected.metadata).toEqual(
@@ -11955,6 +15338,37 @@ describe("SQLite Asset Refresh persistence", () => {
         }),
       ]),
     );
+    expect(accepted?.observedEntityGraphs).toEqual([
+      expect.objectContaining({
+        artifactId: expect.any(String),
+        revisionId: expect.any(String),
+        complete: true,
+        entities: [
+          expect.objectContaining({
+            label: "Recovery local contributor",
+            occurrenceSlot: "recovery.format.contributor",
+          }),
+        ],
+      }),
+    ]);
+    if (accepted === undefined)
+      throw new Error("missing accepted recognition after SQLite reopen");
+    const retractionWorkflow = recoveryWorkflow(reopened, {
+      includeFormatFacts: true,
+    });
+    const retraction = await retractionWorkflow.prepareRecognitionRetraction({
+      assetId: accepted.entity.id,
+      predecessorDecisionId: accepted.recognitionDecision.id,
+      proposedBy: "reviewer",
+      reason: "test current observed graph removal",
+    });
+    await retractionWorkflow.applyChangeImpactPreview({
+      previewId: retraction.id,
+      confirmedBy: "reviewer",
+    });
+    await expect(
+      reopened.findAcceptedForSubjects([accepted.entity.id]),
+    ).resolves.toEqual([]);
     reopened.close();
   });
 
@@ -11978,7 +15392,7 @@ describe("SQLite Asset Refresh persistence", () => {
         ).map((row) => String(row.id));
       return {
         digitalAssets: ids(
-          "SELECT id FROM entities WHERE kind = 'digital-asset' ORDER BY id",
+          "SELECT entity_id AS id FROM entity_kind_assertions WHERE kind = 'digital-asset' ORDER BY entity_id",
         ),
         entities: ids("SELECT id FROM entities ORDER BY id"),
         mentions: ids("SELECT id FROM entity_mentions ORDER BY id"),
@@ -13424,6 +16838,13 @@ describe("SQLite Asset Refresh persistence", () => {
 
   it("advances one frozen source lineage with immutable facts and rejects a stale refresh", async () => {
     const { catalogue, root } = await createCatalogueWithRoot();
+    const traversal = reevaluationWorkflow(catalogue, {
+      observationVersion: 0,
+      sourceVersion: 0,
+      expanded: false,
+      managedMissing: false,
+      omitCover: false,
+    });
     await catalogue.createExecution(execution());
     const initialRecord = {
       id: "record",
@@ -13449,6 +16870,10 @@ describe("SQLite Asset Refresh persistence", () => {
       execution: acceptedExecution(),
       accepted: accepted(),
     });
+    const originalRelationshipId = (
+      await traversal.inspectCurrentCatalogueEntity("persona")
+    )?.relationships[0]?.id;
+    expect(originalRelationshipId).toBe("relationship");
     await saveCurrentAttentionPreview(catalogue, {
       executionId: "metadata-refresh-preview-owner",
       previewId: "metadata-refresh-sibling-preview",
@@ -13505,9 +16930,9 @@ describe("SQLite Asset Refresh persistence", () => {
         ],
         relationships: [
           {
-            participantId: "persona",
+            participants: [{ entityId: "persona", role: "voice" }],
+            subjectRole: "asset",
             type: "asset.contribution" as const,
-            role: "voice",
             sourceSlot: "source.credit.voice",
             sourceRecordIds: ["refreshed-record"],
           },
@@ -13555,6 +16980,11 @@ describe("SQLite Asset Refresh persistence", () => {
     const refreshed = await catalogue.inspectExecution("refresh");
     expect(refreshed?.accepted?.entityMentions).toHaveLength(1);
     expect(refreshed?.accepted?.entityResolutionDecisions).toHaveLength(1);
+    const refreshedRelationshipId = (
+      await traversal.inspectCurrentCatalogueEntity("persona")
+    )?.relationships[0]?.id;
+    expect(refreshedRelationshipId).toBeDefined();
+    expect(refreshedRelationshipId).not.toBe(originalRelationshipId);
     const incompleteExecution = {
       ...refreshExecution,
       id: "incomplete-refresh",
@@ -13612,6 +17042,11 @@ describe("SQLite Asset Refresh persistence", () => {
         relationships: [{ sourceRecordIds: ["refreshed-record"] }],
       },
     });
+    expect(
+      (
+        await traversal.inspectCurrentCatalogueEntity("persona")
+      )?.relationships.map(({ id }) => id),
+    ).toContain(refreshedRelationshipId);
     await saveCurrentAttentionPreview(catalogue, {
       executionId: "rollback-preview-owner",
       previewId: "rollback-sibling-preview",
@@ -13832,6 +17267,74 @@ describe("SQLite Asset Refresh persistence", () => {
         submission,
       }),
     ).rejects.toThrow("stale");
+
+    const completeOmissionExecution = {
+      ...refreshExecution,
+      id: "complete-omission-refresh",
+    };
+    await catalogue.createExecution(completeOmissionExecution);
+    const completeOmissionRecord = {
+      ...refreshedRecord,
+      id: "complete-omission-record",
+      acquiredAt: "2026-08-02T00:00:00.000Z",
+      digest: "complete-omission-digest",
+    };
+    const completeOmissionBaseline = await catalogue.freezeSourceLineageHeads({
+      assetId: "asset",
+      sourceAssociation: accepted().recognitionSourceAssociation,
+      coverageIds: [completeOmissionRecord.coverage.id],
+    });
+    await retainSourceRecords(catalogue, completeOmissionExecution.id, [
+      completeOmissionRecord,
+    ]);
+    await catalogue.applyMetadataRefresh({
+      expectedExecution: await executionBaseline(
+        catalogue,
+        completeOmissionExecution.id,
+      ),
+      execution: {
+        ...completed,
+        id: completeOmissionExecution.id,
+        sourceRecordIds: [completeOmissionRecord.id],
+      },
+      submission: {
+        ...submission,
+        sourceRecords: [completeOmissionRecord],
+        expectedLineageHeads: completeOmissionBaseline,
+        interpretation: {
+          ...submission.interpretation,
+          id: "complete-omission-interpretation",
+          sourceRecordIds: [completeOmissionRecord.id],
+          metadata: [],
+          entities: [],
+          relationships: [],
+          entityMentions: [],
+          entityResolutionDecisions: [],
+        },
+      },
+    });
+    await expect(
+      traversal.inspectCurrentCatalogueEntity("persona"),
+    ).resolves.toMatchObject({
+      entity: { id: "persona" },
+      relationships: [],
+    });
+    catalogue.close();
+    const reopenedCatalogue = SqliteCatalogue.forProductData(root);
+    const reopenedTraversal = reevaluationWorkflow(reopenedCatalogue, {
+      observationVersion: 0,
+      sourceVersion: 0,
+      expanded: false,
+      managedMissing: false,
+      omitCover: false,
+    });
+    await expect(
+      reopenedTraversal.inspectCurrentCatalogueEntity("persona"),
+    ).resolves.toMatchObject({
+      entity: { id: "persona" },
+      relationships: [],
+    });
+    reopenedCatalogue.close();
   });
 
   it("conditionally applies every projected identity fact and cover without mixing the old current projection", async () => {
@@ -14039,9 +17542,9 @@ describe("SQLite Asset Refresh persistence", () => {
           ],
           relationships: [
             {
-              participantId: "new-persona",
+              participants: [{ entityId: "new-persona", role: "voice" }],
+              subjectRole: "asset",
               type: "asset.contribution" as const,
-              role: "voice",
               sourceSlot: "source.credit.voice",
               sourceRecordIds: ["new-record"],
               qualifiers: [
@@ -14164,10 +17667,11 @@ describe("SQLite Asset Refresh persistence", () => {
         relationships: [
           {
             id: "new-relationship",
-            subjectId: "asset",
-            participantId: "new-persona",
+            participants: [
+              { entityId: "asset", role: "asset" },
+              { entityId: "new-persona", role: "voice" },
+            ],
             type: "asset.contribution",
-            role: "voice",
             sourceSlot: "source.credit.voice",
             sourceRecordIds: ["new-record"],
             qualifiers: [
@@ -14202,7 +17706,7 @@ describe("SQLite Asset Refresh persistence", () => {
         artifactAssociations: [
           {
             id: "new-cover-association",
-            subjectId: "asset",
+            target: { kind: "entity" as const, entityId: "asset" },
             artifactId: "new-cover",
             role: "asset.primary-cover",
             sourceRecordIds: ["new-record"],
@@ -15087,7 +18591,6 @@ describe("SQLite Asset Refresh persistence", () => {
             sourceArtifacts: [],
           },
           sourceRecordIds: ["supplement-record"],
-          metadataPolicyIds: ["ordinary-film-metadata"],
           sourceArtifacts: [
             {
               id: "supplement-cover",
@@ -15146,7 +18649,6 @@ describe("SQLite Asset Refresh persistence", () => {
                 sourceRecordIds: ["supplement-record"],
                 metadata: [{ property: "asset.awards", value: "One award" }],
               },
-              metadataPolicyIds: ["ordinary-film-metadata"],
               sourceArtifacts: [
                 {
                   id: "supplement-cover",
@@ -15194,7 +18696,6 @@ describe("SQLite Asset Refresh persistence", () => {
     await acceptRecognition(catalogue, {
       execution: acceptedExecution(),
       accepted: accepted(),
-      metadataPolicyIds: [],
     });
 
     const acceptedSubject = accepted();
@@ -15217,7 +18718,6 @@ describe("SQLite Asset Refresh persistence", () => {
         informationRequirement,
       },
       fulfilledArtifactRoles: [],
-      metadataPolicyIds: [],
     };
     const pending: WorkflowExecution = {
       ...execution(),
@@ -15390,8 +18890,10 @@ describe("SQLite Asset Refresh persistence", () => {
           ],
           relationships: [
             {
-              role: "voice",
-              participantId: "persona",
+              participants: [
+                { entityId: "asset", role: "asset" },
+                { entityId: "persona", role: "voice" },
+              ],
               qualifiers: [{ key: "credit-note", value: "official" }],
             },
           ],
@@ -15514,7 +19016,7 @@ describe("SQLite Asset Refresh persistence", () => {
       label: "Work entity",
       sourceRecordIds: ["record"],
     };
-    const workTitle = {
+    const workTitleCandidate = {
       subjectId: work.id,
       property: "work.title",
       sourceSlot: "source.work.title",
@@ -15527,14 +19029,23 @@ describe("SQLite Asset Refresh persistence", () => {
         ...base.proposal,
         interpretation: {
           ...base.proposal.basis.interpretation,
-          metadata: [...base.proposal.basis.interpretation.metadata, workTitle],
+          metadata: [
+            ...base.proposal.basis.interpretation.metadata,
+            workTitleCandidate,
+          ],
           entities: [
             ...(base.proposal.basis.interpretation.entities ?? []),
             work,
           ],
         },
       },
-      metadata: [...base.metadata, workTitle],
+      metadata: [
+        ...base.metadata,
+        {
+          ...workTitleCandidate,
+          target: { kind: "entity" as const, entityId: work.id },
+        },
+      ],
       entities: [...(base.entities ?? []), work],
     };
     await catalogue.createExecution(execution());
@@ -15639,23 +19150,25 @@ describe("SQLite Asset Refresh persistence", () => {
       };
       const relationship = {
         id: otherLineage ? "other-work-series" : "shared-work-series",
-        subjectId: work.id,
-        participantId: participant.id,
+        sourceSubjectId: work.id,
+        participants: [
+          { entityId: work.id, role: "bangumi.subject.predecessor" },
+          { entityId: participant.id, role: "bangumi.subject.sequel" },
+        ],
         type: "bangumi.subject.related",
-        role: "bangumi.subject.sequel",
         sourceSlot: "bangumi.subject.related",
         sourceRecordIds: [recordId],
       };
       const cover = {
         id: otherLineage ? "other-work-cover" : "shared-work-cover",
-        subjectId: work.id,
+        target: { kind: "entity" as const, entityId: work.id },
         artifactId,
         role: "asset.primary-cover",
         sourceRecordIds: [recordId],
       };
       const unprovenancedCover = {
         id: "unprovenanced-other-work-cover",
-        subjectId: work.id,
+        target: { kind: "entity" as const, entityId: work.id },
         artifactId: "unprovenanced-other-work-cover-artifact",
         role: "asset.primary-cover",
         sourceRecordIds: [recordId],
@@ -15747,7 +19260,12 @@ describe("SQLite Asset Refresh persistence", () => {
           blobDigest: `${id}-digest`,
         })),
         artifactAssociations: covers,
-        metadata: [metadata],
+        metadata: [
+          {
+            ...metadata,
+            target: { kind: "entity" as const, entityId: work.id },
+          },
+        ],
         entities: [
           { ...work, sourceRecordIds: [recordId] },
           { ...participant, sourceRecordIds: [recordId] },
@@ -15822,15 +19340,17 @@ describe("SQLite Asset Refresh persistence", () => {
       accepted: {
         metadata: [
           expect.objectContaining({
-            subjectId: work.id,
+            target: { kind: "entity", entityId: work.id },
             property: "bangumi.subject.name",
             value: "Shared work",
           }),
         ],
         relationships: [
           expect.objectContaining({
-            subjectId: work.id,
-            participantId: series.id,
+            participants: expect.arrayContaining([
+              { entityId: work.id, role: "bangumi.subject.predecessor" },
+              { entityId: series.id, role: "bangumi.subject.sequel" },
+            ]),
             type: "bangumi.subject.related",
           }),
         ],
@@ -15870,7 +19390,9 @@ describe("SQLite Asset Refresh persistence", () => {
       "Other work",
     );
     expect(
-      current?.accepted?.relationships.map((item) => item.participantId),
+      current?.accepted?.relationships.flatMap((item) =>
+        item.participants.map((participant) => participant.entityId),
+      ),
     ).not.toContain(otherSeries.id);
     expect(current?.accepted?.entities.map((item) => item.id)).not.toContain(
       otherSeries.id,
@@ -16073,13 +19595,14 @@ describe("SQLite Asset Refresh persistence", () => {
       artifactAssociations: [
         {
           id: "artifact-association-2",
-          subjectId: "asset-2",
+          target: { kind: "entity" as const, entityId: "asset-2" },
           artifactId: "artifact-2",
           role: "asset.primary-cover",
         },
       ],
       metadata: first.metadata.map((assertion) => ({
         ...assertion,
+        target: { kind: "entity" as const, entityId: "asset-2" },
         sourceRecordIds: [secondRecordId],
       })),
       entities: first.entities?.map((entity) => ({
@@ -16102,7 +19625,11 @@ describe("SQLite Asset Refresh persistence", () => {
       relationships: first.relationships?.map((relationship) => ({
         ...relationship,
         id: "relationship-2",
-        subjectId: "asset-2",
+        participants: relationship.participants.map((participant) => ({
+          ...participant,
+          entityId:
+            participant.entityId === "asset" ? "asset-2" : participant.entityId,
+        })),
         sourceRecordIds: [secondRecordId],
       })),
     };
@@ -16159,7 +19686,7 @@ describe("SQLite Asset Refresh persistence", () => {
     expect(
       database
         .prepare(
-          "SELECT count(*) AS count FROM entity_relationships WHERE participant_id = ?",
+          "SELECT count(*) AS count FROM entity_relationship_participants WHERE entity_id = ?",
         )
         .get("persona"),
     ).toEqual({ count: 2 });
@@ -16325,7 +19852,6 @@ describe("SQLite Asset Refresh persistence", () => {
         },
       },
       fulfilledArtifactRoles: [],
-      metadataPolicyIds: ["ordinary-film-metadata"],
     };
     const candidateEnrichmentExecution: WorkflowExecution = {
       ...execution(),
@@ -16449,7 +19975,7 @@ describe("SQLite Asset Refresh persistence", () => {
         associations: [
           {
             id: "other-poster-association",
-            subjectId: "asset",
+            target: { kind: "entity" as const, entityId: "asset" },
             artifactId: "other-poster-artifact",
             role: "asset.primary-cover",
             sourceRecordIds: ["enrichment-record"],
@@ -16531,16 +20057,13 @@ describe("SQLite Asset Refresh persistence", () => {
     await acceptRecognition(catalogue, {
       execution: acceptedExecution(),
       accepted: accepted(),
-      metadataPolicyIds: ["ordinary-film-metadata"],
     });
     catalogue.close();
 
     const later = SqliteCatalogue.forProductData(root);
     const [reopened] = await later.findAcceptedForSubjects(["asset"]);
 
-    expect(reopened?.accepted.metadataPolicyIds).toEqual([
-      "ordinary-film-metadata",
-    ]);
+    expect(reopened?.accepted).not.toHaveProperty("metadataPolicyIds");
     expect(reopened?.accepted.metadataSourceRecords).toEqual([
       {
         id: "record",

@@ -925,7 +925,7 @@ class FanboxCollector implements SourceCollector {
         "response-contract",
       );
     }
-    if (credential?.containsPrivateConfiguration(body) === true) {
+    if (credential?.containsPrivateConfiguration(body)) {
       throw new FanboxCollectionFault(
         "response contained private configuration and was not retained",
         "response-contract",
@@ -1225,6 +1225,18 @@ type FanboxSummarySelection = {
 };
 
 export class FanboxSourceInterpreter implements SourceInterpreter {
+  readonly relationshipDefinitions = [
+    {
+      id: "fanbox.post-creation",
+      type: "asset.contribution",
+      label: "帖子创作",
+      roles: [
+        { role: "asset", label: "帖子", minimum: 1, maximum: 1 },
+        { role: "fanbox.post.creator", label: "创作者", minimum: 1 },
+      ],
+      qualifiers: [],
+    },
+  ];
   readonly capability = interpreterCapability;
 
   canInterpret(input: {
@@ -1281,8 +1293,7 @@ export class FanboxSourceInterpreter implements SourceInterpreter {
         : fanboxDetailPost(
             fanboxSuccessfulEnvelope(JSON.parse(detail.body) as unknown),
           );
-    if (detailPost !== undefined)
-      validateDetailPost(detailPost as Record<string, unknown>);
+    if (detailPost !== undefined) validateDetailPost(detailPost);
     const post = detailPost ?? summaryPost;
     const postId = requiredString(post.id, "post identity");
     const creatorId = optionalString(post.creatorId) ?? source.creatorId;
@@ -1404,10 +1415,16 @@ export class FanboxSourceInterpreter implements SourceInterpreter {
       sourceRecordIds: [factRecord.id],
     };
     const relationship: ProposedEntityRelationship = {
-      participantId: entity.id,
-      participantMentionIds: [mention.id],
+      participants: [
+        {
+          entityId: entity.id,
+          role: "fanbox.post.creator",
+          mentionIds: [mention.id],
+        },
+      ],
+      subjectRole: "asset",
+      requiredRoles: ["asset", "fanbox.post.creator"],
       type: "asset.contribution",
-      role: "fanbox.post.creator",
       sourceSlot: `fanbox.post.creator:${creatorId}`,
       sourceRecordIds: [factRecord.id],
     };

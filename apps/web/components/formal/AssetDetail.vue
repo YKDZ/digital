@@ -16,6 +16,7 @@ const props = withDefaults(
   defineProps<{
     readonly asset: CatalogueAssetViewModel;
     readonly selectedEpisodeId?: string;
+    readonly selectedWorkId?: string;
     readonly showActions?: boolean;
   }>(),
   { showActions: true },
@@ -53,6 +54,7 @@ const selectedBangumiEpisode = computed(() => {
   <BangumiAssetDetail
     v-else-if="bangumiAsset"
     :asset="bangumiAsset"
+    :selected-work-id="selectedWorkId"
     :show-actions="showActions"
   />
   <FanboxAssetDetail

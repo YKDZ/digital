@@ -1223,10 +1223,7 @@ describe("FANBOX 实时失败诊断", () => {
 
     let caught: unknown;
     try {
-      assertFanboxAcceptedPost(
-        value as Parameters<typeof assertFanboxAcceptedPost>[0],
-        post,
-      );
+      assertFanboxAcceptedPost(value, post);
     } catch (error) {
       caught = error;
     }
@@ -1244,10 +1241,7 @@ describe("FANBOX 实时失败诊断", () => {
 
     let titleError: unknown;
     try {
-      assertFanboxAcceptedPost(
-        value as Parameters<typeof assertFanboxAcceptedPost>[0],
-        post,
-      );
+      assertFanboxAcceptedPost(value, post);
     } catch (error) {
       titleError = error;
     }

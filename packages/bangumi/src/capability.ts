@@ -720,6 +720,46 @@ export class BangumiCollector implements SourceCollector {
 
 /** 对一个普通剧集边界的确定性解释。 */
 export class BangumiSourceInterpreter implements SourceInterpreter {
+  readonly relationshipDefinitions = [
+    {
+      id: "bangumi.episode-membership",
+      type: "asset.membership",
+      label: "单集归属",
+      roles: [
+        { role: "asset", label: "单集", minimum: 1, maximum: 1 },
+        {
+          role: "bangumi.subject.ordinary-episode",
+          label: "所属作品",
+          minimum: 1,
+          maximum: 1,
+        },
+      ],
+      qualifiers: [
+        { key: "bangumi.episode.season-position", label: "季内集数" },
+        { key: "bangumi.episode.continuous-position", label: "连续集数" },
+      ],
+    },
+    {
+      id: "bangumi.subject-sequel",
+      type: "bangumi.subject.related",
+      label: "前作与续作",
+      roles: [
+        {
+          role: "bangumi.subject.predecessor",
+          label: "前作",
+          minimum: 1,
+          maximum: 1,
+        },
+        {
+          role: "bangumi.subject.sequel",
+          label: "续作",
+          minimum: 1,
+          maximum: 1,
+        },
+      ],
+      qualifiers: [],
+    },
+  ];
   readonly capability = interpreterCapability;
 
   canInterpret(input: {
@@ -901,9 +941,12 @@ export class BangumiSourceInterpreter implements SourceInterpreter {
     ];
     const relationships: ProposedEntityRelationship[] = [
       {
-        participantId: work.id,
+        participants: [
+          { entityId: work.id, role: "bangumi.subject.ordinary-episode" },
+        ],
+        subjectRole: "asset",
+        requiredRoles: ["asset", "bangumi.subject.ordinary-episode"],
         type: "asset.membership",
-        role: "bangumi.subject.ordinary-episode",
         sourceSlot: `bangumi.subject.ordinary-episode:${seasonSubject.id}:${episode.id}`,
         sourceRecordIds: [subjectRecord.id, episodeRecord.id],
         qualifiers: [
@@ -1463,10 +1506,16 @@ function officialSeasonRelationships(
       return [];
     return [
       {
-        subjectId: predecessor.id,
-        participantId: season.id,
+        participants: [
+          { entityId: predecessor.id, role: "bangumi.subject.predecessor" },
+          { entityId: season.id, role: "bangumi.subject.sequel" },
+        ],
+        sourceSubjectId: predecessor.id,
+        requiredRoles: [
+          "bangumi.subject.predecessor",
+          "bangumi.subject.sequel",
+        ],
         type: "bangumi.subject.related",
-        role: "bangumi.subject.sequel",
         sourceSlot: `bangumi.subject.sequel:${predecessorId}:${seasonId}`,
         sourceRecordIds: [relationRecord.id],
       },

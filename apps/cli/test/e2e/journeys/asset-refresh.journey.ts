@@ -301,7 +301,7 @@ const journey: CliJourney = {
         readonly label: string;
       }[];
       readonly relationships?: readonly {
-        readonly role: string;
+        readonly participants: readonly { readonly role: string }[];
         readonly sourceRecordIds: readonly string[];
       }[];
       readonly recognitionExplanation: string;
@@ -447,7 +447,9 @@ const journey: CliJourney = {
     );
     assert.deepEqual(
       accepted.relationships
-        ?.map((relationship) => relationship.role)
+        ?.flatMap((relationship) =>
+          relationship.participants.map((participant) => participant.role),
+        )
         .toSorted(),
       oracle.projection.relationshipRoles.toSorted(),
     );
@@ -518,8 +520,10 @@ const journey: CliJourney = {
         }[];
         readonly entities?: readonly { readonly id: string }[];
         readonly relationships?: readonly {
-          readonly subjectId: string;
-          readonly participantId: string;
+          readonly participants: readonly {
+            readonly entityId: string;
+            readonly role: string;
+          }[];
           readonly type: string;
           readonly sourceRecordIds: readonly string[];
         }[];
@@ -706,8 +710,15 @@ const journey: CliJourney = {
     assert.ok(
       projectedAccepted.relationships?.every(
         (relationship) =>
-          relationship.subjectId === projectedAccepted.entity.id &&
-          relationship.participantId !== projectedAccepted.entity.id &&
+          relationship.participants.some(
+            (participant) =>
+              participant.entityId === projectedAccepted.entity.id &&
+              participant.role === "asset",
+          ) &&
+          relationship.participants.some(
+            (participant) =>
+              participant.entityId !== projectedAccepted.entity.id,
+          ) &&
           relationship.sourceRecordIds.every((recordId) =>
             replacementSourceIds.has(recordId),
           ),
@@ -814,7 +825,7 @@ const journey: CliJourney = {
       };
       readonly relationships: readonly {
         readonly type: string;
-        readonly role: string;
+        readonly participants: readonly { readonly role: string }[];
         readonly sourceRecordIds: readonly string[];
       }[];
     };
@@ -846,7 +857,7 @@ const journey: CliJourney = {
       );
       for (const relationship of projection.relationships) {
         assert.doesNotMatch(
-          `${relationship.type} ${relationship.role}`,
+          `${relationship.type} ${relationship.participants.map((item) => item.role).join(" ")}`,
           /bonus|supplement|特典|赠品|贈品/iu,
           "directed identity evidence invented a bonus or supplement relationship",
         );

@@ -285,6 +285,118 @@ describe("information fulfillment composition", () => {
     }
   });
 
+  it("通过正式 DLsite 刷新采用两个作品，并从来源社团反查两项已收录作品", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "digital-dlsite-circle-"));
+    temporaryRoots.push(root);
+    const productData = path.join(root, "product-data");
+    await prepareCatalogueAt(productData);
+    const firstObserved = path.join(root, "RJ01668691");
+    const secondObserved = path.join(root, "RJ01668692");
+    await mkdir(firstObserved);
+    await mkdir(secondObserved);
+    await Promise.all([
+      writeFile(path.join(firstObserved, "first.wav"), "first observed bytes"),
+      writeFile(
+        path.join(secondObserved, "second.wav"),
+        "second observed bytes",
+      ),
+    ]);
+    vi.stubGlobal("fetch", async (input: string | URL | Request) => {
+      const address =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      const productId = /product_id=(RJ\d+)/u.exec(address)?.[1];
+      if (productId !== undefined) {
+        return new Response(
+          JSON.stringify({
+            [productId]: {
+              site_id: "maniax",
+              work_name: `Work ${productId}`,
+              regist_date: "2026-08-01",
+              maker_id: "RG123",
+              maker_name: "Circle",
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(
+        '<a href="maker_id/RG123.html"><span>Circle</span></a>',
+        {
+          headers: { "content-type": "text/html" },
+        },
+      );
+    });
+    const workflow = composeAssetRefresh(productData, {});
+    const requirement = {
+      metadataUsageContext: "asset.ordinary",
+      metadata: [{ property: "asset.title", necessity: "required" as const }],
+      relationshipTypes: [],
+      artifactRoles: [],
+    };
+
+    try {
+      const first = await scanRegisteredScope(workflow, firstObserved, {
+        acceptTrusted: true,
+        informationRequirement: requirement,
+      });
+      const second = await scanRegisteredScope(workflow, secondObserved, {
+        acceptTrusted: true,
+        informationRequirement: requirement,
+      });
+      const firstAssetId = first.accepted?.entity.id;
+      const secondAssetId = second.accepted?.entity.id;
+      const circleId = first.accepted?.currentRelatedEntities?.find(
+        (entity) => entity.sourceKey === "RG123",
+      )?.id;
+      if (
+        firstAssetId === undefined ||
+        secondAssetId === undefined ||
+        circleId === undefined
+      )
+        throw new Error("DLsite 的正式采用没有产生两项作品和来源社团");
+
+      const circle = await workflow.inspectCurrentCatalogueEntity(circleId);
+      const firstWork =
+        await workflow.inspectCurrentCatalogueSubject(firstAssetId);
+      const secondWork =
+        await workflow.inspectCurrentCatalogueSubject(secondAssetId);
+      const circleRelationshipIds = circle?.relationships.map(({ id }) => id);
+      const firstCircleRelationshipId = firstWork?.relationships.find(
+        (relationship) =>
+          relationship.participants.some(
+            (participant) => participant.entityId === circleId,
+          ),
+      )?.id;
+      const secondCircleRelationshipId = secondWork?.relationships.find(
+        (relationship) =>
+          relationship.participants.some(
+            (participant) => participant.entityId === circleId,
+          ),
+      )?.id;
+      expect(circle?.relationships).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            participants: expect.arrayContaining([
+              { entityId: circleId, role: "circle" },
+            ]),
+          }),
+        ]),
+      );
+      expect(circle?.accepted.map(({ entity }) => entity.id)).toEqual(
+        expect.arrayContaining([firstAssetId, secondAssetId]),
+      );
+      expect(circleRelationshipIds).toContain(firstCircleRelationshipId);
+      expect(circleRelationshipIds).toContain(secondCircleRelationshipId);
+      expect(circleRelationshipIds).toHaveLength(2);
+    } finally {
+      await workflow.close();
+    }
+  });
+
   it("stops one deduplicated fulfillment child at its next SQLite checkpoint and recovers it with a replacement Host", async () => {
     const root = await mkdtemp(
       path.join(tmpdir(), "digital-hosted-fulfillment-"),
@@ -669,7 +781,7 @@ describe("information fulfillment composition", () => {
       expect(completed?.accepted).toMatchObject({
         artifactAssociations: expect.arrayContaining([
           expect.objectContaining({
-            subjectId,
+            target: { kind: "entity", entityId: subjectId },
             role: "asset.primary-cover",
             sourceRecordIds: [refreshedRecordId],
             sourceAssociationId,
@@ -1274,7 +1386,7 @@ describe("information fulfillment composition", () => {
         accepted: {
           artifactAssociations: expect.arrayContaining([
             expect.objectContaining({
-              subjectId,
+              target: { kind: "entity", entityId: subjectId },
               role: "asset.primary-cover",
               sourceRecordIds: [expect.any(String)],
             }),
@@ -1437,7 +1549,7 @@ describe("information fulfillment composition", () => {
         accepted: {
           artifactAssociations: expect.arrayContaining([
             expect.objectContaining({
-              subjectId,
+              target: { kind: "entity", entityId: subjectId },
               role: "asset.primary-cover",
             }),
           ]),
@@ -1517,7 +1629,7 @@ describe("information fulfillment composition", () => {
       expect(recognized.accepted?.artifactAssociations).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            subjectId,
+            target: { kind: "entity", entityId: subjectId },
             role: "asset.material-delivered",
           }),
         ]),

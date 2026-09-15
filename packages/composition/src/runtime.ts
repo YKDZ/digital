@@ -7,6 +7,7 @@ import {
   AutomationHost,
   ExecutionHost,
   ObservedRootRegistrations,
+  CurrentUserPlaybackInteraction,
   applicationOwnedCapabilityDeclarations,
   attachAssetRefreshAutomation,
   type AutomationClock,
@@ -14,6 +15,7 @@ import {
   type DueAutomationRunner,
   type ObservedRootCleanupFailure,
   type ObservedRootCleanupFailureReporter,
+  type CurrentUserInteractionPersistence,
   type SourceCollector,
 } from "@digital/application";
 import {
@@ -104,6 +106,7 @@ import {
   TmdbArtifactAcquirer,
   TmdbCollector,
   TmdbSourceInterpreter,
+  TmdbSourceAddressing,
   TmdbStrictFilmDirectoryInterpreter,
   TmdbStrictFilmRecognizer,
   tmdbOfficialCollectionCapability,
@@ -167,6 +170,7 @@ export type ComposedAssetRefresh = ProductAssetRefresh & {
   /** 产品管理的、供当前部署电影来源使用的私密访问能力。 */
   readonly sourceConnections: ProductSourceConnections;
   readonly artifactByteAccess: ApplicationArtifactByteAccess;
+  readonly interactionPersistence: CurrentUserInteractionPersistence;
   /** 排空 Application 工作，然后且仅然后释放一次基础设施。 */
   close(): Promise<void>;
 };
@@ -330,6 +334,7 @@ function composeAssetRefreshWithGeneration(
     const sourceAddressingCapabilities = [
       new DlsiteSourceAddressing(),
       new NbinetSourceAddressing(),
+      new TmdbSourceAddressing(),
       taiwanKadokawa.sourceAddressing,
       kadokawaJapan.sourceAddressing,
     ];
@@ -435,6 +440,9 @@ function composeAssetRefreshWithGeneration(
       executionQueries: persistence,
       recoveryLease: persistence,
       reuseQueries: persistence,
+      relationshipTraversalQueries: persistence,
+      relatedEntityIdentity: persistence,
+      relationshipDecisionPersistence: persistence,
       currentCatalogueQueries: persistence,
       workflowHistoryQueries: persistence,
       currentAttentionQueries: persistence,
@@ -490,6 +498,7 @@ function composeAssetRefreshWithGeneration(
             observedRootRegistrations,
           ),
         }),
+        interactionPersistence: persistence,
       }),
       persistence,
       ownedInvocationSupervisor,
@@ -765,6 +774,14 @@ export function composeProductApplication(input: {
         workflow: unavailable.workflow,
         automation: unavailable.automation,
         execution: unavailable.execution,
+        interactions: {
+          async read() {
+            throw new Error("尚未配置产品数据目录");
+          },
+          async save() {
+            throw new Error("尚未配置产品数据目录");
+          },
+        },
         async startAutomation() {
           throw new Error("尚未配置产品数据目录");
         },
@@ -790,6 +807,9 @@ export function composeProductApplication(input: {
           throw new Error("尚未配置产品数据目录");
         },
         async observedFileSelectionForLocation() {
+          throw new Error("尚未配置产品数据目录");
+        },
+        async observedFileDownloadForLocation() {
           throw new Error("尚未配置产品数据目录");
         },
         async confirmObservedFileRevision() {
@@ -818,6 +838,10 @@ export function composeProductApplication(input: {
     const access = requireRuntime().workflow.artifactByteAccess;
     return artifactDownloadOperations(access, access);
   };
+  const interactions = () =>
+    new CurrentUserPlaybackInteraction(
+      requireRuntime().workflow.interactionPersistence,
+    );
   return {
     application: {
       configured: true,
@@ -830,6 +854,14 @@ export function composeProductApplication(input: {
       },
       get execution() {
         return requireRuntime().executionHost;
+      },
+      interactions: {
+        async read(revisionIds) {
+          return await interactions().read(revisionIds);
+        },
+        async save(state) {
+          await interactions().save(state);
+        },
       },
       async startAutomation(options: ProductAutomationHostOptions = {}) {
         await requireRuntime(options).automationHost.start();
@@ -865,6 +897,11 @@ export function composeProductApplication(input: {
       },
       async observedFileSelectionForLocation(locationId) {
         return await downloadOperations().observedFileSelectionForLocation(
+          locationId,
+        );
+      },
+      async observedFileDownloadForLocation(locationId) {
+        return await downloadOperations().observedFileDownloadForLocation(
           locationId,
         );
       },

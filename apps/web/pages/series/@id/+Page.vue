@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { usePageContext } from "vike-vue/usePageContext";
+import { computed } from "vue";
 
 import AssetDetail from "#/components/formal/AssetDetail.vue";
 import { Button } from "#/components/ui/button";
 import { useCatalogueSubject } from "#/composables/use-catalogue-subject";
 
 const pageContext = usePageContext();
+const selectedWorkId = computed(() => pageContext.urlParsed.search.season);
 const { selected, error, loading, reload } = useCatalogueSubject(
   () => pageContext.routeParams.id ?? "",
 );
@@ -19,7 +21,7 @@ const { selected, error, loading, reload } = useCatalogueSubject(
     {{ error }} <Button variant="link" @click="reload">重试</Button>
   </p>
   <section v-else-if="selected">
-    <AssetDetail :asset="selected.asset" />
+    <AssetDetail :asset="selected.asset" :selected-work-id="selectedWorkId" />
   </section>
   <section v-else class="grid gap-4">
     <h1 class="text-3xl font-bold">未找到作品系列</h1>

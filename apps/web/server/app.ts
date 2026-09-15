@@ -99,6 +99,7 @@ async function createOwnedWebApp(
       throw new AggregateError(
         [registrationError, closeError],
         "Web 产品登记失败且调用者清理未完成",
+        { cause: closeError },
       );
     }
     throw registrationError;
@@ -114,6 +115,7 @@ async function createOwnedWebApp(
       throw new AggregateError(
         [assemblyError, disposeError],
         "Web app assembly 失败且产品清理未完成",
+        { cause: disposeError },
       );
     }
     throw assemblyError;

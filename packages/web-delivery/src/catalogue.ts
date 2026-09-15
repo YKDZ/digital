@@ -97,6 +97,22 @@ export async function requestCatalogueSubject(
   return (await response.json()) as CatalogueSubjectResponse;
 }
 
+/** 保存当前本地用户对一个明确产物修订版的播放交互。 */
+export async function savePlaybackInteraction(input: {
+  readonly revisionId: string;
+  readonly positionMilliseconds: number;
+  readonly completed: boolean;
+}): Promise<void> {
+  const response = await fetch("/api/playback-interactions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (response.ok) return;
+  const result = (await response.json()) as { readonly error?: string };
+  throw new Error(result.error ?? "暂时无法保存播放状态");
+}
+
 /**
  * 交付层对应用层终态结果完整且用户可见的视图。保持该显式边界类型与应用层模型分离，
  * 同时让标签覆盖可由机械方式穷尽检查。

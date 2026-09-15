@@ -276,8 +276,8 @@ describe("FANBOX official collection", () => {
     });
     expect(
       decodeFanboxCollectionFailureCode({
-        capability: result.failures[0]!.capability,
-        code: result.failures[0]!.failureCode!,
+        capability: result.failures[0].capability,
+        code: result.failures[0].failureCode!,
       }),
     ).toEqual({ category: "transport-failure" });
     expect(JSON.stringify(result.failures)).not.toContain("do-not-copy");
@@ -2642,7 +2642,7 @@ describe("FANBOX interpretation", () => {
       },
     ]);
     expect(batch.relationships).toMatchObject([
-      { role: "fanbox.post.creator" },
+      { participants: [{ role: "fanbox.post.creator" }] },
     ]);
     expect(batch.sourceArtifacts).toHaveLength(3);
     expect(batch.metadata).toEqual(

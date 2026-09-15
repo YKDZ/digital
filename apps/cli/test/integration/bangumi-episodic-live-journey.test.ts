@@ -155,7 +155,7 @@ function inspection(
         metadata: [
           {
             id: `season-position-${address}`,
-            subjectId: entityId,
+            target: { kind: "entity", entityId },
             property: "bangumi.episode.season-position",
             value: String(position),
             sourceSlot: "bangumi.episode.ep",
@@ -163,17 +163,17 @@ function inspection(
           },
           {
             id: `continuous-position-${address}`,
-            subjectId: entityId,
+            target: { kind: "entity", entityId },
             property: "bangumi.episode.continuous-position",
             value: String(position),
             sourceSlot: "bangumi.episode.sort",
             sourceRecordIds: ["episode-page-record"],
           },
         ],
-        entities: [
+        currentRelatedEntities: [
           {
             id: subjectId,
-            kind: "entity" as const,
+            kind: { status: "ordinary" as const },
             sourceIdentity: "bangumi",
             identityNamespace: "bangumi.subject",
             sourceKey: "100",
@@ -184,10 +184,14 @@ function inspection(
         relationships: [
           {
             id: `membership-${address}`,
-            subjectId: entityId,
-            participantId: subjectId,
+            participants: [
+              { entityId, role: "asset" },
+              {
+                entityId: subjectId,
+                role: "bangumi.subject.ordinary-episode",
+              },
+            ],
             type: "asset.membership",
-            role: "bangumi.subject.ordinary-episode",
             sourceSlot: `bangumi.subject.ordinary-episode:100:${address}`,
             sourceRecordIds: ["subject-record", "episode-page-record"],
             qualifiers: [
@@ -216,7 +220,7 @@ function inspection(
         artifactAssociations: [
           {
             id: `association-${address}`,
-            subjectId: entityId,
+            target: { kind: "entity", entityId },
             artifactId,
             role: "asset.material-delivered",
           },
@@ -291,11 +295,11 @@ function multiSeasonInspection(): AssetRefreshInspection {
     if (item?.accepted === undefined) continue;
     (
       item.accepted as unknown as {
-        entities: Record<string, unknown>[];
+        currentRelatedEntities: Record<string, unknown>[];
       }
-    ).entities.push({
+    ).currentRelatedEntities.push({
       id: "subject-200",
-      kind: "entity",
+      kind: { status: "ordinary" },
       sourceIdentity: "bangumi",
       identityNamespace: "bangumi.subject",
       sourceKey: "200",
@@ -308,10 +312,11 @@ function multiSeasonInspection(): AssetRefreshInspection {
       }
     ).relationships.push({
       id: "sequel-100-200",
-      subjectId: "subject-100",
-      participantId: "subject-200",
+      participants: [
+        { entityId: "subject-100", role: "bangumi.subject.predecessor" },
+        { entityId: "subject-200", role: "bangumi.subject.sequel" },
+      ],
       type: "bangumi.subject.related",
-      role: "bangumi.subject.sequel",
       sourceSlot: "bangumi.subject.sequel:100:200",
       sourceRecordIds: ["relationship-record"],
     });
@@ -338,12 +343,17 @@ function multiSeasonInspection(): AssetRefreshInspection {
     );
     if (membership !== undefined) {
       const mutableMembership = membership as unknown as {
-        participantId: string;
+        participants: { entityId: string; role: string }[];
         sourceSlot: string;
         sourceRecordIds: string[];
         qualifiers: { key: string; value: string }[];
       };
-      mutableMembership.participantId = "subject-200";
+      const seasonParticipant = mutableMembership.participants.find(
+        (participant) =>
+          participant.role === "bangumi.subject.ordinary-episode",
+      );
+      if (seasonParticipant !== undefined)
+        seasonParticipant.entityId = "subject-200";
       mutableMembership.sourceSlot =
         "bangumi.subject.ordinary-episode:200:1002";
       mutableMembership.sourceRecordIds = [
@@ -379,11 +389,11 @@ describe("Bangumi episodic live journey contract", () => {
     if (firstAccepted !== undefined)
       (
         firstAccepted as unknown as {
-          entities: Record<string, unknown>[];
+          currentRelatedEntities: Record<string, unknown>[];
         }
-      ).entities.push({
+      ).currentRelatedEntities.push({
         id: "subject-300",
-        kind: "entity",
+        kind: { status: "ordinary" },
         sourceIdentity: "bangumi",
         identityNamespace: "bangumi.subject",
         sourceKey: "300",
@@ -410,12 +420,23 @@ describe("Bangumi episodic live journey contract", () => {
     const reversedSequel = multiSeasonInspection();
     const reversed =
       reversedSequel.itemResults?.[0]?.accepted?.relationships?.find(
-        (relationship) => relationship.role === "bangumi.subject.sequel",
+        (relationship) =>
+          relationship.participants.some(
+            (participant) => participant.role === "bangumi.subject.sequel",
+          ),
       );
     if (reversed !== undefined) {
-      const subjectId = reversed.subjectId;
-      (reversed as { subjectId: string }).subjectId = reversed.participantId;
-      (reversed as { participantId: string }).participantId = subjectId;
+      const predecessor = reversed.participants.find(
+        (participant) => participant.role === "bangumi.subject.predecessor",
+      );
+      const successor = reversed.participants.find(
+        (participant) => participant.role === "bangumi.subject.sequel",
+      );
+      if (predecessor !== undefined && successor !== undefined) {
+        const entityId = predecessor.entityId;
+        (predecessor as { entityId: string }).entityId = successor.entityId;
+        (successor as { entityId: string }).entityId = entityId;
+      }
     }
     expect(() =>
       assertBangumiAcceptedEpisodeSet(reversedSequel, multiSeasonOracle),
@@ -426,8 +447,13 @@ describe("Bangumi episodic live journey contract", () => {
       wrongMembership.itemResults?.[0]?.accepted?.relationships?.find(
         (relationship) => relationship.type === "asset.membership",
       );
-    if (membership !== undefined)
-      (membership as { participantId: string }).participantId = "subject-200";
+    if (membership !== undefined) {
+      const participant = membership.participants.find(
+        (item) => item.role === "bangumi.subject.ordinary-episode",
+      );
+      if (participant !== undefined)
+        (participant as { entityId: string }).entityId = "subject-200";
+    }
     expect(() =>
       assertBangumiAcceptedEpisodeSet(wrongMembership, multiSeasonOracle),
     ).toThrow();

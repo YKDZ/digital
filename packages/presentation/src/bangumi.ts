@@ -70,13 +70,21 @@ function managedArtwork(
   subjectId: string,
 ): string | undefined {
   for (const fact of facts) {
-    const association = fact.artifactAssociations.find(
-      (item) =>
-        item.subjectId === subjectId && item.role === "asset.primary-cover",
-    );
+    const coverArtifactIds = [
+      ...new Set(
+        fact.artifactAssociations.flatMap((association) =>
+          association.target.kind === "entity" &&
+          association.target.entityId === subjectId &&
+          association.role === "asset.primary-cover"
+            ? [association.artifactId]
+            : [],
+        ),
+      ),
+    ];
+    if (coverArtifactIds.length !== 1) continue;
     const location = fact.locations.find(
       (item) =>
-        item.artifactId === association?.artifactId && item.kind === "managed",
+        item.artifactId === coverArtifactIds[0] && item.kind === "managed",
     );
     if (location !== undefined) return location.address;
   }
@@ -133,7 +141,7 @@ export function projectBangumiCatalogue(
   );
   const works = new Map<string, WorkState>();
   for (const fact of accepted) {
-    for (const entity of fact.entities ?? []) {
+    for (const entity of fact.currentRelatedEntities ?? []) {
       if (
         entity.sourceIdentity !== "bangumi" ||
         entity.identityNamespace !== "bangumi.subject"
@@ -163,15 +171,27 @@ export function projectBangumiCatalogue(
     for (const relationship of fact.relationships ?? []) {
       if (
         relationship.type !== "bangumi.subject.related" ||
-        relationship.role !== "bangumi.subject.sequel" ||
-        relationship.subjectId === undefined ||
-        !works.has(relationship.subjectId) ||
-        !works.has(relationship.participantId)
+        !relationship.participants.some(
+          (participant) => participant.role === "bangumi.subject.sequel",
+        )
+      )
+        continue;
+      const predecessorId = relationship.participants.find(
+        (participant) => participant.role === "bangumi.subject.predecessor",
+      )?.entityId;
+      const sequelId = relationship.participants.find(
+        (participant) => participant.role === "bangumi.subject.sequel",
+      )?.entityId;
+      if (
+        predecessorId === undefined ||
+        sequelId === undefined ||
+        !works.has(predecessorId) ||
+        !works.has(sequelId)
       )
         continue;
       const edge = {
-        predecessorId: relationship.subjectId,
-        sequelId: relationship.participantId,
+        predecessorId,
+        sequelId,
       };
       sequelEdges.set(`${edge.predecessorId}\u0000${edge.sequelId}`, edge);
     }
@@ -246,10 +266,17 @@ export function projectBangumiCatalogue(
         .filter((fact) =>
           fact.relationships?.some(
             (relationship) =>
-              relationship.subjectId === fact.id &&
-              relationship.participantId === work.id &&
+              relationship.participants.some(
+                (participant) => participant.entityId === fact.id,
+              ) &&
+              relationship.participants.some(
+                (participant) => participant.entityId === work.id,
+              ) &&
               relationship.type === "asset.membership" &&
-              relationship.role === "bangumi.subject.ordinary-episode",
+              relationship.participants.some(
+                (participant) =>
+                  participant.role === "bangumi.subject.ordinary-episode",
+              ),
           ),
         )
         .flatMap((fact) => {

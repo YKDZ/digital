@@ -1,4 +1,7 @@
-import type { MetadataAssertion } from "./metadata-assertion.ts";
+import type {
+  DescriptionTarget,
+  MetadataAssertion,
+} from "./metadata-assertion.ts";
 
 export type MetadataPolicyRule = {
   /** 精确属性、以 `*` 结尾的命名空间模式，或作为默认值的 `*`。 */
@@ -22,7 +25,7 @@ export type EffectiveMetadataAlternative = {
   readonly sourceSlot: string;
   readonly qualifiers?: MetadataAssertion["qualifiers"];
   readonly exclusion?: {
-    readonly kind: "source-preference" | "deterministic-assertion-order";
+    readonly kind: "source-preference";
     readonly selectedSource: string;
     readonly disagreesWithSelected: boolean;
   };
@@ -32,6 +35,7 @@ export type EffectiveMetadata = {
   readonly property: string;
   readonly value: string;
   readonly selectedAssertion: MetadataAssertion;
+  readonly contributingAssertions: readonly MetadataAssertion[];
   readonly sourceRecordIds: readonly string[];
   readonly sourceSlot: string;
   readonly sourceIdentity: string;
@@ -43,6 +47,10 @@ export type EffectiveMetadata = {
         readonly kind: "preferred-source-absent-fallback";
         readonly absentPreferredSources: readonly string[];
         readonly selectedFallbackSource: string;
+      }
+    | {
+        readonly kind: "preferred-sources-absent-unranked";
+        readonly absentPreferredSources: readonly string[];
       }
     | { readonly kind: "unranked-source-assertion" };
 };
@@ -56,13 +64,24 @@ export type MetadataPolicyConflict = {
   readonly explanation: string;
 };
 
+export type MetadataValueConflict = {
+  readonly kind: "metadata-value-conflict";
+  readonly property: string;
+  readonly metadataUsageContext: string;
+  readonly candidates: readonly EffectiveMetadataAlternative[];
+  readonly explanation: string;
+};
+
 export type EffectiveMetadataProjection = {
   readonly values: readonly EffectiveMetadata[];
-  readonly conflicts: readonly MetadataPolicyConflict[];
+  readonly conflicts: readonly (
+    | MetadataPolicyConflict
+    | MetadataValueConflict
+  )[];
 };
 
 export type EffectiveMetadataInput = {
-  readonly subjectId: string;
+  readonly target: DescriptionTarget;
   readonly metadataUsageContext: string;
   readonly policies?: readonly MetadataPolicy[];
   readonly sourceRecords: readonly {
@@ -116,7 +135,8 @@ export function deriveEffectiveMetadata(
     .filter(
       (policy) =>
         policy.metadataUsageContext === input.metadataUsageContext &&
-        policy.subjectIds.includes(input.subjectId),
+        input.target.kind === "entity" &&
+        policy.subjectIds.includes(input.target.entityId),
     );
   if (
     new Set(applicablePolicies.map((policy) => policy.id)).size !==
@@ -134,11 +154,25 @@ export function deriveEffectiveMetadata(
   }
 
   const values: EffectiveMetadata[] = [];
-  const conflicts: MetadataPolicyConflict[] = [];
+  const conflicts: (MetadataPolicyConflict | MetadataValueConflict)[] = [];
   for (const property of [...byProperty.keys()].toSorted()) {
     const assertions = (byProperty.get(property) ?? []).toSorted(
       compareResolvedAssertions,
     );
+    const userAssertions = assertions.filter(
+      ({ assertion }) => assertion.authoredBy !== undefined,
+    );
+    if (userAssertions.length > 0) {
+      const selected = selectOne(
+        assertions,
+        ["user"],
+        input.metadataUsageContext,
+      );
+      if (selected !== undefined && "kind" in selected)
+        conflicts.push(selected);
+      else if (selected !== undefined) values.push(selected);
+      continue;
+    }
     const controllers = applicablePolicies.flatMap((policy) => {
       const rule = controllingRule(policy.rules, property);
       return rule === undefined ? [] : [{ policy, rule }];
@@ -161,15 +195,23 @@ export function deriveEffectiveMetadata(
       (rule.cardinality === "many" &&
         rule.preferredSourceIdentities.length === 0)
     ) {
-      values.push(...assertions.map((assertion) => unranked(assertion)));
+      values.push(...coalesceUnranked(assertions));
       continue;
     }
     if (rule.cardinality === "many") {
       values.push(...selectMany(assertions, rule.preferredSourceIdentities));
       continue;
     }
-    const selected = selectOne(assertions, rule.preferredSourceIdentities);
-    if (selected !== undefined) values.push(selected);
+    const selected = selectOne(
+      assertions,
+      rule.preferredSourceIdentities,
+      input.metadataUsageContext,
+    );
+    if (selected !== undefined && "kind" in selected) {
+      conflicts.push(selected);
+    } else if (selected !== undefined) {
+      values.push(selected);
+    }
   }
   return { values, conflicts };
 }
@@ -187,11 +229,7 @@ function resolveAssertions(
     sourceByRecord.set(record.id, record.sourceIdentity);
   }
   return input.metadata.flatMap((assertion): readonly ResolvedAssertion[] => {
-    if (
-      assertion.subjectId !== undefined &&
-      assertion.subjectId !== input.subjectId
-    )
-      return [];
+    if (!sameDescriptionTarget(assertion.target, input.target)) return [];
     if (assertion.authoredBy !== undefined)
       return [{ assertion, sourceIdentity: "user" }];
     const identities = [
@@ -212,6 +250,18 @@ function resolveAssertions(
       ? []
       : [{ assertion, sourceIdentity: "local-observed" }];
   });
+}
+
+function sameDescriptionTarget(
+  left: DescriptionTarget,
+  right: DescriptionTarget,
+): boolean {
+  return left.kind === "entity" && right.kind === "entity"
+    ? left.entityId === right.entityId
+    : left.kind === "artifact-revision" && right.kind === "artifact-revision"
+      ? left.artifactId === right.artifactId &&
+        left.revisionId === right.revisionId
+      : false;
 }
 
 function controllingRule(
@@ -238,28 +288,47 @@ function controllingRule(
 function selectOne(
   assertions: readonly ResolvedAssertion[],
   preferredSources: readonly string[],
-): EffectiveMetadata | undefined {
+  metadataUsageContext: string,
+): EffectiveMetadata | MetadataValueConflict | undefined {
   if (assertions.length === 0) return undefined;
   const selectedPreferenceIndex = preferredSources.findIndex((identity) =>
     assertions.some((assertion) => assertion.sourceIdentity === identity),
   );
-  const selected =
+  const selectedSource = preferredSources[selectedPreferenceIndex];
+  const eligible =
     selectedPreferenceIndex < 0
-      ? assertions[0]
-      : assertions.find(
-          (assertion) =>
-            assertion.sourceIdentity ===
-            preferredSources[selectedPreferenceIndex],
+      ? assertions
+      : assertions.filter(
+          (assertion) => assertion.sourceIdentity === selectedSource,
         );
+  if (new Set(eligible.map(semanticValueKey)).size > 1) {
+    return {
+      kind: "metadata-value-conflict",
+      property: assertions[0]!.assertion.property,
+      metadataUsageContext,
+      candidates: eligible.map((assertion) => alternative(assertion)),
+      explanation:
+        selectedSource === undefined
+          ? `Unranked Metadata Sources supply several values for single-valued property ${assertions[0]!.assertion.property}`
+          : `Metadata Source ${selectedSource} supplies several values for single-valued property ${assertions[0]!.assertion.property}`,
+    };
+  }
+  const selected = eligible[0];
   if (selected === undefined) return undefined;
+  const selectedValueKey = semanticValueKey(selected);
+  const contributors = [
+    selected,
+    ...assertions.filter(
+      (assertion) =>
+        assertion !== selected &&
+        semanticValueKey(assertion) === selectedValueKey,
+    ),
+  ];
   const alternatives = assertions
-    .filter((assertion) => assertion !== selected)
+    .filter((assertion) => semanticValueKey(assertion) !== selectedValueKey)
     .map((assertion) =>
       alternative(assertion, {
-        kind:
-          selectedPreferenceIndex < 0
-            ? "deterministic-assertion-order"
-            : "source-preference",
+        kind: "source-preference",
         selectedSource: selected.sourceIdentity,
         disagreesWithSelected:
           assertion.assertion.value !== selected.assertion.value,
@@ -267,7 +336,7 @@ function selectOne(
     );
   if (selectedPreferenceIndex === 0) {
     return {
-      ...effective(selected, alternatives),
+      ...effective(selected, alternatives, contributors),
       reasoning: {
         kind: "source-preference",
         preferredSource: selected.sourceIdentity,
@@ -276,7 +345,7 @@ function selectOne(
   }
   if (selectedPreferenceIndex > 0) {
     return {
-      ...effective(selected, alternatives),
+      ...effective(selected, alternatives, contributors),
       reasoning: {
         kind: "preferred-source-absent-fallback",
         absentPreferredSources: preferredSources.slice(
@@ -289,15 +358,26 @@ function selectOne(
   }
   if (preferredSources.length > 0) {
     return {
-      ...effective(selected, alternatives),
+      ...effective(selected, [], contributors),
       reasoning: {
-        kind: "preferred-source-absent-fallback",
+        kind: "preferred-sources-absent-unranked",
         absentPreferredSources: preferredSources,
-        selectedFallbackSource: selected.sourceIdentity,
       },
     };
   }
   return unranked(selected, alternatives);
+}
+
+function semanticValueKey(resolved: ResolvedAssertion): string {
+  return JSON.stringify([
+    resolved.assertion.value,
+    [...(resolved.assertion.qualifiers ?? [])]
+      .map((qualifier) => [qualifier.key, qualifier.value] as const)
+      .toSorted(
+        ([leftKey, leftValue], [rightKey, rightValue]) =>
+          compareText(leftKey, rightKey) || compareText(leftValue, rightValue),
+      ),
+  ]);
 }
 
 function selectMany(
@@ -308,27 +388,32 @@ function selectMany(
   const selectedPreferenceIndex = preferredSources.findIndex((identity) =>
     assertions.some((assertion) => assertion.sourceIdentity === identity),
   );
-  const selectedSource =
-    selectedPreferenceIndex < 0
-      ? assertions[0]?.sourceIdentity
-      : preferredSources[selectedPreferenceIndex];
+  if (selectedPreferenceIndex < 0) {
+    return coalesceBySemanticValue(assertions).map((group) => ({
+      ...effective(group[0]!, [], group),
+      reasoning: {
+        kind: "preferred-sources-absent-unranked",
+        absentPreferredSources: preferredSources,
+      },
+    }));
+  }
+  const selectedSource = preferredSources[selectedPreferenceIndex];
   if (selectedSource === undefined) return [];
   const selected = assertions.filter(
     (assertion) => assertion.sourceIdentity === selectedSource,
   );
-  const selectedValues = new Set(
-    selected.map((assertion) => assertion.assertion.value),
-  );
+  const selectedValues = new Set(selected.map(semanticValueKey));
   const alternatives = assertions
-    .filter((assertion) => assertion.sourceIdentity !== selectedSource)
+    .filter(
+      (assertion) =>
+        assertion.sourceIdentity !== selectedSource &&
+        !selectedValues.has(semanticValueKey(assertion)),
+    )
     .map((assertion) =>
       alternative(assertion, {
-        kind:
-          selectedPreferenceIndex < 0
-            ? "deterministic-assertion-order"
-            : "source-preference",
+        kind: "source-preference",
         selectedSource,
-        disagreesWithSelected: !selectedValues.has(assertion.assertion.value),
+        disagreesWithSelected: true,
       }),
     );
   const reasoning: EffectiveMetadata["reasoning"] =
@@ -336,16 +421,44 @@ function selectMany(
       ? { kind: "source-preference", preferredSource: selectedSource }
       : {
           kind: "preferred-source-absent-fallback",
-          absentPreferredSources:
-            selectedPreferenceIndex < 0
-              ? preferredSources
-              : preferredSources.slice(0, selectedPreferenceIndex),
+          absentPreferredSources: preferredSources.slice(
+            0,
+            selectedPreferenceIndex,
+          ),
           selectedFallbackSource: selectedSource,
         };
-  return selected.map((assertion) => ({
-    ...effective(assertion, alternatives),
+  return coalesceBySemanticValue(selected).map((group) => ({
+    ...effective(group[0]!, alternatives, [
+      ...group,
+      ...assertions.filter(
+        (assertion) =>
+          !group.includes(assertion) &&
+          semanticValueKey(assertion) === semanticValueKey(group[0]!),
+      ),
+    ]),
     reasoning,
   }));
+}
+
+function coalesceUnranked(
+  assertions: readonly ResolvedAssertion[],
+): readonly EffectiveMetadata[] {
+  return coalesceBySemanticValue(assertions).map((group) =>
+    unranked(group[0]!, [], group),
+  );
+}
+
+function coalesceBySemanticValue(
+  assertions: readonly ResolvedAssertion[],
+): readonly (readonly ResolvedAssertion[])[] {
+  const groups = new Map<string, ResolvedAssertion[]>();
+  for (const assertion of assertions) {
+    const key = semanticValueKey(assertion);
+    const group = groups.get(key) ?? [];
+    group.push(assertion);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
 }
 
 function alternative(
@@ -369,14 +482,20 @@ function alternative(
 function effective(
   resolved: ResolvedAssertion,
   alternatives: readonly EffectiveMetadataAlternative[],
+  contributors: readonly ResolvedAssertion[] = [resolved],
 ): Omit<EffectiveMetadata, "reasoning"> {
   const assertion = resolved.assertion;
   return {
     property: assertion.property,
     value: assertion.value,
     selectedAssertion: assertion,
+    contributingAssertions: contributors.map((item) => item.assertion),
     sourceIdentity: resolved.sourceIdentity,
-    sourceRecordIds: assertion.sourceRecordIds,
+    sourceRecordIds: [
+      ...new Set(
+        contributors.flatMap((item) => item.assertion.sourceRecordIds),
+      ),
+    ],
     sourceSlot: assertion.sourceSlot,
     ...(assertion.qualifiers === undefined
       ? {}
@@ -388,9 +507,10 @@ function effective(
 function unranked(
   assertion: ResolvedAssertion,
   alternatives: readonly EffectiveMetadataAlternative[] = [],
+  contributors: readonly ResolvedAssertion[] = [assertion],
 ): EffectiveMetadata {
   return {
-    ...effective(assertion, alternatives),
+    ...effective(assertion, alternatives, contributors),
     reasoning: { kind: "unranked-source-assertion" },
   };
 }

@@ -3,6 +3,7 @@ import {
   CircleAlert,
   History,
   Library,
+  ListPlus,
   Plus,
   Settings2,
   Waypoints,
@@ -24,6 +25,12 @@ const pageContext = usePageContext();
 const { setOpenMobile } = useSidebar();
 const navigation = [
   { href: "/", label: "全部内容", icon: Library, id: "home" },
+  {
+    href: "/intake/enrich",
+    label: "整理内容",
+    icon: ListPlus,
+    id: "enrich",
+  },
   { href: "/attention", label: "需要处理", icon: CircleAlert, id: "attention" },
   { href: "/inspection", label: "刷新记录", icon: History, id: "inspection" },
 ];

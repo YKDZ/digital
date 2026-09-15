@@ -559,9 +559,9 @@ function serializedFailureEvidence(
     "FANBOX 失败证据超过字节上限",
   );
   assertSafe(
-    /FANBOXSESSID|cf_clearance|authorization|cookie|docs[\\/]fanbox\.json/iu.test(
+    !/FANBOXSESSID|cf_clearance|authorization|cookie|docs[\\/]fanbox\.json/iu.test(
       serialized,
-    ) === false,
+    ),
     "FANBOX 失败证据包含禁止的私密标记",
   );
   return serialized;
@@ -1284,12 +1284,12 @@ function oracleString(value: unknown, label: string): string {
     typeof value === "string" && value.trim().length > 0,
     `${label} must be a non-empty string`,
   );
-  return value as string;
+  return value;
 }
 
 function oracleParagraphText(value: unknown, label: string): string {
   assertSafe(typeof value === "string", `${label} must be a string`);
-  const text = value as string;
+  const text = value;
   assertSafe(
     text === "" || text.trim().length > 0,
     `${label} must be exactly empty or contain non-whitespace text`,
@@ -1879,9 +1879,9 @@ const journey: CliJourney = {
       for (const result of allResults) {
         assertSafe(result.exitCode === 0, "FANBOX journey command failed");
         assertSafe(
-          /FANBOXSESSID|cf_clearance|docs[\\/]fanbox\.json|cookie/iu.test(
+          !/FANBOXSESSID|cf_clearance|docs[\\/]fanbox\.json|cookie/iu.test(
             `${result.stdout}\n${result.stderr}`,
-          ) === false,
+          ),
           "private FANBOX configuration leaked through journey output",
         );
       }

@@ -12,7 +12,7 @@ import { Button } from "#/components/ui/button";
 import AssetActions from "./AssetActions.vue";
 
 const emit = defineEmits<{ refreshed: [] }>();
-withDefaults(
+const props = withDefaults(
   defineProps<{
     readonly series: BangumiSeriesViewModel;
     readonly work: BangumiWorkViewModel;
@@ -21,16 +21,13 @@ withDefaults(
   }>(),
   { showActions: true },
 );
+
+const returnHref = `/series/${encodeURIComponent(props.series.id)}?season=${encodeURIComponent(props.work.id)}`;
 </script>
 
 <template>
   <article class="grid gap-8" data-testid="bangumi-episode-detail">
-    <Button
-      as="a"
-      :href="`/series/${encodeURIComponent(series.id)}`"
-      variant="ghost"
-      class="w-fit"
-    >
+    <Button as="a" :href="returnHref" variant="ghost" class="w-fit">
       <ArrowLeft />
       返回{{ work.title }}
     </Button>

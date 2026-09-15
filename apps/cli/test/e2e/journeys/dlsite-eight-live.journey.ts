@@ -252,10 +252,12 @@ const journey: CliJourney = {
             readonly sourceRecordIds: readonly string[];
           }[];
           readonly relationships?: readonly {
-            readonly participantId: string;
-            readonly participantMentionIds?: readonly string[];
+            readonly participants: readonly {
+              readonly entityId: string;
+              readonly role: string;
+              readonly mentionIds?: readonly string[];
+            }[];
             readonly type: string;
-            readonly role: string;
             readonly sourceRecordIds: readonly string[];
           }[];
         };
@@ -402,10 +404,12 @@ const journey: CliJourney = {
               true,
             );
             assert.equal(
-              inspection.accepted?.relationships?.some(
-                (relationship) =>
-                  relationship.role === field &&
-                  relationship.participantId === persona!.id,
+              inspection.accepted?.relationships?.some((relationship) =>
+                relationship.participants.some(
+                  (participant) =>
+                    participant.role === field &&
+                    participant.entityId === persona!.id,
+                ),
               ),
               true,
             );
@@ -441,10 +445,12 @@ const journey: CliJourney = {
             );
           assert.notEqual(resolution, undefined);
           assert.equal(
-            inspection.accepted?.relationships?.some(
-              (relationship) =>
-                relationship.role === mention.role &&
-                relationship.participantId === resolution!.entityId,
+            inspection.accepted?.relationships?.some((relationship) =>
+              relationship.participants.some(
+                (participant) =>
+                  participant.role === mention.role &&
+                  participant.entityId === resolution!.entityId,
+              ),
             ),
             true,
           );
@@ -472,8 +478,10 @@ const journey: CliJourney = {
         );
         sawLanguageEvidence = true;
         const seriesRelationships =
-          inspection.accepted?.relationships?.filter(
-            (relationship) => relationship.role === "dlsite.series.member",
+          inspection.accepted?.relationships?.filter((relationship) =>
+            relationship.participants.some(
+              (participant) => participant.role === "dlsite.series.member",
+            ),
           ) ?? [];
         assert.equal(
           metadata.some((item) => item.property === "asset.series-position") &&
@@ -506,9 +514,12 @@ const journey: CliJourney = {
           assert.ok(
             seriesRelationships.some(
               (relationship) =>
-                relationship.participantId === seriesEntity.id &&
                 relationship.type === work.reviewedSeries?.relationshipType &&
-                relationship.role === work.reviewedSeries.relationshipRole &&
+                relationship.participants.some(
+                  (participant) =>
+                    participant.entityId === seriesEntity.id &&
+                    participant.role === work.reviewedSeries?.relationshipRole,
+                ) &&
                 relationship.sourceRecordIds.length === 1 &&
                 relationship.sourceRecordIds.every((id) =>
                   officialRecordIds.has(id),

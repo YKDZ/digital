@@ -238,19 +238,28 @@ function renderInspection(
                   "元数据规则冲突：",
                   ...metadataPolicyConflicts.map(
                     (conflict) =>
-                      `  ${conflict.property}：规则 ${conflict.policyIds.join("、")} 尚未确定先后，当前没有采用值（候选 ${conflict.candidates.map((candidate) => `${candidate.value}［${candidate.sourceIdentity}］`).join("、") || "无"}）`,
+                      `  ${conflict.property}：${conflict.kind === "policy-conflict" ? `规则 ${conflict.policyIds.join("、")} 尚未确定先后` : "存在多个同等有效值"}，当前没有采用值（候选 ${conflict.candidates.map((candidate) => `${candidate.value}［${candidate.sourceIdentity}］`).join("、") || "无"}）`,
                   ),
                 ]),
             "实体：",
-            ...(accepted.entities ?? []).map(
-              (entity) => `  ${entity.label}（${entity.kind}）`,
-            ),
+            ...(accepted.currentRelatedEntities ?? []).map((entity) => {
+              const kind =
+                entity.kind.status === "effective"
+                  ? entity.kind.kind
+                  : entity.kind.status === "conflict"
+                    ? entity.kind.kinds.join("、")
+                    : "entity";
+              return `  ${entity.label}（${kind}）`;
+            }),
             "关系与角色：",
             ...(accepted.relationships ?? []).map((relationship) => {
-              const participant = (accepted.entities ?? []).find(
-                (entity) => entity.id === relationship.participantId,
-              );
-              return `  ${relationship.role}：${participant?.label ?? relationship.participantId}（记录 ${relationship.sourceRecordIds.join("、")}）`;
+              const participants = relationship.participants.map((item) => {
+                const participant = (
+                  accepted.currentRelatedEntities ?? []
+                ).find((entity) => entity.id === item.entityId);
+                return `${item.role}：${participant?.label ?? item.entityId}`;
+              });
+              return `  ${relationship.type}：${participants.join("；")}（记录 ${relationship.sourceRecordIds.join("、")}）`;
             }),
             `识别说明：${accepted.recognitionExplanation}`,
             "产物与位置：",
@@ -292,7 +301,7 @@ function renderInspection(
                         "  元数据规则冲突：",
                         ...(item.accepted.metadataPolicyConflicts ?? []).map(
                           (conflict) =>
-                            `    ${conflict.property}：规则 ${conflict.policyIds.join("、")} 尚未确定先后，当前没有采用值`,
+                            `    ${conflict.property}：${conflict.kind === "policy-conflict" ? `规则 ${conflict.policyIds.join("、")} 尚未确定先后` : "存在多个同等有效值"}，当前没有采用值`,
                         ),
                       ]),
                 ]),
@@ -352,11 +361,13 @@ function renderChangeImpactPreview(
       ),
       "当前关系：",
       ...preview.current.relationships.map(
-        (item) => `  ${item.role}：${item.participantId}`,
+        (item) =>
+          `  ${item.type}：${item.participants.map((participant) => `${participant.role}：${participant.entityId}`).join("；")}`,
       ),
       "拟定关系：",
       ...preview.projected.relationships.map(
-        (item) => `  ${item.role}：${item.participantId}`,
+        (item) =>
+          `  ${item.type}：${item.participants.map((participant) => `${participant.role}：${participant.entityId}`).join("；")}`,
       ),
       "当前产物用途：",
       ...preview.current.artifactAssociations.map((item) => `  ${item.role}`),

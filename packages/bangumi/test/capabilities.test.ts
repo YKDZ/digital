@@ -227,12 +227,18 @@ describe("Bangumi episodic directory convention", () => {
       expect.arrayContaining([
         expect.objectContaining({
           type: "bangumi.subject.related",
-          subjectId: expect.any(String),
-          participantId: expect.any(String),
+          participants: expect.arrayContaining([
+            expect.objectContaining({ role: "bangumi.subject.predecessor" }),
+            expect.objectContaining({ role: "bangumi.subject.sequel" }),
+          ]),
         }),
         expect.objectContaining({
           type: "asset.membership",
-          role: "bangumi.subject.ordinary-episode",
+          participants: [
+            expect.objectContaining({
+              role: "bangumi.subject.ordinary-episode",
+            }),
+          ],
           qualifiers: [
             { key: "bangumi.episode.season-position", value: "1" },
             { key: "bangumi.episode.continuous-position", value: "29" },

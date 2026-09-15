@@ -83,13 +83,14 @@ describe("TMDB and OMDb live journey contract", () => {
     );
     expect(plannedArgs(6, [strictRoot, directedRoot])).toEqual(
       expect.arrayContaining([
-        "scrape",
+        "scrape-source",
         "directed-root",
-        "https://www.themoviedb.org/movie/9509",
+        "tmdb",
+        JSON.stringify({
+          movie: "https://www.themoviedb.org/movie/9509",
+        }),
         "--scope",
         ".",
-        "--source-identity",
-        "tmdb",
         "--json",
       ]),
     );

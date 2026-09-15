@@ -138,7 +138,7 @@ function normalizeConsumer(input: ConsumerPlaybackCapabilities) {
     if (!mediaType.includes("/")) throw new Error("消费者媒体类型无效");
     const codecs = [
       ...new Set((candidate.codecs ?? []).map(normalizeToken)),
-    ].sort();
+    ].toSorted();
     entries.set(`${mediaType}\u0000${codecs.join("\u0000")}`, {
       mediaType,
       codecs,
@@ -147,7 +147,7 @@ function normalizeConsumer(input: ConsumerPlaybackCapabilities) {
   return {
     contractVersion: input.contractVersion,
     supportsByteRanges: input.supportsByteRanges,
-    media: [...entries.values()].sort((left, right) =>
+    media: [...entries.values()].toSorted((left, right) =>
       `${left.mediaType}\u0000${left.codecs.join("\u0000")}`.localeCompare(
         `${right.mediaType}\u0000${right.codecs.join("\u0000")}`,
       ),
@@ -169,7 +169,7 @@ function normalizeFormat(
   input: PlaybackFormatFacts | undefined,
 ): PlaybackFormatFacts | undefined {
   if (input === undefined) return undefined;
-  const codecs = [...new Set(input.codecs.map(normalizeToken))].sort();
+  const codecs = [...new Set(input.codecs.map(normalizeToken))].toSorted();
   const mediaType = normalizeToken(input.mediaType);
   if (codecs.length === 0 || !mediaType.includes("/")) return undefined;
   return {

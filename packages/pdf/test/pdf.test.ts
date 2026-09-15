@@ -164,20 +164,20 @@ describe("PDF 本地格式能力", () => {
       observedArtifactReference: "local.pdf",
       byteSource: byteSource(bytes, "local.pdf"),
     });
-    const inspection = evidence!.inspection!;
+    const inspection = evidence.inspection!;
     const context = {
       basis: {
         kind: "observed-evidence" as const,
-        producer: evidence!.producer,
+        producer: evidence.producer,
         artifactRevisions: [
           {
             observedArtifactReference: inspection.observedArtifactReference,
             blob: inspection.revision,
-            producer: evidence!.producer,
+            producer: evidence.producer,
           },
         ],
       },
-      evidence: [evidence!],
+      evidence: [evidence],
     };
     const recognizer = capabilities.recognizers[0];
 
@@ -196,7 +196,7 @@ describe("PDF 本地格式能力", () => {
         ...context,
         evidence: [
           {
-            ...evidence!,
+            ...evidence,
             inspection: {
               ...inspection,
               identifiers: [
@@ -222,7 +222,7 @@ describe("PDF 本地格式能力", () => {
         ...context,
         evidence: [
           {
-            ...evidence!,
+            ...evidence,
             inspection: {
               ...inspection,
               identifiers: [
@@ -294,14 +294,14 @@ describe("PDF 本地格式能力", () => {
       ),
     });
 
-    expect(single!.inspection!.identifiers).toEqual([
+    expect(single.inspection!.identifiers).toEqual([
       {
         scheme: "isbn-13",
         value: "9784049131291",
         locators: ["pdf:xmp/dc:identifier[1]/rdf:li[1]"],
       },
     ]);
-    expect(multiple!.inspection!.identifiers).toEqual([
+    expect(multiple.inspection!.identifiers).toEqual([
       {
         scheme: "isbn-13",
         value: "9784049131291",
@@ -313,12 +313,12 @@ describe("PDF 本地格式能力", () => {
         locators: ["pdf:xmp/dc:identifier[1]/rdf:li[2]"],
       },
     ]);
-    expect(single!.inspection!.metadata).not.toEqual(
+    expect(single.inspection!.metadata).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ property: "asset.title" }),
       ]),
     );
-    expect(infoOnly!.inspection!.metadata).toEqual(
+    expect(infoOnly.inspection!.metadata).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           property: "asset.title",
@@ -327,7 +327,7 @@ describe("PDF 本地格式能力", () => {
         }),
       ]),
     );
-    expect(matchingTitles!.inspection!.metadata).toEqual(
+    expect(matchingTitles.inspection!.metadata).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           property: "asset.title",
@@ -378,7 +378,7 @@ describe("PDF 本地格式能力", () => {
       ),
     });
 
-    expect(evidence!.inspection!.identifiers).toEqual([
+    expect(evidence.inspection!.identifiers).toEqual([
       {
         scheme: "isbn-13",
         value: "9784049131291",
@@ -388,12 +388,12 @@ describe("PDF 本地格式能力", () => {
         ],
       },
     ]);
-    expect(evidence!.inspection!.metadata).not.toEqual(
+    expect(evidence.inspection!.metadata).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ property: "asset.title" }),
       ]),
     );
-    expect(directTitle!.inspection!.metadata).toEqual(
+    expect(directTitle.inspection!.metadata).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           property: "asset.title",
@@ -411,12 +411,12 @@ describe("PDF 本地格式能力", () => {
       observedArtifactReference: "cover.pdf",
       byteSource: byteSource(bytes, "cover.pdf"),
     });
-    const part = evidence!.inspection!.parts[0]!;
+    const part = evidence.inspection!.parts[0];
     const candidate = {
       ...part,
       id: "pdf-cover",
       observedArtifactReference: "cover.pdf",
-      producer: evidence!.producer,
+      producer: evidence.producer,
     };
     const acquirer = capabilities.observedArtifactPartAcquirers[0];
 
@@ -434,7 +434,7 @@ describe("PDF 本地格式能力", () => {
     ]);
     expect(first.bytes).toEqual(second.bytes);
     expect(first.mediaType).toBe("image/png");
-    expect(first.origin).toEqual(evidence!.inspection!.revision);
+    expect(first.origin).toEqual(evidence.inspection!.revision);
     expect(first.bytes.byteLength).toBeLessThanOrEqual(16 * 1024 * 1024);
     const image = await loadImage(first.bytes);
     const canvas = createCanvas(image.width, image.height);
@@ -591,7 +591,7 @@ function serializePdf(
 ): Uint8Array {
   const chunks: Uint8Array[] = [ascii("%PDF-1.7\n")];
   const offsets = [0];
-  let length = chunks[0]!.byteLength;
+  let length = chunks[0].byteLength;
   for (const [index, object] of objects.entries()) {
     offsets.push(length);
     const framed = joinBytes([

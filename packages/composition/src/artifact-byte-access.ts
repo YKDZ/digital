@@ -95,7 +95,7 @@ export class ComposedArtifactLocationByteSources implements ArtifactLocationByte
           !path.isAbsolute(relative)
         );
       })
-      .sort(
+      .toSorted(
         (left, right) => right.containerPath.length - left.containerPath.length,
       );
     if (

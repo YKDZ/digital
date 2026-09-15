@@ -188,7 +188,7 @@ async function inspectMp4FromProbe(
         0,
       );
       if (codecs === undefined || codecs.length === 0) return undefined;
-      const ordered = [...new Set(codecs)].sort();
+      const ordered = [...new Set(codecs)].toSorted();
       return {
         mediaType: ordered.some(
           (codec) => codec.startsWith("avc1.") || codec.startsWith("avc3."),

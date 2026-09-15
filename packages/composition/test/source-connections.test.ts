@@ -163,7 +163,7 @@ describe("static source registration", () => {
       });
       const selected = await workflow.selectSourceAssociationCandidate({
         executionId: decision.executionId,
-        candidateReference: reopened!.candidates[1]!.reference,
+        candidateReference: reopened!.candidates[1].reference,
       });
       const durablePreview = await workflow.inspectChangeImpactPreview(
         selected.preview!.id,
@@ -436,6 +436,34 @@ describe("product-managed Bangumi OAuth source connection", () => {
     } finally {
       await workflow.close();
     }
+  });
+
+  it("更换 Bangumi 应用配置后可以立即重新开始授权", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "digital-bangumi-oauth-"));
+    temporaryRoots.push(root);
+    const privateState = ProductSourceConnectionPrivateState.forRoot(
+      path.join(root, "product-data"),
+    );
+    const connection = new ProductBangumiSourceConnection({
+      privateState,
+      environment: {},
+    });
+    connection.configureClient({
+      clientId: "digital-test-client",
+      clientSecret: "digital-test-secret",
+      redirectUri:
+        "http://localhost:53688/api/source-connections/bangumi/callback",
+    });
+    connection.beginAuthorization();
+
+    connection.configureClient({
+      clientId: "digital-test-client",
+      clientSecret: "digital-test-secret",
+      redirectUri:
+        "http://localhost:3000/api/source-connections/bangumi/callback",
+    });
+
+    expect(() => connection.beginAuthorization()).not.toThrow();
   });
 
   it("consumes a matching OAuth rejection callback once without sending a token request or reflecting provider text", async () => {

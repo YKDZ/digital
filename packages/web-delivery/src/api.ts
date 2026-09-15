@@ -31,11 +31,37 @@ import {
   inspectCorrectionSubject,
   selectSourceAssociationDecisionCandidate,
   retrySourceAssociationDecision,
+  cancelExecution,
   startRecognitionRetraction,
   startObservedMaterialAssociation,
   inspectObservedMaterialAssociation,
   confirmObservedMaterialAssociation,
+  saveCurrentPlaybackInteraction,
 } from "./web-delivery.ts";
+
+function playbackInteractionRequest(value: unknown): {
+  readonly artifactRevisionId: string;
+  readonly positionMilliseconds: number;
+  readonly completed: boolean;
+} {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    throw new Error("播放交互请求无效");
+  const input = value as Record<string, unknown>;
+  if (
+    typeof input.revisionId !== "string" ||
+    input.revisionId.trim().length === 0 ||
+    typeof input.positionMilliseconds !== "number" ||
+    !Number.isSafeInteger(input.positionMilliseconds) ||
+    input.positionMilliseconds < 0 ||
+    typeof input.completed !== "boolean"
+  )
+    throw new Error("播放交互请求无效");
+  return {
+    artifactRevisionId: input.revisionId,
+    positionMilliseconds: input.positionMilliseconds,
+    completed: input.completed,
+  };
+}
 
 type ApiCommands = {
   readonly startRefresh: typeof startRefresh;
@@ -47,6 +73,7 @@ type ApiCommands = {
   readonly inspectCorrectionSubject: typeof inspectCorrectionSubject;
   readonly selectSourceAssociationDecisionCandidate: typeof selectSourceAssociationDecisionCandidate;
   readonly retrySourceAssociationDecision: typeof retrySourceAssociationDecision;
+  readonly cancelExecution: typeof cancelExecution;
   readonly startRecognitionRetraction: typeof startRecognitionRetraction;
   readonly updatePreview: typeof updatePreview;
 };
@@ -61,6 +88,7 @@ const defaultCommands: ApiCommands = {
   inspectCorrectionSubject,
   selectSourceAssociationDecisionCandidate,
   retrySourceAssociationDecision,
+  cancelExecution,
   startRecognitionRetraction,
   updatePreview,
 };
@@ -216,6 +244,19 @@ export function createApi(
         return artifactDeliveryErrorResponse(error);
       }
     })
+    .post("/playback-interactions", async (c) => {
+      try {
+        await saveCurrentPlaybackInteraction(
+          playbackInteractionRequest(await c.req.json()),
+        );
+        return c.body(null, 204);
+      } catch (error) {
+        return c.json(
+          { error: error instanceof Error ? error.message : String(error) },
+          400,
+        );
+      }
+    })
     .get("/playback-media/:revisionId/:blobDigest", async (c) => {
       try {
         return await playbackMediaResponse(
@@ -303,6 +344,15 @@ export function createApi(
         return c.json(
           await commands.retrySourceAssociationDecision(c.req.param("id")),
           202,
+        );
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
+    .post("/executions/:id/cancel", async (c) => {
+      try {
+        return c.json(
+          await commands.cancelExecution(c.req.param("id"), await c.req.json()),
         );
       } catch (error) {
         return c.json({ error: errorMessage(error) }, 400);

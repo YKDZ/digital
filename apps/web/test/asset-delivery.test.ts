@@ -111,6 +111,10 @@ describe("asset delivery view", () => {
       input,
     }));
     const retryDecision = vi.fn(async (id: string) => ({ executionId: id }));
+    const cancelExecution = vi.fn(async (id: string, input: unknown) => ({
+      id,
+      input,
+    }));
     const retractIdentity = vi.fn(async (input: unknown) => ({
       id: "recognition-preview",
       input,
@@ -121,7 +125,8 @@ describe("asset delivery view", () => {
       inspectCorrectionSubject: inspectSubject as never,
       selectSourceAssociationDecisionCandidate: selectCandidate as never,
       retrySourceAssociationDecision: retryDecision as never,
-      startRecognitionRetraction: retractIdentity as never,
+      cancelExecution: cancelExecution as never,
+      startRecognitionRetraction: retractIdentity,
     });
 
     const prepared = await api.request("/source-association-decisions", {
@@ -178,6 +183,15 @@ describe("asset delivery view", () => {
         })
       ).status,
     ).toBe(202);
+    const cancelled = await api.request("/executions/execution/cancel", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ requestedBy: "reviewer" }),
+    });
+    expect(cancelled.status).toBe(200);
+    expect(cancelExecution).toHaveBeenCalledWith("execution", {
+      requestedBy: "reviewer",
+    });
     const retraction = await api.request("/recognition-retractions", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -196,7 +210,7 @@ describe("asset delivery view", () => {
 
   it("rejects malformed preview actions without consuming the live preview", async () => {
     const previewAction = vi.fn(async () => ({ status: "applied" as const }));
-    const api = createApi({ updatePreview: previewAction as never });
+    const api = createApi({ updatePreview: previewAction });
 
     for (const body of [
       { action: "approve", previewId: "preview", actorId: "reviewer" },
@@ -549,10 +563,11 @@ describe("asset delivery view", () => {
               value: "终将成为你",
             },
           ],
-          entities: [
+          currentRelatedEntities: [
             {
               id: workId,
               label: "やがて君になる",
+              kind: { status: "ordinary" as const },
               sourceIdentity: "bangumi",
               identityNamespace: "bangumi.subject",
               sourceKey: "243981",
@@ -560,10 +575,14 @@ describe("asset delivery view", () => {
           ],
           relationships: [
             {
-              subjectId: assetId,
-              participantId: workId,
+              participants: [
+                { entityId: assetId, role: "asset" },
+                {
+                  entityId: workId,
+                  role: "bangumi.subject.ordinary-episode",
+                },
+              ],
               type: "asset.membership",
-              role: "bangumi.subject.ordinary-episode",
             },
           ],
           artifactAssociations: [],
@@ -666,7 +685,10 @@ describe("asset delivery view", () => {
   it("dispatches scan and exact DLsite actions to their presentation-owned requirements", async () => {
     const previousRoots = process.env.DIGITAL_WEB_OBSERVED_ROOTS;
     process.env.DIGITAL_WEB_OBSERVED_ROOTS = "/media";
-    const requests: Array<{ readonly informationRequirement?: unknown }> = [];
+    const requests: Array<{
+      readonly informationRequirement?: unknown;
+      readonly acceptTrusted?: boolean;
+    }> = [];
     const workflow = {
       async scanObservedScope(input: {
         readonly informationRequirement?: unknown;
@@ -736,7 +758,11 @@ describe("asset delivery view", () => {
     try {
       await startRefreshWith(
         workflow as never,
-        { observedRootId: "registered-media", relativeScope: "." },
+        {
+          observedRootId: "registered-media",
+          relativeScope: ".",
+          acceptTrusted: false,
+        },
         new ExecutionHost(),
       );
       await startRefreshWith(
@@ -764,6 +790,7 @@ describe("asset delivery view", () => {
         dlsiteAssetViewInformationRequirement,
         dlsiteAssetViewInformationRequirement,
       ]);
+      expect(requests[0]).toMatchObject({ acceptTrusted: false });
       expect(dlsiteAssetViewInformationRequirement.metadata).not.toContainEqual(
         {
           property: "asset.runtime-minutes",
@@ -786,6 +813,8 @@ describe("asset delivery view", () => {
     const previousProductData = process.env.DIGITAL_PRODUCT_DATA;
     const previousRoots = process.env.DIGITAL_WEB_OBSERVED_ROOTS;
     const requested: string[] = [];
+    let coverBytes = new Uint8Array([1, 2, 3, 4]);
+    let sourceTitle = "Exact automated work";
     const fulfillInformation = vi.spyOn(
       AssetRefreshWorkflow.prototype,
       "fulfillInformation",
@@ -817,7 +846,7 @@ describe("asset delivery view", () => {
           JSON.stringify({
             RJ01668691: {
               site_id: "maniax",
-              work_name: "Exact automated work",
+              work_name: sourceTitle,
               regist_date: "2026-08-01",
               price: 880,
               maker_id: "circle-1",
@@ -841,7 +870,7 @@ describe("asset delivery view", () => {
         });
       }
       if (address === "https://img.dlsite.jp/primary.jpg") {
-        return new Response(new Uint8Array([1, 2, 3, 4]), {
+        return new Response(coverBytes, {
           headers: { "content-type": "image/jpeg" },
         });
       }
@@ -888,14 +917,10 @@ describe("asset delivery view", () => {
 
       const automatedRequirement = fulfillInformation.mock.calls
         .map(([input]) => input.requirement)
-        .find(
-          (requirement) =>
-            requirement.metadata.some(
-              (item) => item.property === "dlsite.product.price-jpy",
-            ) &&
-            requirement.metadata.some(
-              (item) => item.property === "asset.series-position",
-            ),
+        .find((requirement) =>
+          requirement.metadata.some(
+            (item) => item.property === "dlsite.product.price-jpy",
+          ),
         );
       expect(automatedRequirement).toEqual(
         dlsiteAssetViewInformationRequirement,
@@ -941,6 +966,39 @@ describe("asset delivery view", () => {
           }),
         ]),
       );
+
+      coverBytes = new Uint8Array([5, 6, 7, 8]);
+      sourceTitle = "Exact automated work refreshed";
+      const repeated = await updateAutomation({
+        action: "scan-now",
+        intentId: enabled.intent.id,
+      });
+      expect("status" in repeated ? repeated.status : undefined).toBe(
+        "started",
+      );
+      if (
+        !("status" in repeated) ||
+        repeated.status !== "started" ||
+        repeated.execution === undefined
+      )
+        throw new Error("重复检查未开始");
+      const repeatedExecutionId = repeated.execution.id;
+      await expect
+        .poll(async () => {
+          const snapshot = await catalogueSnapshot();
+          const execution = snapshot.executions.find(
+            (item) => item.id === repeatedExecutionId,
+          );
+          if (execution === undefined || execution.status === "running")
+            return undefined;
+          return snapshot.assets.find(
+            (asset) =>
+              "cardComponent" in asset && asset.cardComponent === "dlsite",
+          );
+        })
+        .toMatchObject({
+          cover: expect.stringMatching(/^\/api\/artifacts\//u),
+        });
     } finally {
       listCurrentCataloguePage.mockRestore();
       scanFilesystem.mockRestore();
@@ -1215,7 +1273,7 @@ describe("asset delivery view", () => {
             metadata: [],
             effectiveMetadata: [],
             metadataPolicyConflicts: [],
-            entities: [],
+            currentRelatedEntities: [],
             entityMentions: [],
             entityResolutionDecisions: [],
             relationships: [],
@@ -2088,14 +2146,15 @@ describe("asset delivery view", () => {
     }
   }, 20_000);
 
-  it("首次选择只渐进确认一个观察文件并立即通过精确 revision 下载", async () => {
+  it("首次选择在同字节已有更具体媒体类型时确认观察文件并下载", async () => {
     const root = await mkdtemp(
       path.join(tmpdir(), "digital-disposable-observed-download-"),
     );
     const productData = path.join(root, "product-data");
     const observedRoot = path.join(root, "observed");
-    const observedFile = path.join(observedRoot, "作品.txt");
-    const bytes = new TextEncoder().encode("只确认这个文件");
+    const observedFile = path.join(observedRoot, "poster.jpg");
+    const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
+    const blobDigest = createHash("sha256").update(bytes).digest("hex");
     let closeProduct: (() => Promise<void>) | undefined;
     try {
       await mkdir(observedRoot, { recursive: true });
@@ -2125,7 +2184,7 @@ describe("asset delivery view", () => {
         complete: true,
         files: [
           {
-            relativePath: "作品.txt",
+            relativePath: "poster.jpg",
             size: bytes.byteLength,
             modifiedAt: details.mtime.toISOString(),
           },
@@ -2136,13 +2195,15 @@ describe("asset delivery view", () => {
       }).replaceAll("'", "''");
       database.exec(`
         INSERT INTO artifacts (id) VALUES ('artifact-observed-download');
+        INSERT INTO blobs (digest, media_type, byte_length)
+          VALUES ('${blobDigest}', 'image/jpeg', ${bytes.byteLength});
         INSERT INTO locations (id, artifact_id, address, kind)
           VALUES ('location-observed-download', 'artifact-observed-download', '${observedFile.replaceAll("'", "''")}', 'observed');
         INSERT INTO current_file_observations (
-          location_id, snapshot_id, observed_at, size, modified_at,
+          location_id, address, snapshot_id, observed_at, size, modified_at,
           conditional_baseline
         ) VALUES (
-          'location-observed-download', 'snapshot-observed-download',
+          'location-observed-download', '${observedFile.replaceAll("'", "''")}', 'snapshot-observed-download',
           '2026-08-29T00:00:00.000Z', ${bytes.byteLength},
           '${details.mtime.toISOString()}', '${observationBaseline}'
         );
@@ -2253,7 +2314,6 @@ describe("asset delivery view", () => {
 
       await writeFile(observedFile, bytes);
       await utimes(observedFile, details.atime, details.mtime);
-      const blobDigest = createHash("sha256").update(bytes).digest("hex");
       const artifactRevisionId = `artifact-revision_${createHash("sha256")
         .update(`artifact-observed-download\u0000${blobDigest}`)
         .digest("hex")}`;

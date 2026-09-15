@@ -6,6 +6,7 @@ import { Button } from "#/components/ui/button";
 
 const props = defineProps<{
   readonly target: { readonly subjectId: string };
+  readonly showEnrichment?: boolean;
 }>();
 const emit = defineEmits<{ done: [] }>();
 const message = ref<string>();
@@ -37,6 +38,12 @@ async function refresh(kind: "metadata-refresh" | "rescrape") {
 <template>
   <div class="grid gap-2">
     <div class="flex flex-wrap gap-2">
+      <Button
+        v-if="showEnrichment !== false"
+        as="a"
+        :href="`/intake/enrich?asset=${encodeURIComponent(target.subjectId)}`"
+        >整理内容</Button
+      >
       <Button
         variant="outline"
         :disabled="pending !== undefined"

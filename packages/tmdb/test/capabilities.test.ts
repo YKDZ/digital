@@ -7,11 +7,48 @@ import {
   TmdbArtifactAcquirer,
   TmdbCollector,
   TmdbSourceInterpreter,
+  TmdbSourceAddressing,
   TmdbStrictFilmDirectoryInterpreter,
   TmdbStrictFilmRecognizer,
   trustedTmdbDirectedFilmRule,
   trustedTmdbStrictFilmRule,
 } from "../src/index.ts";
+
+describe("TMDB 明确电影输入", () => {
+  const addressing = new TmdbSourceAddressing();
+
+  it("将电影编号和规范电影页归一为同一来源地址", () => {
+    expect(addressing.normalize({ movie: "9509" })).toMatchObject({
+      status: "accepted",
+      normalizedInput: {
+        movie: "https://www.themoviedb.org/movie/9509",
+      },
+      evidence: {
+        sourceIdentity: "tmdb",
+        sourceAddress: "https://www.themoviedb.org/movie/9509",
+      },
+    });
+    expect(
+      addressing.normalize({
+        movie: "https://www.themoviedb.org/movie/9509",
+      }),
+    ).toMatchObject({
+      status: "accepted",
+      evidence: {
+        sourceAddress: "https://www.themoviedb.org/movie/9509",
+      },
+    });
+  });
+
+  it("拒绝未知字段和非电影地址", () => {
+    expect(addressing.normalize({ id: "9509" })).toMatchObject({
+      status: "invalid",
+    });
+    expect(
+      addressing.normalize({ movie: "https://example.com/movie/9509" }),
+    ).toMatchObject({ status: "invalid" });
+  });
+});
 
 const snapshot = (root: string, directories: readonly string[] = []) => ({
   id: "snapshot",
@@ -666,10 +703,16 @@ describe("TMDB collection and interpretation", () => {
     ).toBe(true);
     expect(interpreted.relationships).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ role: "director" }),
         expect.objectContaining({
-          role: "cast",
-          participantId: "entity_tmdb_person_75920",
+          participants: [expect.objectContaining({ role: "director" })],
+        }),
+        expect.objectContaining({
+          participants: [
+            expect.objectContaining({
+              entityId: "entity_tmdb_person_75920",
+              role: "cast",
+            }),
+          ],
           qualifiers: [
             { key: "character", value: "角色 8" },
             { key: "tmdb.cast-order", value: "0" },
@@ -677,11 +720,11 @@ describe("TMDB collection and interpretation", () => {
         }),
       ]),
     );
-    const cast = interpreted.relationships?.filter(
-      (item) => item.role === "cast",
+    const cast = interpreted.relationships?.filter((item) =>
+      item.participants.some(({ role }) => role === "cast"),
     );
     expect(cast).toHaveLength(10);
-    expect(cast?.map((item) => item.participantId)).toEqual([
+    expect(cast?.map((item) => item.participants[0]?.entityId)).toEqual([
       "entity_tmdb_person_75920",
       "entity_tmdb_person_75921",
       "entity_tmdb_person_75922",
@@ -707,12 +750,14 @@ describe("TMDB collection and interpretation", () => {
       translationsRecord.id,
     ]);
     expect(
-      interpreted.relationships?.find((item) => item.role === "director")
-        ?.sourceRecordIds,
+      interpreted.relationships?.find((item) =>
+        item.participants.some(({ role }) => role === "director"),
+      )?.sourceRecordIds,
     ).toEqual([directorsRecord.id]);
     expect(
-      interpreted.relationships?.find((item) => item.role === "cast")
-        ?.sourceRecordIds,
+      interpreted.relationships?.find((item) =>
+        item.participants.some(({ role }) => role === "cast"),
+      )?.sourceRecordIds,
     ).toEqual([creditsRecord.id]);
     expect(proposal.ruleResults[0]?.evidenceReferences).toEqual([
       { kind: "source-record", sourceRecordId: searchRecord.id },
@@ -1154,11 +1199,11 @@ describe("TMDB collection and interpretation", () => {
     ]);
     expect(interpreted.relationships).toEqual([
       expect.objectContaining({
-        role: "director",
+        participants: [expect.objectContaining({ role: "director" })],
         sourceSlot: "tmdb.credits.crew.1",
       }),
       expect.objectContaining({
-        role: "cast",
+        participants: [expect.objectContaining({ role: "cast" })],
         qualifiers: [
           { key: "character", value: "尹英华" },
           { key: "tmdb.cast-order", value: "1" },

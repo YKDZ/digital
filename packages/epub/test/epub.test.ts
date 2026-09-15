@@ -120,7 +120,7 @@ describe("EPUB publication inspection", () => {
           observedArtifactReference: "isbn-lexical-boundary",
           byteSource: byteSource(fixture(metadata), "lexical.epub"),
         })
-      )[0]!;
+      )[0];
     const prefixed = await inspect(
       `<dc:identifier>ISBN-13: 978-0-306-40615-7</dc:identifier>`,
     );
@@ -382,9 +382,32 @@ describe("EPUB publication inspection", () => {
         (item) => item.property === "book.contributor",
       ),
     ).toHaveLength(1);
+    expect(epub3Evidence?.inspection?.entityGraph).toMatchObject({
+      coverage: { id: "epub.opf.relationships", completeness: "complete" },
+      entities: [
+        {
+          key: "contributor:creator:1",
+          label: "Carlo Zen 東條チカ",
+          preservedValue: "Carlo Zen 東條チカ",
+        },
+        { key: "series:collection-1", label: "幼女战记" },
+      ],
+      relationships: [
+        {
+          type: "asset.contribution",
+          sourceSlot: "opf.creator.1",
+          participants: [{ entityKey: "contributor:creator:1", role: "aut" }],
+        },
+        {
+          type: "asset.membership",
+          sourceSlot: "opf.collection.collection-1",
+          qualifiers: [{ key: "position", value: "2" }],
+        },
+      ],
+    });
 
-    const epub2Part = epub2Evidence!.inspection!.parts[0]!;
-    const epub3Part = epub3Evidence!.inspection!.parts[0]!;
+    const epub2Part = epub2Evidence.inspection!.parts[0];
+    const epub3Part = epub3Evidence.inspection!.parts[0];
     expect(epub2Part.locator).toBe(
       "epub:OPS/book.opf#/metadata/meta[@name='cover'][@content='cover2']->manifest/item[@id='cover2']->entry:OPS/images/cover.jpg",
     );
@@ -397,10 +420,10 @@ describe("EPUB publication inspection", () => {
         id: "foreign-cover",
         ...epub3Part,
         observedArtifactReference: "revision-epub3",
-        producer: { ...epub3Evidence!.producer, capabilityId: "foreign" },
+        producer: { ...epub3Evidence.producer, capabilityId: "foreign" },
       }),
     ).toBe(false);
-    for (const forged of forgedCoordinates(epub3Evidence!.producer)) {
+    for (const forged of forgedCoordinates(epub3Evidence.producer)) {
       expect(
         acquirer.canAcquire({
           id: "forged-producer-cover",
@@ -417,7 +440,7 @@ describe("EPUB publication inspection", () => {
           ...epub3Part,
           locator: epub3Part.locator.replace("cover-image", "ordinary-image"),
           observedArtifactReference: "revision-epub3",
-          producer: epub3Evidence!.producer,
+          producer: epub3Evidence.producer,
         },
         byteSource: byteSource(epub3, "publication.epub"),
       }),
@@ -428,7 +451,7 @@ describe("EPUB publication inspection", () => {
           id: "cover-3",
           ...epub3Part,
           observedArtifactReference: "revision-epub3",
-          producer: epub3Evidence!.producer,
+          producer: epub3Evidence.producer,
         },
         byteSource: byteSource(epub3, "publication.epub"),
       }),
@@ -458,6 +481,47 @@ describe("EPUB publication inspection", () => {
     expect(ambiguousEvidence[0]?.inspection?.parts).toEqual([]);
   });
 
+  it("only proposes explicitly typed series and never splits a composite contributor", async () => {
+    const nonSeries = fixture(
+      `<dc:creator>甲、乙</dc:creator><meta id="set" property="belongs-to-collection">合集</meta><meta refines="#set" property="collection-type">set</meta><meta refines="#set" property="group-position">7</meta>`,
+    );
+    const explicitSeries = fixture(
+      `<dc:creator opf:role="aut">甲、乙</dc:creator><meta id="series" property="belongs-to-collection">系列</meta><meta refines="#series" property="collection-type">series</meta>`,
+    );
+    const inspector = new EpubPublicationInspector();
+    const [withoutGraph] = await inspector.inspect({
+      observedArtifactReference: "non-series",
+      byteSource: byteSource(nonSeries, "non-series.epub"),
+    });
+    const [withGraph] = await inspector.inspect({
+      observedArtifactReference: "series",
+      byteSource: byteSource(explicitSeries, "series.epub"),
+    });
+
+    expect(withoutGraph?.inspection?.entityGraph).toMatchObject({
+      coverage: { id: "epub.opf.relationships", completeness: "complete" },
+      entities: [],
+      relationships: [],
+    });
+    expect(withGraph?.inspection?.entityGraph).toMatchObject({
+      entities: [
+        {
+          key: "contributor:creator:1",
+          label: "甲、乙",
+          preservedValue: "甲、乙",
+        },
+        { key: "series:series", label: "系列" },
+      ],
+      relationships: [
+        expect.objectContaining({ type: "asset.contribution" }),
+        expect.objectContaining({
+          type: "asset.membership",
+          qualifiers: [],
+        }),
+      ],
+    });
+  });
+
   it("proposes only one inspector-produced revision with no valid ISBN", async () => {
     const inspector = new EpubPublicationInspector();
     const noIsbn = (
@@ -465,7 +529,7 @@ describe("EPUB publication inspection", () => {
         observedArtifactReference: "revision-local",
         byteSource: byteSource(fixture(""), "local.epub"),
       })
-    )[0]!;
+    )[0];
     const withIsbn = (
       await inspector.inspect({
         observedArtifactReference: "revision-official",
@@ -476,7 +540,7 @@ describe("EPUB publication inspection", () => {
           "official.epub",
         ),
       })
-    )[0]!;
+    )[0];
     const conflicting = (
       await inspector.inspect({
         observedArtifactReference: "revision-conflict",
@@ -487,7 +551,7 @@ describe("EPUB publication inspection", () => {
           "conflict.epub",
         ),
       })
-    )[0]!;
+    )[0];
     const recognizer = new EpubLocalPublicationRecognizer();
     const localContext = observedContext(noIsbn);
 
@@ -522,7 +586,7 @@ describe("EPUB publication inspection", () => {
           basis: {
             ...localContext.basis,
             artifactRevisions: [
-              { ...localContext.basis.artifactRevisions[0]!, producer: forged },
+              { ...localContext.basis.artifactRevisions[0], producer: forged },
             ],
           },
         }),
@@ -536,7 +600,7 @@ describe("EPUB publication inspection", () => {
           artifactRevisions: [
             ...localContext.basis.artifactRevisions,
             {
-              ...localContext.basis.artifactRevisions[0]!,
+              ...localContext.basis.artifactRevisions[0],
               observedArtifactReference: "second",
             },
           ],

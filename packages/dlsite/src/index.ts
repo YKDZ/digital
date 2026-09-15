@@ -90,7 +90,6 @@ export const dlsiteInformationFulfillmentCapabilities = [
       "asset.declared-language",
       "dlsite.product.price-jpy",
       "asset.introduction",
-      "asset.series-position",
     ],
     relationshipTypes: ["asset.contribution", "asset.membership"],
     cost: "low",
@@ -445,6 +444,32 @@ type ProductInfo = {
 };
 
 export class DlsiteSourceInterpreter implements SourceInterpreter {
+  readonly relationshipDefinitions = [
+    {
+      id: "dlsite.contribution",
+      type: "asset.contribution",
+      label: "DLsite 创作署名",
+      roles: [
+        { role: "asset", label: "作品", minimum: 1, maximum: 1 },
+        { role: "circle", label: "社团", minimum: 0 },
+        { role: "voice", label: "声优", minimum: 0 },
+        { role: "scenario", label: "脚本", minimum: 0 },
+        { role: "illustration", label: "插画", minimum: 0 },
+        { role: "author", label: "作者", minimum: 0 },
+      ],
+      qualifiers: [],
+    },
+    {
+      id: "dlsite.series-membership",
+      type: "asset.membership",
+      label: "DLsite 系列归属",
+      roles: [
+        { role: "asset", label: "作品", minimum: 1, maximum: 1 },
+        { role: "dlsite.series.member", label: "系列", minimum: 1, maximum: 1 },
+      ],
+      qualifiers: [{ key: "asset.membership.position", label: "系列顺序" }],
+    },
+  ];
   readonly capability = interpreterCapability;
 
   canInterpret(input: {
@@ -592,6 +617,9 @@ export class DlsiteSourceInterpreter implements SourceInterpreter {
     const relationships: ProposedEntityRelationship[] = [];
     const byExactNamespace = new Map<string, SourcedEntity>();
     const relationshipOccurrences = new Map<string, number>();
+    const coverageBySourceRecordId = new Map(
+      input.sourceRecords.map((record) => [record.id, record.coverage.id]),
+    );
     const mention = (i: {
       readonly field: string;
       readonly role: string;
@@ -601,16 +629,26 @@ export class DlsiteSourceInterpreter implements SourceInterpreter {
       readonly sourceRecordId: string;
       readonly namespace: string;
     }): SourcedEntity => {
-      const sourceKey = i.sourceKey ?? i.value;
-      const exactKey = `${i.namespace}\u0000${sourceKey}`;
+      const occurrenceIndex =
+        (relationshipOccurrences.get(i.namespace) ?? 0) + 1;
+      relationshipOccurrences.set(i.namespace, occurrenceIndex);
+      /** 无稳定来源键时，以作品地址、字段、角色和出现序号建立只属于本次指称的本地坐标。 */
+      const sourceKey =
+        i.sourceKey ??
+        `occurrence:${sourceAddress}\u0000${i.field}\u0000${i.role}\u0000${occurrenceIndex}`;
+      const identityNamespace =
+        i.sourceKey === undefined
+          ? `${i.namespace}.occurrence-local`
+          : i.namespace;
+      const exactKey = `${identityNamespace}\u0000${sourceKey}`;
       let entity = byExactNamespace.get(exactKey);
       if (entity === undefined) {
         entity = {
-          id: sourcedEntityId(i.namespace, sourceKey),
+          id: sourcedEntityId(identityNamespace, sourceKey),
           kind: i.kind,
           sourceIdentity: "dlsite",
           sourceKey,
-          identityNamespace: i.namespace,
+          identityNamespace,
           label: i.value,
           sourceRecordIds: [i.sourceRecordId],
         };
@@ -618,13 +656,21 @@ export class DlsiteSourceInterpreter implements SourceInterpreter {
         entities.push(entity);
       }
       const occurrence: EntityMention = {
-        id: `entity-mention_${randomUUID()}`,
+        id: sourceMentionId({
+          sourceAddress,
+          coverageId: coverageBySourceRecordId.get(i.sourceRecordId) ?? "",
+          field: i.field,
+          role: i.role,
+          identityNamespace,
+          sourceKey,
+          occurrenceIndex,
+        }),
         sourceRecordIds: [i.sourceRecordId],
         sourceIdentity: "dlsite",
         field: i.field,
         role: i.role,
         label: i.value,
-        identityNamespace: i.namespace,
+        identityNamespace,
         sourceKey,
       };
       entityMentions.push(occurrence);
@@ -635,14 +681,13 @@ export class DlsiteSourceInterpreter implements SourceInterpreter {
         rule: "source-field-role-exact",
         sourceRecordIds: [i.sourceRecordId],
       });
-      const occurrenceIndex =
-        (relationshipOccurrences.get(i.namespace) ?? 0) + 1;
-      relationshipOccurrences.set(i.namespace, occurrenceIndex);
       relationships.push({
-        participantId: entity.id,
-        participantMentionIds: [occurrence.id],
+        participants: [
+          { entityId: entity.id, role: i.role, mentionIds: [occurrence.id] },
+        ],
+        subjectRole: "asset",
+        requiredRoles: ["asset", i.role],
         type: "asset.contribution",
-        role: i.role,
         sourceSlot: `${i.namespace}:${sourceKey}:${occurrenceIndex}`,
         sourceRecordIds: [i.sourceRecordId],
       });
@@ -680,22 +725,20 @@ export class DlsiteSourceInterpreter implements SourceInterpreter {
         sourceRecordIds: [productRecordId],
       };
       entities.push(series);
+      const volume = firstString(product.title_volumn);
       relationships.push({
-        participantId: series.id,
+        participants: [{ entityId: series.id, role: "dlsite.series.member" }],
+        subjectRole: "asset",
+        requiredRoles: ["asset", "dlsite.series.member"],
         type: "asset.membership",
-        role: "dlsite.series.member",
         sourceSlot: `dlsite.series.member:${seriesId}`,
         sourceRecordIds: [productRecordId],
+        ...(volume === undefined
+          ? {}
+          : {
+              qualifiers: [{ key: "asset.membership.position", value: volume }],
+            }),
       });
-      const volume = firstString(product.title_volumn);
-      if (volume !== undefined) {
-        metadata.push({
-          property: "asset.series-position",
-          sourceSlot: `dlsite.series.position:${seriesId}`,
-          value: volume,
-          sourceRecordIds: [productRecordId],
-        });
-      }
     }
     for (const [field, role, htmlLabel] of [
       ["voice", "voice", "声優"],
@@ -755,7 +798,7 @@ export class DlsiteExactRecognizer implements Recognizer {
     if (input.basis.kind !== "source-interpretation")
       throw new Error("DLsite recognizer requires source interpretation");
     const interpretation = input.basis.interpretation;
-    const directed = input.evidence.some((evidence) => {
+    const directedEvidence = input.evidence.filter((evidence) => {
       if (
         evidence.kind !== "directed-source-address" ||
         evidence.sourceIdentity !== "dlsite" ||
@@ -771,7 +814,7 @@ export class DlsiteExactRecognizer implements Recognizer {
         return false;
       }
     });
-    const directory = input.evidence.some(
+    const directoryEvidence = input.evidence.filter(
       (evidence) =>
         evidence.sourceIdentity === "dlsite" &&
         evidence.producer.capabilityId === directoryCapability.capabilityId &&
@@ -779,6 +822,8 @@ export class DlsiteExactRecognizer implements Recognizer {
         productIdFromAddress(evidence.sourceAddress) ===
           productIdFromAddress(interpretation.sourceAddress),
     );
+    const directed = directedEvidence.length !== 0;
+    const directory = directoryEvidence.length !== 0;
     const satisfied = directed || directory;
     return {
       id: `recognition-proposal_${randomUUID()}`,
@@ -789,7 +834,7 @@ export class DlsiteExactRecognizer implements Recognizer {
           explanation: directed
             ? "用户指定的精确 DLsite 来源地址与官方记录一致"
             : "目录中的精确来源地址与官方记录一致",
-          evidence: input.evidence,
+          evidence: [...directedEvidence, ...directoryEvidence],
         },
       ],
     };
@@ -1002,6 +1047,32 @@ function creditedNames(value: unknown): readonly string[] {
 function sourcedEntityId(namespace: string, sourceKey: string): string {
   return `entity_${createHash("sha256")
     .update(`dlsite:${namespace}:${sourceKey}`)
+    .digest("hex")}`;
+}
+
+/** 来源指称用来源覆盖坐标稳定寻址，绝不由显示名称推断。 */
+function sourceMentionId(input: {
+  readonly sourceAddress: string;
+  readonly coverageId: string;
+  readonly field: string;
+  readonly role: string;
+  readonly identityNamespace: string;
+  readonly sourceKey: string;
+  readonly occurrenceIndex: number;
+}): string {
+  return `entity-mention_${createHash("sha256")
+    .update(
+      [
+        "dlsite",
+        input.sourceAddress,
+        input.coverageId,
+        input.field,
+        input.role,
+        input.identityNamespace,
+        input.sourceKey,
+        String(input.occurrenceIndex),
+      ].join("\u0000"),
+    )
     .digest("hex")}`;
 }
 

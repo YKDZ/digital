@@ -119,12 +119,12 @@ describe("KADOKAWA 日本来源", () => {
       `https://www.kadokawa.co.jp/product/${first}/`,
       `https://www.kadokawa.co.jp/product/${second}/`,
     ]);
-    expect(batches[1]!.metadata).toEqual(
+    expect(batches[1].metadata).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           property: "asset.title",
           value: "第二册",
-          sourceRecordIds: [collected.records[2]!.id],
+          sourceRecordIds: [collected.records[2].id],
         }),
       ]),
     );
@@ -372,7 +372,7 @@ describe("KADOKAWA 日本来源", () => {
         interpretation: batch,
       }),
     ).toBe(true);
-    const candidate = batch.sourceArtifacts[0]!;
+    const candidate = batch.sourceArtifacts[0];
     await expect(
       source.artifactAcquirer.acquire(candidate),
     ).resolves.toMatchObject({ mediaType: "image/webp" });
@@ -411,7 +411,7 @@ describe("KADOKAWA 日本来源", () => {
       evidence: [evidence],
       sourceRecords: collected.records,
     });
-    expect(batch!.metadata).toEqual(
+    expect(batch.metadata).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           property: "book.contributor",
@@ -420,6 +420,22 @@ describe("KADOKAWA 日本来源", () => {
         expect.objectContaining({
           property: "book.contributor-role",
           value: "著者",
+        }),
+      ]),
+    );
+    expect(batch.entities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: "甲",
+          identityNamespace: "kadokawa-jp.contributor.occurrence-local",
+        }),
+      ]),
+    );
+    expect(batch.relationships).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "asset.contribution",
+          participants: [expect.objectContaining({ role: "著者" })],
         }),
       ]),
     );
@@ -440,7 +456,7 @@ describe("KADOKAWA 日本来源", () => {
       evidence: [driftEvidence],
       sourceRecords: driftCollected.records,
     });
-    expect(driftBatch!.metadata.map((fact) => fact.property)).not.toEqual(
+    expect(driftBatch.metadata.map((fact) => fact.property)).not.toEqual(
       expect.arrayContaining(["book.contributor", "book.contributor-role"]),
     );
   });
@@ -468,7 +484,7 @@ describe("KADOKAWA 日本来源", () => {
     expect(
       collector.associationInterpreter.canInterpret({
         evidence: directed.evidence,
-        interpretation: batch!,
+        interpretation: batch,
       }),
     ).toBe(true);
     const subject = {
@@ -488,7 +504,7 @@ describe("KADOKAWA 日本来源", () => {
       collector.associationInterpreter.interpret({
         subject,
         evidence: directed.evidence,
-        interpretation: batch!,
+        interpretation: batch,
       }),
     ).toMatchObject({ status: "accepted" });
     expect(
@@ -497,16 +513,16 @@ describe("KADOKAWA 日本来源", () => {
           ...evidence,
           sourceAddress: `https://www.kadokawa.co.jp/product/${second}/`,
         },
-        interpretation: batch!,
+        interpretation: batch,
       }),
     ).toBe(false);
     expect(
       collector.associationInterpreter.canInterpret({
         evidence: { ...evidence, sourceIdentity: "foreign" },
-        interpretation: batch!,
+        interpretation: batch,
       }),
     ).toBe(false);
-    const candidate = batch!.sourceArtifacts[0]!;
+    const candidate = batch.sourceArtifacts[0];
     for (const failed of [
       response("", candidate.acquisitionReference, "image/webp", 500),
       response("", candidate.acquisitionReference, "image/webp"),

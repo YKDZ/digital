@@ -7,6 +7,7 @@ import {
   type FilesystemPackageSnapshot,
   type Recognizer,
   type RecognitionCandidateContext,
+  type SourceAddressingCapability,
   type SourceArtifactAcquirer,
   type SourceCollectionResult,
   type SourceCollector,
@@ -71,6 +72,13 @@ const recognizerCapability = declareCapability({
   contractVersion: "1",
   interpretationContractVersions: ["1"],
 });
+const addressingCapability = declareCapability({
+  identity: "tmdb.explicit-film-addressing",
+  implementationVersion: "1",
+  kind: "source-addressing",
+  contractVersion: "1",
+  interpretationContractVersions: ["1"],
+});
 const acquirerCapability = declareCapability({
   identity: "tmdb.source-artifact-acquirer",
   implementationVersion: "2",
@@ -91,6 +99,56 @@ export const trustedTmdbDirectedFilmRule = {
   ruleId: "exact-directed-official-address",
   ruleVersion: "1",
 } as const;
+
+export class TmdbSourceAddressing implements SourceAddressingCapability {
+  readonly capability = addressingCapability;
+  readonly inputRequirement = {
+    sourceIdentity: "tmdb",
+    displayName: "TMDB",
+    fields: [
+      {
+        key: "movie",
+        label: "电影",
+        required: true,
+        acceptedInput: "TMDB 电影编号或规范电影页",
+        example: "https://www.themoviedb.org/movie/9509",
+      },
+    ],
+  } as const;
+
+  normalize(input: Readonly<Record<string, string>>) {
+    if (Object.keys(input).some((key) => key !== "movie"))
+      return {
+        status: "invalid" as const,
+        reason: "TMDB 来源输入包含未知字段",
+      };
+    const supplied = input.movie?.trim();
+    if (supplied === undefined || supplied.length === 0)
+      return {
+        status: "invalid" as const,
+        reason: "请输入 TMDB 电影编号或规范电影页",
+      };
+    const sourceAddress = /^[1-9]\d*$/u.test(supplied)
+      ? movieAddress(supplied)
+      : canonicalDirectedMovieAddress(supplied);
+    if (sourceAddress === undefined)
+      return {
+        status: "invalid" as const,
+        reason: "TMDB 电影编号或电影页无效",
+      };
+    return {
+      status: "accepted" as const,
+      normalizedInput: { movie: sourceAddress },
+      evidence: {
+        kind: "directed-source-address" as const,
+        sourceIdentity: "tmdb",
+        sourceAddress,
+        explanation: "用户明确指定 TMDB 电影",
+        producer: this.capability,
+      },
+    };
+  }
+}
 
 type FetchLike = (
   input: string,
@@ -646,6 +704,31 @@ export class TmdbCollector implements SourceCollector {
 
 /** 将一部已验证 TMDB 影片及其完整演职员表响应映射为通用事实。 */
 export class TmdbSourceInterpreter implements SourceInterpreter {
+  readonly relationshipDefinitions = [
+    {
+      id: "tmdb.directing",
+      type: "asset.contribution",
+      label: "影片导演",
+      roles: [
+        { role: "asset", label: "影片", minimum: 1, maximum: 1 },
+        { role: "director", label: "导演", minimum: 1 },
+      ],
+      qualifiers: [],
+    },
+    {
+      id: "tmdb.cast",
+      type: "asset.contribution",
+      label: "影片出演",
+      roles: [
+        { role: "asset", label: "影片", minimum: 1, maximum: 1 },
+        { role: "cast", label: "演员", minimum: 1 },
+      ],
+      qualifiers: [
+        { key: "character", label: "饰演角色" },
+        { key: "tmdb.cast-order", label: "演员排序" },
+      ],
+    },
+  ];
   readonly capability = interpreterCapability;
 
   canInterpret(input: {
@@ -815,9 +898,10 @@ export class TmdbSourceInterpreter implements SourceInterpreter {
       if (value.job !== "Director") continue;
       const entity = person(value, directorCredits.id);
       relationships.push({
-        participantId: entity.id,
+        participants: [{ entityId: entity.id, role: "director" }],
+        subjectRole: "asset",
+        requiredRoles: ["asset", "director"],
         type: "asset.contribution",
-        role: "director",
         sourceSlot: `tmdb.credits.crew.${value.sourceIndex}`,
         sourceRecordIds: [directorCredits.id],
       });
@@ -827,9 +911,10 @@ export class TmdbSourceInterpreter implements SourceInterpreter {
       .slice(0, 10)) {
       const entity = person(value, credits.id);
       relationships.push({
-        participantId: entity.id,
+        participants: [{ entityId: entity.id, role: "cast" }],
+        subjectRole: "asset",
+        requiredRoles: ["asset", "cast"],
         type: "asset.contribution",
-        role: "cast",
         sourceSlot: `tmdb.credits.cast.${value.sourceIndex}`,
         sourceRecordIds: [credits.id],
         qualifiers: [

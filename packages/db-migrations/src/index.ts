@@ -120,6 +120,7 @@ async function prepareProductionCatalogueWithWriter(
         .prepare("SELECT 1 FROM __digital_catalogue_migrations LIMIT 1")
         .get() !== undefined;
     if (!hasLedgerRows && schemaCanAdoptBaseline(database)) {
+      establishDefaultLocalUser(database);
       const insert = database.prepare(
         "INSERT INTO __digital_catalogue_migrations (id, checksum, applied_at) VALUES (?, ?, ?)",
       );
@@ -197,6 +198,27 @@ async function prepareProductionCatalogueWithWriter(
   } finally {
     database.close();
   }
+}
+
+/** 已审阅结构整体认领账本时，仍需补上迁移所含的本地身份初始化。 */
+function establishDefaultLocalUser(database: DatabaseSync): void {
+  database.exec(`
+    INSERT INTO entities (id)
+    SELECT 'person:local-user'
+    WHERE NOT EXISTS (SELECT 1 FROM entities WHERE id = 'person:local-user');
+    INSERT INTO entity_kind_assertions (id, entity_id, kind, basis, source_record_ids_json)
+    SELECT 'local-user-person-kind', 'person:local-user', 'person', 'legacy-migration', '[]'
+    WHERE NOT EXISTS (SELECT 1 FROM entity_kind_assertions WHERE entity_id = 'person:local-user' AND kind = 'person');
+    INSERT INTO local_users (user_id, person_id)
+    SELECT 'local-user', 'person:local-user'
+    WHERE EXISTS (
+      SELECT 1 FROM entity_kind_assertions
+      WHERE entity_id = 'person:local-user' AND kind = 'person'
+    )
+      AND NOT EXISTS (
+        SELECT 1 FROM local_users WHERE user_id = 'local-user'
+      );
+  `);
 }
 
 /** 只在离线 prepare 持有 product-data writer lock 时清理 proof 派生索引。 */

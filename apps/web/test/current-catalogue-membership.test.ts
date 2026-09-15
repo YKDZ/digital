@@ -38,9 +38,7 @@ it("removes an asset from the Web current catalogue after a successful scan conf
     await unlink(path.join(media, "local.txt"));
     const disappearanceScan = await startRefresh(product, root.id);
     await expect
-      .poll(async () =>
-        intakeExecution(product!, root.id, disappearanceScan.id),
-      )
+      .poll(async () => intakeExecution(product, root.id, disappearanceScan.id))
       .toMatchObject({ execution: { status: "completed" } });
 
     await expect(currentCatalogue(product)).resolves.toMatchObject({

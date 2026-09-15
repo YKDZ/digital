@@ -18,6 +18,7 @@ import type {
   PlaybackPlanning,
   PlaybackPreferences,
 } from "@digital/application";
+import type { AssetInteractionState } from "@digital/domain";
 
 export {
   ArtifactByteAccessError,
@@ -89,6 +90,12 @@ export type ProductApplication = {
   readonly workflow: ProductWorkflowOperations;
   readonly automation: ProductAutomationOperations;
   readonly execution: ProductExecutionOperations;
+  readonly interactions: {
+    read(
+      revisionIds: readonly string[],
+    ): Promise<readonly AssetInteractionState[]>;
+    save(input: AssetInteractionState): Promise<void>;
+  };
   startAutomation(options?: ProductAutomationHostOptions): Promise<void>;
   setAutomationInformationRequirementForAcceptedSubject(
     resolver: AutomationInformationRequirementResolver,
@@ -114,6 +121,13 @@ export type ProductApplication = {
   observedFileSelectionForLocation(
     locationId: string,
   ): Promise<ObservedFileSelectionId | undefined>;
+  observedFileDownloadForLocation(locationId: string): Promise<
+    | {
+        readonly selectionId: ObservedFileSelectionId;
+        readonly byteLength: number;
+      }
+    | undefined
+  >;
   confirmObservedFileRevision(input: {
     readonly observedFileSelectionId: ObservedFileSelectionId;
   }): Promise<{ readonly artifactRevisionId: string }>;
@@ -134,6 +148,7 @@ export function artifactDownloadOperations(
   | "openArtifactBytes"
   | "planPlayback"
   | "observedFileSelectionForLocation"
+  | "observedFileDownloadForLocation"
   | "confirmObservedFileRevision"
 > {
   return {
@@ -148,6 +163,16 @@ export function artifactDownloadOperations(
     },
     observedFileSelectionForLocation: async (locationId) =>
       await confirmation.observedFileSelectionForLocation(locationId),
+    async observedFileDownloadForLocation(locationId) {
+      const selectionId =
+        await confirmation.observedFileSelectionForLocation(locationId);
+      if (selectionId === undefined) return undefined;
+      const facts =
+        await confirmation.readObservedFileConfirmationFacts(selectionId);
+      return facts === undefined
+        ? undefined
+        : { selectionId, byteLength: facts.observation.size };
+    },
     async confirmObservedFileRevision(input) {
       return await confirmation.confirmObservedFileSelection(
         input.observedFileSelectionId,

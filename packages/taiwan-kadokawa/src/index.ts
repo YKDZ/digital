@@ -13,7 +13,11 @@ import {
 } from "@digital/application";
 import type {
   CapabilityCoordinate,
+  EntityMention,
+  EntityResolutionDecision,
+  ProposedEntityRelationship,
   RecognitionEvidence,
+  SourcedEntity,
   SourceRecord,
 } from "@digital/domain";
 import { parse } from "parse5";
@@ -179,6 +183,18 @@ export function createTaiwanKadokawaSource(
     },
   };
   const interpreter: SourceInterpreter = {
+    relationshipDefinitions: [
+      {
+        id: "taiwan-kadokawa.contribution",
+        type: "asset.contribution",
+        label: "图书署名（台湾角川）",
+        roles: [
+          { role: "asset", label: "作品", minimum: 1, maximum: 1 },
+          { role: "book.contributor", label: "署名者", minimum: 1 },
+        ],
+        qualifiers: [],
+      },
+    ],
     capability: interpreterCapability,
     canInterpret(input) {
       return (
@@ -217,16 +233,62 @@ export function createTaiwanKadokawaSource(
         ),
       ];
       const description = descriptionFacts(page.description);
+      const entities: SourcedEntity[] = [];
+      const entityMentions: EntityMention[] = [];
+      const entityResolutionDecisions: EntityResolutionDecision[] = [];
+      const relationships: ProposedEntityRelationship[] = [];
       if (description !== undefined) {
-        for (const [index, contributor] of description.contributors.entries())
+        for (const [index, contributor] of description.contributors.entries()) {
+          const slot = `taiwan-kadokawa.contributor.${index + 1}`;
+          const sourceKey = `${address}\u0000${slot}`;
+          const identityNamespace =
+            "taiwan-kadokawa.contributor.occurrence-local";
+          const entityId = relatedEntityId(identityNamespace, sourceKey);
+          const mentionId = relatedEntityId("mention", sourceKey);
+          entities.push({
+            id: entityId,
+            kind: "entity",
+            sourceIdentity,
+            sourceKey,
+            identityNamespace,
+            label: contributor,
+            sourceRecordIds: [record.id],
+          });
+          entityMentions.push({
+            id: mentionId,
+            sourceRecordIds: [record.id],
+            sourceIdentity,
+            field: "book.contributor",
+            role: "book.contributor",
+            label: contributor,
+            identityNamespace,
+            sourceKey,
+          });
+          entityResolutionDecisions.push({
+            id: relatedEntityId("resolution", mentionId),
+            mentionId,
+            entityId,
+            rule: "source-field-role-exact",
+            sourceRecordIds: [record.id],
+          });
+          relationships.push({
+            participants: [
+              {
+                entityId,
+                role: "book.contributor",
+                mentionIds: [mentionId],
+              },
+            ],
+            subjectRole: "asset",
+            requiredRoles: ["asset", "book.contributor"],
+            type: "asset.contribution",
+            sourceSlot: slot,
+            sourceRecordIds: [record.id],
+          });
           metadata.push(
-            assertion(
-              "book.contributor",
-              `taiwan-kadokawa.contributor.${index + 1}`,
-              contributor,
-              record.id,
-            ),
+            assertion("book.contributor", slot, contributor, record.id),
           );
+        }
         metadata.push(
           assertion(
             "book.publication-date",
@@ -252,6 +314,12 @@ export function createTaiwanKadokawaSource(
           sourceIdentity,
           sourceAddress: address,
           metadata,
+          ...(entities.length === 0 ? {} : { entities }),
+          ...(entityMentions.length === 0 ? {} : { entityMentions }),
+          ...(entityResolutionDecisions.length === 0
+            ? {}
+            : { entityResolutionDecisions }),
+          ...(relationships.length === 0 ? {} : { relationships }),
           sourceArtifacts:
             page.image === undefined
               ? []
@@ -347,6 +415,12 @@ export function createTaiwanKadokawaSource(
     associationInterpreter,
     artifactAcquirer,
   };
+}
+
+function relatedEntityId(namespace: string, value: string): string {
+  return `entity_${createHash("sha256")
+    .update(`${namespace}\u0000${value}`)
+    .digest("hex")}`;
 }
 
 function sourceAddressFromEvidence(

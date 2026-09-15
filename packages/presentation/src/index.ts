@@ -1,4 +1,5 @@
 import type {
+  AcceptedAssetState,
   EffectiveMetadata,
   InformationRequirement,
 } from "@digital/application";
@@ -96,7 +97,6 @@ export const dlsiteAssetViewInformationRequirement: InformationRequirement = {
     { property: "asset.declared-language", necessity: "optional" },
     { property: "asset.content-classification", necessity: "optional" },
     { property: "dlsite.product.price-jpy", necessity: "optional" },
-    { property: "asset.series-position", necessity: "optional" },
   ],
   artifactRoles: [
     {
@@ -128,6 +128,30 @@ export type DlsiteViewCreditGroup = {
   readonly names: readonly string[];
 };
 
+export type ArtifactFileView = {
+  readonly name: string;
+  readonly format: string;
+  readonly revisionId?: string;
+  readonly image?: string;
+  readonly byteLength?: number;
+  readonly downloadUrl?: string;
+  readonly interaction?: {
+    readonly positionMilliseconds: number;
+    readonly completed: boolean;
+  };
+};
+
+export type AssetFileTreeNode = {
+  readonly name: string;
+  readonly children?: readonly AssetFileTreeNode[];
+  readonly format?: string;
+  readonly revisionId?: string;
+  readonly image?: string;
+  readonly byteLength?: number;
+  readonly downloadUrl?: string;
+  readonly interaction?: ArtifactFileView["interaction"];
+};
+
 export type AssetViewModel = {
   readonly id: string;
   /** 精确交付主体；服务端解析可变范围/指代。 */
@@ -143,12 +167,8 @@ export type AssetViewModel = {
   readonly language?: string;
   readonly classifications: readonly string[];
   readonly cover?: string;
-  readonly files?: readonly {
-    readonly name: string;
-    readonly format: string;
-    readonly revisionId?: string;
-    readonly image?: string;
-  }[];
+  readonly files?: readonly ArtifactFileView[];
+  readonly fileTree?: readonly AssetFileTreeNode[];
   readonly available: boolean;
   readonly officialPage?: string;
   readonly sourceLabel?: string;
@@ -175,6 +195,7 @@ export type AssetViewModel = {
     readonly attachments: readonly {
       readonly name?: string;
       readonly byteLength?: string;
+      readonly kind: "file" | "image";
     }[];
   };
   readonly dlsite?: {
@@ -187,6 +208,7 @@ export type AssetViewModel = {
     readonly languages: readonly string[];
     readonly classifications: readonly string[];
     readonly credits: readonly DlsiteViewCreditGroup[];
+    readonly fileTree?: readonly AssetFileTreeNode[];
     readonly series?: {
       readonly name: string;
       readonly position?: string;
@@ -201,12 +223,7 @@ export type AssetViewModel = {
     readonly publicationDate?: string;
     readonly language?: string;
     readonly format?: string;
-    readonly files: readonly {
-      readonly name: string;
-      readonly format: string;
-      readonly revisionId?: string;
-      readonly image?: string;
-    }[];
+    readonly files: readonly ArtifactFileView[];
   };
   readonly film?: {
     readonly title: string;
@@ -233,6 +250,7 @@ export type AssetViewModel = {
 
 export type AssetViewFacts = {
   readonly id: string;
+  readonly primaryCoverArtifactId?: string;
   /** 所有当前来源关联；其中一项可能仍是识别溯源。 */
   readonly sourceAssociations?: readonly {
     readonly sourceIdentity?: string;
@@ -260,21 +278,35 @@ export type AssetViewFacts = {
       readonly sourceOrdinal?: number;
     };
   }[];
-  readonly entities?: readonly {
-    readonly id: string;
-    readonly label: string;
-    readonly sourceIdentity?: string;
-    readonly identityNamespace?: string;
-    readonly sourceKey?: string;
-  }[];
+  /** 当前相关实体只接收唯一生效种类投影，绝不接收来源解释候选。 */
+  readonly currentRelatedEntities?: readonly Pick<
+    NonNullable<AcceptedAssetState["currentRelatedEntities"]>[number],
+    | "id"
+    | "label"
+    | "kind"
+    | "sourceIdentity"
+    | "identityNamespace"
+    | "sourceKey"
+  >[];
   readonly relationships?: readonly {
-    readonly subjectId?: string;
-    readonly participantId: string;
     readonly type: string;
-    readonly role: string;
+    readonly participants: readonly {
+      readonly entityId: string;
+      readonly role: string;
+    }[];
+    readonly qualifiers?: readonly {
+      readonly key: string;
+      readonly value: string;
+    }[];
   }[];
   readonly artifactAssociations: readonly {
-    readonly subjectId?: string;
+    readonly target:
+      | { readonly kind: "entity"; readonly entityId: string }
+      | {
+          readonly kind: "artifact-revision";
+          readonly artifactId: string;
+          readonly revisionId: string;
+        };
     readonly artifactId: string;
     readonly role: string;
     readonly observedArtifactPart?: {
@@ -286,21 +318,40 @@ export type AssetViewFacts = {
   readonly artifactRevisions?: readonly {
     readonly id: string;
     readonly artifactId: string;
+    readonly blobDigest?: string;
+  }[];
+  readonly blobs?: readonly {
+    readonly digest: string;
+    readonly byteLength: number;
+  }[];
+  /** 当前观察与精确确认选出的 Location→revision；历史修订版本身不构成 target。 */
+  readonly currentLocationRevisions?: readonly {
+    readonly locationId: string;
+    readonly revisionId: string;
   }[];
   readonly locations: readonly {
+    readonly id?: string;
     readonly artifactId: string;
     readonly kind: "managed" | "observed";
     readonly address: string;
+    readonly byteLength?: number;
+    readonly downloadUrl?: string;
+  }[];
+  readonly interactionStates?: readonly {
+    readonly artifactRevisionId: string;
+    readonly positionMilliseconds: number;
+    readonly completed: boolean;
   }[];
 };
 
 export type CatalogueViewModel = AssetViewModel | BangumiSeriesViewModel;
 
-function firstMetadata(
+function singleMetadata(
   metadata: AssetViewFacts["metadata"],
   property: string,
 ): string | undefined {
-  return metadata.find((item) => item.property === property)?.value;
+  const values = metadataValues(metadata, property);
+  return values.length === 1 ? values[0] : undefined;
 }
 
 function metadataValues(
@@ -390,12 +441,17 @@ function relationshipLabels(
   role: string,
 ): readonly string[] {
   const entities = new Map(
-    (input.entities ?? []).map((entity) => [entity.id, entity.label]),
+    (input.currentRelatedEntities ?? []).map((entity) => [
+      entity.id,
+      entity.label,
+    ]),
   );
   return (input.relationships ?? []).flatMap((relationship) => {
-    if (relationship.role !== role) return [];
-    const label = entities.get(relationship.participantId);
-    return label === undefined ? [] : [label];
+    return relationship.participants.flatMap((participant) => {
+      if (participant.role !== role) return [];
+      const label = entities.get(participant.entityId);
+      return label === undefined ? [] : [label];
+    });
   });
 }
 
@@ -406,9 +462,145 @@ function firstRelationshipLabel(
   return relationshipLabels(input, role)[0];
 }
 
+function fileFormat(name: string): string {
+  return /\.([^.]+)$/u.exec(name)?.[1]?.toUpperCase() ?? "文件";
+}
+
+function currentRevisionId(
+  input: AssetViewFacts,
+  location: AssetViewFacts["locations"][number],
+): string | undefined {
+  if (location.kind === "managed") {
+    const revisions = (input.artifactRevisions ?? []).filter(
+      (revision) => revision.artifactId === location.artifactId,
+    );
+    return revisions.length === 1 ? revisions[0]?.id : undefined;
+  }
+  if (location.id === undefined) return undefined;
+  return input.currentLocationRevisions?.find(
+    (candidate) => candidate.locationId === location.id,
+  )?.revisionId;
+}
+
+function interactionFor(
+  input: AssetViewFacts,
+  revisionId: string | undefined,
+): ArtifactFileView["interaction"] | undefined {
+  if (revisionId === undefined) return undefined;
+  const state = input.interactionStates?.find(
+    (candidate) => candidate.artifactRevisionId === revisionId,
+  );
+  return state === undefined
+    ? undefined
+    : {
+        positionMilliseconds: state.positionMilliseconds,
+        completed: state.completed,
+      };
+}
+
+function observedFileTree(input: AssetViewFacts): readonly AssetFileTreeNode[] {
+  const files = input.locations.filter(
+    (location) => location.kind === "observed",
+  );
+  const paths = files.map((file) =>
+    file.address.split(/[\\/]/u).filter(Boolean),
+  );
+  const common = paths.reduce<string[]>(
+    (prefix, current) => {
+      let length = 0;
+      while (length < prefix.length && prefix[length] === current[length])
+        length += 1;
+      return prefix.slice(0, length);
+    },
+    paths[0]?.slice(0, -1) ?? [],
+  );
+  type MutableNode = {
+    name: string;
+    children: Map<string, MutableNode>;
+    file?: ArtifactFileView;
+  };
+  const root = new Map<string, MutableNode>();
+  for (const location of files) {
+    const segments = location.address
+      .split(/[\\/]/u)
+      .filter(Boolean)
+      .slice(common.length);
+    const name = segments.pop();
+    if (name === undefined) continue;
+    let children = root;
+    for (const segment of segments) {
+      const node = children.get(segment) ?? {
+        name: segment,
+        children: new Map(),
+      };
+      children.set(segment, node);
+      children = node.children;
+    }
+    const revisionId = currentRevisionId(input, location);
+    const revision = (input.artifactRevisions ?? []).find(
+      (candidate) =>
+        candidate.id === revisionId &&
+        candidate.artifactId === location.artifactId,
+    );
+    const byteLength =
+      location.byteLength ??
+      input.blobs?.find((blob) => blob.digest === revision?.blobDigest)
+        ?.byteLength;
+    children.set(name, {
+      name,
+      children: new Map(),
+      file: {
+        name,
+        format: fileFormat(name),
+        ...(revisionId === undefined ? {} : { revisionId }),
+        ...(byteLength === undefined ? {} : { byteLength }),
+        ...(location.downloadUrl === undefined
+          ? {}
+          : { downloadUrl: location.downloadUrl }),
+        ...(interactionFor(input, revisionId) === undefined
+          ? {}
+          : { interaction: interactionFor(input, revisionId)! }),
+      },
+    });
+  }
+  const project = (
+    nodes: Map<string, MutableNode>,
+  ): readonly AssetFileTreeNode[] =>
+    [...nodes.values()]
+      .toSorted((left, right) => left.name.localeCompare(right.name))
+      .map((node) =>
+        node.file === undefined
+          ? { name: node.name, children: project(node.children) }
+          : {
+              name: node.file.name,
+              format: node.file.format,
+              ...(node.file.revisionId === undefined
+                ? {}
+                : { revisionId: node.file.revisionId }),
+              ...(node.file.image === undefined
+                ? {}
+                : { image: node.file.image }),
+              ...(node.file.byteLength === undefined
+                ? {}
+                : { byteLength: node.file.byteLength }),
+              ...(node.file.downloadUrl === undefined
+                ? {}
+                : { downloadUrl: node.file.downloadUrl }),
+              ...(node.file.interaction === undefined
+                ? {}
+                : { interaction: node.file.interaction }),
+            },
+      );
+  return project(root);
+}
+
 function fanboxAttachments(
   candidates: AssetViewFacts["sourceArtifactCandidates"],
-): readonly { readonly name?: string; readonly byteLength?: string }[] {
+): readonly {
+  readonly name?: string;
+  readonly byteLength?: string;
+  readonly kind: "file" | "image";
+}[] {
   return (candidates ?? [])
     .filter((candidate) => candidate.role.startsWith("fanbox.attachment."))
     .toSorted(
@@ -416,7 +608,8 @@ function fanboxAttachments(
         (left.selectionEvidence?.sourceOrdinal ?? Number.MAX_SAFE_INTEGER) -
         (right.selectionEvidence?.sourceOrdinal ?? Number.MAX_SAFE_INTEGER),
     )
-    .map(({ selectionEvidence }) => ({
+    .map(({ role, selectionEvidence }) => ({
+      kind: role === "fanbox.attachment.image" ? "image" : "file",
       ...(selectionEvidence?.suggestedFilename === undefined
         ? {}
         : { name: selectionEvidence.suggestedFilename }),
@@ -446,66 +639,76 @@ function dlsiteCredits(
  */
 export function projectAssetView(input: AssetViewFacts): AssetViewModel {
   const component = assetViewComponent(input);
-  const coverAssociation = input.artifactAssociations.find(
-    (association) =>
-      (association.subjectId === undefined ||
-        association.subjectId === input.id) &&
-      association.role === "asset.primary-cover",
-  );
   const cover = input.locations.find(
     (location) =>
-      location.artifactId === coverAssociation?.artifactId &&
+      location.artifactId === input.primaryCoverArtifactId &&
       location.kind === "managed",
   )?.address;
   const entities = new Map(
-    (input.entities ?? []).map((entity) => [entity.id, entity.label]),
+    (input.currentRelatedEntities ?? []).map((entity) => [
+      entity.id,
+      entity.label,
+    ]),
   );
   const relationships = (input.relationships ?? []).flatMap((relationship) => {
-    const label = entities.get(relationship.participantId);
-    if (label === undefined) return [];
-    return [
-      {
-        heading:
-          relationship.type === "asset.contribution" ? "参与者" : "相关内容",
-        label,
-      } as const,
-    ];
+    return relationship.participants.flatMap((participant) => {
+      if (participant.role === "asset") return [];
+      const label = entities.get(participant.entityId);
+      return label === undefined
+        ? []
+        : [
+            {
+              heading:
+                relationship.type === "asset.contribution"
+                  ? "参与者"
+                  : "相关内容",
+              label,
+            } as const,
+          ];
+    });
   });
-  const title = firstMetadata(input.metadata, "asset.title") ?? "未命名";
-  const releaseDate = firstMetadata(input.metadata, "asset.release-date");
-  const publicationDateTime = firstMetadata(
+  const title = singleMetadata(input.metadata, "asset.title") ?? "未命名";
+  const releaseDate = singleMetadata(input.metadata, "asset.release-date");
+  const publicationDateTime = singleMetadata(
     input.metadata,
     "asset.publication-datetime",
   );
-  const introduction = firstMetadata(input.metadata, "asset.introduction");
-  const summary = firstMetadata(input.metadata, "asset.summary");
-  const body = firstMetadata(input.metadata, "asset.body");
-  const language = firstMetadata(input.metadata, "asset.declared-language");
+  const introduction = singleMetadata(input.metadata, "asset.introduction");
+  const summary = singleMetadata(input.metadata, "asset.summary");
+  const body = singleMetadata(input.metadata, "asset.body");
+  const language = singleMetadata(input.metadata, "asset.declared-language");
   const classifications = metadataValues(
     input.metadata,
     "asset.content-classification",
   );
-  const fanboxEntitlement = firstMetadata(
+  const fanboxEntitlement = singleMetadata(
     input.metadata,
     "fanbox.post.entitlement",
   );
   const fanboxCreator = firstRelationshipLabel(input, "fanbox.post.creator");
-  const fanboxLikeCount = firstMetadata(
+  const fanboxLikeCount = singleMetadata(
     input.metadata,
     "fanbox.post.like-count",
   );
-  const fanboxCommentCount = firstMetadata(
+  const fanboxCommentCount = singleMetadata(
     input.metadata,
     "fanbox.post.comment-count",
   );
   const dlsiteCircle = firstRelationshipLabel(input, "circle");
-  const dlsitePriceJpy = firstMetadata(
+  const dlsitePriceJpy = singleMetadata(
     input.metadata,
     "dlsite.product.price-jpy",
   );
   const seriesName = firstRelationshipLabel(input, "dlsite.series.member");
-  const seriesPosition = firstMetadata(input.metadata, "asset.series-position");
-  const runtimeMinutes = firstMetadata(input.metadata, "asset.runtime-minutes");
+  const seriesPosition = relationshipQualifier(
+    input,
+    "dlsite.series.member",
+    "asset.membership.position",
+  );
+  const runtimeMinutes = singleMetadata(
+    input.metadata,
+    "asset.runtime-minutes",
+  );
   const filmGenres = metadataValues(input.metadata, "asset.genre");
   const filmDirectors = relationshipLabels(input, "director");
   const filmCast = relationshipLabels(input, "cast");
@@ -540,15 +743,16 @@ export function projectAssetView(input: AssetViewFacts): AssetViewModel {
     .map((location) => {
       const name = location.address.split(/[\\/]/u).at(-1) ?? "文件";
       const extension = /\.([^.]+)$/u.exec(name)?.[1]?.toUpperCase();
+      const revisionId = currentRevisionId(input, location);
       const imageAssociation = input.artifactAssociations.find(
         (association) =>
-          (association.subjectId === undefined ||
-            association.subjectId === input.id) &&
-          ["asset.material-image", "asset.primary-cover"].includes(
-            association.role,
-          ) &&
+          association.target.kind === "artifact-revision" &&
+          association.role === "asset.material-image" &&
           association.observedArtifactPart?.artifactId ===
             location.artifactId &&
+          association.target.artifactId === location.artifactId &&
+          association.target.revisionId ===
+            association.observedArtifactPart.revisionId &&
           input.artifactRevisions?.some(
             (revision) =>
               revision.id === association.observedArtifactPart?.revisionId &&
@@ -560,25 +764,38 @@ export function projectAssetView(input: AssetViewFacts): AssetViewModel {
           candidate.kind === "managed" &&
           candidate.artifactId === imageAssociation?.artifactId,
       )?.address;
+      const artifactRevisions = (input.artifactRevisions ?? []).filter(
+        (revision) => revision.artifactId === location.artifactId,
+      );
+      const revision = artifactRevisions.find(
+        (candidate) => candidate.id === revisionId,
+      );
+      const byteLength =
+        location.byteLength ??
+        input.blobs?.find((blob) => blob.digest === revision?.blobDigest)
+          ?.byteLength;
       return {
         name,
         format: extension ?? "文件",
-        ...(imageAssociation?.observedArtifactPart === undefined
+        ...(revision === undefined ? {} : { revisionId: revision.id }),
+        ...(image === undefined ? {} : { image }),
+        ...(byteLength === undefined ? {} : { byteLength }),
+        ...(location.downloadUrl === undefined
           ? {}
-          : {
-              revisionId: imageAssociation.observedArtifactPart.revisionId,
-              ...(image === undefined ? {} : { image }),
-            }),
+          : { downloadUrl: location.downloadUrl }),
+        ...(interactionFor(input, revisionId) === undefined
+          ? {}
+          : { interaction: interactionFor(input, revisionId)! }),
       };
     });
-  const bookIsbn13 = firstMetadata(input.metadata, "book.isbn-13");
-  const bookPublisher = firstMetadata(input.metadata, "book.publisher");
-  const bookPublicationDate = firstMetadata(
+  const bookIsbn13 = singleMetadata(input.metadata, "book.isbn-13");
+  const bookPublisher = singleMetadata(input.metadata, "book.publisher");
+  const bookPublicationDate = singleMetadata(
     input.metadata,
     "book.publication-date",
   );
-  const filmAwards = firstMetadata(input.metadata, "asset.awards");
-  const filmBoxOffice = firstMetadata(input.metadata, "asset.box-office");
+  const filmAwards = singleMetadata(input.metadata, "asset.awards");
+  const filmBoxOffice = singleMetadata(input.metadata, "asset.box-office");
   const firstObservedFile = observedFiles[0];
   const primarySourceLabel = sourceLabel(
     input.sourceAssociation?.sourceIdentity,
@@ -612,6 +829,7 @@ export function projectAssetView(input: AssetViewFacts): AssetViewModel {
     ...(language === undefined ? {} : { language }),
     classifications,
     files: observedFiles,
+    fileTree: observedFileTree(input),
     ...(cover === undefined ? {} : { cover }),
     available: input.locations.some((location) => location.kind === "observed"),
     sources,
@@ -668,6 +886,7 @@ export function projectAssetView(input: AssetViewFacts): AssetViewModel {
             ),
             classifications,
             credits: dlsiteCredits(input),
+            fileTree: observedFileTree(input),
             ...(seriesName === undefined
               ? {}
               : {
@@ -725,6 +944,20 @@ export function projectAssetView(input: AssetViewFacts): AssetViewModel {
           },
         }),
   };
+}
+
+function relationshipQualifier(
+  input: AssetViewFacts,
+  role: string,
+  key: string,
+): string | undefined {
+  return input.relationships
+    ?.find((relationship) =>
+      relationship.participants.some(
+        (participant) => participant.role === role,
+      ),
+    )
+    ?.qualifiers?.find((qualifier) => qualifier.key === key)?.value;
 }
 
 /**

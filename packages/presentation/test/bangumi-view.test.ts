@@ -47,10 +47,11 @@ function bloomFacts(): readonly AssetViewFacts[] {
           value: "2018-10-05",
         },
       ],
-      entities: [
+      currentRelatedEntities: [
         {
           id: workId,
           label: "やがて君になる",
+          kind: { status: "ordinary" },
           sourceIdentity: "bangumi",
           identityNamespace: "bangumi.subject",
           sourceKey: "243981",
@@ -58,15 +59,16 @@ function bloomFacts(): readonly AssetViewFacts[] {
       ],
       relationships: [
         {
-          subjectId: assetId,
-          participantId: workId,
+          participants: [
+            { entityId: assetId, role: "asset" },
+            { entityId: workId, role: "bangumi.subject.ordinary-episode" },
+          ],
           type: "asset.membership",
-          role: "bangumi.subject.ordinary-episode",
         },
       ],
       artifactAssociations: [
         {
-          subjectId: workId,
+          target: { kind: "entity", entityId: workId },
           artifactId: "artifact_bloom_cover",
           role: "asset.primary-cover",
         },
@@ -123,10 +125,11 @@ function frierenFacts(): readonly AssetViewFacts[] {
             value: workTitle,
           },
         ],
-        entities: [
+        currentRelatedEntities: [
           {
             id: firstWork,
             label: "葬送のフリーレン",
+            kind: { status: "ordinary" },
             sourceIdentity: "bangumi",
             identityNamespace: "bangumi.subject",
             sourceKey: "400602",
@@ -137,6 +140,7 @@ function frierenFacts(): readonly AssetViewFacts[] {
                 {
                   id: secondWork,
                   label: "葬送のフリーレン 第2期",
+                  kind: { status: "ordinary" },
                   sourceIdentity: "bangumi",
                   identityNamespace: "bangumi.subject",
                   sourceKey: workKey,
@@ -145,25 +149,33 @@ function frierenFacts(): readonly AssetViewFacts[] {
         ],
         relationships: [
           {
-            subjectId: assetId,
-            participantId: workId,
+            participants: [
+              { entityId: assetId, role: "asset" },
+              {
+                entityId: workId,
+                role: "bangumi.subject.ordinary-episode",
+              },
+            ],
             type: "asset.membership",
-            role: "bangumi.subject.ordinary-episode",
           },
           ...(workId === firstWork
             ? []
             : [
                 {
-                  subjectId: firstWork,
-                  participantId: secondWork,
+                  participants: [
+                    {
+                      entityId: firstWork,
+                      role: "bangumi.subject.predecessor",
+                    },
+                    { entityId: secondWork, role: "bangumi.subject.sequel" },
+                  ],
                   type: "bangumi.subject.related",
-                  role: "bangumi.subject.sequel",
                 },
               ]),
         ],
         artifactAssociations: [
           {
-            subjectId: workId,
+            target: { kind: "entity", entityId: workId },
             artifactId: `artifact_cover_${workKey}`,
             role: "asset.primary-cover",
           },
@@ -197,7 +209,7 @@ describe("Bangumi Asset View", () => {
         nativeAddress: "opaque:ordinary",
       },
       metadata: [{ property: "asset.title", value: "Ordinary work" }],
-      entities: [],
+      currentRelatedEntities: [],
       relationships: [],
       artifactAssociations: [],
       locations: [],
@@ -300,10 +312,17 @@ describe("Bangumi Asset View", () => {
             relationships: [
               ...fact.relationships,
               {
-                subjectId: "entity_bangumi-subject_515759",
-                participantId: "entity_bangumi-subject_400602",
+                participants: [
+                  {
+                    entityId: "entity_bangumi-subject_515759",
+                    role: "bangumi.subject.predecessor",
+                  },
+                  {
+                    entityId: "entity_bangumi-subject_400602",
+                    role: "bangumi.subject.sequel",
+                  },
+                ],
                 type: "bangumi.subject.related",
-                role: "bangumi.subject.sequel",
               },
             ],
           }

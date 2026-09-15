@@ -14,6 +14,7 @@ import {
 } from "@digital/application";
 import type {
   MetadataAssertion,
+  MetadataAssertionCandidate,
   RecognitionEvidence,
   SourceAssociation,
   SourceArtifactCandidate,
@@ -577,13 +578,13 @@ async function collectOmdbRecord(input: {
 }
 
 function imdbIdentifier(
-  metadata: readonly MetadataAssertion[],
+  metadata: readonly Pick<MetadataAssertion, "property" | "value">[],
 ): string | undefined {
   return metadata.find((item) => item.property === "external.imdb-id")?.value;
 }
 
 function initialReleaseYear(
-  metadata: readonly MetadataAssertion[],
+  metadata: readonly Pick<MetadataAssertion, "property" | "value">[],
 ): string | undefined {
   const date = metadata.find(
     (item) => item.property === "asset.release-date",
@@ -592,7 +593,7 @@ function initialReleaseYear(
 }
 
 function sourceTitles(
-  metadata: readonly MetadataAssertion[],
+  metadata: readonly Pick<MetadataAssertion, "property" | "value">[],
 ): readonly string[] {
   return metadata
     .filter((item) =>
@@ -704,13 +705,13 @@ function optionalText(value: unknown): string | undefined {
 function metadataFromResponse(
   value: OmdbResponse,
   sourceRecordId: string,
-): readonly MetadataAssertion[] {
-  const facts: MetadataAssertion[] = [];
+): readonly MetadataAssertionCandidate[] {
+  const facts: MetadataAssertionCandidate[] = [];
   const add = (
     property: string,
     sourceSlot: string,
     field: string | undefined,
-    qualifiers?: MetadataAssertion["qualifiers"],
+    qualifiers?: MetadataAssertionCandidate["qualifiers"],
   ) => {
     if (field !== undefined)
       facts.push({

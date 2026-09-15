@@ -934,7 +934,10 @@ function accepted(
     blobs: [],
     artifactRevisions: [],
     artifactAssociations: [],
-    metadata: proposal.basis.interpretation.metadata,
+    metadata: proposal.basis.interpretation.metadata.map((assertion) => ({
+      ...assertion,
+      target: { kind: "entity" as const, entityId: "asset-1" },
+    })),
   };
 }
 

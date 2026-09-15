@@ -5,7 +5,7 @@ import type {
   RecognitionPolicy,
   WorkflowConfigurationCompatibility,
 } from "@digital/application";
-import type { AcceptedRecognition } from "@digital/domain";
+import type { SourceAssociation } from "@digital/domain";
 
 const trustedRecognitionRules = [
   {
@@ -64,10 +64,6 @@ const trustedRecognitionRules = [
   },
 ] as const;
 
-const trustedTmdbRules = trustedRecognitionRules.filter(
-  (rule) => rule.capabilityId === "tmdb.strict-film-recognizer",
-);
-
 /** 当前产品允许自动接受的初始识别规则；集成不能自行授予信任。 */
 export function curatedInitialRecognitionPolicy(): RecognitionPolicy & {
   readonly version: string;
@@ -92,23 +88,13 @@ export function curatedInitialRecognitionPolicy(): RecognitionPolicy & {
 }
 
 const ordinaryFilmMetadataPolicyId = "ordinary-film-metadata";
-const ordinaryManualMetadataPolicyId = "ordinary-manual-metadata";
+const ordinaryDlsiteMetadataPolicyId = "ordinary-dlsite-metadata";
+const ordinaryNbinetMetadataPolicyId = "ordinary-nbinet-metadata";
 
 /** 当前产品在普通浏览语境采用的来源优先级。 */
 export class CuratedMetadataPolicyConfiguration implements MetadataPolicyConfiguration {
-  readonly version = "curated-metadata/3";
+  readonly version = "curated-metadata/4";
   readonly policies = [
-    {
-      id: ordinaryManualMetadataPolicyId,
-      metadataUsageContext: "asset.ordinary",
-      rules: ["asset.title", "asset.content-classification"].map(
-        (property) => ({
-          property,
-          preferredSourceIdentities: ["user"],
-          cardinality: "one" as const,
-        }),
-      ),
-    },
     {
       id: ordinaryFilmMetadataPolicyId,
       metadataUsageContext: "asset.ordinary",
@@ -147,23 +133,93 @@ export class CuratedMetadataPolicyConfiguration implements MetadataPolicyConfigu
         },
       ],
     },
+    {
+      id: ordinaryDlsiteMetadataPolicyId,
+      metadataUsageContext: "asset.ordinary",
+      rules: [
+        ...[
+          "asset.title",
+          "asset.release-date",
+          "asset.content-classification",
+          "asset.introduction",
+          "dlsite.product.price-jpy",
+        ].map((property) => ({
+          property,
+          preferredSourceIdentities: ["dlsite", "local-observed"],
+          cardinality: "one" as const,
+        })),
+        {
+          property: "asset.declared-language",
+          preferredSourceIdentities: ["dlsite", "local-observed"],
+          cardinality: "many" as const,
+        },
+      ],
+    },
+    {
+      id: ordinaryNbinetMetadataPolicyId,
+      metadataUsageContext: "asset.ordinary",
+      rules: [
+        {
+          property: "book.isbn-13",
+          preferredSourceIdentities: [
+            "nbinet",
+            "kadokawa-jp",
+            "taiwan-kadokawa",
+            "local-observed",
+          ],
+          cardinality: "one" as const,
+        },
+        ...[
+          "asset.title",
+          "book.publisher",
+          "book.publication-date",
+          "asset.declared-language",
+        ].map((property) => ({
+          property,
+          preferredSourceIdentities: [
+            "nbinet",
+            "kadokawa-jp",
+            "taiwan-kadokawa",
+            "local-observed",
+          ],
+          cardinality: "one" as const,
+        })),
+        {
+          property: "book.contributor",
+          preferredSourceIdentities: [
+            "nbinet",
+            "kadokawa-jp",
+            "taiwan-kadokawa",
+            "local-observed",
+          ],
+          cardinality: "many" as const,
+        },
+      ],
+    },
+  ];
+  readonly artifactAssociationRules = [
+    {
+      usageContext: "asset.ordinary",
+      role: "asset.primary-cover",
+      preferredSourceIdentities: ["dlsite"],
+    },
   ];
 
-  enroll(accepted: AcceptedRecognition): readonly string[] {
-    if (accepted.proposal.basis.kind === "manual-boundary")
-      return [ordinaryManualMetadataPolicyId];
-    const acceptedTmdbFilmRule =
-      accepted.recognitionDecision.acceptedRuleResults.some((result) =>
-        trustedTmdbRules.some(
-          (trusted) =>
-            result.outcome === "satisfied" &&
-            result.capabilityId === trusted.capabilityId &&
-            result.capabilityVersion === trusted.capabilityVersion &&
-            result.ruleId === trusted.ruleId &&
-            result.ruleVersion === trusted.ruleVersion,
-        ),
-      );
-    return acceptedTmdbFilmRule ? [ordinaryFilmMetadataPolicyId] : [];
+  select(accepted: {
+    readonly sourceAssociations: readonly SourceAssociation[];
+  }): readonly string[] {
+    const sources = new Set(
+      accepted.sourceAssociations.map(({ sourceIdentity }) => sourceIdentity),
+    );
+    return [
+      ...(sources.has("tmdb") ? [ordinaryFilmMetadataPolicyId] : []),
+      ...(sources.has("dlsite") ? [ordinaryDlsiteMetadataPolicyId] : []),
+      ...(sources.has("nbinet") ||
+      sources.has("kadokawa-jp") ||
+      sources.has("taiwan-kadokawa")
+        ? [ordinaryNbinetMetadataPolicyId]
+        : []),
+    ];
   }
 }
 

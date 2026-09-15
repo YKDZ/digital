@@ -87,6 +87,220 @@ describe("production catalogue preparation", () => {
     }
   });
 
+  it("hard-migrates local description targets and coalesces one current address", async () => {
+    const productDataDirectory = await temporaryProductData();
+    try {
+      await prepareCatalogueBeforeDescriptionTargets(productDataDirectory);
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).resolves.toEqual({ applied: 8 });
+      const database = new DatabaseSync(
+        path.join(productDataDirectory, "catalogue.sqlite"),
+        { readOnly: true },
+      );
+      expect(
+        database
+          .prepare(
+            "SELECT target_kind, target_artifact_id, target_revision_id, role FROM artifact_associations WHERE role = 'asset.material-image'",
+          )
+          .get(),
+      ).toEqual({
+        target_kind: "artifact-revision",
+        target_artifact_id: "observed-artifact",
+        target_revision_id: "observed-revision",
+        role: "asset.material-image",
+      });
+      expect(
+        database
+          .prepare(
+            "SELECT target_kind, target_entity_id, artifact_id, role FROM artifact_associations WHERE role = 'asset.primary-cover'",
+          )
+          .get(),
+      ).toEqual({
+        target_kind: "entity",
+        target_entity_id: "asset",
+        artifact_id: "image",
+        role: "asset.primary-cover",
+      });
+      expect(
+        database
+          .prepare(
+            "SELECT target_kind, target_artifact_id, target_revision_id FROM metadata_assertions",
+          )
+          .get(),
+      ).toEqual({
+        target_kind: "artifact-revision",
+        target_artifact_id: "observed-artifact",
+        target_revision_id: "observed-revision",
+      });
+      expect(
+        database
+          .prepare(
+            "SELECT address, count(*) AS count FROM current_file_observations",
+          )
+          .get(),
+      ).toEqual({ address: "/media/book.epub", count: 1 });
+      database.close();
+    } finally {
+      await rm(productDataDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves an old sourced-entity relationship lifecycle subject while naming every participant", async () => {
+    const productDataDirectory = await temporaryProductData();
+    try {
+      await prepareCatalogueBeforeNamedRelationshipParticipants(
+        productDataDirectory,
+      );
+      const legacy = new DatabaseSync(
+        path.join(productDataDirectory, "catalogue.sqlite"),
+      );
+      legacy
+        .prepare(
+          `INSERT INTO entity_relationships
+            (id, subject_id, participant_id, type, role, source_record_ids_json)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          "bangumi-sequel",
+          "bangumi-subject-1",
+          "bangumi-subject-2",
+          "bangumi.subject.related",
+          "bangumi.subject.sequel",
+          '["bangumi-record"]',
+        );
+      legacy
+        .prepare(
+          `INSERT INTO relationship_lifecycles
+            (relationship_id, source_identity, native_address, coverage_id, source_record_id, source_slot)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          "bangumi-sequel",
+          "bangumi",
+          "bangumi:subject:1",
+          "bangumi.relationships",
+          "bangumi-record",
+          "bangumi.subject.sequel:1:2",
+        );
+      const credit = {
+        type: "asset.contribution",
+        participantId: "creator",
+        role: "voice",
+        sourceSlot: "credit",
+        sourceRecordIds: ["record"],
+        participantMentionIds: ["mention"],
+      };
+      const sequel = {
+        type: "bangumi.subject.related",
+        subjectId: "season-1",
+        participantId: "season-2",
+        role: "bangumi.subject.sequel",
+        sourceSlot: "sequel",
+        sourceRecordIds: ["record"],
+      };
+      legacy
+        .prepare(`INSERT INTO current_source_artifact_candidate_lineages
+        (subject_id, source_association_id, source_identity, native_address, coverage_id, source_record_id, interpretation_json)
+        VALUES ('asset', 'association', 'fixture', 'address', 'coverage', 'record', ?)`)
+        .run(
+          JSON.stringify({
+            relationships: [credit, sequel],
+            artifactCandidates: [{ id: "retained-cover" }],
+          }),
+        );
+      legacy
+        .prepare(`INSERT INTO change_impact_previews (id, execution_id, asset_id, preview_json)
+        VALUES ('preview', 'execution', 'asset', ?)`)
+        .run(
+          JSON.stringify({
+            projected: {
+              relationships: [{ ...credit, id: "credit", subjectId: "asset" }],
+            },
+          }),
+        );
+      legacy.close();
+
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).resolves.toEqual({ applied: 7 });
+      const migrated = new DatabaseSync(
+        path.join(productDataDirectory, "catalogue.sqlite"),
+        { readOnly: true },
+      );
+      expect(
+        migrated
+          .prepare(
+            "SELECT source_subject_id FROM relationship_lifecycles WHERE relationship_id = 'bangumi-sequel'",
+          )
+          .get(),
+      ).toEqual({ source_subject_id: "bangumi-subject-1" });
+      expect(
+        migrated
+          .prepare(
+            "SELECT entity_id, role FROM entity_relationship_participants WHERE relationship_id = 'bangumi-sequel' ORDER BY role",
+          )
+          .all(),
+      ).toEqual([
+        {
+          entity_id: "bangumi-subject-1",
+          role: "bangumi.subject.predecessor",
+        },
+        { entity_id: "bangumi-subject-2", role: "bangumi.subject.sequel" },
+      ]);
+      const stored = migrated
+        .prepare(
+          "SELECT interpretation_json AS json FROM current_source_artifact_candidate_lineages",
+        )
+        .get()!;
+      expect(JSON.parse(String(stored.json))).toEqual({
+        relationships: [
+          {
+            type: "asset.contribution",
+            subjectRole: "asset",
+            participants: [
+              { entityId: "creator", role: "voice", mentionIds: ["mention"] },
+            ],
+            sourceSlot: "credit",
+            sourceRecordIds: ["record"],
+          },
+          {
+            type: "bangumi.subject.related",
+            sourceSubjectId: "season-1",
+            participants: [
+              { entityId: "season-1", role: "bangumi.subject.predecessor" },
+              { entityId: "season-2", role: "bangumi.subject.sequel" },
+            ],
+            sourceSlot: "sequel",
+            sourceRecordIds: ["record"],
+          },
+        ],
+        artifactCandidates: [{ id: "retained-cover" }],
+      });
+      const preview = migrated
+        .prepare(
+          "SELECT preview_json AS json FROM change_impact_previews WHERE id = 'preview'",
+        )
+        .get()!;
+      expect(JSON.parse(String(preview.json)).projected.relationships).toEqual([
+        {
+          type: "asset.contribution",
+          id: "credit",
+          sourceSubjectId: "asset",
+          participants: [
+            { entityId: "asset", role: "asset" },
+            { entityId: "creator", role: "voice", mentionIds: ["mention"] },
+          ],
+          sourceSlot: "credit",
+          sourceRecordIds: ["record"],
+        },
+      ]);
+      migrated.close();
+    } finally {
+      await rm(productDataDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("migrates only a source enrichment whose execution, checkpoint, captured record, interpretation, and frozen authority agree", async () => {
     const valid = await temporaryProductData();
     const corrupt = await temporaryProductData();
@@ -94,7 +308,7 @@ describe("production catalogue preparation", () => {
       await prepareLegacySourceEnrichmentCatalogue(valid, false);
       await expect(
         prepareProductionCatalogue({ productDataDirectory: valid }),
-      ).resolves.toEqual({ applied: 2 });
+      ).resolves.toEqual({ applied: 11 });
       await expect(
         inspectProductionCatalogueReadiness({ productDataDirectory: valid }),
       ).resolves.toMatchObject({ state: "ready" });
@@ -133,20 +347,18 @@ describe("production catalogue preparation", () => {
     try {
       for (const root of roots)
         await prepareLegacySourceEnrichmentCatalogue(root, false);
-      const missing = new DatabaseSync(
-        path.join(roots[0]!, "catalogue.sqlite"),
-      );
+      const missing = new DatabaseSync(path.join(roots[0], "catalogue.sqlite"));
       missing.exec("UPDATE workflow_executions SET workflow_input_json = NULL");
       missing.close();
       const duplicated = new DatabaseSync(
-        path.join(roots[1]!, "catalogue.sqlite"),
+        path.join(roots[1], "catalogue.sqlite"),
       );
       duplicated.exec(
         "UPDATE workflow_executions SET source_enrichments_json = json_array(json_extract(source_enrichments_json, '$[0]'), json_extract(source_enrichments_json, '$[0]'))",
       );
       duplicated.close();
       const wrongCoordinate = new DatabaseSync(
-        path.join(roots[2]!, "catalogue.sqlite"),
+        path.join(roots[2], "catalogue.sqlite"),
       );
       wrongCoordinate.exec(
         "UPDATE workflow_executions SET compatibility_json = json_set(compatibility_json, '$.capabilityCoordinates[0].capabilityVersion', '2')",
@@ -308,7 +520,7 @@ describe("production catalogue preparation", () => {
       });
       await expect(
         prepareProductionCatalogue({ productDataDirectory: terminated }),
-      ).resolves.toEqual({ applied: 3 });
+      ).resolves.toEqual({ applied: 12 });
       const terminatedDatabase = new DatabaseSync(
         path.join(terminated, "catalogue.sqlite"),
         { readOnly: true },
@@ -421,7 +633,7 @@ describe("production catalogue preparation", () => {
     try {
       await expect(
         prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 5 });
+      ).resolves.toEqual({ applied: 14 });
       const reopened = SqliteCatalogue.forProductData(productDataDirectory);
       await expect(reopened.listCurrentCatalogue()).resolves.toMatchObject([
         {
@@ -688,6 +900,121 @@ async function temporaryProductData(): Promise<string> {
   return await mkdtemp(
     path.join(tmpdir(), "digital-disposable-production-migrations-"),
   );
+}
+
+async function prepareCatalogueBeforeNamedRelationshipParticipants(
+  productDataDirectory: string,
+): Promise<void> {
+  await mkdir(productDataDirectory, { recursive: true });
+  await mkdir(path.join(productDataDirectory, "managed-artifacts"), {
+    recursive: true,
+  });
+  const database = new DatabaseSync(
+    path.join(productDataDirectory, "catalogue.sqlite"),
+  );
+  try {
+    database.exec(`
+      CREATE TABLE __digital_catalogue_migrations (
+        id TEXT PRIMARY KEY NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL
+      );
+      CREATE TABLE __digital_catalogue_migration_failures (
+        id TEXT PRIMARY KEY NOT NULL, message TEXT NOT NULL, occurred_at TEXT NOT NULL
+      );
+    `);
+    for (const artifact of productionMigrationArtifacts) {
+      if (artifact.id === "20260913010000_named_relationship_participants")
+        break;
+      database.exec(
+        await readFile(
+          new URL(
+            `../migrations/${artifact.id}/migration.sql`,
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+      );
+      database
+        .prepare(
+          "INSERT INTO __digital_catalogue_migrations (id, checksum, applied_at) VALUES (?, ?, ?)",
+        )
+        .run(artifact.id, artifact.checksum, "2026-09-13T00:00:00.000Z");
+    }
+  } finally {
+    database.close();
+  }
+}
+
+async function prepareCatalogueBeforeDescriptionTargets(
+  productDataDirectory: string,
+): Promise<void> {
+  await mkdir(productDataDirectory, { recursive: true });
+  await mkdir(path.join(productDataDirectory, "managed-artifacts"), {
+    recursive: true,
+  });
+  const database = new DatabaseSync(
+    path.join(productDataDirectory, "catalogue.sqlite"),
+  );
+  try {
+    database.exec(`
+      CREATE TABLE __digital_catalogue_migrations (
+        id TEXT PRIMARY KEY NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL
+      );
+      CREATE TABLE __digital_catalogue_migration_failures (
+        id TEXT PRIMARY KEY NOT NULL, message TEXT NOT NULL, occurred_at TEXT NOT NULL
+      );
+    `);
+    for (const artifact of productionMigrationArtifacts) {
+      if (artifact.id === "20260910000000_description_targets") break;
+      database.exec(
+        await readFile(
+          new URL(
+            `../migrations/${artifact.id}/migration.sql`,
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+      );
+      database
+        .prepare(
+          "INSERT INTO __digital_catalogue_migrations (id, checksum, applied_at) VALUES (?, ?, ?)",
+        )
+        .run(artifact.id, artifact.checksum, "2026-09-10T00:00:00.000Z");
+    }
+    const part = JSON.stringify({
+      artifactId: "observed-artifact",
+      revisionId: "observed-revision",
+      locator: "epub:cover",
+    });
+    database
+      .prepare(
+        "INSERT INTO artifact_associations (id, subject_id, artifact_id, role, observed_artifact_part_json) VALUES ('cover', 'asset', 'image', 'asset.primary-cover', ?)",
+      )
+      .run(part);
+    database.exec(`
+      INSERT INTO artifact_associations (id, subject_id, artifact_id, role)
+        VALUES ('delivered', 'asset', 'observed-artifact', 'asset.material-delivered');
+      INSERT INTO blobs (digest, media_type, byte_length)
+        VALUES ('observed-digest', 'application/epub+zip', 1);
+      INSERT INTO artifact_revisions (id, artifact_id, blob_digest)
+        VALUES ('observed-revision', 'observed-artifact', 'observed-digest');
+    `);
+    database
+      .prepare(
+        "INSERT INTO metadata_assertions (subject_id, property, value, source_record_ids_json, observed_artifact_part_json) VALUES ('asset', 'asset.title', '书名', '[]', ?)",
+      )
+      .run(part);
+    database.exec(`
+      INSERT INTO artifacts(id) VALUES ('observed-artifact'), ('duplicate-artifact');
+      INSERT INTO locations(id, artifact_id, address, kind) VALUES
+        ('location-old', 'observed-artifact', '/media/book.epub', 'observed'),
+        ('location-new', 'observed-artifact', '/media/book.epub', 'observed');
+      INSERT INTO current_file_observations(location_id, snapshot_id, observed_at, size, modified_at, conditional_baseline) VALUES
+        ('location-old', 'old', '2026-09-01T00:00:00.000Z', 1, 'old', 'old'),
+        ('location-new', 'new', '2026-09-02T00:00:00.000Z', 1, 'new', 'new');
+    `);
+  } finally {
+    database.close();
+  }
 }
 
 async function prepareLegacySourceEnrichmentCatalogue(

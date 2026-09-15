@@ -13,7 +13,11 @@ import {
 } from "@digital/application";
 import type {
   CapabilityCoordinate,
+  EntityMention,
+  EntityResolutionDecision,
+  ProposedEntityRelationship,
   RecognitionEvidence,
+  SourcedEntity,
   SourceRecord,
 } from "@digital/domain";
 import { parse } from "parse5";
@@ -173,6 +177,16 @@ export function createKadokawaJapanSource(
     },
   };
   const interpreter: SourceInterpreter = {
+    relationshipDefinitions: [
+      {
+        id: "kadokawa-jp.contribution",
+        type: "asset.contribution",
+        label: "图书署名（日本角川）",
+        roles: [{ role: "asset", label: "作品", minimum: 1, maximum: 1 }],
+        additionalRoles: { label: "署名角色" },
+        qualifiers: [],
+      },
+    ],
     capability: interpretation,
     canInterpret: ({ evidence, sourceRecords }) =>
       requestedAddress(evidence) !== undefined &&
@@ -433,7 +447,7 @@ function booksFromQuery(body: string, wanted: string): readonly Book[] {
       japaneseIsbn(item.isbn) !== undefined &&
       /^\d{12}$/u.test(item.itemCode ?? "")
     )
-      found.set(item.itemCode!, { isbn: item.isbn!, code: item.itemCode! });
+      found.set(item.itemCode, { isbn: item.isbn!, code: item.itemCode! });
   return [...found.values()];
 }
 function onlyDetail(records: readonly SourceRecord[], address: string) {
@@ -529,6 +543,52 @@ function batchFromDetail(
           },
         ])),
   ];
+  const entities: SourcedEntity[] = [];
+  const entityMentions: EntityMention[] = [];
+  const entityResolutionDecisions: EntityResolutionDecision[] = [];
+  const relationships: ProposedEntityRelationship[] = [];
+  for (const [role, name] of page.authors ?? []) {
+    const index = entities.length + 1;
+    const slot = `kadokawa-jp.contributor.${index}`;
+    const sourceKey = `${record.nativeAddress}\u0000${slot}`;
+    const identityNamespace = "kadokawa-jp.contributor.occurrence-local";
+    const entityId = relatedEntityId(identityNamespace, sourceKey);
+    const mentionId = relatedEntityId("mention", sourceKey);
+    entities.push({
+      id: entityId,
+      kind: "entity",
+      sourceIdentity: identity,
+      sourceKey,
+      identityNamespace,
+      label: name,
+      sourceRecordIds: [record.id],
+    });
+    entityMentions.push({
+      id: mentionId,
+      sourceRecordIds: [record.id],
+      sourceIdentity: identity,
+      field: "book.contributor",
+      role,
+      label: name,
+      identityNamespace,
+      sourceKey,
+    });
+    entityResolutionDecisions.push({
+      id: relatedEntityId("resolution", mentionId),
+      mentionId,
+      entityId,
+      rule: "source-field-role-exact",
+      sourceRecordIds: [record.id],
+    });
+    relationships.push({
+      participants: [{ entityId, role, mentionIds: [mentionId] }],
+      subjectRole: "asset",
+      requiredRoles: ["asset", role],
+      type: "asset.contribution",
+      sourceSlot: slot,
+      sourceRecordIds: [record.id],
+    });
+  }
   return {
     id: `source-interpretation_${randomUUID()}`,
     producer: interpretation,
@@ -537,6 +597,12 @@ function batchFromDetail(
     sourceIdentity: identity,
     sourceAddress: record.nativeAddress,
     metadata,
+    ...(entities.length === 0 ? {} : { entities }),
+    ...(entityMentions.length === 0 ? {} : { entityMentions }),
+    ...(entityResolutionDecisions.length === 0
+      ? {}
+      : { entityResolutionDecisions }),
+    ...(relationships.length === 0 ? {} : { relationships }),
     sourceArtifacts:
       page.cover === undefined
         ? []
@@ -551,6 +617,12 @@ function batchFromDetail(
             },
           ],
   };
+}
+
+function relatedEntityId(namespace: string, value: string): string {
+  return `entity_${createHash("sha256")
+    .update(`${namespace}\u0000${value}`)
+    .digest("hex")}`;
 }
 function batchIsbn(batch: {
   readonly metadata: readonly {

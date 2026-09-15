@@ -79,7 +79,7 @@ describe("NBINet exact ISBN source", () => {
     });
     expect(
       addressing.normalize({
-        isbn: normalized.evidence.sourceAddress!,
+        isbn: normalized.evidence.sourceAddress,
       }),
     ).toMatchObject({
       status: "accepted",
@@ -146,7 +146,7 @@ describe("NBINet exact ISBN source", () => {
       producer: new NbinetSourceInterpreter().capability,
       sourceRecordIds: ["record"],
       sourceIdentity: "nbinet",
-      sourceAddress: addressing.evidence.sourceAddress!,
+      sourceAddress: addressing.evidence.sourceAddress,
       metadata: [],
       sourceArtifacts: [],
     };
@@ -258,6 +258,22 @@ describe("NBINet exact ISBN source", () => {
     });
 
     expect(batch.sourceAddress).toContain("9789864738281");
+    expect(batch.entities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: "東條チカ",
+          identityNamespace: "nbinet.contributor.occurrence-local",
+        }),
+      ]),
+    );
+    expect(batch.relationships).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "asset.contribution",
+          participants: [expect.objectContaining({ role: "book.contributor" })],
+        }),
+      ]),
+    );
     expect(batch.metadata).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -294,6 +310,48 @@ describe("NBINet exact ISBN source", () => {
         (item) => item.sourceRecordIds[0] === official.records[0].id,
       ),
     ).toBe(true);
+  });
+
+  it("interprets the contributor display contract without leaking its authority control form", async () => {
+    const collector = new NbinetCollector(async () =>
+      response({
+        docs: [
+          {
+            pnx: {
+              display: {
+                title: ["妹妹人生 上"],
+                creator: ["入间人间、入間人間$$Q入間人間"],
+              },
+              addata: { isbn: ["9789578531222"] },
+            },
+          },
+        ],
+        info: { total: 1 },
+      }),
+    );
+    const isbnEvidence = {
+      ...evidence[0],
+      inspection: {
+        ...evidence[0].inspection,
+        identifiers: [
+          {
+            ...evidence[0].inspection.identifiers[0],
+            value: "9789578531222",
+          },
+        ],
+      },
+    };
+    const [record] = (await collector.collect(isbnEvidence)).records;
+    const [batch] = new NbinetSourceInterpreter().interpret({
+      evidence: [isbnEvidence],
+      sourceRecords: [record],
+    });
+
+    expect(
+      batch.metadata
+        .filter(({ property }) => property === "book.contributor")
+        .map(({ value }) => value),
+    ).toEqual(["入间人间", "入間人間"]);
   });
 
   it("fails closed when more than one official response record can match", () => {

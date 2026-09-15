@@ -256,7 +256,7 @@ describe("Asset Refresh CLI", () => {
           readonly sourceIdentity: string;
         }[]
       ).map(({ sourceIdentity }) => sourceIdentity),
-    ).toEqual(["dlsite", "nbinet", "taiwan-kadokawa", "kadokawa-jp"]);
+    ).toEqual(["dlsite", "nbinet", "tmdb", "taiwan-kadokawa", "kadokawa-jp"]);
     const invalid = runtime(
       [
         "enrich-source",

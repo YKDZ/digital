@@ -135,6 +135,7 @@ export function useIntake() {
       const execution = await sendAction<{ id: string }>("/api/refresh", {
         observedRootId: rootId.value,
         relativeScope: ".",
+        acceptTrusted: false,
       });
       await load(rootId.value, execution.id);
     } catch (cause) {

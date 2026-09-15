@@ -501,9 +501,12 @@ export function projectManagedSourceArtifacts(
         id:
           options?.freshId?.("artifact-association") ??
           `artifact-association_${materializationKey}`,
-        subjectId: options?.forceFallbackSubject
-          ? fallbackSubjectId
-          : (stored.subjectId ?? fallbackSubjectId),
+        target: {
+          kind: "entity" as const,
+          entityId: options?.forceFallbackSubject
+            ? fallbackSubjectId
+            : (stored.subjectId ?? fallbackSubjectId),
+        },
         artifactId: artifact.id,
         role: stored.role,
         sourceRecordIds: [stored.sourceRecordId],

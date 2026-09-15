@@ -25,7 +25,7 @@ export function libraryItems(entries: readonly CurrentCatalogueIndexEntry[]) {
       sourceAssociation: entry.recognitionSourceAssociation,
       sourceAssociations: entry.sourceAssociations,
       metadata: entry.effectiveMetadata,
-      entities: entry.entities,
+      currentRelatedEntities: entry.currentRelatedEntities,
       relationships: entry.relationships,
       artifactAssociations: [],
       locations: [],

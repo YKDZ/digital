@@ -901,7 +901,9 @@ export class ProductBangumiSourceConnection {
       !allowedRedirectUri(input.redirectUri)
     )
       throw new Error("请填写有效的 Bangumi 应用信息与回调地址");
-    // 更换应用后旧授权不能继续使用；复用连接自身的撤销与并发控制。
+    // 更换应用后旧授权不能继续使用；同时关闭绑定旧回调的待处理授权，
+    // 避免用户必须等待它自然过期才能重新开始。
+    this.retirePendingIfCurrent();
     this.revoke(this.inspect().version);
     this.privateState.write({
       key: "bangumi-oauth-client",

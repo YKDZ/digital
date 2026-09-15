@@ -169,7 +169,14 @@ test("书籍从统一首页打开已有出版详情", async ({ page }) => {
           publicationDate: "2017",
           language: "zh",
           format: "EPUB",
-          files: [{ name: "幼女战记(1).epub", format: "EPUB" }],
+          files: [
+            {
+              name: "幼女战记(1).epub",
+              format: "EPUB",
+              byteLength: 2_621_440,
+              downloadUrl: "/api/artifact-downloads/book-1/revision-1",
+            },
+          ],
         },
       },
     ],
@@ -191,9 +198,14 @@ test("书籍从统一首页打开已有出版详情", async ({ page }) => {
     page.getByRole("heading", { name: "幼女战记(1)" }),
   ).toBeVisible();
   await expect(page.getByText("出版信息")).toBeVisible();
-  await expect(page.getByText("本地文件")).toBeVisible();
+  await expect(page.getByText("文件", { exact: true })).toBeVisible();
+  await expect(page.getByText("2.5 MB")).toBeVisible();
+  await expect(page.getByRole("link", { name: "下载原文件" })).toHaveAttribute(
+    "href",
+    "/api/artifact-downloads/book-1/revision-1",
+  );
+  await expect(page.getByRole("button", { name: "更多操作" })).toBeVisible();
   await expect(page.getByText("9789864738281")).toBeVisible();
-  await expect(page.getByText("元数据来源：")).toBeVisible();
   await expect(page.getByRole("link", { name: "国家图书馆" })).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
   await expect
@@ -207,6 +219,63 @@ test("书籍从统一首页打开已有出版详情", async ({ page }) => {
         ),
     )
     .toBe(true);
+});
+
+test("FANBOX 帖子分开展示随帖附件与本地文件树", async ({ page }) => {
+  await mockCataloguePage(page, {
+    configured: true,
+    assets: [
+      {
+        id: "fanbox-post",
+        title: "Movie | ひみつ",
+        cardComponent: "fanbox",
+        detailComponent: "fanbox",
+        refreshTarget: { subjectId: "fanbox-post" },
+        available: true,
+        classifications: [],
+        relationships: [],
+        officialPage: "https://example.test/post",
+        fileTree: [
+          { name: "poster.jpg", format: "JPG", downloadUrl: "/files/poster" },
+          {
+            name: "video",
+            children: [
+              { name: "movie.mp4", format: "MP4", downloadUrl: "/files/movie" },
+            ],
+          },
+        ],
+        fanbox: {
+          title: "Movie | ひみつ",
+          publicationDateTime: "2024-03-07T22:55:32+09:00",
+          creator: "Custom Udon",
+          body: "帖子正文",
+          hasOfficialCover: false,
+          entitlement: "available",
+          attachments: [
+            { kind: "file", name: "Himitsu1-1.zip", byteLength: "1048576" },
+          ],
+        },
+      },
+    ],
+    executions: [],
+    automation: [],
+  });
+
+  await page.goto("/assets/fanbox-post", { waitUntil: "domcontentloaded" });
+
+  await expect(
+    page.getByRole("heading", { name: "Movie | ひみつ" }),
+  ).toBeVisible();
+  await expect(page.getByText("帖子正文")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "随帖附件" })).toBeVisible();
+  await expect(page.getByText("Himitsu1-1.zip")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "本地内容" })).toBeVisible();
+  await expect(page.getByText("video", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: /movie\.mp4/u })).toHaveAttribute(
+    "href",
+    "/files/movie",
+  );
+  await expect(page.locator("video, audio")).toHaveCount(0);
 });
 
 test("影片从统一首页打开已有影视详情", async ({ page }) => {

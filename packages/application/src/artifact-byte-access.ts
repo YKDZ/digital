@@ -113,7 +113,7 @@ export type ArtifactRevisionAccessFacts = {
 export function orderedArtifactByteLocations(
   locations: ArtifactRevisionAccessFacts["locations"],
 ): ArtifactRevisionAccessFacts["locations"] {
-  return [...locations].sort((left, right) => {
+  return [...locations].toSorted((left, right) => {
     if (left.kind !== right.kind) return left.kind === "managed" ? -1 : 1;
     return left.locationId.localeCompare(right.locationId);
   });

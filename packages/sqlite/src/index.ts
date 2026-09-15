@@ -23,12 +23,14 @@ import type {
   CurrentCataloguePageRequest,
   CurrentCatalogueIndexFacts,
   CurrentCataloguePersistencePage,
+  CatalogueEntityRelationshipFacts,
   CurrentCatalogueQueries,
   WorkflowHistoryPageRequest,
   WorkflowHistoryPersistencePage,
   WorkflowHistoryQueries,
   InformationSubjectFactsQueries,
   CurrentSourceArtifactQueries,
+  CurrentUserInteractionPersistence,
   CreateSourceRefreshRunInputForExecution,
   ExecutionStartDisposition,
   ExecutionInspection,
@@ -60,6 +62,13 @@ import type {
   WorkflowExecutionQueries,
   WorkflowRecoveryLease,
   WorkflowExecution,
+  RelatedEntityIdentity,
+  RelatedEntityIdentityPersistence,
+  EntityMentionResolution,
+  EntityIdentityMergePreview,
+  RelationshipChange,
+  RelationshipChangePreview,
+  RelationshipDecisionPersistence,
 } from "@digital/application";
 import {
   createObservedRootAuthorityIndex,
@@ -78,9 +87,11 @@ import type {
   ArtifactRevision,
   Blob,
   CapabilityCoordinate,
+  DescriptionTarget,
   EntityMention,
   EntityResolutionDecision,
   EntityRelationship,
+  EffectiveEntityKind,
   Location,
   MetadataAssertion,
   ObservedMaterialAssociationSubmission,
@@ -99,6 +110,7 @@ import type {
   SourceAssociationEstablishmentSupport,
   SourceAssociationRetraction,
   SourcedEntity,
+  RelationshipDecision,
 } from "@digital/domain";
 import {
   beginSourceRefreshScopeAcquisition as beginDomainSourceRefreshScopeAcquisition,
@@ -106,6 +118,7 @@ import {
   completeSourceRefreshChangeSet as completeDomainSourceRefreshChangeSet,
   createSourceRefreshRun as createDomainSourceRefreshRun,
   deriveSourceSlotLifecycleChanges,
+  deriveEffectiveEntityIdentity,
   failSourceRefreshScope as failDomainSourceRefreshScope,
   projectSourceRefreshRun,
   reviewSourceRefreshChangeSet as reviewDomainSourceRefreshChangeSet,
@@ -119,6 +132,8 @@ import {
   validateRecognitionSupersessionSourceRetraction,
   validateSourceAssociationChange,
   recognitionSourceInterpretation,
+  deriveEffectiveRelationships,
+  relationshipCoordinateKey,
 } from "@digital/domain";
 import {
   and,
@@ -128,6 +143,7 @@ import {
   gt,
   inArray,
   isNull,
+  isNotNull,
   lt,
   lte,
   ne,
@@ -152,6 +168,7 @@ import {
   artifactAssociationSupersessions,
   artifactAssociations,
   artifactRevisions,
+  artifactInteractionStates,
   artifactContentProofs,
   artifacts,
   automationIntents,
@@ -163,15 +180,27 @@ import {
   currentSourceArtifactCandidateLineages,
   currentSourceAssociations,
   entities,
+  entityKindAssertions,
+  entityKindDecisions,
+  entityKindSourceSupports,
+  localEntityCommitments,
+  localEntityNames,
+  localUsers,
   entityMentions,
+  entityRelationshipParticipants,
   entityRelationships,
   entityResolutionDecisions,
+  observedEntities,
+  observedEntityMentions,
+  observedEntityResolutions,
+  observedEntityGraphEntities,
+  observedEntityGraphRelationships,
+  observedEntityGraphSupports,
   locations,
   metadataAssertionLifecycles,
   metadataAssertionRetractions,
   metadataAssertionSources,
   metadataAssertions,
-  metadataPolicyEnrollments,
   observedRootRegistrations,
   observedRevisionConfirmations,
   recognitionDecisions,
@@ -181,6 +210,11 @@ import {
   relationshipLifecycles,
   relationshipRetractions,
   relationshipSources,
+  relationshipDecisions,
+  relationshipDecisionHeads,
+  relationshipManualSupports,
+  entityIdentityMerges,
+  entityIdentityMergeRetractions,
   recognitionHeads,
   sourceAssociations,
   sourceAssociationChangeProposals,
@@ -305,6 +339,58 @@ function currentObservationConditionalBaseline(
   return sha256Text(canonicalJson({ ...input, revisionHeads }));
 }
 
+/** 仅把当前观察与同一产物的一条精确确认相交为可消费修订版。 */
+function currentConfirmedLocationRevisions(
+  query: Pick<ReturnType<typeof drizzle>, "select">,
+  locationRows: readonly Pick<
+    typeof locations.$inferSelect,
+    "id" | "artifactId" | "kind"
+  >[],
+): readonly { readonly locationId: string; readonly revisionId: string }[] {
+  return locationRows.flatMap((location) => {
+    if (location.kind !== "observed") return [];
+    const current = query
+      .select()
+      .from(currentFileObservations)
+      .where(eq(currentFileObservations.locationId, location.id))
+      .get();
+    if (current === undefined) return [];
+    const confirmationIds = query
+      .select({ revisionId: observedRevisionConfirmations.revisionId })
+      .from(observedRevisionConfirmations)
+      .where(
+        and(
+          eq(observedRevisionConfirmations.locationId, location.id),
+          eq(observedRevisionConfirmations.snapshotId, current.snapshotId),
+          eq(observedRevisionConfirmations.observedAt, current.observedAt),
+          eq(observedRevisionConfirmations.size, current.size),
+          eq(observedRevisionConfirmations.modifiedAt, current.modifiedAt),
+          eq(
+            observedRevisionConfirmations.conditionalBaseline,
+            current.conditionalBaseline,
+          ),
+        ),
+      )
+      .all()
+      .map(({ revisionId }) => revisionId);
+    if (confirmationIds.length === 0) return [];
+    const revisionIds = query
+      .select({ id: artifactRevisions.id })
+      .from(artifactRevisions)
+      .where(
+        and(
+          eq(artifactRevisions.artifactId, location.artifactId),
+          inArray(artifactRevisions.id, sqliteTextSet(confirmationIds)),
+        ),
+      )
+      .all()
+      .map(({ id }) => id);
+    return revisionIds.length === 1
+      ? [{ locationId: location.id, revisionId: revisionIds[0]! }]
+      : [];
+  });
+}
+
 function proofMetadataMatchesBlob(
   proof: ArtifactContentProofMetadata,
   blobDigest: string,
@@ -373,18 +459,28 @@ type CurrentCatalogueHydrationRows = {
   readonly relationships: readonly (typeof entityRelationships.$inferSelect)[];
   readonly relationshipLifecycles: readonly (typeof relationshipLifecycles.$inferSelect)[];
   readonly relationshipRetractions: readonly (typeof relationshipRetractions.$inferSelect)[];
-  readonly policies: readonly (typeof metadataPolicyEnrollments.$inferSelect)[];
   readonly sourceRecords: readonly Pick<
     typeof sourceRecords.$inferSelect,
     "id" | "sourceIdentity" | "nativeAddress"
   >[];
   readonly artifacts: readonly (typeof artifacts.$inferSelect)[];
   readonly locations: readonly (typeof locations.$inferSelect)[];
+  readonly currentLocationRevisions: readonly {
+    readonly locationId: string;
+    readonly revisionId: string;
+  }[];
   readonly revisions: readonly (typeof artifactRevisions.$inferSelect)[];
   readonly blobs: readonly (typeof blobs.$inferSelect)[];
   readonly sourcedEntities: readonly (typeof sourcedEntities.$inferSelect)[];
+  readonly entityKinds: ReadonlyMap<string, EffectiveEntityKind>;
   readonly resolutions: readonly (typeof entityResolutionDecisions.$inferSelect)[];
   readonly mentions: readonly (typeof entityMentions.$inferSelect)[];
+  readonly observedEntities: readonly (typeof observedEntities.$inferSelect)[];
+  readonly observedMentions: readonly (typeof observedEntityMentions.$inferSelect)[];
+  readonly observedResolutions: readonly (typeof observedEntityResolutions.$inferSelect)[];
+  readonly observedEntityGraphSupports: readonly (typeof observedEntityGraphSupports.$inferSelect)[];
+  readonly observedEntityGraphEntities: readonly (typeof observedEntityGraphEntities.$inferSelect)[];
+  readonly observedEntityGraphRelationships: readonly (typeof observedEntityGraphRelationships.$inferSelect)[];
 };
 
 /**
@@ -478,8 +574,6 @@ function currentObservedMaterialPredicate(): SQL {
     FROM ${artifactAssociations}
     INNER JOIN ${locations}
       ON ${locations.artifactId} = ${artifactAssociations.artifactId}
-    INNER JOIN ${currentFileObservations}
-      ON ${currentFileObservations.locationId} = ${locations.id}
     INNER JOIN ${currentFileObservationSupports}
       ON ${currentFileObservationSupports.locationId} = ${locations.id}
     INNER JOIN ${observedRootRegistrations}
@@ -758,12 +852,1718 @@ export class SqliteCatalogue
     ObservedFileConfirmationQueries,
     ObservedRevisionConfirmationCommands,
     ObservedRootRegistrationCommands,
-    ObservedRootRegistrationQueries
+    ObservedRootRegistrationQueries,
+    CurrentUserInteractionPersistence,
+    RelatedEntityIdentityPersistence,
+    RelationshipDecisionPersistence
 {
   private database: DatabaseSync | undefined;
   private readonly productDataDirectory: string;
   private readonly clock: SqliteCatalogueClock;
   private readonly workflowExecutionPersistence: WorkflowExecutionPersistence;
+
+  async previewRelationshipChange(input: {
+    readonly changes: readonly RelationshipChange[];
+  }): Promise<RelationshipChangePreview> {
+    return this.relationshipChangePreviewWithDrizzle(
+      drizzle({ client: await this.ensure() }),
+      input.changes,
+    );
+  }
+
+  async applyRelationshipChange(input: {
+    readonly id: string;
+    readonly actorId: string;
+    readonly preview: RelationshipChangePreview;
+  }): Promise<"applied" | "stale"> {
+    const query = drizzle({ client: await this.ensure() });
+    return query.transaction(
+      (transaction) => {
+        const current = this.relationshipChangePreviewWithDrizzle(
+          transaction,
+          input.preview.changes,
+        );
+        if (current.baseline !== input.preview.baseline)
+          return "stale" as const;
+        const relations = this.relationshipProjectionWithDrizzle(transaction);
+        const adoptedManualRelationshipIds = new Set<string>();
+        for (const [index, change] of input.preview.changes.entries()) {
+          const coordinate = this.relationshipChangeCoordinate(
+            change,
+            relations.relationships,
+          );
+          const coordinateKey = relationshipCoordinateKey(coordinate);
+          const decisionId = `${input.id}:${index}`;
+          let manualRelationshipId: string | undefined;
+          if (change.kind === "fix") {
+            const draft = change.relationship!;
+            manualRelationshipId = `manual-relationship_${sha256Text(JSON.stringify({ coordinate, qualifiers: draft.qualifiers ?? [] })).slice(0, 40)}`;
+            const current = relations.decisions.find(
+              (decision) =>
+                relationshipCoordinateKey(decision.coordinate) ===
+                coordinateKey,
+            );
+            if (
+              current?.kind === "fix" &&
+              current.manualRelationshipId === manualRelationshipId
+            )
+              continue;
+            if (adoptedManualRelationshipIds.has(manualRelationshipId))
+              continue;
+            if (
+              transaction
+                .select({ id: entities.id })
+                .from(entities)
+                .where(
+                  inArray(
+                    entities.id,
+                    sqliteTextSet(
+                      draft.participants.map(({ entityId }) => entityId),
+                    ),
+                  ),
+                )
+                .all().length !==
+              new Set(draft.participants.map(({ entityId }) => entityId)).size
+            )
+              throw new Error("更正关系引用了不存在的实体");
+            transaction
+              .insert(entityRelationships)
+              .values({
+                id: manualRelationshipId,
+                type: draft.type,
+                participantsJson: JSON.stringify(draft.participants),
+                sourceRecordIdsJson: "[]",
+                qualifiersJson: JSON.stringify(draft.qualifiers ?? []),
+                producerJson: null,
+              })
+              .onConflictDoNothing()
+              .run();
+            for (const participant of draft.participants)
+              transaction
+                .insert(entityRelationshipParticipants)
+                .values({
+                  relationshipId: manualRelationshipId,
+                  entityId: participant.entityId,
+                  role: participant.role,
+                  mentionIdsJson: JSON.stringify(participant.mentionIds ?? []),
+                })
+                .onConflictDoNothing()
+                .run();
+            transaction
+              .insert(relationshipManualSupports)
+              .values({
+                relationshipId: manualRelationshipId,
+                decisionId,
+              })
+              .onConflictDoNothing()
+              .run();
+          }
+          transaction
+            .insert(relationshipDecisions)
+            .values({
+              id: decisionId,
+              coordinateJson: JSON.stringify(coordinate),
+              kind: change.kind,
+              relationshipIdsJson: JSON.stringify(change.relationshipIds ?? []),
+              manualRelationshipId: manualRelationshipId ?? null,
+              actorId: input.actorId,
+            })
+            .run();
+          transaction
+            .insert(relationshipDecisionHeads)
+            .values({ coordinateKey, decisionId })
+            .onConflictDoUpdate({
+              target: relationshipDecisionHeads.coordinateKey,
+              set: { decisionId },
+            })
+            .run();
+          if (manualRelationshipId !== undefined)
+            adoptedManualRelationshipIds.add(manualRelationshipId);
+        }
+        return "applied" as const;
+      },
+      { behavior: "immediate" },
+    );
+  }
+
+  private relationshipChangePreviewWithDrizzle(
+    query: DrizzleReadQuery,
+    changes: readonly RelationshipChange[],
+  ): RelationshipChangePreview {
+    const normalizedChanges = this.normalizeRelationshipChangesWithDrizzle(
+      query,
+      changes,
+    );
+    const state = this.relationshipProjectionWithDrizzle(query);
+    const relationships = [...state.relationships];
+    const manualRelationshipDecisionIds = new Map(
+      state.manualRelationshipDecisionIds,
+    );
+    const decisions = new Map(
+      state.decisions.map((decision) => [
+        relationshipCoordinateKey(decision.coordinate),
+        decision,
+      ]),
+    );
+    for (const change of normalizedChanges) {
+      const coordinate = this.relationshipChangeCoordinate(
+        change,
+        relationships,
+      );
+      const key = relationshipCoordinateKey(coordinate);
+      const decisionId = `preview:${key}`;
+      let manualRelationshipId: string | undefined;
+      if (change.kind === "fix") {
+        const draft = change.relationship!;
+        const participantIds = [
+          ...new Set(draft.participants.map(({ entityId }) => entityId)),
+        ];
+        if (
+          query
+            .select({ id: entities.id })
+            .from(entities)
+            .where(inArray(entities.id, sqliteTextSet(participantIds)))
+            .all().length !== participantIds.length
+        )
+          throw new Error("更正关系引用了不存在的实体");
+        manualRelationshipId = `manual-relationship_${sha256Text(JSON.stringify({ coordinate, qualifiers: draft.qualifiers ?? [] })).slice(0, 40)}`;
+        if (!relationships.some(({ id }) => id === manualRelationshipId))
+          relationships.push({
+            id: manualRelationshipId,
+            type: draft.type,
+            participants: draft.participants,
+            sourceSlot: "manual",
+            sourceRecordIds: [],
+            ...(draft.qualifiers === undefined
+              ? {}
+              : { qualifiers: draft.qualifiers }),
+          });
+        manualRelationshipDecisionIds.set(manualRelationshipId, decisionId);
+      }
+      decisions.set(key, {
+        id: decisionId,
+        coordinate,
+        kind: change.kind,
+        relationshipIds: change.relationshipIds ?? [],
+        ...(manualRelationshipId === undefined ? {} : { manualRelationshipId }),
+      });
+    }
+    const effective = deriveEffectiveRelationships({
+      relationships,
+      decisions: [...decisions.values()],
+      manualRelationshipDecisionIds,
+    });
+    this.assertIdentityFoldedRelationshipStructure(query, effective);
+    return {
+      baseline: sha256Text(
+        JSON.stringify({
+          relationships: state.relationships.map(({ id, sourceRecordIds }) => ({
+            id,
+            sourceRecordIds,
+          })),
+          decisions: state.decisions,
+          merges: query.select().from(entityIdentityMerges).all(),
+          retractions: query
+            .select()
+            .from(entityIdentityMergeRetractions)
+            .all(),
+        }),
+      ),
+      changes: normalizedChanges,
+      relationships: effective.map((relationship) => ({
+        id: relationship.id,
+        participants: relationship.participants.map(({ entityId, role }) => ({
+          entityId,
+          role,
+        })),
+        type: relationship.type,
+        ...(relationship.qualifiers === undefined
+          ? {}
+          : { qualifiers: relationship.qualifiers }),
+        sources: [],
+      })),
+    };
+  }
+
+  /** 关系决定先得出既有生效投影，再以当前身份代表验证最终结构。 */
+  private assertIdentityFoldedRelationshipStructure(
+    query: DrizzleReadQuery,
+    relationships: readonly EntityRelationship[],
+  ): void {
+    const forest = this.effectiveIdentityForestWithDrizzle(query);
+    for (const relationship of relationships) {
+      const participants = relationship.participants.map((participant) => ({
+        ...participant,
+        entityId:
+          forest.representativeByEntity.get(participant.entityId) ??
+          participant.entityId,
+      }));
+      if (
+        new Set(
+          participants.map(({ entityId, role }) => `${entityId}\u0000${role}`),
+        ).size !== participants.length ||
+        new Set(participants.map(({ entityId }) => entityId)).size < 2
+      )
+        throw new Error("身份合并会使当前关系结构无效");
+    }
+  }
+
+  /** 人工关系始终写入当前代表，不改写已有的来源或人工关系事实。 */
+  private normalizeRelationshipChangesWithDrizzle(
+    query: DrizzleReadQuery,
+    changes: readonly RelationshipChange[],
+  ): readonly RelationshipChange[] {
+    const forest = this.effectiveIdentityForestWithDrizzle(query);
+    return changes.map((change) =>
+      change.relationship === undefined
+        ? change
+        : {
+            ...change,
+            relationship: {
+              ...change.relationship,
+              participants: change.relationship.participants.map(
+                (participant) => ({
+                  ...participant,
+                  entityId:
+                    forest.representativeByEntity.get(participant.entityId) ??
+                    participant.entityId,
+                }),
+              ),
+            },
+          },
+    );
+  }
+
+  private relationshipChangeCoordinate(
+    change: RelationshipChange,
+    relationships: readonly EntityRelationship[],
+  ) {
+    if (change.relationship !== undefined)
+      return {
+        type: change.relationship.type,
+        participants: change.relationship.participants,
+      };
+    const target = relationships.find((relationship) =>
+      change.relationshipIds?.includes(relationship.id),
+    );
+    if (target === undefined) throw new Error("关系决定必须点名当前关系");
+    return { type: target.type, participants: target.participants };
+  }
+
+  private relationshipProjectionWithDrizzle(query: DrizzleReadQuery): {
+    readonly relationships: readonly EntityRelationship[];
+    readonly decisions: readonly RelationshipDecision[];
+    readonly manualRelationshipDecisionIds: ReadonlyMap<string, string>;
+  } {
+    const rows = query
+      .select()
+      .from(entityRelationships)
+      .orderBy(asc(entityRelationships.id))
+      .all();
+    const lifecycles = query.select().from(relationshipLifecycles).all();
+    const retracted = new Set(
+      query
+        .select({ id: relationshipRetractions.relationshipId })
+        .from(relationshipRetractions)
+        .all()
+        .map(({ id }) => id),
+    );
+    const superseded = new Set(
+      lifecycles.flatMap(({ predecessorRelationshipId }) =>
+        predecessorRelationshipId === null ? [] : [predecessorRelationshipId],
+      ),
+    );
+    const lifecycleByRelationship = new Map(
+      lifecycles.map((lifecycle) => [lifecycle.relationshipId, lifecycle]),
+    );
+    const manualRelationshipDecisionIds = new Map(
+      query
+        .select()
+        .from(relationshipManualSupports)
+        .all()
+        .map((row) => [row.relationshipId, row.decisionId]),
+    );
+    /**
+     * 本地格式观察图不走 SourceRecord lifecycle；它只能由图成员、图 support
+     * 与该资产当前 RecognitionDecision 共同支持，不能因为实体关系事实仍在而复活。
+     */
+    const currentObservedRelationshipSourceSlots = new Map(
+      query
+        .select({
+          relationshipId: observedEntityGraphRelationships.relationshipId,
+          sourceSlot: observedEntityGraphRelationships.sourceSlot,
+        })
+        .from(observedEntityGraphRelationships)
+        .innerJoin(
+          observedEntityGraphSupports,
+          eq(
+            observedEntityGraphRelationships.graphId,
+            observedEntityGraphSupports.id,
+          ),
+        )
+        .innerJoin(
+          recognitionHeads,
+          and(
+            eq(recognitionHeads.subjectId, observedEntityGraphSupports.assetId),
+            eq(
+              recognitionHeads.recognitionDecisionId,
+              observedEntityGraphSupports.recognitionDecisionId,
+            ),
+          ),
+        )
+        .all()
+        .map(
+          ({ relationshipId, sourceSlot }) =>
+            [relationshipId, sourceSlot] as const,
+        ),
+    );
+    const relationships = rows.flatMap((row) => {
+      const lifecycle = lifecycleByRelationship.get(row.id);
+      if (
+        (lifecycle === undefined &&
+          !manualRelationshipDecisionIds.has(row.id) &&
+          !currentObservedRelationshipSourceSlots.has(row.id)) ||
+        retracted.has(row.id) ||
+        superseded.has(row.id)
+      )
+        return [];
+      return [
+        {
+          id: row.id,
+          type: row.type,
+          participants: relationshipParticipantsFromJson(row.participantsJson),
+          sourceSlot:
+            lifecycle?.sourceSlot ??
+            currentObservedRelationshipSourceSlots.get(row.id) ??
+            "manual",
+          sourceRecordIds: jsonStringArray(
+            row.sourceRecordIdsJson,
+            "relationship source records",
+          ),
+          qualifiers: JSON.parse(row.qualifiersJson) as NonNullable<
+            EntityRelationship["qualifiers"]
+          >,
+          ...(row.producerJson === null
+            ? {}
+            : { producer: producerFromJson(row.producerJson) }),
+        },
+      ];
+    });
+    const decisions = query
+      .select({ decision: relationshipDecisions })
+      .from(relationshipDecisionHeads)
+      .innerJoin(
+        relationshipDecisions,
+        eq(relationshipDecisionHeads.decisionId, relationshipDecisions.id),
+      )
+      .all()
+      .map(({ decision }) => ({
+        id: decision.id,
+        coordinate: JSON.parse(
+          decision.coordinateJson,
+        ) as RelationshipDecision["coordinate"],
+        kind: decision.kind as RelationshipDecision["kind"],
+        relationshipIds: jsonStringArray(
+          decision.relationshipIdsJson,
+          "relationship decision targets",
+        ),
+        ...(decision.manualRelationshipId === null
+          ? {}
+          : { manualRelationshipId: decision.manualRelationshipId }),
+      }));
+    return { relationships, decisions, manualRelationshipDecisionIds };
+  }
+
+  async createLocalRelatedEntity(input: {
+    readonly commitmentId: string;
+    readonly id: string;
+    readonly label: string;
+    readonly kind: "entity" | "person" | "persona";
+    readonly actorId: string;
+  }): Promise<RelatedEntityIdentity> {
+    const query = drizzle({ client: await this.ensure() });
+    return query.transaction((transaction) => {
+      const existing = transaction
+        .select()
+        .from(localEntityCommitments)
+        .where(
+          and(
+            eq(localEntityCommitments.actorId, input.actorId),
+            eq(localEntityCommitments.commitmentId, input.commitmentId),
+          ),
+        )
+        .get();
+      if (existing !== undefined) {
+        if (
+          existing.label !== input.label ||
+          existing.submittedKind !== input.kind
+        )
+          throw new Error("本地身份提交坐标与既有内容冲突");
+        return {
+          id: existing.entityId,
+          label: existing.label,
+          kind: this.entityKindStateWithDrizzle(transaction, existing.entityId)
+            .effective,
+          identity: "local",
+        };
+      }
+      transaction
+        .insert(localEntityCommitments)
+        .values({
+          actorId: input.actorId,
+          commitmentId: input.commitmentId,
+          entityId: input.id,
+          label: input.label,
+          submittedKind: input.kind,
+        })
+        .run();
+      transaction
+        .insert(entities)
+        .values({ id: input.id })
+        .onConflictDoNothing()
+        .run();
+      transaction
+        .insert(localEntityNames)
+        .values({
+          entityId: input.id,
+          label: input.label,
+          actorId: input.actorId,
+        })
+        .onConflictDoNothing()
+        .run();
+      if (input.kind !== "entity")
+        transaction
+          .insert(entityKindAssertions)
+          .values({
+            id: `manual-entity-kind:${input.id}`,
+            entityId: input.id,
+            kind: input.kind,
+            basis: "manual",
+            sourceRecordIdsJson: "[]",
+            actorId: input.actorId,
+          })
+          .onConflictDoNothing()
+          .run();
+      return {
+        id: input.id,
+        label: input.label,
+        kind:
+          input.kind === "entity"
+            ? { status: "ordinary" }
+            : { status: "effective", kind: input.kind, basis: "assertion" },
+        identity: "local",
+      };
+    });
+  }
+
+  async findRelatedEntities(
+    label: string,
+  ): Promise<readonly RelatedEntityIdentity[]> {
+    const query = drizzle({ client: await this.ensure() });
+    const forest = this.effectiveIdentityForestWithDrizzle(query);
+    const local = query
+      .select()
+      .from(localEntityNames)
+      .where(eq(localEntityNames.label, label))
+      .all();
+    const sourced = query
+      .select()
+      .from(sourcedEntities)
+      .where(eq(sourcedEntities.label, label))
+      .all();
+    const observed = this.currentObservedEntityRowsWithDrizzle(query).filter(
+      (row) => row.label === label,
+    );
+    const candidates = [
+      ...local.map((row) => ({
+        id: row.entityId,
+        label: row.label,
+        identity: "local" as const,
+      })),
+      ...sourced.map((row) => ({
+        id: row.id,
+        label: row.label,
+        identity: "source" as const,
+      })),
+      ...observed.map((row) => ({
+        id: row.id,
+        label: row.label,
+        identity: "local" as const,
+      })),
+    ];
+    return [
+      ...new Map(
+        candidates.map((candidate) => {
+          const representativeId =
+            forest.representativeByEntity.get(candidate.id) ?? candidate.id;
+          return [
+            representativeId,
+            {
+              ...candidate,
+              id: representativeId,
+              kind: this.relatedEntityKindWithDrizzle(query, representativeId),
+            },
+          ] as const;
+        }),
+      ).values(),
+    ];
+  }
+
+  async previewEntityIdentityMerge(input: {
+    readonly retainedEntityId: string;
+    readonly mergedEntityId: string;
+  }): Promise<EntityIdentityMergePreview> {
+    const query = drizzle({ client: await this.ensure() });
+    return this.entityIdentityMergePreviewWithDrizzle(query, input);
+  }
+
+  async findEntityIdentityMergeReplay(input: {
+    readonly actorId: string;
+    readonly commitmentId: string;
+  }): Promise<
+    | {
+        readonly retainedEntityId: string;
+        readonly mergedEntityId: string;
+        readonly impactFingerprint: string;
+      }
+    | undefined
+  > {
+    const query = drizzle({ client: await this.ensure() });
+    return query
+      .select({
+        retainedEntityId: entityIdentityMerges.retainedEntityId,
+        mergedEntityId: entityIdentityMerges.mergedEntityId,
+        impactFingerprint: entityIdentityMerges.impactFingerprint,
+      })
+      .from(entityIdentityMerges)
+      .where(
+        and(
+          eq(entityIdentityMerges.actorId, input.actorId),
+          eq(entityIdentityMerges.commitmentId, input.commitmentId),
+        ),
+      )
+      .get();
+  }
+
+  async applyEntityIdentityMerge(input: {
+    readonly id: string;
+    readonly commitmentId: string;
+    readonly actorId: string;
+    readonly preview: EntityIdentityMergePreview;
+    readonly impactFingerprint: string;
+  }): Promise<"applied" | "stale"> {
+    const query = drizzle({ client: await this.ensure() });
+    return query.transaction((transaction) => {
+      const replay = transaction
+        .select()
+        .from(entityIdentityMerges)
+        .where(
+          and(
+            eq(entityIdentityMerges.actorId, input.actorId),
+            eq(entityIdentityMerges.commitmentId, input.commitmentId),
+          ),
+        )
+        .get();
+      if (replay !== undefined) {
+        if (
+          replay.retainedEntityId !== input.preview.retainedEntityId ||
+          replay.mergedEntityId !== input.preview.mergedEntityId ||
+          replay.impactFingerprint !== input.impactFingerprint
+        )
+          throw new Error("身份合并提交坐标与既有内容冲突");
+        return "applied" as const;
+      }
+      const current = this.entityIdentityMergePreviewWithDrizzle(transaction, {
+        retainedEntityId: input.preview.retainedEntityId,
+        mergedEntityId: input.preview.mergedEntityId,
+      });
+      if (current.mergeId !== undefined)
+        throw new Error("身份合并已经采用；请重用原提交标识");
+      if (current.baseline !== input.preview.baseline) return "stale" as const;
+      transaction
+        .insert(entityIdentityMerges)
+        .values({
+          id: input.id,
+          retainedEntityId: input.preview.retainedEntityId,
+          mergedEntityId: input.preview.mergedEntityId,
+          actorId: input.actorId,
+          commitmentId: input.commitmentId,
+          impactFingerprint: input.impactFingerprint,
+        })
+        .run();
+      return "applied" as const;
+    });
+  }
+
+  async undoEntityIdentityMerge(input: {
+    readonly id: string;
+    readonly commitmentId: string;
+    readonly actorId: string;
+    readonly preview: EntityIdentityMergePreview;
+  }): Promise<"applied" | "stale"> {
+    const mergeId = input.preview.mergeId;
+    if (mergeId === undefined) throw new Error("当前没有可撤销的身份合并");
+    const query = drizzle({ client: await this.ensure() });
+    return query.transaction((transaction) => {
+      const replay = transaction
+        .select()
+        .from(entityIdentityMergeRetractions)
+        .where(
+          and(
+            eq(entityIdentityMergeRetractions.actorId, input.actorId),
+            eq(entityIdentityMergeRetractions.commitmentId, input.commitmentId),
+          ),
+        )
+        .get();
+      if (replay !== undefined) {
+        if (replay.mergeId !== mergeId)
+          throw new Error("身份合并撤销提交坐标与既有内容冲突");
+        return "applied" as const;
+      }
+      const current = this.entityIdentityMergePreviewWithDrizzle(transaction, {
+        retainedEntityId: input.preview.retainedEntityId,
+        mergedEntityId: input.preview.mergedEntityId,
+      });
+      if (current.baseline !== input.preview.baseline) return "stale" as const;
+      transaction
+        .insert(entityIdentityMergeRetractions)
+        .values({
+          id: input.id,
+          mergeId,
+          actorId: input.actorId,
+          commitmentId: input.commitmentId,
+        })
+        .run();
+      return "applied" as const;
+    });
+  }
+
+  private effectiveIdentityForestWithDrizzle(query: DrizzleReadQuery) {
+    return deriveEffectiveEntityIdentity({
+      entityIds: query
+        .select({ id: entities.id })
+        .from(entities)
+        .all()
+        .map(({ id }) => id),
+      merges: query
+        .select()
+        .from(entityIdentityMerges)
+        .all()
+        .map((merge) => ({
+          id: merge.id,
+          retainedEntityId: merge.retainedEntityId,
+          mergedEntityId: merge.mergedEntityId,
+          actorId: merge.actorId,
+          commitmentId: merge.commitmentId,
+        })),
+      retractions: query
+        .select()
+        .from(entityIdentityMergeRetractions)
+        .all()
+        .map((retraction) => ({
+          id: retraction.id,
+          mergeId: retraction.mergeId,
+          actorId: retraction.actorId,
+          commitmentId: retraction.commitmentId,
+        })),
+    });
+  }
+
+  private entityIdentityMergePreviewWithDrizzle(
+    query: DrizzleReadQuery,
+    input: {
+      readonly retainedEntityId: string;
+      readonly mergedEntityId: string;
+    },
+  ): EntityIdentityMergePreview {
+    if (input.retainedEntityId === input.mergedEntityId)
+      throw new Error("不能将实体合并到自身");
+    const entityIds = query
+      .select({ id: entities.id })
+      .from(entities)
+      .all()
+      .map(({ id }) => id);
+    if (
+      !entityIds.includes(input.retainedEntityId) ||
+      !entityIds.includes(input.mergedEntityId)
+    )
+      throw new Error("待合并相关实体不存在");
+    if (
+      query
+        .select()
+        .from(recognitionHeads)
+        .where(
+          inArray(
+            recognitionHeads.subjectId,
+            sqliteTextSet([input.retainedEntityId, input.mergedEntityId]),
+          ),
+        )
+        .get() !== undefined
+    )
+      throw new Error("数字资产不能进行身份合并");
+    const merges = query.select().from(entityIdentityMerges).all();
+    const retractions = query
+      .select()
+      .from(entityIdentityMergeRetractions)
+      .all();
+    const forest = deriveEffectiveEntityIdentity({
+      entityIds,
+      merges,
+      retractions,
+    });
+    const retainedRoot = forest.representativeByEntity.get(
+      input.retainedEntityId,
+    )!;
+    const mergedRoot = forest.representativeByEntity.get(input.mergedEntityId)!;
+    const retainedMembers = forest.membersByRepresentative.get(
+      retainedRoot,
+    ) ?? [retainedRoot];
+    const mergedMembers = forest.membersByRepresentative.get(mergedRoot) ?? [
+      mergedRoot,
+    ];
+    const exact = merges.find(
+      (merge) =>
+        merge.retainedEntityId === input.retainedEntityId &&
+        merge.mergedEntityId === input.mergedEntityId &&
+        !retractions.some((retraction) => retraction.mergeId === merge.id),
+    );
+    if (
+      retainedRoot !== mergedRoot &&
+      (!this.hasCurrentRelatedEntityInGroupWithDrizzle(
+        query,
+        retainedMembers,
+      ) ||
+        !this.hasCurrentRelatedEntityInGroupWithDrizzle(query, mergedMembers))
+    )
+      throw new Error("待合并相关实体不是当前身份");
+    if (
+      retainedRoot === mergedRoot &&
+      exact !== undefined &&
+      !this.hasCurrentRelatedEntityInGroupWithDrizzle(query, retainedMembers)
+    )
+      throw new Error("待合并相关实体不是当前身份");
+    const affectedMemberIds = uniqueStrings([
+      ...retainedMembers,
+      ...mergedMembers,
+    ]);
+    const metadata = query
+      .select({
+        entityId: metadataAssertions.targetEntityId,
+        property: metadataAssertions.property,
+        value: metadataAssertions.value,
+        id: metadataAssertions.id,
+        sourceRecordIdsJson: metadataAssertions.sourceRecordIdsJson,
+        authoredByJson: metadataAssertions.authoredByJson,
+        observedArtifactPartJson: metadataAssertions.observedArtifactPartJson,
+      })
+      .from(metadataAssertions)
+      .where(
+        and(
+          eq(metadataAssertions.targetKind, "entity"),
+          inArray(
+            metadataAssertions.targetEntityId,
+            sqliteTextSet(affectedMemberIds),
+          ),
+        ),
+      )
+      .all()
+      .map(
+        ({
+          entityId,
+          property,
+          value,
+          id,
+          sourceRecordIdsJson,
+          authoredByJson,
+          observedArtifactPartJson,
+        }) => ({
+          entityId: entityId!,
+          property,
+          value,
+          id,
+          sourceRecordIdsJson,
+          authoredByJson,
+          observedArtifactPartJson,
+        }),
+      );
+    const metadataIds = metadata.map(({ id }) => id);
+    const metadataLifecycles =
+      metadataIds.length === 0
+        ? []
+        : query
+            .select()
+            .from(metadataAssertionLifecycles)
+            .where(
+              inArray(
+                metadataAssertionLifecycles.assertionId,
+                sqliteTextSet(metadataIds),
+              ),
+            )
+            .all();
+    const supersededMetadataIds = new Set(
+      metadataIds.length === 0
+        ? []
+        : query
+            .select({
+              predecessorAssertionId:
+                metadataAssertionLifecycles.predecessorAssertionId,
+            })
+            .from(metadataAssertionLifecycles)
+            .where(
+              inArray(
+                metadataAssertionLifecycles.predecessorAssertionId,
+                sqliteTextSet(metadataIds),
+              ),
+            )
+            .all()
+            .flatMap(({ predecessorAssertionId }) =>
+              predecessorAssertionId === null ? [] : [predecessorAssertionId],
+            ),
+    );
+    const retractedMetadataIds = new Set(
+      metadataIds.length === 0
+        ? []
+        : query
+            .select({ assertionId: metadataAssertionRetractions.assertionId })
+            .from(metadataAssertionRetractions)
+            .where(
+              inArray(
+                metadataAssertionRetractions.assertionId,
+                sqliteTextSet(metadataIds),
+              ),
+            )
+            .all()
+            .map(({ assertionId }) => assertionId),
+    );
+    const currentSourceRecordIds = new Set(
+      query
+        .select({ sourceRecordId: sourceLineageHeads.sourceRecordId })
+        .from(sourceLineageHeads)
+        .all()
+        .map(({ sourceRecordId }) => sourceRecordId),
+    );
+    const currentSourceCoordinates = new Set(
+      query
+        .select({
+          sourceIdentity: sourceAssociations.sourceIdentity,
+          nativeAddress: sourceAssociations.nativeAddress,
+        })
+        .from(currentSourceAssociations)
+        .innerJoin(
+          sourceAssociations,
+          eq(sourceAssociations.id, currentSourceAssociations.associationId),
+        )
+        .all()
+        .map(
+          ({ sourceIdentity, nativeAddress }) =>
+            `${sourceIdentity}\u0000${nativeAddress}`,
+        ),
+    );
+    const metadataLifecycleById = new Map(
+      metadataLifecycles.map((lifecycle) => [lifecycle.assertionId, lifecycle]),
+    );
+    const currentMetadata = metadata.filter((assertion) => {
+      if (
+        supersededMetadataIds.has(assertion.id) ||
+        retractedMetadataIds.has(assertion.id)
+      )
+        return false;
+      const lifecycle = metadataLifecycleById.get(assertion.id);
+      if (lifecycle !== undefined)
+        return (
+          currentSourceRecordIds.has(lifecycle.sourceRecordId) ||
+          currentSourceCoordinates.has(
+            `${lifecycle.sourceIdentity}\u0000${lifecycle.nativeAddress}`,
+          )
+        );
+      return (
+        assertion.authoredByJson !== null ||
+        assertion.observedArtifactPartJson !== null ||
+        assertion.sourceRecordIdsJson === "[]"
+      );
+    });
+    const affectedKindStates = this.entityKindStatesWithDrizzle(
+      query,
+      affectedMemberIds,
+    );
+    const kinds = [
+      ...new Set(
+        affectedMemberIds.flatMap((entityId) => {
+          const effective = affectedKindStates.get(entityId)!.effective;
+          return effective.status === "ordinary"
+            ? []
+            : effective.status === "conflict"
+              ? effective.kinds
+              : [effective.kind];
+        }),
+      ),
+    ];
+    if (kinds.length > 1) throw new Error("身份合并会造成相关实体种类冲突");
+    const relationshipState = this.relationshipProjectionWithDrizzle(query);
+    const effectiveRelationshipIds = new Set(
+      deriveEffectiveRelationships({
+        relationships: relationshipState.relationships,
+        decisions: relationshipState.decisions,
+        manualRelationshipDecisionIds:
+          relationshipState.manualRelationshipDecisionIds,
+      }).map(({ id }) => id),
+    );
+    const affectedRelationships = relationshipState.relationships.filter(
+      (relationship) =>
+        effectiveRelationshipIds.has(relationship.id) &&
+        relationship.participants.some(({ entityId }) =>
+          affectedMemberIds.includes(entityId),
+        ),
+    );
+    const relevantRelationshipIds = relationshipState.relationships
+      .filter((relationship) =>
+        relationship.participants.some(({ entityId }) =>
+          affectedMemberIds.includes(entityId),
+        ),
+      )
+      .map(({ id }) => id);
+    const relationshipIds: string[] = [];
+    for (const relationship of affectedRelationships) {
+      const projectedParticipants = relationship.participants.map(
+        (participant) => {
+          const root = forest.representativeByEntity.get(participant.entityId)!;
+          return {
+            ...participant,
+            entityId: root === mergedRoot ? retainedRoot : root,
+          };
+        },
+      );
+      if (
+        relationship.participants.some(({ entityId }) =>
+          affectedMemberIds.includes(entityId),
+        )
+      )
+        relationshipIds.push(relationship.id);
+      if (
+        new Set(
+          projectedParticipants.map(
+            ({ entityId, role }) => `${entityId}\u0000${role}`,
+          ),
+        ).size !== projectedParticipants.length ||
+        new Set(projectedParticipants.map(({ entityId }) => entityId)).size < 2
+      )
+        throw new Error("身份合并会使现有关系结构无效");
+    }
+    if (retainedRoot === mergedRoot && exact === undefined)
+      throw new Error("身份合并必须连接两个不同当前根");
+    return {
+      retainedEntityId: exact?.retainedEntityId ?? retainedRoot,
+      mergedEntityId: exact?.mergedEntityId ?? mergedRoot,
+      members:
+        exact === undefined
+          ? affectedMemberIds
+          : (forest.membersByRepresentative.get(retainedRoot) ?? []),
+      relationshipIds,
+      metadata: currentMetadata.map(({ entityId, property, value }) => ({
+        entityId,
+        property,
+        value,
+      })),
+      metadataConflicts: [],
+      metadataPolicyBaseline: "",
+      effectiveKind:
+        kinds.length === 0
+          ? { status: "ordinary" }
+          : {
+              status: "effective",
+              kind: kinds[0]!,
+              basis: affectedMemberIds.some((entityId) => {
+                const effective = affectedKindStates.get(entityId)!.effective;
+                return (
+                  effective.status === "effective" &&
+                  effective.basis === "decision"
+                );
+              })
+                ? "decision"
+                : "assertion",
+            },
+      baseline: sha256Text(
+        JSON.stringify({
+          merges,
+          retractions,
+          members: affectedMemberIds,
+          metadata: currentMetadata,
+          metadataLifecycles,
+          metadataRetractions: [...retractedMetadataIds],
+          kinds: affectedMemberIds.map((entityId) => ({
+            entityId,
+            baseline: affectedKindStates.get(entityId)!.baseline,
+          })),
+          relationships: affectedRelationships,
+          decisions: relationshipState.decisions.filter(
+            (decision) =>
+              decision.relationshipIds.some((id) =>
+                relevantRelationshipIds.includes(id),
+              ) ||
+              decision.coordinate.participants.some(({ entityId }) =>
+                affectedMemberIds.includes(entityId),
+              ),
+          ),
+        }),
+      ),
+      ...(exact === undefined ? {} : { mergeId: exact.id }),
+    };
+  }
+
+  async resolveEntityMentionManually(input: {
+    readonly id: string;
+    readonly mentionId: string;
+    readonly entityId: string;
+    readonly actorId: string;
+    readonly baseline: string;
+  }): Promise<"applied" | "stale"> {
+    const query = drizzle({ client: await this.ensure() });
+    return query.transaction((transaction) => {
+      const forest = this.effectiveIdentityForestWithDrizzle(transaction);
+      const representativeId =
+        forest.representativeByEntity.get(input.entityId) ?? input.entityId;
+      if (
+        transaction
+          .select({ id: entityMentions.id })
+          .from(entityMentions)
+          .where(eq(entityMentions.id, input.mentionId))
+          .get() === undefined
+      )
+        throw new Error("待消歧实体指称不存在");
+      if (
+        transaction
+          .select({ id: entities.id })
+          .from(entities)
+          .where(eq(entities.id, representativeId))
+          .get() === undefined
+      )
+        throw new Error("所选相关实体不存在");
+      const current = this.entityMentionResolutionWithDrizzle(
+        transaction,
+        input.mentionId,
+      );
+      if (current.baseline !== input.baseline) return "stale" as const;
+      transaction
+        .insert(entityResolutionDecisions)
+        .values({
+          id: input.id,
+          mentionId: input.mentionId,
+          entityId: representativeId,
+          rule: "manual",
+          basis: "manual",
+          replacesDecisionId: current.decisionId ?? null,
+          sourceRecordIdsJson: "[]",
+          producerJson: null,
+          actorId: input.actorId,
+          operation: "select",
+        })
+        .run();
+      return "applied" as const;
+    });
+  }
+
+  async inspectEntityMentionResolution(
+    mentionId: string,
+  ): Promise<EntityMentionResolution> {
+    const query = drizzle({ client: await this.ensure() });
+    return this.entityMentionResolutionWithDrizzle(query, mentionId);
+  }
+
+  async retractEntityMentionResolution(input: {
+    readonly id: string;
+    readonly mentionId: string;
+    readonly actorId: string;
+    readonly baseline: string;
+  }): Promise<"applied" | "stale"> {
+    const query = drizzle({ client: await this.ensure() });
+    return query.transaction((transaction) => {
+      const current = this.entityMentionResolutionWithDrizzle(
+        transaction,
+        input.mentionId,
+      );
+      if (current.baseline !== input.baseline) return "stale" as const;
+      if (current.basis !== "manual" || current.entityId === undefined)
+        throw new Error("当前没有可撤回的人工实体消歧");
+      transaction
+        .insert(entityResolutionDecisions)
+        .values({
+          id: input.id,
+          mentionId: input.mentionId,
+          entityId: current.entityId,
+          rule: "manual",
+          basis: "manual",
+          replacesDecisionId: current.decisionId ?? null,
+          sourceRecordIdsJson: "[]",
+          producerJson: null,
+          actorId: input.actorId,
+          operation: "retract",
+        })
+        .run();
+      return "applied" as const;
+    });
+  }
+
+  async previewEntityKindDecision(input: {
+    readonly entityId: string;
+    readonly selectedKind?: "person" | "persona";
+  }): Promise<{
+    readonly entityId: string;
+    readonly baseline: string;
+    readonly currentDecisionId?: string;
+    readonly selectedKind?: "person" | "persona";
+    readonly effective: EffectiveEntityKind;
+  }> {
+    const query = drizzle({ client: await this.ensure() });
+    const current = this.effectiveEntityKindStateWithDrizzle(
+      query,
+      input.entityId,
+    );
+    return {
+      entityId: current.entityId,
+      baseline: current.baseline,
+      ...(current.decision === undefined
+        ? {}
+        : { currentDecisionId: current.decision.id }),
+      ...(input.selectedKind === undefined
+        ? {}
+        : { selectedKind: input.selectedKind }),
+      effective: current.effective,
+    };
+  }
+
+  async applyEntityKindDecision(input: {
+    readonly id: string;
+    readonly entityId: string;
+    readonly selectedKind?: "person" | "persona";
+    readonly actorId: string;
+    readonly baseline: string;
+  }): Promise<"applied" | "stale"> {
+    const query = drizzle({ client: await this.ensure() });
+    return query.transaction((transaction) => {
+      const representativeId =
+        this.effectiveIdentityForestWithDrizzle(
+          transaction,
+        ).representativeByEntity.get(input.entityId) ?? input.entityId;
+      if (
+        transaction
+          .select({ id: entities.id })
+          .from(entities)
+          .where(eq(entities.id, representativeId))
+          .get() === undefined
+      )
+        throw new Error("相关实体不存在");
+      const current = this.effectiveEntityKindStateWithDrizzle(
+        transaction,
+        representativeId,
+      );
+      if (current.baseline !== input.baseline) return "stale" as const;
+      transaction
+        .insert(entityKindDecisions)
+        .values({
+          id: input.id,
+          entityId: representativeId,
+          selectedKind: input.selectedKind ?? null,
+          basis: "manual",
+          replacesDecisionId: current.decision?.id ?? null,
+          actorId: input.actorId,
+          operation: input.selectedKind === undefined ? "clear" : "select",
+        })
+        .run();
+      return "applied" as const;
+    });
+  }
+
+  private entityKindStateWithDrizzle(
+    query: DrizzleReadQuery,
+    entityId: string,
+  ): {
+    readonly effective: EffectiveEntityKind;
+    readonly decision?: {
+      readonly id: string;
+      readonly selectedKind: "digital-asset" | "person" | "persona";
+    };
+    readonly baseline: string;
+  } {
+    return this.entityKindStatesWithDrizzle(query, [entityId]).get(entityId)!;
+  }
+
+  /**
+   * 当前种类的唯一批量投影。来源断言只有在其谱系叶与当前来源记录头一致时才生效；
+   * 因此同种类的新支持也会成为预演基线的一部分，而不是被种类集合吞掉。
+   */
+  private entityKindStatesWithDrizzle(
+    query: DrizzleReadQuery,
+    entityIds: readonly string[],
+  ): ReadonlyMap<
+    string,
+    {
+      readonly effective: EffectiveEntityKind;
+      readonly decision?: {
+        readonly id: string;
+        readonly selectedKind: "digital-asset" | "person" | "persona";
+      };
+      readonly baseline: string;
+    }
+  > {
+    const ids = uniqueStrings(entityIds);
+    if (ids.length === 0) return new Map();
+    const assertions = query
+      .select()
+      .from(entityKindAssertions)
+      .where(inArray(entityKindAssertions.entityId, sqliteTextSet(ids)))
+      .all();
+    const decisions = query
+      .select()
+      .from(entityKindDecisions)
+      .where(inArray(entityKindDecisions.entityId, sqliteTextSet(ids)))
+      .orderBy(desc(sql<number>`${entityKindDecisions}.rowid`))
+      .all();
+    const supports = query
+      .select()
+      .from(entityKindSourceSupports)
+      .where(inArray(entityKindSourceSupports.entityId, sqliteTextSet(ids)))
+      .orderBy(desc(sql<number>`${entityKindSourceSupports}.rowid`))
+      .all();
+    const supportSubjects = uniqueStrings(
+      supports.map((support) => support.sourceSubjectId),
+    );
+    const heads =
+      supportSubjects.length === 0
+        ? []
+        : query
+            .select()
+            .from(sourceLineageHeads)
+            .where(
+              inArray(
+                sourceLineageHeads.subjectId,
+                sqliteTextSet(supportSubjects),
+              ),
+            )
+            .all();
+    const lineageKey = (input: {
+      readonly sourceSubjectId: string;
+      readonly sourceIdentity: string;
+      readonly nativeAddress: string;
+      readonly coverageId: string;
+    }) =>
+      `${input.sourceSubjectId}\u0000${input.sourceIdentity}\u0000${input.nativeAddress}\u0000${input.coverageId}`;
+    const headByLineage = new Map(
+      heads.map((head) => [
+        `${head.subjectId}\u0000${head.sourceIdentity}\u0000${head.nativeAddress}\u0000${head.coverageId}`,
+        head.sourceRecordId,
+      ]),
+    );
+    const latestByEntity = new Map<string, (typeof decisions)[number]>();
+    for (const decision of decisions)
+      if (!latestByEntity.has(decision.entityId))
+        latestByEntity.set(decision.entityId, decision);
+    const assertionsByEntity = new Map<string, (typeof assertions)[number][]>();
+    for (const assertion of assertions)
+      (
+        assertionsByEntity.get(assertion.entityId) ??
+        assertionsByEntity.set(assertion.entityId, []).get(assertion.entityId)!
+      ).push(assertion);
+    const leavesByEntity = new Map<string, (typeof supports)[number][]>();
+    const seenLeaves = new Set<string>();
+    for (const support of supports) {
+      const key = `${support.entityId}\u0000${lineageKey(support)}`;
+      if (seenLeaves.has(key)) continue;
+      seenLeaves.add(key);
+      (
+        leavesByEntity.get(support.entityId) ??
+        leavesByEntity.set(support.entityId, []).get(support.entityId)!
+      ).push(support);
+    }
+    const result = new Map<
+      string,
+      {
+        readonly effective: EffectiveEntityKind;
+        readonly decision?: {
+          readonly id: string;
+          readonly selectedKind: "digital-asset" | "person" | "persona";
+        };
+        readonly baseline: string;
+      }
+    >();
+    for (const entityId of ids) {
+      const latest = latestByEntity.get(entityId);
+      const decision =
+        latest?.operation === "select" && latest.selectedKind !== null
+          ? {
+              id: latest.id,
+              selectedKind: latest.selectedKind as
+                | "digital-asset"
+                | "person"
+                | "persona",
+            }
+          : undefined;
+      const currentSupports = (leavesByEntity.get(entityId) ?? []).filter(
+        (support) =>
+          support.operation === "assert" &&
+          support.assertionId !== null &&
+          headByLineage.get(lineageKey(support)) === support.sourceRecordId,
+      );
+      const supportedAssertionIds = new Set(
+        currentSupports.map((support) => support.assertionId!),
+      );
+      const currentAssertions = (assertionsByEntity.get(entityId) ?? []).filter(
+        (assertion) =>
+          assertion.basis !== "source" ||
+          supportedAssertionIds.has(assertion.id),
+      );
+      const kinds = [
+        ...new Set(currentAssertions.map((assertion) => assertion.kind)),
+      ].toSorted() as ("digital-asset" | "person" | "persona")[];
+      const effective: EffectiveEntityKind =
+        decision === undefined
+          ? kinds.length === 0
+            ? { status: "ordinary" }
+            : kinds.length === 1
+              ? { status: "effective", kind: kinds[0]!, basis: "assertion" }
+              : { status: "conflict", kinds }
+          : {
+              status: "effective",
+              kind: decision.selectedKind,
+              basis: "decision",
+            };
+      const baseline = createHash("sha256")
+        .update(
+          JSON.stringify({
+            assertions: currentAssertions
+              .map(({ id, kind, basis }) => ({ id, kind, basis }))
+              .toSorted((left, right) => left.id.localeCompare(right.id)),
+            supports: (leavesByEntity.get(entityId) ?? [])
+              .map((support) => ({
+                id: support.id,
+                assertionId: support.assertionId,
+                sourceSubjectId: support.sourceSubjectId,
+                sourceIdentity: support.sourceIdentity,
+                nativeAddress: support.nativeAddress,
+                coverageId: support.coverageId,
+                sourceRecordId: support.sourceRecordId,
+                headSourceRecordId: headByLineage.get(lineageKey(support)),
+              }))
+              .toSorted((left, right) => left.id.localeCompare(right.id)),
+            decision:
+              latest === undefined
+                ? null
+                : {
+                    id: latest.id,
+                    operation: latest.operation,
+                    selectedKind: latest.selectedKind,
+                    replacesDecisionId: latest.replacesDecisionId,
+                  },
+          }),
+        )
+        .digest("hex");
+      result.set(entityId, {
+        effective,
+        ...(decision === undefined ? {} : { decision }),
+        baseline,
+      });
+    }
+    return result;
+  }
+
+  private relatedEntityKindWithDrizzle(
+    query: DrizzleReadQuery,
+    entityId: string,
+  ): EffectiveEntityKind {
+    return this.effectiveEntityKindStateWithDrizzle(query, entityId).effective;
+  }
+
+  /**
+   * 观察身份只有在其图成员、图支持和该资产当前识别头同时成立时才可参与公开查询。
+   * 历史图保留作审计，但绝不借由实体表本身重新进入当前投影。
+   */
+  private currentObservedEntityRowsWithDrizzle(
+    query: DrizzleReadQuery,
+  ): readonly {
+    readonly id: string;
+    readonly assetId: string;
+    readonly label: string;
+  }[] {
+    return query
+      .select({
+        id: observedEntities.id,
+        assetId: observedEntities.assetId,
+        label: observedEntities.label,
+      })
+      .from(observedEntityGraphEntities)
+      .innerJoin(
+        observedEntityGraphSupports,
+        eq(observedEntityGraphEntities.graphId, observedEntityGraphSupports.id),
+      )
+      .innerJoin(
+        recognitionHeads,
+        and(
+          eq(recognitionHeads.subjectId, observedEntityGraphSupports.assetId),
+          eq(
+            recognitionHeads.recognitionDecisionId,
+            observedEntityGraphSupports.recognitionDecisionId,
+          ),
+        ),
+      )
+      .innerJoin(
+        observedEntities,
+        eq(observedEntities.id, observedEntityGraphEntities.entityId),
+      )
+      .all();
+  }
+
+  /** 当前观察身份与既有本地／来源身份均可参与相关实体操作。 */
+  private hasCurrentRelatedEntityInGroupWithDrizzle(
+    query: DrizzleReadQuery,
+    entityIds: readonly string[],
+  ): boolean {
+    if (
+      this.currentObservedEntityRowsWithDrizzle(query).some((row) =>
+        entityIds.includes(row.id),
+      )
+    )
+      return true;
+    return (
+      query
+        .select({ id: localEntityNames.entityId })
+        .from(localEntityNames)
+        .where(inArray(localEntityNames.entityId, sqliteTextSet(entityIds)))
+        .get() !== undefined ||
+      query
+        .select({ id: sourcedEntities.id })
+        .from(sourcedEntities)
+        .where(inArray(sourcedEntities.id, sqliteTextSet(entityIds)))
+        .get() !== undefined
+    );
+  }
+
+  /**
+   * 各实体先按原有规则投影种类，再在当前身份成员间汇集；保留者没有优先级。
+   */
+  private effectiveEntityKindStateWithDrizzle(
+    query: DrizzleReadQuery,
+    entityId: string,
+  ): {
+    readonly entityId: string;
+    readonly effective: EffectiveEntityKind;
+    readonly decision?: {
+      readonly id: string;
+      readonly selectedKind: "digital-asset" | "person" | "persona";
+    };
+    readonly baseline: string;
+  } {
+    const forest = this.effectiveIdentityForestWithDrizzle(query);
+    const representativeId =
+      forest.representativeByEntity.get(entityId) ?? entityId;
+    const memberIds = forest.membersByRepresentative.get(representativeId) ?? [
+      representativeId,
+    ];
+    const states = this.entityKindStatesWithDrizzle(query, memberIds);
+    const kinds = [
+      ...new Set(
+        memberIds.flatMap((memberId) => {
+          const effective = states.get(memberId)!.effective;
+          return effective.status === "ordinary"
+            ? []
+            : effective.status === "conflict"
+              ? effective.kinds
+              : [effective.kind];
+        }),
+      ),
+    ].toSorted();
+    const representative = states.get(representativeId)!;
+    const effective: EffectiveEntityKind =
+      kinds.length === 0
+        ? { status: "ordinary" }
+        : kinds.length === 1
+          ? {
+              status: "effective",
+              kind: kinds[0]!,
+              basis: memberIds.some((memberId) => {
+                const memberEffective = states.get(memberId)!.effective;
+                return (
+                  memberEffective.status === "effective" &&
+                  memberEffective.basis === "decision"
+                );
+              })
+                ? "decision"
+                : "assertion",
+            }
+          : { status: "conflict", kinds };
+    return {
+      entityId: representativeId,
+      effective,
+      ...(representative.decision === undefined
+        ? {}
+        : { decision: representative.decision }),
+      baseline: sha256Text(
+        JSON.stringify({
+          representativeId,
+          members: memberIds,
+          states: memberIds.map((memberId) => ({
+            entityId: memberId,
+            baseline: states.get(memberId)!.baseline,
+          })),
+          merges: query.select().from(entityIdentityMerges).all(),
+          retractions: query
+            .select()
+            .from(entityIdentityMergeRetractions)
+            .all(),
+        }),
+      ),
+    };
+  }
+
+  /** 资产读者共享这一批量生效种类投影，避免任一断言绕过人工决定或冲突。 */
+  private currentEffectiveDigitalAssetIdsWithDrizzle(
+    query: DrizzleReadQuery,
+    entityIds: readonly string[],
+  ): readonly string[] {
+    const states = this.entityKindStatesWithDrizzle(query, entityIds);
+    return entityIds.filter((entityId) => {
+      const effective = states.get(entityId)?.effective;
+      return (
+        effective?.status === "effective" && effective.kind === "digital-asset"
+      );
+    });
+  }
+
+  private entityMentionResolutionWithDrizzle(
+    query: DrizzleReadQuery,
+    mentionId: string,
+  ): EntityMentionResolution {
+    const mention = query
+      .select()
+      .from(entityMentions)
+      .where(eq(entityMentions.id, mentionId))
+      .get();
+    if (mention === undefined) throw new Error("待消歧实体指称不存在");
+    const decisions = query
+      .select()
+      .from(entityResolutionDecisions)
+      .where(eq(entityResolutionDecisions.mentionId, mentionId))
+      .orderBy(desc(sql<number>`${entityResolutionDecisions}.rowid`))
+      .all();
+    const latestManual = decisions.find((row) => row.basis === "manual");
+    const source = decisions.find(
+      (row) => row.basis === "source" && row.operation === "select",
+    );
+    const chosen = latestManual?.operation === "select" ? latestManual : source;
+    const baseline = createHash("sha256")
+      .update(
+        JSON.stringify({
+          manual: latestManual?.id ?? null,
+          source: source?.id ?? null,
+          merges: query.select().from(entityIdentityMerges).all(),
+          retractions: query
+            .select()
+            .from(entityIdentityMergeRetractions)
+            .all(),
+        }),
+      )
+      .digest("hex");
+    return {
+      mentionId,
+      label: mention.label,
+      ...(chosen === undefined
+        ? {}
+        : {
+            entityId:
+              this.effectiveIdentityForestWithDrizzle(
+                query,
+              ).representativeByEntity.get(chosen.entityId) ?? chosen.entityId,
+            basis: chosen.basis as "source" | "manual",
+            decisionId: chosen.id,
+          }),
+      ...(chosen?.actorId === null || chosen?.actorId === undefined
+        ? {}
+        : { actorId: chosen.actorId }),
+      sourceRecordIds:
+        chosen === undefined
+          ? (JSON.parse(mention.sourceRecordIdsJson) as string[])
+          : (JSON.parse(chosen.sourceRecordIdsJson) as string[]),
+      baseline,
+    };
+  }
+
+  async readPlaybackInteractions(revisionIds: readonly string[]) {
+    if (revisionIds.length === 0) return [];
+    const query = drizzle({ client: await this.ensure() });
+    this.requireDefaultLocalUser(query);
+    return query
+      .select({
+        artifactRevisionId: artifactInteractionStates.revisionId,
+        positionMilliseconds: artifactInteractionStates.positionMilliseconds,
+        completed: artifactInteractionStates.completed,
+      })
+      .from(artifactInteractionStates)
+      .where(
+        and(
+          eq(artifactInteractionStates.userId, "local-user"),
+          inArray(
+            artifactInteractionStates.revisionId,
+            sqliteTextSet(revisionIds),
+          ),
+        ),
+      )
+      .orderBy(asc(artifactInteractionStates.revisionId))
+      .all()
+      .map((row) => ({ ...row, completed: row.completed === 1 }));
+  }
+
+  async savePlaybackInteraction(
+    input: import("@digital/domain").AssetInteractionState,
+  ): Promise<void> {
+    const query = drizzle({ client: await this.ensure() });
+    this.requireDefaultLocalUser(query);
+    const revision = query
+      .select({ id: artifactRevisions.id })
+      .from(artifactRevisions)
+      .where(eq(artifactRevisions.id, input.artifactRevisionId))
+      .get();
+    if (revision === undefined) throw new Error("文件修订版不存在");
+    query
+      .insert(artifactInteractionStates)
+      .values({
+        userId: "local-user",
+        revisionId: input.artifactRevisionId,
+        positionMilliseconds: input.positionMilliseconds,
+        completed: input.completed ? 1 : 0,
+      })
+      .onConflictDoUpdate({
+        target: [
+          artifactInteractionStates.userId,
+          artifactInteractionStates.revisionId,
+        ],
+        set: {
+          positionMilliseconds: input.positionMilliseconds,
+          completed: input.completed ? 1 : 0,
+        },
+      })
+      .run();
+  }
+
+  private requireDefaultLocalUser(query: ReturnType<typeof drizzle>): void {
+    const bindings = query
+      .select({
+        userId: localUsers.userId,
+        personId: localUsers.personId,
+      })
+      .from(localUsers)
+      .all();
+    const effective =
+      bindings.length === 1
+        ? this.entityKindStateWithDrizzle(query, bindings[0]!.personId)
+            .effective
+        : undefined;
+    if (
+      bindings.length !== 1 ||
+      bindings[0]?.userId !== "local-user" ||
+      bindings[0]?.personId !== "person:local-user" ||
+      effective?.status !== "effective" ||
+      effective.kind !== "person"
+    )
+      throw new Error("本地用户身份未准备");
+  }
 
   async readArtifactRevisionAccessFacts(revisionId: string) {
     const database = await this.ensure();
@@ -907,7 +2707,7 @@ export class SqliteCatalogue
           blobDigest: blob.digest,
           blobByteLength: blob.byteLength,
           locationId: location.id,
-          locationKind: location.kind as "managed" | "observed",
+          locationKind: location.kind,
         });
         if (baseline !== input.expected.conditionalBaseline)
           return "stale" as const;
@@ -1158,7 +2958,8 @@ export class SqliteCatalogue
             .get();
           if (
             persistedBlob?.byteLength !== input.blob.byteLength ||
-            persistedBlob.mediaType !== input.blob.mediaType
+            (input.blob.mediaType !== "application/octet-stream" &&
+              persistedBlob.mediaType !== input.blob.mediaType)
           )
             return "stale" as const;
           transaction.insert(artifactRevisions).values(input.revision).run();
@@ -2506,7 +4307,6 @@ export class SqliteCatalogue
       Location,
       "artifactId" | "address"
     >[];
-    readonly metadataPolicyIds?: readonly string[];
     readonly resumeClaim?: { readonly token: string; readonly now: string };
   }): Promise<void> {
     // 同样确保公开适配器对非应用层调用方安全。该检查发生在事务打开前，
@@ -2598,19 +4398,6 @@ export class SqliteCatalogue
           this.invalidateStaleChangeImpactPreviewsWithDrizzle(transaction, [
             input.accepted.entity.id,
           ]);
-          for (const policyId of new Set(input.metadataPolicyIds ?? [])) {
-            if (policyId.length === 0)
-              throw new Error("Metadata Policy enrollment identifier is empty");
-            transaction
-              .insert(metadataPolicyEnrollments)
-              .values({
-                subjectId: input.accepted.entity.id,
-                policyId,
-                executionId: input.execution.id,
-              })
-              .onConflictDoNothing()
-              .run();
-          }
           this.workflowExecutionPersistence.replaceExecutionWithDrizzle(
             transaction,
             input.execution,
@@ -2731,6 +4518,7 @@ export class SqliteCatalogue
             this.insertOrVerifyArtifactFactsWithDrizzle(
               transaction,
               input.submission,
+              input.submission.recognitionDecision.assetId,
             );
             this.projectCurrentFileObservationsWithDrizzle(
               transaction,
@@ -2791,9 +4579,9 @@ export class SqliteCatalogue
         throw new Error("观察材料关联审计引用不存在");
       const association: ArtifactAssociation = {
         id: associationRow.id,
-        subjectId: associationRow.subjectId,
+        target: descriptionTargetFromColumns(associationRow),
         artifactId: associationRow.artifactId,
-        role: associationRow.role as ArtifactAssociation["role"],
+        role: associationRow.role,
         sourceRecordIds: JSON.parse(
           associationRow.sourceRecordIdsJson,
         ) as string[],
@@ -3013,7 +4801,7 @@ export class SqliteCatalogue
                   (item) =>
                     item.id === association.id &&
                     item.artifactId === association.artifactId &&
-                    item.subjectId === association.subjectId &&
+                    sameDescriptionTarget(item.target, association.target) &&
                     item.role === association.role,
                 ) ||
                 !execution.materialAssociation.submission?.supports.some(
@@ -3059,7 +4847,7 @@ export class SqliteCatalogue
               id: location.id,
               artifactId: location.artifactId,
               address: location.address,
-              kind: location.kind as Location["kind"],
+              kind: location.kind,
             },
             revision: {
               id: revision.id,
@@ -3781,16 +5569,82 @@ export class SqliteCatalogue
     const currentHeads = await query
       .select({ assetId: recognitionHeads.subjectId })
       .from(recognitionHeads)
-      .innerJoin(
-        entities,
-        and(
-          eq(entities.id, recognitionHeads.subjectId),
-          eq(entities.kind, "digital-asset"),
-        ),
-      )
       .where(
         and(
           currentObservedMaterialPredicate(),
+          sql`(
+            EXISTS (
+              SELECT 1 FROM entity_kind_decisions decision
+              WHERE decision.entity_id = ${recognitionHeads.subjectId}
+                AND decision.rowid = (
+                  SELECT MAX(latest.rowid) FROM entity_kind_decisions latest
+                  WHERE latest.entity_id = ${recognitionHeads.subjectId}
+                )
+                AND decision.operation = 'select'
+                AND decision.selected_kind = 'digital-asset'
+            ) OR (
+              NOT EXISTS (
+                SELECT 1 FROM entity_kind_decisions decision
+                 WHERE decision.entity_id = ${recognitionHeads.subjectId}
+                   AND decision.rowid = (
+                     SELECT MAX(latest.rowid) FROM entity_kind_decisions latest
+                      WHERE latest.entity_id = ${recognitionHeads.subjectId}
+                   )
+                   AND decision.operation = 'select'
+              )
+              AND 1 = (
+                SELECT COUNT(DISTINCT current_kind.kind) FROM (
+                  SELECT assertion.kind
+                    FROM entity_kind_assertions assertion
+                   WHERE assertion.entity_id = ${recognitionHeads.subjectId}
+                     AND assertion.basis <> 'source'
+                  UNION
+                  SELECT assertion.kind
+                    FROM entity_kind_assertions assertion
+                    JOIN entity_kind_source_supports support
+                      ON support.assertion_id = assertion.id
+                    JOIN source_lineage_heads source_head
+                      ON source_head.subject_id = support.source_subject_id
+                     AND source_head.source_identity = support.source_identity
+                     AND source_head.native_address = support.native_address
+                     AND source_head.coverage_id = support.coverage_id
+                     AND source_head.source_record_id = support.source_record_id
+                   WHERE support.entity_id = ${recognitionHeads.subjectId}
+                     AND support.operation = 'assert'
+                     AND NOT EXISTS (
+                       SELECT 1 FROM entity_kind_source_supports successor
+                        WHERE successor.predecessor_id = support.id
+                     )
+                ) current_kind
+              )
+              AND EXISTS (
+                SELECT 1 FROM (
+                  SELECT assertion.kind
+                    FROM entity_kind_assertions assertion
+                   WHERE assertion.entity_id = ${recognitionHeads.subjectId}
+                     AND assertion.basis <> 'source'
+                  UNION
+                  SELECT assertion.kind
+                    FROM entity_kind_assertions assertion
+                    JOIN entity_kind_source_supports support
+                      ON support.assertion_id = assertion.id
+                    JOIN source_lineage_heads source_head
+                      ON source_head.subject_id = support.source_subject_id
+                     AND source_head.source_identity = support.source_identity
+                     AND source_head.native_address = support.native_address
+                     AND source_head.coverage_id = support.coverage_id
+                     AND source_head.source_record_id = support.source_record_id
+                   WHERE support.entity_id = ${recognitionHeads.subjectId}
+                     AND support.operation = 'assert'
+                     AND NOT EXISTS (
+                       SELECT 1 FROM entity_kind_source_supports successor
+                        WHERE successor.predecessor_id = support.id
+                     )
+                ) current_kind
+               WHERE current_kind.kind = 'digital-asset'
+              )
+            )
+          )`,
           anchor === undefined
             ? undefined
             : gt(recognitionHeads.subjectId, anchor),
@@ -3811,6 +5665,8 @@ export class SqliteCatalogue
     const items = await this.readCurrentAcceptedPageWithDrizzle(
       query,
       pageHeads.map(({ assetId }) => assetId),
+      undefined,
+      "already-effective",
     );
     const last = pageHeads.at(-1);
     return {
@@ -3854,7 +5710,6 @@ export class SqliteCatalogue
           entity: item.entity,
           additionOrder: orders.get(item.entity.id)!,
           metadata: item.metadata,
-          metadataPolicyIds: item.metadataPolicyIds ?? [],
           metadataSourceRecords: item.metadataSourceRecords ?? [],
           sourceAssociations: item.sourceAssociations,
           ...(item.recognitionSourceAssociation === undefined
@@ -3862,7 +5717,7 @@ export class SqliteCatalogue
             : {
                 recognitionSourceAssociation: item.recognitionSourceAssociation,
               }),
-          entities: item.entities ?? [],
+          currentRelatedEntities: item.currentRelatedEntities ?? [],
           relationships: item.relationships ?? [],
         });
     }
@@ -3874,31 +5729,17 @@ export class SqliteCatalogue
    * 使常规浏览始终有界。
    */
   async listCurrentCatalogue(): Promise<readonly AcceptedAssetState[]> {
-    const database = await this.ensure();
-    const query = drizzle({ client: database });
-    const currentHeads = await query
-      .select({ assetId: recognitionHeads.subjectId })
-      .from(recognitionHeads)
-      .innerJoin(
-        entities,
-        and(
-          eq(entities.id, recognitionHeads.subjectId),
-          eq(entities.kind, "digital-asset"),
-        ),
-      )
-      .where(currentObservedMaterialPredicate())
-      .orderBy(asc(recognitionHeads.subjectId));
-    const assetIds = [
-      ...new Set(currentHeads.map((current) => current.assetId)),
-    ];
-    const hydrated = await Promise.all(
-      assetIds.map(async (assetId) =>
-        this.readCurrentAcceptedWithDrizzle(query, assetId),
-      ),
-    );
-    return hydrated.flatMap((accepted) =>
-      accepted === undefined ? [] : [accepted],
-    );
+    const items: AcceptedAssetState[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.listCurrentCataloguePage({
+        limit: maximumCataloguePageLimit,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      items.push(...page.items);
+      cursor = page.nextCursor;
+    } while (cursor !== undefined);
+    return items;
   }
 
   async inspectRawSourceRecord(
@@ -4100,6 +5941,522 @@ export class SqliteCatalogue
     return found;
   }
 
+  async findCurrentRelationshipParticipant(
+    entityId: string,
+  ): Promise<CatalogueEntityRelationshipFacts | undefined> {
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    const forest = this.effectiveIdentityForestWithDrizzle(query);
+    const representativeId =
+      forest.representativeByEntity.get(entityId) ?? entityId;
+    const memberIds = forest.membersByRepresentative.get(representativeId) ?? [
+      representativeId,
+    ];
+    const currentAsset = query
+      .select({ id: recognitionHeads.subjectId })
+      .from(recognitionHeads)
+      .where(
+        and(
+          eq(recognitionHeads.subjectId, representativeId),
+          isNotNull(recognitionHeads.recognitionDecisionId),
+          currentObservedMaterialPredicate(),
+        ),
+      )
+      .get();
+    if (
+      currentAsset === undefined &&
+      !this.hasCurrentRelatedEntityInGroupWithDrizzle(query, memberIds)
+    )
+      return undefined;
+    const entity = query
+      .select({
+        id: entities.id,
+        sourceIdentity: sourcedEntities.sourceIdentity,
+        sourceKey: sourcedEntities.sourceKey,
+        identityNamespace: sourcedEntities.identityNamespace,
+        sourcedLabel: sourcedEntities.label,
+        observedLabel: observedEntities.label,
+        localLabel: localEntityNames.label,
+      })
+      .from(entities)
+      .leftJoin(sourcedEntities, eq(sourcedEntities.id, entities.id))
+      .leftJoin(observedEntities, eq(observedEntities.id, entities.id))
+      .leftJoin(localEntityNames, eq(localEntityNames.entityId, entities.id))
+      .where(eq(entities.id, representativeId))
+      .get();
+    if (entity === undefined) return undefined;
+    const latestManualByMention = new Map<
+      string,
+      typeof entityResolutionDecisions.$inferSelect
+    >();
+    for (const decision of query
+      .select()
+      .from(entityResolutionDecisions)
+      .where(eq(entityResolutionDecisions.basis, "manual"))
+      .orderBy(desc(sql<number>`${entityResolutionDecisions}.rowid`))
+      .all())
+      if (!latestManualByMention.has(decision.mentionId))
+        latestManualByMention.set(decision.mentionId, decision);
+    const manualMentionIds = [...latestManualByMention.values()].flatMap(
+      (decision) =>
+        decision.operation === "select" &&
+        (forest.representativeByEntity.get(decision.entityId) ??
+          decision.entityId) === representativeId
+          ? [decision.mentionId]
+          : [],
+    );
+    const manualRelationshipIds =
+      manualMentionIds.length === 0
+        ? []
+        : query
+            .select()
+            .from(entityRelationshipParticipants)
+            .all()
+            .filter((participant) =>
+              (JSON.parse(participant.mentionIdsJson) as string[]).some((id) =>
+                manualMentionIds.includes(id),
+              ),
+            )
+            .map((participant) => participant.relationshipId);
+    const manuallySupportedRelationshipIds = query
+      .select({ relationshipId: relationshipManualSupports.relationshipId })
+      .from(entityRelationshipParticipants)
+      .innerJoin(
+        relationshipManualSupports,
+        eq(
+          relationshipManualSupports.relationshipId,
+          entityRelationshipParticipants.relationshipId,
+        ),
+      )
+      .where(
+        inArray(
+          entityRelationshipParticipants.entityId,
+          sqliteTextSet(memberIds),
+        ),
+      )
+      .all()
+      .map(({ relationshipId }) => relationshipId);
+    const relationshipRows = [
+      ...new Map([
+        ...query
+          .select({ relationship: entityRelationships })
+          .from(entityRelationshipParticipants)
+          .innerJoin(
+            entityRelationships,
+            eq(
+              entityRelationships.id,
+              entityRelationshipParticipants.relationshipId,
+            ),
+          )
+          .where(
+            inArray(
+              entityRelationshipParticipants.entityId,
+              sqliteTextSet(memberIds),
+            ),
+          )
+          .orderBy(asc(sql<number>`${entityRelationships}.rowid`))
+          .all()
+          .map(({ relationship }) => [relationship.id, relationship] as const),
+        ...(manualRelationshipIds.length === 0
+          ? []
+          : query
+              .select()
+              .from(entityRelationships)
+              .where(
+                inArray(
+                  entityRelationships.id,
+                  sqliteTextSet(manualRelationshipIds),
+                ),
+              )
+              .all()
+              .map((relationship) => [relationship.id, relationship] as const)),
+        ...(manuallySupportedRelationshipIds.length === 0
+          ? []
+          : query
+              .select()
+              .from(entityRelationships)
+              .where(
+                inArray(
+                  entityRelationships.id,
+                  sqliteTextSet(manuallySupportedRelationshipIds),
+                ),
+              )
+              .all()
+              .map((relationship) => [relationship.id, relationship] as const)),
+      ]).values(),
+    ];
+    const relationshipIds = uniqueStrings(
+      relationshipRows.map((row) => row.id),
+    );
+    const lifecycles =
+      relationshipIds.length === 0
+        ? []
+        : query
+            .select()
+            .from(relationshipLifecycles)
+            .where(
+              inArray(
+                relationshipLifecycles.relationshipId,
+                sqliteTextSet(relationshipIds),
+              ),
+            )
+            .all();
+    const lifecycleByRelationshipId = new Map(
+      lifecycles.map((lifecycle) => [lifecycle.relationshipId, lifecycle]),
+    );
+    const observedCurrentRelationshipSourceSlots = new Map(
+      relationshipIds.length === 0
+        ? []
+        : query
+            .select({
+              relationshipId: observedEntityGraphRelationships.relationshipId,
+              sourceSlot: observedEntityGraphRelationships.sourceSlot,
+            })
+            .from(observedEntityGraphRelationships)
+            .innerJoin(
+              observedEntityGraphSupports,
+              eq(
+                observedEntityGraphRelationships.graphId,
+                observedEntityGraphSupports.id,
+              ),
+            )
+            .innerJoin(
+              recognitionHeads,
+              and(
+                eq(
+                  recognitionHeads.subjectId,
+                  observedEntityGraphSupports.assetId,
+                ),
+                eq(
+                  recognitionHeads.recognitionDecisionId,
+                  observedEntityGraphSupports.recognitionDecisionId,
+                ),
+              ),
+            )
+            .where(
+              inArray(
+                observedEntityGraphRelationships.relationshipId,
+                sqliteTextSet(relationshipIds),
+              ),
+            )
+            .all()
+            .map(
+              ({ relationshipId, sourceSlot }) =>
+                [relationshipId, sourceSlot] as const,
+            ),
+    );
+    const retractedRelationshipIds = new Set(
+      relationshipIds.length === 0
+        ? []
+        : query
+            .select({ relationshipId: relationshipRetractions.relationshipId })
+            .from(relationshipRetractions)
+            .where(
+              inArray(
+                relationshipRetractions.relationshipId,
+                sqliteTextSet(relationshipIds),
+              ),
+            )
+            .all()
+            .map((row) => row.relationshipId),
+    );
+    const supersededRelationshipIds = new Set(
+      relationshipIds.length === 0
+        ? []
+        : query
+            .select({
+              predecessorId: relationshipLifecycles.predecessorRelationshipId,
+            })
+            .from(relationshipLifecycles)
+            .where(
+              inArray(
+                relationshipLifecycles.predecessorRelationshipId,
+                sqliteTextSet(relationshipIds),
+              ),
+            )
+            .all()
+            .flatMap((row) =>
+              row.predecessorId === null ? [] : [row.predecessorId],
+            ),
+    );
+    const manualDecisionByRelationship = new Map(
+      relationshipIds.length === 0
+        ? []
+        : query
+            .select()
+            .from(relationshipManualSupports)
+            .where(
+              inArray(
+                relationshipManualSupports.relationshipId,
+                sqliteTextSet(relationshipIds),
+              ),
+            )
+            .all()
+            .map(
+              (support) =>
+                [support.relationshipId, support.decisionId] as const,
+            ),
+    );
+    const resolvedRelationshipMentionEntityId = (
+      mentionId: string,
+    ): string | undefined =>
+      query
+        .select({ entityId: observedEntityResolutions.entityId })
+        .from(observedEntityResolutions)
+        .where(eq(observedEntityResolutions.mentionId, mentionId))
+        .get()?.entityId ??
+      this.entityMentionResolutionWithDrizzle(query, mentionId).entityId;
+    const currentRelationshipRows = relationshipRows.filter(
+      (relationship) =>
+        (((lifecycleByRelationshipId.has(relationship.id) ||
+          manualDecisionByRelationship.has(relationship.id)) &&
+          !retractedRelationshipIds.has(relationship.id) &&
+          !supersededRelationshipIds.has(relationship.id)) ||
+          observedCurrentRelationshipSourceSlots.has(relationship.id)) &&
+        relationshipParticipantsFromJson(relationship.participantsJson).some(
+          (participant) =>
+            (participant.mentionIds ?? [participant.entityId]).some(
+              (mentionOrEntityId) => {
+                const participantEntityId =
+                  participant.mentionIds === undefined
+                    ? mentionOrEntityId
+                    : resolvedRelationshipMentionEntityId(mentionOrEntityId);
+                return (
+                  (forest.representativeByEntity.get(
+                    participantEntityId ?? "",
+                  ) ?? participantEntityId) === representativeId
+                );
+              },
+            ),
+        ),
+    );
+    const relationships = currentRelationshipRows.map((relationship) => {
+      const lifecycle = lifecycleByRelationshipId.get(relationship.id);
+      return {
+        id: relationship.id,
+        participants: relationshipParticipantsFromJson(
+          relationship.participantsJson,
+        ).map(({ entityId: participantId, role, mentionIds }) => {
+          const resolvedParticipantId =
+            mentionIds
+              ?.map((mentionId) =>
+                resolvedRelationshipMentionEntityId(mentionId),
+              )
+              .find((resolved) => resolved !== undefined) ?? participantId;
+          return {
+            entityId:
+              forest.representativeByEntity.get(resolvedParticipantId) ??
+              resolvedParticipantId,
+            role,
+          };
+        }),
+        type: relationship.type,
+        qualifiers: JSON.parse(relationship.qualifiersJson) as NonNullable<
+          EntityRelationship["qualifiers"]
+        >,
+        sources:
+          lifecycle === undefined
+            ? []
+            : [
+                {
+                  sourceIdentity: lifecycle.sourceIdentity,
+                  nativeAddress: lifecycle.nativeAddress,
+                },
+              ],
+      };
+    });
+    const effective = deriveEffectiveRelationships({
+      relationships: currentRelationshipRows.map((relationship) => ({
+        id: relationship.id,
+        participants: relationshipParticipantsFromJson(
+          relationship.participantsJson,
+        ),
+        type: relationship.type,
+        sourceSlot:
+          lifecycleByRelationshipId.get(relationship.id)?.sourceSlot ??
+          observedCurrentRelationshipSourceSlots.get(relationship.id) ??
+          "manual",
+        sourceRecordIds: jsonStringArray(
+          relationship.sourceRecordIdsJson,
+          "relationship source records",
+        ),
+        qualifiers: JSON.parse(relationship.qualifiersJson) as NonNullable<
+          EntityRelationship["qualifiers"]
+        >,
+      })),
+      decisions: query
+        .select({ decision: relationshipDecisions })
+        .from(relationshipDecisionHeads)
+        .innerJoin(
+          relationshipDecisions,
+          eq(relationshipDecisionHeads.decisionId, relationshipDecisions.id),
+        )
+        .all()
+        .map(({ decision }) => ({
+          id: decision.id,
+          coordinate: JSON.parse(
+            decision.coordinateJson,
+          ) as RelationshipDecision["coordinate"],
+          kind: decision.kind as RelationshipDecision["kind"],
+          relationshipIds: jsonStringArray(
+            decision.relationshipIdsJson,
+            "relationship decision targets",
+          ),
+          ...(decision.manualRelationshipId === null
+            ? {}
+            : { manualRelationshipId: decision.manualRelationshipId }),
+        })),
+      manualRelationshipDecisionIds: manualDecisionByRelationship,
+    });
+    const effectiveRelationshipIds = new Set(effective.map(({ id }) => id));
+    const effectiveRelationships = relationships.filter(({ id }) =>
+      effectiveRelationshipIds.has(id),
+    );
+    const effectiveRelationshipRows = currentRelationshipRows.filter(({ id }) =>
+      effectiveRelationshipIds.has(id),
+    );
+    const participantRows =
+      effectiveRelationshipRows.length === 0
+        ? []
+        : query
+            .select({ entityId: entityRelationshipParticipants.entityId })
+            .from(entityRelationshipParticipants)
+            .where(
+              inArray(
+                entityRelationshipParticipants.relationshipId,
+                sqliteTextSet(effectiveRelationshipRows.map((row) => row.id)),
+              ),
+            )
+            .all();
+    const effectiveRelationshipSourceRecordIds = uniqueStrings(
+      effectiveRelationshipRows.flatMap((relationship) => {
+        const sourceRecordId = lifecycleByRelationshipId.get(
+          relationship.id,
+        )?.sourceRecordId;
+        return sourceRecordId === undefined ? [] : [sourceRecordId];
+      }),
+    );
+    const sourceAssetIdsFromLineage =
+      effectiveRelationshipSourceRecordIds.length === 0
+        ? []
+        : query
+            .select({ subjectId: sourceLineageHeads.subjectId })
+            .from(sourceLineageHeads)
+            .where(
+              inArray(
+                sourceLineageHeads.sourceRecordId,
+                sqliteTextSet(effectiveRelationshipSourceRecordIds),
+              ),
+            )
+            .all()
+            .map(({ subjectId }) => subjectId);
+    const effectiveRelationshipSourceCoordinates = new Set(
+      effectiveRelationshipRows.flatMap((relationship) => {
+        const lifecycle = lifecycleByRelationshipId.get(relationship.id);
+        return lifecycle === undefined
+          ? []
+          : [`${lifecycle.sourceIdentity}\u0000${lifecycle.nativeAddress}`];
+      }),
+    );
+    const sourceAssetIdsFromAssociation =
+      effectiveRelationshipSourceCoordinates.size === 0
+        ? []
+        : query
+            .select({
+              subjectId: sourceAssociations.subjectId,
+              sourceIdentity: sourceAssociations.sourceIdentity,
+              nativeAddress: sourceAssociations.nativeAddress,
+            })
+            .from(currentSourceAssociations)
+            .innerJoin(
+              sourceAssociations,
+              eq(
+                sourceAssociations.id,
+                currentSourceAssociations.associationId,
+              ),
+            )
+            .all()
+            .flatMap(({ subjectId, sourceIdentity, nativeAddress }) =>
+              effectiveRelationshipSourceCoordinates.has(
+                `${sourceIdentity}\u0000${nativeAddress}`,
+              )
+                ? [subjectId]
+                : [],
+            );
+    const sourceAssetIds = uniqueStrings([
+      ...sourceAssetIdsFromLineage,
+      ...sourceAssetIdsFromAssociation,
+    ]);
+    const candidates = uniqueStrings([
+      ...participantRows.map((row) => row.entityId),
+      ...sourceAssetIds,
+      ...effectiveRelationshipRows.flatMap((relationship) => {
+        const sourceSubjectId = lifecycleByRelationshipId.get(
+          relationship.id,
+        )?.sourceSubjectId;
+        return sourceSubjectId === undefined || sourceSubjectId.length === 0
+          ? []
+          : [sourceSubjectId];
+      }),
+    ]);
+    const accepted = await this.findAcceptedForSubjects(candidates);
+    // 资料断言的 subject 是原属相关实体，不是数字资产；从当前资产投影反查，不能借用关系邻接。
+    const metadataSubjectIds = query
+      .select({ subjectId: recognitionHeads.subjectId })
+      .from(recognitionHeads)
+      .where(sql`${recognitionHeads.recognitionDecisionId} IS NOT NULL`)
+      .all()
+      .map(({ subjectId }) => subjectId);
+    const metadataAccepted =
+      await this.findAcceptedForSubjects(metadataSubjectIds);
+    return {
+      entity: {
+        id: entity.id,
+        kind: this.relatedEntityKindWithDrizzle(query, entity.id),
+        label:
+          entity.sourcedLabel ??
+          entity.observedLabel ??
+          entity.localLabel ??
+          entity.id,
+        ...(entity.sourceIdentity === null
+          ? {}
+          : { sourceIdentity: entity.sourceIdentity }),
+        ...(entity.sourceKey === null ? {} : { sourceKey: entity.sourceKey }),
+        ...(entity.identityNamespace === null
+          ? {}
+          : { identityNamespace: entity.identityNamespace }),
+      },
+      memberIds,
+      relationships: effectiveRelationships,
+      metadataAccepted: metadataAccepted.filter(({ accepted: state }) =>
+        state.metadata.some(
+          (assertion) =>
+            assertion.target.kind === "entity" &&
+            memberIds.includes(assertion.target.entityId),
+        ),
+      ),
+      accepted: accepted.filter(
+        ({ subjectId, accepted: state }) =>
+          effectiveRelationshipRows.some((current) =>
+            relationshipParticipantsFromJson(current.participantsJson).some(
+              (participant) => participant.entityId === subjectId,
+            ),
+          ) ||
+          (state.relationships ?? []).some((relationship) =>
+            effectiveRelationshipRows.some(
+              (current) => current.id === relationship.id,
+            ),
+          ) ||
+          effectiveRelationshipRows.some(
+            (current) =>
+              lifecycleByRelationshipId.get(current.id)?.sourceSubjectId ===
+              subjectId,
+          ) ||
+          sourceAssetIds.includes(subjectId),
+      ),
+    };
+  }
+
   async findCurrentSourceAssociationByCoordinate(input: {
     readonly sourceIdentity: string;
     readonly nativeAddress: string;
@@ -4137,12 +6494,12 @@ export class SqliteCatalogue
   > {
     const database = await this.ensure();
     const query = drizzle({ client: database });
-    const entity = query
-      .select({ id: entities.id })
-      .from(entities)
-      .where(and(eq(entities.id, assetId), eq(entities.kind, "digital-asset")))
-      .get();
-    if (entity === undefined) return undefined;
+    if (
+      !this.currentEffectiveDigitalAssetIdsWithDrizzle(query, [
+        assetId,
+      ]).includes(assetId)
+    )
+      return undefined;
     const head = query
       .select({ decisionId: recognitionHeads.recognitionDecisionId })
       .from(recognitionHeads)
@@ -4312,7 +6669,7 @@ export class SqliteCatalogue
     const exact = current.filter((candidate) => {
       const currentObservedMaterial = new Set(
         candidate.accepted.artifactAssociations.flatMap((association) =>
-          association.subjectId === candidate.subjectId &&
+          entityTargetId(association) === candidate.subjectId &&
           association.role === "asset.material-delivered" &&
           association.observedArtifactPart === undefined &&
           (association.sourceRecordIds === undefined ||
@@ -4363,30 +6720,34 @@ export class SqliteCatalogue
         subjectId,
         sourceAssociations,
         metadata: accepted.metadata
-          .filter((fact) => fact.subjectId === subjectId)
+          .filter((fact) => entityTargetId(fact) === subjectId)
           .map(({ property }) => ({
             subjectId,
             property,
           })),
         relationships: (accepted.relationships ?? [])
-          .filter((fact) => fact.subjectId === subjectId)
-          .map(({ subjectId: factSubjectId, type }) => ({
-            subjectId: factSubjectId,
+          .filter((fact) =>
+            fact.participants.some(
+              (participant) => participant.entityId === subjectId,
+            ),
+          )
+          .map(({ type }) => ({
+            subjectId,
             type,
           })),
         artifactAssociations: accepted.artifactAssociations
-          .filter((association) => association.subjectId === subjectId)
+          .filter((association) => entityTargetId(association) === subjectId)
           .map(
             ({
               id,
-              subjectId: associationSubjectId,
+              target,
               artifactId,
               role,
               sourceAssociationId,
               sourceRecordIds,
             }) => ({
               id,
-              subjectId: associationSubjectId,
+              subjectId: target.kind === "entity" ? target.entityId : subjectId,
               artifactId,
               role,
               ...(sourceAssociationId === undefined
@@ -4397,7 +6758,10 @@ export class SqliteCatalogue
                 : {
                     currentSourceArtifact:
                       this.isCurrentSourceArtifactAssociation(query, {
-                        subjectId: associationSubjectId,
+                        subjectId:
+                          target.kind === "entity"
+                            ? target.entityId
+                            : subjectId,
                         sourceAssociationId,
                         sourceRecordIds,
                       }),
@@ -4743,13 +7107,17 @@ export class SqliteCatalogue
             input.resumeClaim,
           );
           this.assertManagedSourceArtifactCommitInputs(transaction, input);
-          this.insertOrVerifyArtifactFactsWithDrizzle(transaction, {
-            artifacts: input.managedArtifacts.artifacts,
-            locations: input.managedArtifacts.locations,
-            blobs: input.managedArtifacts.blobs,
-            artifactRevisions: input.managedArtifacts.revisions,
-            artifactAssociations: input.managedArtifacts.associations,
-          });
+          this.insertOrVerifyArtifactFactsWithDrizzle(
+            transaction,
+            {
+              artifacts: input.managedArtifacts.artifacts,
+              locations: input.managedArtifacts.locations,
+              blobs: input.managedArtifacts.blobs,
+              artifactRevisions: input.managedArtifacts.revisions,
+              artifactAssociations: input.managedArtifacts.associations,
+            },
+            input.expectedIdentity.subjectId,
+          );
           const submittedAssociations =
             this.attachManagedSourceArtifactAssociationProvenanceWithDrizzle(
               transaction,
@@ -4908,7 +7276,8 @@ export class SqliteCatalogue
     if (
       input.managedArtifacts.associations.some(
         (artifactAssociation) =>
-          artifactAssociation.subjectId !== input.expectedIdentity.subjectId ||
+          entityTargetId(artifactAssociation) !==
+            input.expectedIdentity.subjectId ||
           artifactAssociation.sourceRecordIds === undefined ||
           artifactAssociation.sourceRecordIds.length === 0 ||
           !artifactAssociation.sourceRecordIds.every((sourceRecordId) =>
@@ -5005,7 +7374,7 @@ export class SqliteCatalogue
     const associationIds = accepted.artifactAssociations
       .filter(
         (association) =>
-          association.subjectId === sourceAssociation.subjectId &&
+          entityTargetId(association) === sourceAssociation.subjectId &&
           association.sourceRecordIds !== undefined &&
           association.sourceRecordIds.length > 0 &&
           association.sourceRecordIds.every((sourceRecordId) =>
@@ -5656,13 +8025,17 @@ export class SqliteCatalogue
             association.metadataRefreshPreflight,
           );
           if (input.managedArtifacts !== undefined) {
-            this.insertOrVerifyArtifactFactsWithDrizzle(transaction, {
-              artifacts: input.managedArtifacts.artifacts,
-              locations: input.managedArtifacts.locations,
-              blobs: input.managedArtifacts.blobs,
-              artifactRevisions: input.managedArtifacts.revisions,
-              artifactAssociations: input.managedArtifacts.associations,
-            });
+            this.insertOrVerifyArtifactFactsWithDrizzle(
+              transaction,
+              {
+                artifacts: input.managedArtifacts.artifacts,
+                locations: input.managedArtifacts.locations,
+                blobs: input.managedArtifacts.blobs,
+                artifactRevisions: input.managedArtifacts.revisions,
+                artifactAssociations: input.managedArtifacts.associations,
+              },
+              input.assetId,
+            );
             const submittedAssociations =
               this.attachManagedSourceArtifactAssociationProvenanceWithDrizzle(
                 transaction,
@@ -5874,7 +8247,7 @@ export class SqliteCatalogue
       if (
         input.managedArtifacts.associations.some(
           (association) =>
-            association.subjectId !== input.assetId ||
+            entityTargetId(association) !== input.assetId ||
             association.sourceRecordIds === undefined ||
             association.sourceRecordIds.length === 0 ||
             !association.sourceRecordIds.every((sourceRecordId) =>
@@ -6213,7 +8586,10 @@ export class SqliteCatalogue
           )
           .map((relationship) =>
             sourceFactCoordinate(
-              relationship.subjectId ?? input.submission.assetId,
+              relationshipSourceSubjectId(
+                input.submission.assetId,
+                relationship,
+              ),
               relationship.sourceSlot,
             ),
           );
@@ -6927,6 +9303,12 @@ export class SqliteCatalogue
             blobs: currentPreview.projected.blobs,
             artifactRevisions: currentPreview.projected.artifactRevisions,
             artifactAssociations: currentPreview.projected.artifactAssociations,
+            ...(currentPreview.projectedObservedEntityGraphs === undefined
+              ? {}
+              : {
+                  observedEntityGraphs:
+                    currentPreview.projectedObservedEntityGraphs,
+                }),
           };
           this.insertReevaluatedArtifactFactsWithDrizzle(
             transaction,
@@ -8478,13 +10860,21 @@ export class SqliteCatalogue
     for (const relationship of candidateRelationships) {
       const current = currentRelationshipsByCoordinate.get(
         sourceFactCoordinate(
-          relationship.subjectId ?? input.assetId,
+          relationshipSourceSubjectId(input.assetId, relationship),
           relationship.sourceSlot,
         ),
       );
       if (
         current !== undefined &&
-        relationshipMatchesCurrent(current, relationship)
+        relationshipMatchesCurrent(current, {
+          ...relationship,
+          participants: [
+            ...(relationship.subjectRole === undefined
+              ? []
+              : [{ entityId: input.assetId, role: relationship.subjectRole }]),
+            ...relationship.participants,
+          ],
+        })
       ) {
         continue;
       }
@@ -8497,7 +10887,7 @@ export class SqliteCatalogue
       const nextRelationshipCoordinates = new Set(
         candidateRelationships.map((relationship) =>
           sourceFactCoordinate(
-            relationship.subjectId ?? input.assetId,
+            relationshipSourceSubjectId(input.assetId, relationship),
             relationship.sourceSlot,
           ),
         ),
@@ -8520,6 +10910,51 @@ export class SqliteCatalogue
         }
       }
     }
+    const kindSupports = query
+      .select()
+      .from(entityKindSourceSupports)
+      .where(
+        and(
+          eq(entityKindSourceSupports.sourceSubjectId, input.assetId),
+          eq(
+            entityKindSourceSupports.sourceIdentity,
+            input.record.sourceIdentity,
+          ),
+          eq(
+            entityKindSourceSupports.nativeAddress,
+            input.record.nativeAddress,
+          ),
+          eq(entityKindSourceSupports.coverageId, input.record.coverage.id),
+        ),
+      )
+      .orderBy(desc(sql<number>`${entityKindSourceSupports}.rowid`))
+      .all();
+    const currentKindSupports = new Map<
+      string,
+      (typeof kindSupports)[number]
+    >();
+    for (const support of kindSupports)
+      if (!currentKindSupports.has(support.entityId))
+        currentKindSupports.set(support.entityId, support);
+    const nextKindEntities = new Set(
+      (input.interpretation.entities ?? [])
+        .filter((entity) => entity.sourceRecordIds.includes(input.record.id))
+        .map((entity) => entity.id),
+    );
+    if (input.record.coverage.completeness === "complete")
+      for (const [entityId, support] of currentKindSupports)
+        if (support.operation === "assert" && !nextKindEntities.has(entityId))
+          changes.push({
+            kind: "retracted",
+            factReference: `entity-kind:${entityId}`,
+          });
+    if (input.record.coverage.completeness === "incomplete")
+      for (const [entityId, support] of currentKindSupports)
+        if (support.operation === "assert" && !nextKindEntities.has(entityId))
+          changes.push({
+            kind: "unchanged",
+            factReference: `entity-kind:${entityId}`,
+          });
     return deduplicateSourceRefreshChanges(changes);
   }
 
@@ -8636,10 +11071,22 @@ export class SqliteCatalogue
       query
         .select({
           id: entityRelationships.id,
-          subjectId: entityRelationships.subjectId,
+          subjectId: entityRelationshipParticipants.entityId,
         })
-        .from(entityRelationships)
-        .where(inArray(entityRelationships.subjectId, sqliteTextSet(assetIds)))
+        .from(entityRelationshipParticipants)
+        .innerJoin(
+          entityRelationships,
+          eq(
+            entityRelationships.id,
+            entityRelationshipParticipants.relationshipId,
+          ),
+        )
+        .where(
+          inArray(
+            entityRelationshipParticipants.entityId,
+            sqliteTextSet(assetIds),
+          ),
+        )
         .orderBy(asc(entityRelationships.id))
         .all(),
       query
@@ -9079,8 +11526,15 @@ export class SqliteCatalogue
 
     const relationshipRows = query
       .select({ id: entityRelationships.id })
-      .from(entityRelationships)
-      .where(eq(entityRelationships.subjectId, assetId))
+      .from(entityRelationshipParticipants)
+      .innerJoin(
+        entityRelationships,
+        eq(
+          entityRelationships.id,
+          entityRelationshipParticipants.relationshipId,
+        ),
+      )
+      .where(eq(entityRelationshipParticipants.entityId, assetId))
       .orderBy(asc(entityRelationships.id))
       .all();
     const supersededRelationships = new Set(
@@ -9200,7 +11654,7 @@ export class SqliteCatalogue
       (association) => {
         const successor = projected.get(association.id);
         return successor !== undefined &&
-          successor.subjectId === association.subjectId &&
+          sameDescriptionTarget(successor.target, association.target) &&
           successor.artifactId === association.artifactId &&
           successor.role === association.role
           ? []
@@ -9278,12 +11732,32 @@ export class SqliteCatalogue
     const ruleResults = JSON.stringify(proposal.ruleResults);
     const observedMaterialInterpretation =
       proposal.observedArtifactAssociations === undefined &&
-      proposal.observedArtifactRevisions === undefined
+      proposal.observedArtifactRevisions === undefined &&
+      proposal.observedMetadata === undefined &&
+      proposal.observedArtifactParts === undefined &&
+      proposal.observedEntityGraphs === undefined
         ? null
         : JSON.stringify({
-            observedArtifactAssociations:
-              proposal.observedArtifactAssociations ?? [],
-            observedArtifactRevisions: proposal.observedArtifactRevisions ?? [],
+            ...(proposal.observedArtifactAssociations === undefined
+              ? {}
+              : {
+                  observedArtifactAssociations:
+                    proposal.observedArtifactAssociations,
+                }),
+            ...(proposal.observedArtifactRevisions === undefined
+              ? {}
+              : {
+                  observedArtifactRevisions: proposal.observedArtifactRevisions,
+                }),
+            ...(proposal.observedMetadata === undefined
+              ? {}
+              : { observedMetadata: proposal.observedMetadata }),
+            ...(proposal.observedArtifactParts === undefined
+              ? {}
+              : { observedArtifactParts: proposal.observedArtifactParts }),
+            ...(proposal.observedEntityGraphs === undefined
+              ? {}
+              : { observedEntityGraphs: proposal.observedEntityGraphs }),
           });
     const existing = transaction
       .select({
@@ -9375,7 +11849,11 @@ export class SqliteCatalogue
             ? {}
             : (JSON.parse(row.observedMaterialInterpretationJson) as Pick<
                 RecognitionProposal,
-                "observedArtifactAssociations" | "observedArtifactRevisions"
+                | "observedArtifactAssociations"
+                | "observedArtifactRevisions"
+                | "observedMetadata"
+                | "observedArtifactParts"
+                | "observedEntityGraphs"
               >)),
         };
   }
@@ -9384,6 +11862,9 @@ export class SqliteCatalogue
     query: DrizzleReadQuery,
     assetId: string,
   ): string | undefined {
+    const kind = this.entityKindStateWithDrizzle(query, assetId).effective;
+    if (kind.status !== "effective" || kind.kind !== "digital-asset")
+      return undefined;
     const head = query
       .select({
         subjectId: recognitionHeads.subjectId,
@@ -9392,13 +11873,7 @@ export class SqliteCatalogue
           recognitionHeads.recognitionSourceAssociationId,
       })
       .from(recognitionHeads)
-      .innerJoin(entities, eq(entities.id, recognitionHeads.subjectId))
-      .where(
-        and(
-          eq(recognitionHeads.subjectId, assetId),
-          eq(entities.kind, "digital-asset"),
-        ),
-      )
+      .where(and(eq(recognitionHeads.subjectId, assetId)))
       .get();
     return head === undefined
       ? undefined
@@ -9493,7 +11968,10 @@ export class SqliteCatalogue
         .get();
       if (
         row === undefined ||
-        row.subjectId !== association.subjectId ||
+        !sameDescriptionTarget(
+          descriptionTargetFromColumns(row),
+          association.target,
+        ) ||
         row.artifactId !== association.artifactId ||
         row.role !== association.role
       )
@@ -9596,9 +12074,9 @@ export class SqliteCatalogue
           return false;
         const support = this.hasValidObservedMaterialSupportWithDrizzle(query, {
           id: association.id,
-          subjectId: association.subjectId,
+          target: descriptionTargetFromColumns(association),
           artifactId: association.artifactId,
-          role: association.role as ArtifactAssociation["role"],
+          role: association.role,
         });
         if (
           !support &&
@@ -9636,12 +12114,35 @@ export class SqliteCatalogue
     transaction: DrizzleWriteTransaction,
     accepted: AcceptedRecognition,
   ): void {
+    transaction.insert(entities).values({ id: accepted.entity.id }).run();
     transaction
-      .insert(entities)
-      .values({ id: accepted.entity.id, kind: accepted.entity.kind })
+      .insert(entityKindAssertions)
+      .values({
+        id: `accepted-kind:${accepted.entity.id}`,
+        entityId: accepted.entity.id,
+        kind: "digital-asset",
+        basis: "legacy-migration",
+        sourceRecordIdsJson: "[]",
+      })
+      .onConflictDoNothing()
       .run();
     for (const entity of accepted.entities ?? [])
       this.insertOrReuseSourcedEntityWithDrizzle(transaction, entity);
+    const relatedSourceRecords = [
+      ...new Map(
+        (accepted.entities ?? [])
+          .flatMap((entity) => entity.sourceRecordIds)
+          .map((sourceRecordId) => [
+            sourceRecordId,
+            this.sourceRecordWithDrizzle(transaction, sourceRecordId),
+          ]),
+      ).values(),
+    ];
+    this.advanceSourceEntityKindsWithDrizzle(transaction, {
+      sourceSubjectId: accepted.entity.id,
+      sourceRecords: relatedSourceRecords,
+      entities: accepted.entities ?? [],
+    });
 
     const recognitionSourceAssociation = accepted.recognitionSourceAssociation;
     if (recognitionSourceAssociation !== undefined)
@@ -9741,7 +12242,11 @@ export class SqliteCatalogue
       );
     }
 
-    this.insertOrVerifyArtifactFactsWithDrizzle(transaction, accepted);
+    this.insertOrVerifyArtifactFactsWithDrizzle(
+      transaction,
+      accepted,
+      accepted.entity.id,
+    );
     if ((accepted.proposal.observedArtifactAssociations?.length ?? 0) > 0) {
       const proposalRow = transaction
         .select({ executionId: recognitionProposals.executionId })
@@ -9832,7 +12337,7 @@ export class SqliteCatalogue
 
     for (const assertion of accepted.metadata) {
       const primary = assertion.sourceRecordIds[0];
-      const subjectId = assertion.subjectId ?? accepted.entity.id;
+      const subjectId = entityTargetId(assertion) ?? accepted.entity.id;
       // 一个包可以从每个成员资产投影作品事实。只要来源槽相同，该事实仍是同一条
       // 来源所有的断言。
       const context =
@@ -9859,6 +12364,22 @@ export class SqliteCatalogue
               .where(
                 and(
                   eq(metadataAssertions.subjectId, subjectId),
+                  eq(metadataAssertions.targetKind, assertion.target.kind),
+                  assertion.target.kind === "entity"
+                    ? eq(
+                        metadataAssertions.targetEntityId,
+                        assertion.target.entityId,
+                      )
+                    : and(
+                        eq(
+                          metadataAssertions.targetArtifactId,
+                          assertion.target.artifactId,
+                        ),
+                        eq(
+                          metadataAssertions.targetRevisionId,
+                          assertion.target.revisionId,
+                        ),
+                      ),
                   eq(metadataAssertions.property, assertion.property),
                   eq(metadataAssertions.value, assertion.value),
                   eq(
@@ -9914,6 +12435,8 @@ export class SqliteCatalogue
         .insert(metadataAssertions)
         .values({
           subjectId,
+          ...descriptionTargetColumns(assertion.target),
+          recognitionDecisionId: assertion.recognitionDecisionId ?? null,
           property: assertion.property,
           value: assertion.value,
           sourceRecordIdsJson: JSON.stringify(assertion.sourceRecordIds),
@@ -9960,10 +12483,9 @@ export class SqliteCatalogue
         .get();
       if (existing !== undefined) {
         if (
-          existing.subjectId !== relationship.subjectId ||
-          existing.participantId !== relationship.participantId ||
           existing.type !== relationship.type ||
-          existing.role !== relationship.role ||
+          existing.participantsJson !==
+            JSON.stringify(relationship.participants) ||
           existing.qualifiersJson !==
             JSON.stringify(relationship.qualifiers ?? [])
         )
@@ -9999,15 +12521,24 @@ export class SqliteCatalogue
         .insert(entityRelationships)
         .values({
           id: relationship.id,
-          subjectId: relationship.subjectId,
-          participantId: relationship.participantId,
           type: relationship.type,
-          role: relationship.role,
+          participantsJson: JSON.stringify(relationship.participants),
           sourceRecordIdsJson: JSON.stringify(relationship.sourceRecordIds),
           qualifiersJson: JSON.stringify(relationship.qualifiers ?? []),
           producerJson: producerJson(relationship.producer),
         })
         .run();
+      for (const participant of relationship.participants)
+        transaction
+          .insert(entityRelationshipParticipants)
+          .values({
+            relationshipId: relationship.id,
+            entityId: participant.entityId,
+            role: participant.role,
+            mentionIdsJson: JSON.stringify(participant.mentionIds ?? []),
+          })
+          .onConflictDoNothing()
+          .run();
       for (const sourceRecordId of relationship.sourceRecordIds)
         transaction
           .insert(relationshipSources)
@@ -10024,6 +12555,10 @@ export class SqliteCatalogue
           .insert(relationshipLifecycles)
           .values({
             relationshipId: relationship.id,
+            sourceSubjectId: relationshipSourceSubjectId(
+              accepted.entity.id,
+              relationship,
+            ),
             sourceIdentity: context.sourceIdentity,
             nativeAddress: context.nativeAddress,
             coverageId: context.coverageId,
@@ -10049,6 +12584,7 @@ export class SqliteCatalogue
           sourceRecordIdsJson: JSON.stringify(mention.sourceRecordIds),
           producerJson: producerJson(mention.producer),
         })
+        .onConflictDoNothing()
         .run();
     for (const decision of accepted.entityResolutionDecisions ?? [])
       transaction
@@ -10062,6 +12598,126 @@ export class SqliteCatalogue
           producerJson: producerJson(decision.producer),
         })
         .run();
+    this.insertObservedEntityGraphsWithDrizzle(transaction, accepted);
+  }
+
+  /**
+   * 本地格式图和外部来源图共享关系事实及参与者索引；其支持严格落在产物／修订版
+   * 上，因此不能进入 SourceRecord 生命周期。
+   */
+  private insertObservedEntityGraphsWithDrizzle(
+    transaction: DrizzleWriteTransaction,
+    accepted: AcceptedRecognition,
+  ): void {
+    for (const graph of accepted.observedEntityGraphs ?? []) {
+      for (const entity of graph.entities) {
+        transaction
+          .insert(entities)
+          .values({ id: entity.id })
+          .onConflictDoNothing()
+          .run();
+        transaction
+          .insert(observedEntities)
+          .values({
+            id: entity.id,
+            assetId: graph.assetId,
+            artifactId: graph.artifactId,
+            producerJson: JSON.stringify(graph.producer),
+            coverageId: graph.coverageId,
+            occurrenceSlot: entity.occurrenceSlot,
+            preservedValue: entity.preservedValue,
+            label: entity.label,
+            locator: entity.locator,
+          })
+          .onConflictDoNothing()
+          .run();
+      }
+      for (const mention of graph.mentions)
+        transaction
+          .insert(observedEntityMentions)
+          .values({
+            id: mention.id,
+            entityId: mention.entityId,
+            revisionId: graph.revisionId,
+            sourceSlot: mention.sourceSlot,
+            field: mention.field,
+            role: mention.role,
+            label: mention.label,
+            locator: mention.locator,
+          })
+          .onConflictDoNothing()
+          .run();
+      for (const resolution of graph.resolutions)
+        transaction
+          .insert(observedEntityResolutions)
+          .values(resolution)
+          .onConflictDoNothing()
+          .run();
+
+      const producer = JSON.stringify(graph.producer);
+      const graphId = `observed-entity-graph_${sha256Text(
+        JSON.stringify([
+          accepted.recognitionDecision.id,
+          graph.artifactId,
+          graph.revisionId,
+          graph.producer,
+          graph.coverageId,
+        ]),
+      )}`;
+      transaction
+        .insert(observedEntityGraphSupports)
+        .values({
+          id: graphId,
+          recognitionDecisionId: accepted.recognitionDecision.id,
+          assetId: graph.assetId,
+          artifactId: graph.artifactId,
+          revisionId: graph.revisionId,
+          producerJson: producer,
+          coverageId: graph.coverageId,
+        })
+        .onConflictDoNothing()
+        .run();
+      for (const entity of graph.entities)
+        transaction
+          .insert(observedEntityGraphEntities)
+          .values({ graphId, entityId: entity.id })
+          .onConflictDoNothing()
+          .run();
+      for (const relationship of graph.relationships) {
+        transaction
+          .insert(entityRelationships)
+          .values({
+            id: relationship.id,
+            type: relationship.type,
+            participantsJson: JSON.stringify(relationship.participants),
+            sourceRecordIdsJson: "[]",
+            qualifiersJson: JSON.stringify(relationship.qualifiers ?? []),
+            producerJson: producer,
+          })
+          .onConflictDoNothing()
+          .run();
+        for (const participant of relationship.participants)
+          transaction
+            .insert(entityRelationshipParticipants)
+            .values({
+              relationshipId: relationship.id,
+              entityId: participant.entityId,
+              role: participant.role,
+              mentionIdsJson: JSON.stringify(participant.mentionIds ?? []),
+            })
+            .onConflictDoNothing()
+            .run();
+        transaction
+          .insert(observedEntityGraphRelationships)
+          .values({
+            graphId,
+            relationshipId: relationship.id,
+            sourceSlot: relationship.sourceSlot,
+          })
+          .onConflictDoNothing()
+          .run();
+      }
+    }
   }
 
   /**
@@ -10072,7 +12728,11 @@ export class SqliteCatalogue
     current: AcceptedRecognition,
     accepted: AcceptedRecognition,
   ): void {
-    this.insertOrVerifyArtifactFactsWithDrizzle(transaction, accepted);
+    this.insertOrVerifyArtifactFactsWithDrizzle(
+      transaction,
+      accepted,
+      accepted.entity.id,
+    );
     this.attachAcceptedSourceArtifactAssociationProvenanceWithDrizzle(
       transaction,
       accepted,
@@ -10082,6 +12742,7 @@ export class SqliteCatalogue
       current,
       accepted,
     );
+    this.insertObservedEntityGraphsWithDrizzle(transaction, accepted);
 
     const retainedIds = new Set(
       accepted.artifactAssociations.map((association) => association.id),
@@ -10127,12 +12788,12 @@ export class SqliteCatalogue
     for (const predecessor of removed) {
       const sameCoordinatePredecessors = removed.filter(
         (association) =>
-          association.subjectId === predecessor.subjectId &&
+          sameDescriptionTarget(association.target, predecessor.target) &&
           association.role === predecessor.role,
       );
       const sameCoordinateSuccessors = successors.filter(
         (association) =>
-          association.subjectId === predecessor.subjectId &&
+          sameDescriptionTarget(association.target, predecessor.target) &&
           association.role === predecessor.role,
       );
       if (
@@ -10219,6 +12880,23 @@ export class SqliteCatalogue
           .run();
       }
     }
+    const sourceAssociation = accepted.recognitionSourceAssociation;
+    if (sourceAssociation !== undefined && nextInterpretation !== undefined) {
+      this.supersedeCurrentManagedSourceArtifactsWithDrizzle(transaction, {
+        subjectId: accepted.entity.id,
+        sourceAssociationId: sourceAssociation.id,
+        sourceRecordIds: nextInterpretation.sourceRecordIds,
+        proposalId: accepted.proposal.id,
+        transitionId: accepted.proposal.id,
+        submittedAssociations: accepted.artifactAssociations.flatMap(
+          (association) =>
+            entityTargetId(association) === accepted.entity.id &&
+            ownedBy(association, nextSourceRecordIds)
+              ? [{ id: association.id, role: association.role }]
+              : [],
+        ),
+      });
+    }
   }
 
   private hasValidObservedMaterialSupportWithDrizzle(
@@ -10250,7 +12928,7 @@ export class SqliteCatalogue
               artifactAssociationRecognitionSupports.associationId,
               association.id,
             ),
-            eq(recognitionDecisions.assetId, association.subjectId),
+            eq(recognitionDecisions.assetId, entityTargetId(association) ?? ""),
             sql`(
               EXISTS (
                 SELECT 1 FROM json_each(json_extract(${workflowExecutions.materialAssociationJson}, '$.submission.projections')) AS projection
@@ -10324,15 +13002,17 @@ export class SqliteCatalogue
         .filter(local)
         .map(
           (item) =>
-            `${item.subjectId ?? accepted.entity.id}\u0000${item.property}\u0000${item.sourceSlot}\u0000${item.observedArtifactPart!.artifactId}\u0000${item.observedArtifactPart!.locator}`,
+            `${canonicalJson(item.target)}\u0000${item.property}\u0000${item.sourceSlot}\u0000${item.observedArtifactPart!.artifactId}\u0000${item.observedArtifactPart!.locator}`,
         ),
     );
     for (const next of accepted.metadata.filter(local)) {
-      const subject = next.subjectId ?? accepted.entity.id;
+      const subject = entityTargetId(next) ?? accepted.entity.id;
       const result = transaction
         .insert(metadataAssertions)
         .values({
           subjectId: subject,
+          ...descriptionTargetColumns(next.target),
+          recognitionDecisionId: next.recognitionDecisionId ?? null,
           property: next.property,
           value: next.value,
           sourceRecordIdsJson: "[]",
@@ -10345,7 +13025,7 @@ export class SqliteCatalogue
       const predecessors = current.metadata.filter(
         (previous) =>
           local(previous) &&
-          (previous.subjectId ?? current.entity.id) === subject &&
+          sameDescriptionTarget(previous.target, next.target) &&
           previous.property === next.property &&
           previous.sourceSlot === next.sourceSlot &&
           previous.observedArtifactPart?.artifactId ===
@@ -10363,6 +13043,7 @@ export class SqliteCatalogue
               .where(
                 and(
                   eq(metadataAssertions.subjectId, subject),
+                  eq(metadataAssertions.targetKind, next.target.kind),
                   lt(metadataAssertions.id, Number(result.lastInsertRowid)),
                   eq(metadataAssertions.property, predecessors[0].property),
                   eq(metadataAssertions.sourceSlot, predecessors[0].sourceSlot),
@@ -10388,8 +13069,8 @@ export class SqliteCatalogue
         .run();
     }
     for (const previous of current.metadata.filter(local)) {
-      const subject = previous.subjectId ?? current.entity.id;
-      const coordinate = `${subject}\u0000${previous.property}\u0000${previous.sourceSlot}\u0000${previous.observedArtifactPart!.artifactId}\u0000${previous.observedArtifactPart!.locator}`;
+      const subject = entityTargetId(previous) ?? current.entity.id;
+      const coordinate = `${canonicalJson(previous.target)}\u0000${previous.property}\u0000${previous.sourceSlot}\u0000${previous.observedArtifactPart!.artifactId}\u0000${previous.observedArtifactPart!.locator}`;
       if (nextCoordinates.has(coordinate)) continue;
       const row = transaction
         .select({ id: metadataAssertions.id })
@@ -10397,6 +13078,7 @@ export class SqliteCatalogue
         .where(
           and(
             eq(metadataAssertions.subjectId, subject),
+            eq(metadataAssertions.targetKind, previous.target.kind),
             eq(metadataAssertions.property, previous.property),
             eq(metadataAssertions.sourceSlot, previous.sourceSlot),
             eq(
@@ -10430,6 +13112,7 @@ export class SqliteCatalogue
       | "artifactRevisions"
       | "artifactAssociations"
     >,
+    ownerAssetId: string,
   ): void {
     for (const artifact of facts.artifacts) {
       const existing = transaction
@@ -10553,7 +13236,8 @@ export class SqliteCatalogue
           .insert(artifactAssociations)
           .values({
             id: association.id,
-            subjectId: association.subjectId,
+            subjectId: entityTargetId(association) ?? ownerAssetId,
+            ...descriptionTargetColumns(association.target),
             artifactId: association.artifactId,
             role: association.role,
             sourceRecordIdsJson: sourceRecordIds,
@@ -10563,7 +13247,10 @@ export class SqliteCatalogue
           })
           .run();
       } else if (
-        existing.subjectId !== association.subjectId ||
+        !sameDescriptionTarget(
+          descriptionTargetFromColumns(existing),
+          association.target,
+        ) ||
         existing.artifactId !== association.artifactId ||
         existing.role !== association.role
       ) {
@@ -10710,6 +13397,7 @@ export class SqliteCatalogue
         .insert(currentFileObservations)
         .values({
           locationId: location.id,
+          address: location.address,
           snapshotId: current.snapshot.id,
           observedAt: current.snapshot.observedAt,
           size: current.file.size,
@@ -10717,8 +13405,9 @@ export class SqliteCatalogue
           conditionalBaseline,
         })
         .onConflictDoUpdate({
-          target: currentFileObservations.locationId,
+          target: currentFileObservations.address,
           set: {
+            locationId: location.id,
             snapshotId: current.snapshot.id,
             observedAt: current.snapshot.observedAt,
             size: current.file.size,
@@ -10783,6 +13472,7 @@ export class SqliteCatalogue
               .insert(currentFileObservations)
               .values({
                 locationId: alias.locationId,
+                address: path.resolve(snapshot.root, file.relativePath),
                 snapshotId: snapshot.id,
                 observedAt: snapshot.observedAt,
                 size: file.size,
@@ -10790,8 +13480,9 @@ export class SqliteCatalogue
                 conditionalBaseline,
               })
               .onConflictDoUpdate({
-                target: currentFileObservations.locationId,
+                target: currentFileObservations.address,
                 set: {
+                  locationId: alias.locationId,
                   snapshotId: snapshot.id,
                   observedAt: snapshot.observedAt,
                   size: file.size,
@@ -10881,6 +13572,7 @@ export class SqliteCatalogue
         .insert(currentFileObservations)
         .values({
           locationId: location.id,
+          address: location.address,
           snapshotId: current.snapshot.id,
           observedAt: current.snapshot.observedAt,
           size: current.file.size,
@@ -10888,8 +13580,9 @@ export class SqliteCatalogue
           conditionalBaseline,
         })
         .onConflictDoUpdate({
-          target: currentFileObservations.locationId,
+          target: currentFileObservations.address,
           set: {
+            locationId: location.id,
             snapshotId: current.snapshot.id,
             observedAt: current.snapshot.observedAt,
             size: current.file.size,
@@ -10972,7 +13665,6 @@ export class SqliteCatalogue
   ): void {
     const existing = transaction
       .select({
-        kind: entities.kind,
         sourceIdentity: sourcedEntities.sourceIdentity,
         sourceKey: sourcedEntities.sourceKey,
         identityNamespace: sourcedEntities.identityNamespace,
@@ -10984,7 +13676,6 @@ export class SqliteCatalogue
       .get();
     if (existing !== undefined) {
       if (
-        existing.kind !== entity.kind ||
         existing.sourceIdentity !== entity.sourceIdentity ||
         existing.sourceKey !== entity.sourceKey ||
         existing.identityNamespace !== entity.identityNamespace
@@ -11008,10 +13699,7 @@ export class SqliteCatalogue
       return;
     }
 
-    transaction
-      .insert(entities)
-      .values({ id: entity.id, kind: entity.kind })
-      .run();
+    transaction.insert(entities).values({ id: entity.id }).run();
     transaction
       .insert(sourcedEntities)
       .values({
@@ -11056,6 +13744,173 @@ export class SqliteCatalogue
       nativeAddress: record.nativeAddress,
       coverageId: record.coverage.id,
     };
+  }
+
+  private advanceSourceEntityKindsWithDrizzle(
+    transaction: DrizzleWriteTransaction,
+    input: {
+      readonly sourceSubjectId: string;
+      readonly sourceRecords: readonly SourceRecord[];
+      readonly entities: readonly SourcedEntity[];
+    },
+  ): void {
+    for (const entity of input.entities)
+      for (const sourceRecordId of entity.sourceRecordIds) {
+        const context = this.sourceRecordContextWithDrizzle(
+          transaction,
+          sourceRecordId,
+        );
+        const predecessor = transaction
+          .select()
+          .from(entityKindSourceSupports)
+          .where(
+            and(
+              eq(entityKindSourceSupports.entityId, entity.id),
+              eq(
+                entityKindSourceSupports.sourceSubjectId,
+                input.sourceSubjectId,
+              ),
+              eq(
+                entityKindSourceSupports.sourceIdentity,
+                context.sourceIdentity,
+              ),
+              eq(entityKindSourceSupports.nativeAddress, context.nativeAddress),
+              eq(entityKindSourceSupports.coverageId, context.coverageId),
+            ),
+          )
+          .orderBy(desc(sql<number>`${entityKindSourceSupports}.rowid`))
+          .get();
+        const supportId = `entity-kind-support:${input.sourceSubjectId}:${entity.id}:${sourceRecordId}`;
+        const assertionId =
+          entity.kind === "entity"
+            ? null
+            : `source-kind-assertion:${input.sourceSubjectId}:${entity.id}:${sourceRecordId}:${entity.kind}`;
+        if (assertionId !== null)
+          transaction
+            .insert(entityKindAssertions)
+            .values({
+              id: assertionId,
+              entityId: entity.id,
+              kind: entity.kind,
+              basis: "source",
+              sourceRecordIdsJson: JSON.stringify([sourceRecordId]),
+              producerJson: producerJson(entity.producer),
+            })
+            .onConflictDoNothing()
+            .run();
+        transaction
+          .insert(entityKindSourceSupports)
+          .values({
+            id: supportId,
+            entityId: entity.id,
+            sourceSubjectId: input.sourceSubjectId,
+            sourceIdentity: context.sourceIdentity,
+            nativeAddress: context.nativeAddress,
+            coverageId: context.coverageId,
+            sourceRecordId,
+            assertionId,
+            predecessorId: predecessor?.id ?? null,
+            operation: entity.kind === "entity" ? "retract" : "assert",
+          })
+          .onConflictDoNothing()
+          .run();
+      }
+    for (const record of input.sourceRecords.filter(
+      (item) => item.coverage.completeness === "complete",
+    )) {
+      const context = this.sourceRecordContextWithDrizzle(
+        transaction,
+        record.id,
+      );
+      const present = new Set(
+        input.entities
+          .filter((entity) => entity.sourceRecordIds.includes(record.id))
+          .map((entity) => entity.id),
+      );
+      const previous = transaction
+        .select()
+        .from(entityKindSourceSupports)
+        .where(
+          and(
+            eq(entityKindSourceSupports.sourceSubjectId, input.sourceSubjectId),
+            eq(entityKindSourceSupports.sourceIdentity, context.sourceIdentity),
+            eq(entityKindSourceSupports.nativeAddress, context.nativeAddress),
+            eq(entityKindSourceSupports.coverageId, context.coverageId),
+          ),
+        )
+        .orderBy(desc(sql<number>`${entityKindSourceSupports}.rowid`))
+        .all();
+      const leaves = new Map<string, (typeof previous)[number]>();
+      for (const support of previous)
+        if (!leaves.has(support.entityId))
+          leaves.set(support.entityId, support);
+      for (const [entityId, predecessor] of leaves)
+        if (!present.has(entityId))
+          transaction
+            .insert(entityKindSourceSupports)
+            .values({
+              id: `entity-kind-retract:${input.sourceSubjectId}:${entityId}:${record.id}`,
+              entityId,
+              sourceSubjectId: input.sourceSubjectId,
+              sourceIdentity: context.sourceIdentity,
+              nativeAddress: context.nativeAddress,
+              coverageId: context.coverageId,
+              sourceRecordId: record.id,
+              assertionId: null,
+              predecessorId: predecessor.id,
+              operation: "retract",
+            })
+            .onConflictDoNothing()
+            .run();
+    }
+    for (const record of input.sourceRecords.filter(
+      (item) => item.coverage.completeness === "incomplete",
+    )) {
+      const context = this.sourceRecordContextWithDrizzle(
+        transaction,
+        record.id,
+      );
+      const present = new Set(
+        input.entities
+          .filter((entity) => entity.sourceRecordIds.includes(record.id))
+          .map((entity) => entity.id),
+      );
+      const previous = transaction
+        .select()
+        .from(entityKindSourceSupports)
+        .where(
+          and(
+            eq(entityKindSourceSupports.sourceSubjectId, input.sourceSubjectId),
+            eq(entityKindSourceSupports.sourceIdentity, context.sourceIdentity),
+            eq(entityKindSourceSupports.nativeAddress, context.nativeAddress),
+            eq(entityKindSourceSupports.coverageId, context.coverageId),
+          ),
+        )
+        .orderBy(desc(sql<number>`${entityKindSourceSupports}.rowid`))
+        .all();
+      const leaves = new Map<string, (typeof previous)[number]>();
+      for (const support of previous)
+        if (!leaves.has(support.entityId))
+          leaves.set(support.entityId, support);
+      for (const [entityId, predecessor] of leaves)
+        if (predecessor.operation === "assert" && !present.has(entityId))
+          transaction
+            .insert(entityKindSourceSupports)
+            .values({
+              id: `entity-kind-retained:${input.sourceSubjectId}:${entityId}:${record.id}`,
+              entityId,
+              sourceSubjectId: input.sourceSubjectId,
+              sourceIdentity: context.sourceIdentity,
+              nativeAddress: context.nativeAddress,
+              coverageId: context.coverageId,
+              sourceRecordId: record.id,
+              assertionId: predecessor.assertionId,
+              predecessorId: predecessor.id,
+              operation: "assert",
+            })
+            .onConflictDoNothing()
+            .run();
+    }
   }
 
   private retractScopedFactsWithDrizzle(
@@ -11277,19 +14132,17 @@ export class SqliteCatalogue
     readonly relationshipId: string;
     readonly subjectId: string;
     readonly sourceSlot: string;
-    readonly participant_id: string;
+    readonly participants_json: string;
     readonly type: string;
-    readonly role: string;
     readonly qualifiers_json: string;
   }> {
     const candidates = query
       .select({
         relationshipId: relationshipLifecycles.relationshipId,
-        subjectId: entityRelationships.subjectId,
+        subjectId: relationshipLifecycles.sourceSubjectId,
         sourceSlot: relationshipLifecycles.sourceSlot,
-        participant_id: entityRelationships.participantId,
+        participants_json: entityRelationships.participantsJson,
         type: entityRelationships.type,
-        role: entityRelationships.role,
         qualifiers_json: entityRelationships.qualifiersJson,
       })
       .from(relationshipLifecycles)
@@ -11448,6 +14301,10 @@ export class SqliteCatalogue
         .insert(metadataAssertions)
         .values({
           subjectId: assertion.subjectId ?? submission.assetId,
+          ...descriptionTargetColumns({
+            kind: "entity",
+            entityId: assertion.subjectId ?? submission.assetId,
+          }),
           property: assertion.property,
           value: assertion.value,
           sourceRecordIdsJson: JSON.stringify(assertion.sourceRecordIds),
@@ -11485,7 +14342,7 @@ export class SqliteCatalogue
     for (const entity of submission.interpretation.entities ?? []) {
       transaction
         .insert(entities)
-        .values({ id: entity.id, kind: entity.kind })
+        .values({ id: entity.id })
         .onConflictDoNothing()
         .run();
       transaction
@@ -11503,18 +14360,27 @@ export class SqliteCatalogue
         .onConflictDoNothing()
         .run();
     }
+    this.advanceSourceEntityKindsWithDrizzle(transaction, {
+      sourceSubjectId: submission.assetId,
+      sourceRecords: submission.sourceRecords,
+      entities: submission.interpretation.entities ?? [],
+    });
     for (const relationship of submission.interpretation.relationships ?? []) {
       const primary = relationship.sourceRecordIds[0];
       if (primary === undefined)
         throw new Error("Relationship requires Source Record provenance");
       const context = this.sourceRecordContextWithDrizzle(transaction, primary);
-      const subjectId = relationship.subjectId ?? submission.assetId;
+      const participants = [
+        ...(relationship.subjectRole === undefined
+          ? []
+          : [{ entityId: submission.assetId, role: relationship.subjectRole }]),
+        ...relationship.participants,
+      ];
       const candidates = transaction
         .select({
           relationship_id: relationshipLifecycles.relationshipId,
-          participant_id: entityRelationships.participantId,
+          participants_json: entityRelationships.participantsJson,
           type: entityRelationships.type,
-          role: entityRelationships.role,
           qualifiers_json: entityRelationships.qualifiersJson,
           source_record_ids_json: entityRelationships.sourceRecordIdsJson,
           producer_json: entityRelationships.producerJson,
@@ -11526,7 +14392,10 @@ export class SqliteCatalogue
         )
         .where(
           and(
-            eq(entityRelationships.subjectId, subjectId),
+            eq(
+              relationshipLifecycles.sourceSubjectId,
+              relationshipSourceSubjectId(submission.assetId, relationship),
+            ),
             eq(relationshipLifecycles.sourceIdentity, context.sourceIdentity),
             eq(relationshipLifecycles.nativeAddress, context.nativeAddress),
             eq(relationshipLifecycles.coverageId, context.coverageId),
@@ -11560,7 +14429,7 @@ export class SqliteCatalogue
       );
       if (
         previous !== undefined &&
-        relationshipMatchesCurrent(previous, relationship)
+        relationshipMatchesCurrent(previous, { ...relationship, participants })
       ) {
         assertCompatibleProducer(
           previous.producer_json,
@@ -11595,15 +14464,23 @@ export class SqliteCatalogue
         .insert(entityRelationships)
         .values({
           id: relationshipId,
-          subjectId,
-          participantId: relationship.participantId,
           type: relationship.type,
-          role: relationship.role,
+          participantsJson: JSON.stringify(participants),
           sourceRecordIdsJson: JSON.stringify(relationship.sourceRecordIds),
           qualifiersJson: JSON.stringify(relationship.qualifiers ?? []),
           producerJson: producerJson(relationship.producer),
         })
         .run();
+      for (const participant of participants)
+        transaction
+          .insert(entityRelationshipParticipants)
+          .values({
+            relationshipId,
+            entityId: participant.entityId,
+            role: participant.role,
+            mentionIdsJson: JSON.stringify(participant.mentionIds ?? []),
+          })
+          .run();
       for (const sourceRecordId of relationship.sourceRecordIds)
         transaction
           .insert(relationshipSources)
@@ -11613,6 +14490,10 @@ export class SqliteCatalogue
         .insert(relationshipLifecycles)
         .values({
           relationshipId,
+          sourceSubjectId: relationshipSourceSubjectId(
+            submission.assetId,
+            relationship,
+          ),
           sourceIdentity: context.sourceIdentity,
           nativeAddress: context.nativeAddress,
           coverageId: context.coverageId,
@@ -11642,6 +14523,7 @@ export class SqliteCatalogue
           sourceRecordIdsJson: JSON.stringify(mention.sourceRecordIds),
           producerJson: producerJson(mention.producer),
         })
+        .onConflictDoNothing()
         .run();
     }
     for (const resolution of submission.interpretation
@@ -11655,7 +14537,10 @@ export class SqliteCatalogue
           rule: resolution.rule,
           sourceRecordIdsJson: JSON.stringify(resolution.sourceRecordIds),
           producerJson: producerJson(resolution.producer),
+          basis: "source",
+          operation: "select",
         })
+        .onConflictDoNothing()
         .run();
     }
   }
@@ -11677,7 +14562,7 @@ export class SqliteCatalogue
     )) {
       transaction
         .insert(entities)
-        .values({ id: entity.id, kind: entity.kind })
+        .values({ id: entity.id })
         .onConflictDoNothing()
         .run();
       transaction
@@ -11695,6 +14580,13 @@ export class SqliteCatalogue
         .onConflictDoNothing()
         .run();
     }
+    this.advanceSourceEntityKindsWithDrizzle(transaction, {
+      sourceSubjectId: preview.assetId,
+      sourceRecords: [],
+      entities: preview.projected.entities.filter((item) =>
+        isReplacementFact(item.sourceRecordIds),
+      ),
+    });
     for (const relationship of preview.projected.relationships.filter((item) =>
       isReplacementFact(item.sourceRecordIds),
     )) {
@@ -11706,15 +14598,24 @@ export class SqliteCatalogue
         .insert(entityRelationships)
         .values({
           id: relationship.id,
-          subjectId: relationship.subjectId,
-          participantId: relationship.participantId,
           type: relationship.type,
-          role: relationship.role,
+          participantsJson: JSON.stringify(relationship.participants),
           sourceRecordIdsJson: JSON.stringify(relationship.sourceRecordIds),
           qualifiersJson: JSON.stringify(relationship.qualifiers ?? []),
           producerJson: producerJson(relationship.producer),
         })
         .run();
+      for (const participant of relationship.participants)
+        transaction
+          .insert(entityRelationshipParticipants)
+          .values({
+            relationshipId: relationship.id,
+            entityId: participant.entityId,
+            role: participant.role,
+            mentionIdsJson: JSON.stringify(participant.mentionIds ?? []),
+          })
+          .onConflictDoNothing()
+          .run();
       for (const sourceRecordId of relationship.sourceRecordIds)
         transaction
           .insert(relationshipSources)
@@ -11724,6 +14625,7 @@ export class SqliteCatalogue
         .insert(relationshipLifecycles)
         .values({
           relationshipId: relationship.id,
+          sourceSubjectId: relationship.sourceSubjectId ?? preview.assetId,
           sourceIdentity: context.sourceIdentity,
           nativeAddress: context.nativeAddress,
           coverageId: context.coverageId,
@@ -11749,6 +14651,7 @@ export class SqliteCatalogue
           sourceRecordIdsJson: JSON.stringify(mention.sourceRecordIds),
           producerJson: producerJson(mention.producer),
         })
+        .onConflictDoNothing()
         .run();
     }
     for (const decision of preview.projected.entityResolutionDecisions.filter(
@@ -11763,6 +14666,8 @@ export class SqliteCatalogue
           rule: decision.rule,
           sourceRecordIdsJson: JSON.stringify(decision.sourceRecordIds),
           producerJson: producerJson(decision.producer),
+          basis: "source",
+          operation: "select",
         })
         .run();
     }
@@ -11791,7 +14696,7 @@ export class SqliteCatalogue
       ) ||
       preview.projected.artifactAssociations.some(
         (association) =>
-          association.subjectId !== preview.assetId ||
+          entityTargetId(association) !== preview.assetId ||
           !artifactIds.has(association.artifactId),
       )
     ) {
@@ -11840,7 +14745,11 @@ export class SqliteCatalogue
         !superseded.has(association.id) && !retracted.has(association.id),
     );
 
-    this.insertOrVerifyArtifactFactsWithDrizzle(transaction, preview.projected);
+    this.insertOrVerifyArtifactFactsWithDrizzle(
+      transaction,
+      preview.projected,
+      preview.assetId,
+    );
     const projectedIds = new Set(
       preview.projected.artifactAssociations.map(
         (association) => association.id,
@@ -11996,26 +14905,25 @@ export class SqliteCatalogue
     query: DrizzleReadQuery,
     assetIds: readonly string[],
     indexMetadataProperties?: readonly string[],
+    selection: "filter-current" | "already-effective" = "filter-current",
   ): Promise<readonly AcceptedAssetState[]> {
-    if (assetIds.length === 0) return [];
+    const effectiveAssetIds =
+      selection === "already-effective"
+        ? assetIds
+        : this.currentEffectiveDigitalAssetIdsWithDrizzle(query, assetIds);
+    if (effectiveAssetIds.length === 0) return [];
     const [
       assetEntities,
       heads,
       associations,
       currentAssociationsRows,
       decisions,
-      policies,
       currentLineageHeads,
     ] = await Promise.all([
       query
         .select()
         .from(entities)
-        .where(
-          and(
-            inArray(entities.id, sqliteTextSet(assetIds)),
-            eq(entities.kind, "digital-asset"),
-          ),
-        ),
+        .where(and(inArray(entities.id, sqliteTextSet(effectiveAssetIds)))),
       query
         .select()
         .from(recognitionHeads)
@@ -12035,13 +14943,6 @@ export class SqliteCatalogue
         .select()
         .from(recognitionDecisions)
         .where(inArray(recognitionDecisions.assetId, sqliteTextSet(assetIds))),
-      query
-        .select()
-        .from(metadataPolicyEnrollments)
-        .where(
-          inArray(metadataPolicyEnrollments.subjectId, sqliteTextSet(assetIds)),
-        )
-        .orderBy(asc(sql<number>`${metadataPolicyEnrollments}.rowid`)),
       query
         .select({
           subjectId: sourceLineageHeads.subjectId,
@@ -12113,48 +15014,66 @@ export class SqliteCatalogue
           ) ?? [],
       ),
     ]);
-    const [artifactAssociationRows, metadataRows, relationshipRows] =
-      await Promise.all([
-        indexMetadataProperties !== undefined
-          ? Promise.resolve([])
-          : query
-              .select()
-              .from(artifactAssociations)
-              .where(
-                inArray(
-                  artifactAssociations.subjectId,
-                  sqliteTextSet(factSubjectIds),
-                ),
-              )
-              .orderBy(asc(artifactAssociations.id)),
-        query
-          .select()
-          .from(metadataAssertions)
-          .where(
-            and(
+    const [
+      artifactAssociationRows,
+      metadataRows,
+      relationshipRowsWithParticipants,
+    ] = await Promise.all([
+      indexMetadataProperties !== undefined
+        ? Promise.resolve([])
+        : query
+            .select()
+            .from(artifactAssociations)
+            .where(
               inArray(
-                metadataAssertions.subjectId,
+                artifactAssociations.subjectId,
                 sqliteTextSet(factSubjectIds),
               ),
-              indexMetadataProperties === undefined
-                ? undefined
-                : inArray(
-                    metadataAssertions.property,
-                    sqliteTextSet(indexMetadataProperties),
-                  ),
-            ),
-          ),
-        query
-          .select()
-          .from(entityRelationships)
-          .where(
+            )
+            .orderBy(asc(artifactAssociations.id)),
+      query
+        .select()
+        .from(metadataAssertions)
+        .where(
+          and(
             inArray(
-              entityRelationships.subjectId,
+              metadataAssertions.subjectId,
               sqliteTextSet(factSubjectIds),
             ),
-          )
-          .orderBy(asc(sql<number>`${entityRelationships}.rowid`)),
-      ]);
+            indexMetadataProperties === undefined
+              ? undefined
+              : inArray(
+                  metadataAssertions.property,
+                  sqliteTextSet(indexMetadataProperties),
+                ),
+          ),
+        ),
+      query
+        .select({ relationship: entityRelationships })
+        .from(entityRelationshipParticipants)
+        .innerJoin(
+          entityRelationships,
+          eq(
+            entityRelationships.id,
+            entityRelationshipParticipants.relationshipId,
+          ),
+        )
+        .where(
+          inArray(
+            entityRelationshipParticipants.entityId,
+            sqliteTextSet(factSubjectIds),
+          ),
+        )
+        .orderBy(asc(sql<number>`${entityRelationships}.rowid`)),
+    ]);
+    const relationshipRows = [
+      ...new Map(
+        relationshipRowsWithParticipants.map(({ relationship }) => [
+          relationship.id,
+          relationship,
+        ]),
+      ).values(),
+    ];
     const artifactAssociationIds = artifactAssociationRows.map((row) => row.id);
     const metadataIds = metadataRows.map((row) => row.id);
     const relationshipIds = relationshipRows.map((row) => row.id);
@@ -12332,6 +15251,32 @@ export class SqliteCatalogue
               )
               .orderBy(asc(artifactRevisions.id)),
           ]);
+    const observedLocationIds = locationRows
+      .filter(({ kind }) => kind === "observed")
+      .map(({ id }) => id);
+    const currentObservedLocationIds = new Set(
+      observedLocationIds.length === 0
+        ? []
+        : (
+            await query
+              .select({ id: currentFileObservationSupports.locationId })
+              .from(currentFileObservationSupports)
+              .where(
+                inArray(
+                  currentFileObservationSupports.locationId,
+                  sqliteTextSet(observedLocationIds),
+                ),
+              )
+          ).map(({ id }) => id),
+    );
+    const currentLocationRows = locationRows.filter(
+      ({ id, kind }) =>
+        kind !== "observed" || currentObservedLocationIds.has(id),
+    );
+    const currentLocationRevisions = currentConfirmedLocationRevisions(
+      query,
+      currentLocationRows,
+    );
     const digests = uniqueStrings(revisionRows.map((row) => row.blobDigest));
     const blobRows =
       digests.length === 0
@@ -12342,10 +15287,14 @@ export class SqliteCatalogue
             .where(inArray(blobs.digest, sqliteTextSet(digests)))
             .orderBy(asc(blobs.digest));
     const participantIds = uniqueStrings(
-      relationshipRows.map((row) => row.participantId),
+      relationshipRows.flatMap((row) =>
+        relationshipParticipantsFromJson(row.participantsJson).map(
+          (participant) => participant.entityId,
+        ),
+      ),
     );
     const lifecycleSourcedEntityRows =
-      currentLineageHeads.length === 0
+      sourceRecordIds.length === 0
         ? []
         : await query
             .select()
@@ -12354,8 +15303,8 @@ export class SqliteCatalogue
               sql`EXISTS (
                 SELECT 1 FROM json_each(${sourcedEntities.sourceRecordIdsJson}) AS source_id
                 WHERE source_id.value IN (${sql.join(
-                  currentLineageHeads.map(
-                    ({ sourceRecordId }) => sql`${sourceRecordId}`,
+                  sourceRecordIds.map(
+                    (sourceRecordId) => sql`${sourceRecordId}`,
                   ),
                   sql`, `,
                 )})
@@ -12374,7 +15323,11 @@ export class SqliteCatalogue
               .from(entities)
               .where(inArray(entities.id, sqliteTextSet(entityIds)))
               .orderBy(asc(entities.id)),
-            Promise.resolve(lifecycleSourcedEntityRows),
+            query
+              .select()
+              .from(sourcedEntities)
+              .where(inArray(sourcedEntities.id, sqliteTextSet(entityIds)))
+              .orderBy(asc(sourcedEntities.id)),
             participantIds.length === 0
               ? Promise.resolve([])
               : query
@@ -12390,6 +15343,7 @@ export class SqliteCatalogue
                     asc(sql<number>`${entityResolutionDecisions}.rowid`),
                   ),
           ]);
+    const entityKinds = this.entityKindStatesWithDrizzle(query, entityIds);
     const mentionIds = uniqueStrings(
       resolutionRows.map((resolution) => resolution.mentionId),
     );
@@ -12401,8 +15355,75 @@ export class SqliteCatalogue
             .from(entityMentions)
             .where(inArray(entityMentions.id, sqliteTextSet(mentionIds)))
             .orderBy(asc(sql<number>`${entityMentions}.rowid`));
-
-    return assetIds.flatMap((assetId) => {
+    const observedEntityRows = await query
+      .select()
+      .from(observedEntities)
+      .where(
+        inArray(observedEntities.assetId, sqliteTextSet(effectiveAssetIds)),
+      );
+    const observedEntityIds = observedEntityRows.map((row) => row.id);
+    const observedMentionRows =
+      observedEntityIds.length === 0
+        ? []
+        : await query
+            .select()
+            .from(observedEntityMentions)
+            .where(
+              inArray(
+                observedEntityMentions.entityId,
+                sqliteTextSet(observedEntityIds),
+              ),
+            );
+    const observedMentionIds = observedMentionRows.map((row) => row.id);
+    const observedResolutionRows =
+      observedMentionIds.length === 0
+        ? []
+        : await query
+            .select()
+            .from(observedEntityResolutions)
+            .where(
+              inArray(
+                observedEntityResolutions.mentionId,
+                sqliteTextSet(observedMentionIds),
+              ),
+            );
+    const observedEntityGraphSupportRows = await query
+      .select()
+      .from(observedEntityGraphSupports)
+      .where(
+        inArray(
+          observedEntityGraphSupports.assetId,
+          sqliteTextSet(effectiveAssetIds),
+        ),
+      );
+    const observedGraphIds = observedEntityGraphSupportRows.map(
+      (row) => row.id,
+    );
+    const observedEntityGraphEntityRows =
+      observedGraphIds.length === 0
+        ? []
+        : await query
+            .select()
+            .from(observedEntityGraphEntities)
+            .where(
+              inArray(
+                observedEntityGraphEntities.graphId,
+                sqliteTextSet(observedGraphIds),
+              ),
+            );
+    const observedEntityGraphRelationshipRows =
+      observedGraphIds.length === 0
+        ? []
+        : await query
+            .select()
+            .from(observedEntityGraphRelationships)
+            .where(
+              inArray(
+                observedEntityGraphRelationships.graphId,
+                sqliteTextSet(observedGraphIds),
+              ),
+            );
+    return effectiveAssetIds.flatMap((assetId) => {
       const accepted = this.projectCurrentAcceptedFromRows(assetId, {
         entities: [...assetEntities, ...participantEntities],
         heads,
@@ -12421,15 +15442,27 @@ export class SqliteCatalogue
         relationships: relationshipRows,
         relationshipLifecycles: relationshipLifecyclesRows,
         relationshipRetractions: relationshipRetractionsRows,
-        policies,
         sourceRecords: sourceRecordRows,
         artifacts: artifactRows,
-        locations: locationRows,
+        locations: currentLocationRows,
+        currentLocationRevisions,
         revisions: revisionRows,
         blobs: blobRows,
         sourcedEntities: sourcedEntityRows,
+        entityKinds: new Map(
+          [...entityKinds].map(([entityId, state]) => [
+            entityId,
+            state.effective,
+          ]),
+        ),
         resolutions: resolutionRows,
         mentions: mentionRows,
+        observedEntities: observedEntityRows,
+        observedMentions: observedMentionRows,
+        observedResolutions: observedResolutionRows,
+        observedEntityGraphSupports: observedEntityGraphSupportRows,
+        observedEntityGraphEntities: observedEntityGraphEntityRows,
+        observedEntityGraphRelationships: observedEntityGraphRelationshipRows,
       });
       return accepted === undefined ? [] : [accepted];
     });
@@ -12439,9 +15472,7 @@ export class SqliteCatalogue
     assetId: string,
     rows: CurrentCatalogueHydrationRows,
   ): AcceptedAssetState | undefined {
-    const entity = rows.entities.find(
-      (item) => item.id === assetId && item.kind === "digital-asset",
-    );
+    const entity = rows.entities.find((item) => item.id === assetId);
     const head = rows.heads.find((item) => item.subjectId === assetId);
     if (entity === undefined || head === undefined) return undefined;
     const recognitionSourceAssociationRow = rows.associations.find(
@@ -12468,7 +15499,11 @@ export class SqliteCatalogue
         ? {}
         : (JSON.parse(proposalRow.observedMaterialInterpretationJson) as Pick<
             RecognitionProposal,
-            "observedArtifactAssociations" | "observedArtifactRevisions"
+            | "observedArtifactAssociations"
+            | "observedArtifactRevisions"
+            | "observedMetadata"
+            | "observedArtifactParts"
+            | "observedEntityGraphs"
           >)),
     };
     const currentAssociationIds = new Set(
@@ -12512,7 +15547,9 @@ export class SqliteCatalogue
       factSubjectIds.has(row.subjectId),
     );
     const relationshipRows = rows.relationships.filter((row) =>
-      factSubjectIds.has(row.subjectId),
+      relationshipParticipantsFromJson(row.participantsJson).some(
+        (participant) => factSubjectIds.has(participant.entityId),
+      ),
     );
     const sourceRecordsById = new Map(
       rows.sourceRecords.map((record) => [record.id, record]),
@@ -12602,7 +15639,7 @@ export class SqliteCatalogue
         return [];
       return [
         {
-          subjectId: row.subjectId,
+          target: descriptionTargetFromColumns(row),
           property: row.property,
           sourceSlot: lifecycle?.sourceSlot ?? row.sourceSlot ?? "",
           value: row.value,
@@ -12631,6 +15668,9 @@ export class SqliteCatalogue
           ...(row.producerJson === null
             ? {}
             : { producer: producerFromJson(row.producerJson) }),
+          ...(row.recognitionDecisionId === null
+            ? {}
+            : { recognitionDecisionId: row.recognitionDecisionId }),
         },
       ];
     });
@@ -12681,6 +15721,173 @@ export class SqliteCatalogue
     );
     const digests = new Set(revisionRows.map((item) => item.blobDigest));
     const blobRows = rows.blobs.filter((item) => digests.has(item.digest));
+    const observedRevisionByReference = new Map(
+      (proposal.observedArtifactRevisions ?? []).map((candidate) => [
+        candidate.observedArtifactReference,
+        candidate,
+      ]),
+    );
+    const candidateObservedEntityGraphs = (
+      proposal.observedEntityGraphs ?? []
+    ).flatMap((candidate) => {
+      const revisionCandidate = observedRevisionByReference.get(
+        candidate.observedArtifactReference,
+      );
+      const revision =
+        revisionCandidate === undefined
+          ? undefined
+          : revisionRows.find(
+              (row) => row.blobDigest === revisionCandidate.blob.digest,
+            );
+      if (revision === undefined) return [];
+      const artifact = artifactRows.find(
+        (row) => row.id === revision.artifactId,
+      );
+      if (artifact === undefined) return [];
+      const entityIdByKey = new Map(
+        candidate.entities.map((item) => [
+          item.key,
+          `observed-entity_${sha256Text(JSON.stringify([assetId, artifact.id, candidate.producer, candidate.coverage.id, item.occurrenceSlot, item.preservedValue]))}`,
+        ]),
+      );
+      const mentionIdByKey = new Map(
+        candidate.mentions.map((item) => [
+          item.key,
+          `observed-mention_${sha256Text(JSON.stringify([entityIdByKey.get(item.entityKey), revision.id, item.sourceSlot, item.label]))}`,
+        ]),
+      );
+      return [
+        {
+          assetId,
+          artifactId: artifact.id,
+          revisionId: revision.id,
+          producer: candidate.producer,
+          coverageId: candidate.coverage.id,
+          complete: true as const,
+          entities: candidate.entities.map((item) => ({
+            id: entityIdByKey.get(item.key)!,
+            occurrenceSlot: item.occurrenceSlot,
+            label: item.label,
+            preservedValue: item.preservedValue,
+            locator: item.locator,
+          })),
+          mentions: candidate.mentions.map((item) => ({
+            id: mentionIdByKey.get(item.key)!,
+            entityId: entityIdByKey.get(item.entityKey)!,
+            sourceSlot: item.sourceSlot,
+            field: item.field,
+            role: item.role,
+            label: item.label,
+            locator: item.locator,
+          })),
+          resolutions: candidate.resolutions.map((item) => ({
+            mentionId: mentionIdByKey.get(item.mentionKey)!,
+            entityId: entityIdByKey.get(item.entityKey)!,
+          })),
+          relationships: candidate.relationships.map((item) => ({
+            id: `observed-relationship_${sha256Text(JSON.stringify([assetId, artifact.id, candidate.producer, candidate.coverage.id, item.sourceSlot, revision.id, item.type, item.subjectRole, item.participants, item.qualifiers]))}`,
+            participants: [
+              { entityId: assetId, role: item.subjectRole },
+              ...item.participants.map((participant) => ({
+                entityId: entityIdByKey.get(participant.entityKey)!,
+                role: participant.role,
+                mentionIds: participant.mentionKeys.map(
+                  (key) => mentionIdByKey.get(key)!,
+                ),
+              })),
+            ],
+            type: item.type,
+            sourceSlot: item.sourceSlot,
+            sourceRecordIds: [],
+            producer: candidate.producer,
+            qualifiers: item.qualifiers,
+          })),
+        },
+      ];
+    });
+    const currentObservedGraphSupports =
+      rows.observedEntityGraphSupports.filter(
+        (support) =>
+          support.assetId === assetId &&
+          support.recognitionDecisionId === head.recognitionDecisionId,
+      );
+    const observedEntityGraphs = currentObservedGraphSupports.map((support) => {
+      const graphEntityIds = new Set(
+        rows.observedEntityGraphEntities
+          .filter((item) => item.graphId === support.id)
+          .map((item) => item.entityId),
+      );
+      const relationshipIds = new Set(
+        rows.observedEntityGraphRelationships
+          .filter((item) => item.graphId === support.id)
+          .map((item) => item.relationshipId),
+      );
+      const graphEntities = rows.observedEntities.filter((entity) =>
+        graphEntityIds.has(entity.id),
+      );
+      const entityIds = new Set(graphEntities.map((entity) => entity.id));
+      const graphMentions = rows.observedMentions.filter(
+        (mention) =>
+          entityIds.has(mention.entityId) &&
+          mention.revisionId === support.revisionId,
+      );
+      const mentionIds = new Set(graphMentions.map((mention) => mention.id));
+      return {
+        assetId: support.assetId,
+        artifactId: support.artifactId,
+        revisionId: support.revisionId,
+        producer: producerFromJson(support.producerJson),
+        coverageId: support.coverageId,
+        complete: true as const,
+        entities: graphEntities.map((entity) => ({
+          id: entity.id,
+          occurrenceSlot: entity.occurrenceSlot,
+          label: entity.label,
+          preservedValue: entity.preservedValue,
+          locator: entity.locator,
+        })),
+        mentions: graphMentions.map((mention) => ({
+          id: mention.id,
+          entityId: mention.entityId,
+          sourceSlot: mention.sourceSlot,
+          field: mention.field,
+          role: mention.role,
+          label: mention.label,
+          locator: mention.locator,
+        })),
+        resolutions: rows.observedResolutions
+          .filter((resolution) => mentionIds.has(resolution.mentionId))
+          .map((resolution) => ({
+            mentionId: resolution.mentionId,
+            entityId: resolution.entityId,
+          })),
+        relationships: rows.relationships
+          .filter((relationship) => relationshipIds.has(relationship.id))
+          .map((relationship) => ({
+            id: relationship.id,
+            participants: relationshipParticipantsFromJson(
+              relationship.participantsJson,
+            ),
+            type: relationship.type,
+            sourceSlot: rows.observedEntityGraphRelationships.find(
+              (item) =>
+                item.graphId === support.id &&
+                item.relationshipId === relationship.id,
+            )!.sourceSlot,
+            sourceRecordIds: [],
+            qualifiers: JSON.parse(relationship.qualifiersJson) as NonNullable<
+              EntityRelationship["qualifiers"]
+            >,
+            ...(relationship.producerJson === null
+              ? {}
+              : { producer: producerFromJson(relationship.producerJson) }),
+          })),
+      };
+    });
+    const hydratedObservedEntityGraphs =
+      observedEntityGraphs.length === 0
+        ? candidateObservedEntityGraphs
+        : observedEntityGraphs;
     const relationshipLifecycleById = new Map(
       rows.relationshipLifecycles.map((item) => [item.relationshipId, item]),
     );
@@ -12709,14 +15916,20 @@ export class SqliteCatalogue
       );
     });
     const participantIds = new Set(
-      currentRelationshipRows.map((item) => item.participantId),
+      currentRelationshipRows.flatMap((item) =>
+        relationshipParticipantsFromJson(item.participantsJson).map(
+          (participant) => participant.entityId,
+        ),
+      ),
     );
     const entityById = new Map(rows.entities.map((item) => [item.id, item]));
     const sourcedEntityById = new Map(
       rows.sourcedEntities.map((item) => [item.id, item]),
     );
+    const sourcedEntityKind = (entityId: string): EffectiveEntityKind =>
+      rows.entityKinds.get(entityId) ?? { status: "ordinary" };
     const relationshipEntities = [...participantIds].flatMap(
-      (participantId): SourcedEntity[] => {
+      (participantId): import("@digital/domain").CurrentRelatedEntity[] => {
         const relatedEntity = entityById.get(participantId);
         const sourcedEntity = sourcedEntityById.get(participantId);
         if (relatedEntity === undefined || sourcedEntity === undefined)
@@ -12724,7 +15937,7 @@ export class SqliteCatalogue
         return [
           {
             id: relatedEntity.id,
-            kind: relatedEntity.kind as SourcedEntity["kind"],
+            kind: sourcedEntityKind(relatedEntity.id),
             sourceIdentity: sourcedEntity.sourceIdentity,
             sourceKey: sourcedEntity.sourceKey,
             identityNamespace: sourcedEntity.identityNamespace,
@@ -12741,7 +15954,7 @@ export class SqliteCatalogue
       },
     );
     const lineageEntities = rows.sourcedEntities.flatMap(
-      (sourcedEntity): SourcedEntity[] => {
+      (sourcedEntity): import("@digital/domain").CurrentRelatedEntity[] => {
         const relatedEntity = entityById.get(sourcedEntity.id);
         if (relatedEntity === undefined) return [];
         const recordIds = jsonStringArray(
@@ -12763,7 +15976,7 @@ export class SqliteCatalogue
         return [
           {
             id: relatedEntity.id,
-            kind: relatedEntity.kind as SourcedEntity["kind"],
+            kind: sourcedEntityKind(relatedEntity.id),
             sourceIdentity: sourcedEntity.sourceIdentity,
             sourceKey: sourcedEntity.sourceKey,
             identityNamespace: sourcedEntity.identityNamespace,
@@ -12778,10 +15991,29 @@ export class SqliteCatalogue
     );
     const currentEntities = [
       ...new Map(
-        [...relationshipEntities, ...lineageEntities].map((item) => [
-          item.id,
-          item,
-        ]),
+        [
+          ...relationshipEntities,
+          ...lineageEntities,
+          ...rows.observedEntities
+            .filter(
+              (entity) =>
+                entity.assetId === assetId &&
+                currentObservedGraphSupports.some(
+                  (support) =>
+                    support.artifactId === entity.artifactId &&
+                    support.producerJson === entity.producerJson &&
+                    support.coverageId === entity.coverageId,
+                ),
+            )
+            .map(
+              (entity) =>
+                ({
+                  id: entity.id,
+                  kind: sourcedEntityKind(entity.id),
+                  label: entity.label,
+                }) as import("@digital/domain").CurrentRelatedEntity,
+            ),
+        ].map((item) => [item.id, item]),
       ).values(),
     ];
     const relationships = currentRelationshipRows.map(
@@ -12791,10 +16023,8 @@ export class SqliteCatalogue
           throw new Error("Current relationship requires a lifecycle");
         return {
           id: row.id,
-          subjectId: row.subjectId,
-          participantId: row.participantId,
+          participants: relationshipParticipantsFromJson(row.participantsJson),
           type: row.type,
-          role: row.role,
           sourceSlot: lifecycle.sourceSlot,
           sourceRecordIds: jsonStringArray(
             row.sourceRecordIdsJson,
@@ -12809,8 +16039,10 @@ export class SqliteCatalogue
         };
       },
     );
-    const activeAssetRelationshipRows = currentRelationshipRows.filter(
-      (row) => row.subjectId === assetId,
+    const activeAssetRelationshipRows = currentRelationshipRows.filter((row) =>
+      relationshipParticipantsFromJson(row.participantsJson).some(
+        (participant) => participant.entityId === assetId,
+      ),
     );
     const eligibleResolutionRows = rows.resolutions.filter((resolution) => {
       const resolutionRecordIds = jsonStringArray(
@@ -12819,7 +16051,9 @@ export class SqliteCatalogue
       );
       return activeAssetRelationshipRows.some(
         (relationship) =>
-          relationship.participantId === resolution.entityId &&
+          relationshipParticipantsFromJson(relationship.participantsJson).some(
+            (participant) => participant.entityId === resolution.entityId,
+          ) &&
           jsonStringArray(
             relationship.sourceRecordIdsJson,
             "relationship source records",
@@ -12840,9 +16074,6 @@ export class SqliteCatalogue
       ...(recognitionSourceAssociation === undefined
         ? {}
         : { recognitionSourceAssociation }),
-      metadataPolicyIds: rows.policies.flatMap((item) =>
-        item.subjectId === assetId ? [item.policyId] : [],
-      ),
       metadataSourceRecords,
       recognitionDecision: {
         id: decision.id,
@@ -12878,6 +16109,14 @@ export class SqliteCatalogue
             : { producer: producerFromJson(row.producerJson) }),
         }),
       ),
+      ...(rows.currentLocationRevisions.length === 0
+        ? {}
+        : {
+            currentLocationRevisions: rows.currentLocationRevisions.filter(
+              ({ locationId }) =>
+                locationRows.some(({ id }) => id === locationId),
+            ),
+          }),
       artifactAssociations: currentArtifactAssociationRows.map(
         (row): ArtifactAssociation => {
           const recordIds = jsonStringArray(
@@ -12886,7 +16125,7 @@ export class SqliteCatalogue
           );
           return {
             id: row.id,
-            subjectId: row.subjectId,
+            target: descriptionTargetFromColumns(row),
             artifactId: row.artifactId,
             role: row.role,
             ...(row.sourceAssociationId === null
@@ -12918,7 +16157,15 @@ export class SqliteCatalogue
               ],
         ),
       metadata,
-      entities: currentEntities,
+      entities: currentEntities.map(({ kind, ...entity }) => ({
+        ...entity,
+        kind:
+          kind.status === "effective" &&
+          (kind.kind === "person" || kind.kind === "persona")
+            ? kind.kind
+            : "entity",
+      })),
+      currentRelatedEntities: currentEntities,
       entityMentions: mentionRows.map(
         (row): EntityMention => ({
           id: row.id,
@@ -12953,6 +16200,9 @@ export class SqliteCatalogue
         }),
       ),
       relationships,
+      ...(hydratedObservedEntityGraphs.length === 0
+        ? {}
+        : { observedEntityGraphs: hydratedObservedEntityGraphs }),
     };
   }
 
@@ -12965,10 +16215,16 @@ export class SqliteCatalogue
     query: DrizzleReadQuery,
     assetId: string,
   ): Promise<AcceptedAssetState | undefined> {
+    if (
+      !this.currentEffectiveDigitalAssetIdsWithDrizzle(query, [
+        assetId,
+      ]).includes(assetId)
+    )
+      return undefined;
     const [entity] = await query
       .select()
       .from(entities)
-      .where(and(eq(entities.id, assetId), eq(entities.kind, "digital-asset")));
+      .where(eq(entities.id, assetId));
     if (entity === undefined) return undefined;
 
     const [head] = await query
@@ -13059,8 +16315,7 @@ export class SqliteCatalogue
     const [
       artifactAssociationRows,
       metadataRows,
-      relationshipRows,
-      policyRows,
+      relationshipRowsWithParticipants,
     ] = await Promise.all([
       query
         .select()
@@ -13072,16 +16327,29 @@ export class SqliteCatalogue
         .from(metadataAssertions)
         .where(inArray(metadataAssertions.subjectId, artifactSubjectIds)),
       query
-        .select()
-        .from(entityRelationships)
-        .where(inArray(entityRelationships.subjectId, artifactSubjectIds))
+        .select({ relationship: entityRelationships })
+        .from(entityRelationshipParticipants)
+        .innerJoin(
+          entityRelationships,
+          eq(
+            entityRelationships.id,
+            entityRelationshipParticipants.relationshipId,
+          ),
+        )
+        .where(
+          inArray(entityRelationshipParticipants.entityId, artifactSubjectIds),
+        )
         .orderBy(asc(sql<number>`${entityRelationships}.rowid`)),
-      query
-        .select({ policyId: metadataPolicyEnrollments.policyId })
-        .from(metadataPolicyEnrollments)
-        .where(eq(metadataPolicyEnrollments.subjectId, assetId))
-        .orderBy(asc(sql<number>`${metadataPolicyEnrollments}.rowid`)),
     ]);
+
+    const relationshipRows = [
+      ...new Map(
+        relationshipRowsWithParticipants.map(({ relationship }) => [
+          relationship.id,
+          relationship,
+        ]),
+      ).values(),
+    ];
 
     const artifactAssociationIds = artifactAssociationRows.map((row) => row.id);
     const metadataAssertionIds = metadataRows.map((row) => row.id);
@@ -13254,42 +16522,6 @@ export class SqliteCatalogue
         );
       });
     });
-    const currentSourcedEntityIds = uniqueStrings(
-      currentSourcedEntityRows.map(({ id }) => id),
-    );
-    const currentSourcedEntityKinds = new Map(
-      currentSourcedEntityIds.length === 0
-        ? []
-        : (
-            await query
-              .select({ id: entities.id, kind: entities.kind })
-              .from(entities)
-              .where(inArray(entities.id, currentSourcedEntityIds))
-          ).map((row) => [row.id, row.kind]),
-    );
-    const lineageEntities = currentSourcedEntityRows.flatMap(
-      (row): SourcedEntity[] => {
-        const kind = currentSourcedEntityKinds.get(row.id);
-        if (kind === undefined) return [];
-        return [
-          {
-            id: row.id,
-            kind: kind as SourcedEntity["kind"],
-            sourceIdentity: row.sourceIdentity,
-            sourceKey: row.sourceKey,
-            identityNamespace: row.identityNamespace,
-            label: row.label,
-            sourceRecordIds: jsonStringArray(
-              row.sourceRecordIdsJson,
-              "sourced entity source records",
-            ),
-            ...(row.producerJson === null
-              ? {}
-              : { producer: producerFromJson(row.producerJson) }),
-          },
-        ];
-      },
-    );
     const supersededArtifactAssociationIds = new Set(
       artifactSupersessions.map((row) => row.predecessorAssociationId),
     );
@@ -13370,7 +16602,7 @@ export class SqliteCatalogue
         return [];
       return [
         {
-          subjectId: row.subjectId,
+          target: descriptionTargetFromColumns(row),
           property: row.property,
           sourceSlot: lifecycle?.sourceSlot ?? row.sourceSlot ?? "",
           value: row.value,
@@ -13399,6 +16631,9 @@ export class SqliteCatalogue
           ...(row.producerJson === null
             ? {}
             : { producer: producerFromJson(row.producerJson) }),
+          ...(row.recognitionDecisionId === null
+            ? {}
+            : { recognitionDecisionId: row.recognitionDecisionId }),
         },
       ];
     });
@@ -13465,6 +16700,10 @@ export class SqliteCatalogue
     const digests = uniqueStrings(
       revisionRows.map((revision) => revision.blobDigest),
     );
+    const currentLocationRevisions = currentConfirmedLocationRevisions(
+      query,
+      locationRows,
+    );
     const blobRows =
       digests.length === 0
         ? []
@@ -13502,7 +16741,11 @@ export class SqliteCatalogue
       );
     });
     const relationshipParticipantIds = uniqueStrings(
-      currentRelationshipRows.map((row) => row.participantId),
+      currentRelationshipRows.flatMap((row) =>
+        relationshipParticipantsFromJson(row.participantsJson).map(
+          (participant) => participant.entityId,
+        ),
+      ),
     ).toSorted();
     const [relatedEntityRows, sourcedEntityRows] =
       relationshipParticipantIds.length === 0
@@ -13524,8 +16767,15 @@ export class SqliteCatalogue
     const sourcedEntityById = new Map(
       sourcedEntityRows.map((row) => [row.id, row]),
     );
+    const currentRelatedKinds = this.entityKindStatesWithDrizzle(
+      query,
+      uniqueStrings([
+        ...currentSourcedEntityRows.map(({ id }) => id),
+        ...relationshipParticipantIds,
+      ]),
+    );
     const relationshipEntities = relationshipParticipantIds.flatMap(
-      (participantId): SourcedEntity[] => {
+      (participantId): import("@digital/domain").CurrentRelatedEntity[] => {
         const relatedEntity = relatedEntityById.get(participantId);
         const sourcedEntity = sourcedEntityById.get(participantId);
         if (relatedEntity === undefined || sourcedEntity === undefined)
@@ -13533,7 +16783,9 @@ export class SqliteCatalogue
         return [
           {
             id: relatedEntity.id,
-            kind: relatedEntity.kind as SourcedEntity["kind"],
+            kind:
+              currentRelatedKinds.get(relatedEntity.id)?.effective ??
+              ({ status: "ordinary" } as const),
             sourceIdentity: sourcedEntity.sourceIdentity,
             sourceKey: sourcedEntity.sourceKey,
             identityNamespace: sourcedEntity.identityNamespace,
@@ -13548,6 +16800,25 @@ export class SqliteCatalogue
           },
         ];
       },
+    );
+    const lineageEntities = currentSourcedEntityRows.map(
+      (row): import("@digital/domain").CurrentRelatedEntity => ({
+        id: row.id,
+        kind:
+          currentRelatedKinds.get(row.id)?.effective ??
+          ({ status: "ordinary" } as const),
+        sourceIdentity: row.sourceIdentity,
+        sourceKey: row.sourceKey,
+        identityNamespace: row.identityNamespace,
+        label: row.label,
+        sourceRecordIds: jsonStringArray(
+          row.sourceRecordIdsJson,
+          "sourced entity source records",
+        ),
+        ...(row.producerJson === null
+          ? {}
+          : { producer: producerFromJson(row.producerJson) }),
+      }),
     );
     const currentEntities = [
       ...new Map(
@@ -13564,10 +16835,8 @@ export class SqliteCatalogue
           throw new Error("Current relationship requires a lifecycle");
         return {
           id: row.id,
-          subjectId: row.subjectId,
-          participantId: row.participantId,
+          participants: relationshipParticipantsFromJson(row.participantsJson),
           type: row.type,
-          role: row.role,
           sourceSlot: lifecycle.sourceSlot,
           sourceRecordIds: jsonStringArray(
             row.sourceRecordIdsJson,
@@ -13583,11 +16852,17 @@ export class SqliteCatalogue
       },
     );
 
-    const activeAssetRelationshipRows = currentRelationshipRows.filter(
-      (row) => row.subjectId === assetId,
+    const activeAssetRelationshipRows = currentRelationshipRows.filter((row) =>
+      relationshipParticipantsFromJson(row.participantsJson).some(
+        (participant) => participant.entityId === assetId,
+      ),
     );
     const assetRelationshipParticipantIds = uniqueStrings(
-      activeAssetRelationshipRows.map((row) => row.participantId),
+      activeAssetRelationshipRows.flatMap((row) =>
+        relationshipParticipantsFromJson(row.participantsJson).map(
+          (participant) => participant.entityId,
+        ),
+      ),
     );
     const resolutionRows =
       assetRelationshipParticipantIds.length === 0
@@ -13609,7 +16884,9 @@ export class SqliteCatalogue
       );
       return activeAssetRelationshipRows.some(
         (relationship) =>
-          relationship.participantId === resolution.entityId &&
+          relationshipParticipantsFromJson(relationship.participantsJson).some(
+            (participant) => participant.entityId === resolution.entityId,
+          ) &&
           jsonStringArray(
             relationship.sourceRecordIdsJson,
             "relationship source records",
@@ -13660,6 +16937,170 @@ export class SqliteCatalogue
           : { producer: producerFromJson(row.producerJson) }),
       }),
     );
+    const observedEntityRows = await query
+      .select()
+      .from(observedEntities)
+      .where(eq(observedEntities.assetId, assetId));
+    const currentObservedGraphSupports = await query
+      .select()
+      .from(observedEntityGraphSupports)
+      .where(
+        and(
+          eq(observedEntityGraphSupports.assetId, assetId),
+          eq(observedEntityGraphSupports.recognitionDecisionId, decision.id),
+        ),
+      );
+    const observedGraphIds = currentObservedGraphSupports.map(
+      (item) => item.id,
+    );
+    const observedGraphEntities =
+      observedGraphIds.length === 0
+        ? []
+        : await query
+            .select()
+            .from(observedEntityGraphEntities)
+            .where(
+              inArray(
+                observedEntityGraphEntities.graphId,
+                sqliteTextSet(observedGraphIds),
+              ),
+            );
+    const observedGraphRelationships =
+      observedGraphIds.length === 0
+        ? []
+        : await query
+            .select()
+            .from(observedEntityGraphRelationships)
+            .where(
+              inArray(
+                observedEntityGraphRelationships.graphId,
+                sqliteTextSet(observedGraphIds),
+              ),
+            );
+    const observedRelationshipIds = observedGraphRelationships.map(
+      (item) => item.relationshipId,
+    );
+    const observedRelationshipRows =
+      observedRelationshipIds.length === 0
+        ? []
+        : await query
+            .select()
+            .from(entityRelationships)
+            .where(
+              inArray(
+                entityRelationships.id,
+                sqliteTextSet(observedRelationshipIds),
+              ),
+            );
+    const observedMentionRows =
+      observedEntityRows.length === 0
+        ? []
+        : await query
+            .select()
+            .from(observedEntityMentions)
+            .where(
+              inArray(
+                observedEntityMentions.entityId,
+                observedEntityRows.map((item) => item.id),
+              ),
+            );
+    const observedResolutionRows =
+      observedMentionRows.length === 0
+        ? []
+        : await query
+            .select()
+            .from(observedEntityResolutions)
+            .where(
+              inArray(
+                observedEntityResolutions.mentionId,
+                observedMentionRows.map((item) => item.id),
+              ),
+            );
+    const observedEntityGraphs = currentObservedGraphSupports.map((support) => {
+      const graphEntityIds = new Set(
+        observedGraphEntities
+          .filter((item) => item.graphId === support.id)
+          .map((item) => item.entityId),
+      );
+      const relationshipIds = new Set(
+        observedGraphRelationships
+          .filter((item) => item.graphId === support.id)
+          .map((item) => item.relationshipId),
+      );
+      const graphEntities = observedEntityRows.filter((entity) =>
+        graphEntityIds.has(entity.id),
+      );
+      const entityIds = new Set(graphEntities.map((entity) => entity.id));
+      const graphMentions = observedMentionRows.filter(
+        (mention) =>
+          entityIds.has(mention.entityId) &&
+          mention.revisionId === support.revisionId,
+      );
+      const mentionIds = new Set(graphMentions.map((mention) => mention.id));
+      return {
+        assetId: support.assetId,
+        artifactId: support.artifactId,
+        revisionId: support.revisionId,
+        producer: producerFromJson(support.producerJson),
+        coverageId: support.coverageId,
+        complete: true as const,
+        entities: graphEntities.map((entity) => ({
+          id: entity.id,
+          occurrenceSlot: entity.occurrenceSlot,
+          label: entity.label,
+          preservedValue: entity.preservedValue,
+          locator: entity.locator,
+        })),
+        mentions: graphMentions.map((mention) => ({
+          id: mention.id,
+          entityId: mention.entityId,
+          sourceSlot: mention.sourceSlot,
+          field: mention.field,
+          role: mention.role,
+          label: mention.label,
+          locator: mention.locator,
+        })),
+        resolutions: observedResolutionRows
+          .filter((resolution) => mentionIds.has(resolution.mentionId))
+          .map((resolution) => ({
+            mentionId: resolution.mentionId,
+            entityId: resolution.entityId,
+          })),
+        relationships: observedRelationshipRows
+          .filter((relationship) => relationshipIds.has(relationship.id))
+          .map((relationship) => ({
+            id: relationship.id,
+            participants: relationshipParticipantsFromJson(
+              relationship.participantsJson,
+            ),
+            type: relationship.type,
+            sourceSlot: observedGraphRelationships.find(
+              (item) =>
+                item.graphId === support.id &&
+                item.relationshipId === relationship.id,
+            )!.sourceSlot,
+            sourceRecordIds: [],
+            qualifiers: JSON.parse(relationship.qualifiersJson) as NonNullable<
+              EntityRelationship["qualifiers"]
+            >,
+            ...(relationship.producerJson === null
+              ? {}
+              : { producer: producerFromJson(relationship.producerJson) }),
+          })),
+      };
+    });
+    const observedCurrentEntities = this.currentObservedEntityRowsWithDrizzle(
+      query,
+    )
+      .filter((entity) => entity.assetId === assetId)
+      .map(
+        (entity) =>
+          ({
+            id: entity.id,
+            kind: { status: "ordinary" } as const,
+            label: entity.label,
+          }) as import("@digital/domain").CurrentRelatedEntity,
+      );
 
     return {
       proposal,
@@ -13668,7 +17109,6 @@ export class SqliteCatalogue
       ...(recognitionSourceAssociation === undefined
         ? {}
         : { recognitionSourceAssociation }),
-      metadataPolicyIds: policyRows.map((row) => row.policyId),
       metadataSourceRecords,
       recognitionDecision: {
         id: decision.id,
@@ -13704,6 +17144,9 @@ export class SqliteCatalogue
             : { producer: producerFromJson(row.producerJson) }),
         }),
       ),
+      ...(currentLocationRevisions.length === 0
+        ? {}
+        : { currentLocationRevisions }),
       artifactAssociations: currentArtifactAssociationRows.map(
         (row): ArtifactAssociation => {
           const sourceRecordIdsForAssociation = jsonStringArray(
@@ -13712,7 +17155,7 @@ export class SqliteCatalogue
           );
           return {
             id: row.id,
-            subjectId: row.subjectId,
+            target: descriptionTargetFromColumns(row),
             artifactId: row.artifactId,
             role: row.role,
             ...(row.sourceAssociationId === null
@@ -13741,10 +17184,26 @@ export class SqliteCatalogue
           ) && !endedRecognitionDecisionIds.has(support.recognitionDecisionId),
       ),
       metadata,
-      entities: currentEntities,
+      entities: currentEntities.map(({ kind, ...entity }) => ({
+        ...entity,
+        kind:
+          kind.status === "effective" &&
+          (kind.kind === "person" || kind.kind === "persona")
+            ? kind.kind
+            : "entity",
+      })),
+      currentRelatedEntities: [
+        ...new Map(
+          [...currentEntities, ...observedCurrentEntities].map((item) => [
+            item.id,
+            item,
+          ]),
+        ).values(),
+      ],
       entityMentions: entityMentionsForView,
       entityResolutionDecisions: entityResolutionDecisionsForView,
       relationships,
+      ...(observedEntityGraphs.length === 0 ? {} : { observedEntityGraphs }),
     };
   }
 }
@@ -13807,6 +17266,71 @@ function originalPersistenceError(error: unknown): unknown {
   )
     return error.cause;
   return error;
+}
+
+type StoredDescriptionTarget = {
+  readonly targetKind: string;
+  readonly targetEntityId: string | null;
+  readonly targetArtifactId: string | null;
+  readonly targetRevisionId: string | null;
+};
+
+function descriptionTargetColumns(target: DescriptionTarget) {
+  return target.kind === "entity"
+    ? {
+        targetKind: target.kind,
+        targetEntityId: target.entityId,
+        targetArtifactId: null,
+        targetRevisionId: null,
+      }
+    : {
+        targetKind: target.kind,
+        targetEntityId: null,
+        targetArtifactId: target.artifactId,
+        targetRevisionId: target.revisionId,
+      };
+}
+
+function descriptionTargetFromColumns(
+  row: StoredDescriptionTarget,
+): DescriptionTarget {
+  if (
+    row.targetKind === "entity" &&
+    row.targetEntityId !== null &&
+    row.targetArtifactId === null &&
+    row.targetRevisionId === null
+  )
+    return { kind: "entity", entityId: row.targetEntityId };
+  if (
+    row.targetKind === "artifact-revision" &&
+    row.targetEntityId === null &&
+    row.targetArtifactId !== null &&
+    row.targetRevisionId !== null
+  )
+    return {
+      kind: "artifact-revision",
+      artifactId: row.targetArtifactId,
+      revisionId: row.targetRevisionId,
+    };
+  throw new Error("持久化描述目标无效");
+}
+
+function entityTargetId(
+  value: Pick<ArtifactAssociation | MetadataAssertion, "target">,
+): string | undefined {
+  return value.target.kind === "entity" ? value.target.entityId : undefined;
+}
+
+function sameDescriptionTarget(
+  left: DescriptionTarget,
+  right: DescriptionTarget,
+): boolean {
+  return left.kind === "entity" && right.kind === "entity"
+    ? left.entityId === right.entityId
+    : left.kind === "artifact-revision" && right.kind === "artifact-revision"
+      ? left.artifactId === right.artifactId &&
+        left.revisionId === right.revisionId
+      : false;
 }
 
 function jsonStringArray(value: string, coordinate: string): string[] {
@@ -13880,6 +17404,17 @@ function sourceFactCoordinate(subjectId: string, sourceSlot: string): string {
   return JSON.stringify([subjectId, sourceSlot]);
 }
 
+/** 来源生命周期范围只能来自来源声明，缺省时才是本次采用的资产上下文。 */
+function relationshipSourceSubjectId(
+  assetId: string,
+  relationship: Pick<EntityRelationship, "participants"> & {
+    readonly subjectRole?: string;
+    readonly sourceSubjectId?: string;
+  },
+): string {
+  return relationship.sourceSubjectId ?? assetId;
+}
+
 function sourceFactSlotReference(
   kind: "metadata" | "relationship",
   assetId: string,
@@ -13934,13 +17469,46 @@ function normalizedStoredQualifiers(value: string): string {
   return normalizedQualifiers(parsed as readonly FactQualifier[]);
 }
 
+function relationshipParticipantsFromJson(
+  value: string,
+): EntityRelationship["participants"] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error("Malformed persisted relationship participants");
+  }
+  if (
+    !Array.isArray(parsed) ||
+    parsed.length < 2 ||
+    !parsed.every(
+      (participant) =>
+        typeof participant === "object" &&
+        participant !== null &&
+        typeof (participant as { readonly entityId?: unknown }).entityId ===
+          "string" &&
+        typeof (participant as { readonly role?: unknown }).role === "string" &&
+        ((participant as { readonly mentionIds?: unknown }).mentionIds ===
+          undefined ||
+          (Array.isArray(
+            (participant as { readonly mentionIds?: unknown }).mentionIds,
+          ) &&
+            (
+              participant as { readonly mentionIds: unknown[] }
+            ).mentionIds.every((id) => typeof id === "string"))),
+    )
+  )
+    throw new Error("Malformed persisted relationship participants");
+  return parsed as EntityRelationship["participants"];
+}
+
 function metadataAssertionMatchesCurrent(
   current: {
     readonly property: string;
     readonly value: string;
     readonly qualifiers_json: string;
   },
-  assertion: MetadataAssertion,
+  assertion: Pick<MetadataAssertion, "property" | "value" | "qualifiers">,
 ): boolean {
   return (
     current.property === assertion.property &&
@@ -13952,19 +17520,33 @@ function metadataAssertionMatchesCurrent(
 
 function relationshipMatchesCurrent(
   current: {
-    readonly participant_id: string;
+    readonly participants_json: string;
     readonly type: string;
-    readonly role: string;
     readonly qualifiers_json: string;
   },
-  relationship: NonNullable<SourceInterpretationBatch["relationships"]>[number],
+  relationship: Pick<
+    EntityRelationship,
+    "participants" | "type" | "qualifiers"
+  >,
 ): boolean {
   return (
-    current.participant_id === relationship.participantId &&
+    normalizedRelationshipParticipants(current.participants_json) ===
+      normalizedRelationshipParticipants(
+        JSON.stringify(relationship.participants),
+      ) &&
     current.type === relationship.type &&
-    current.role === relationship.role &&
     normalizedStoredQualifiers(current.qualifiers_json) ===
       normalizedQualifiers(relationship.qualifiers)
+  );
+}
+
+function normalizedRelationshipParticipants(value: string): string {
+  return JSON.stringify(
+    [...relationshipParticipantsFromJson(value)].toSorted((left, right) => {
+      if (left.entityId !== right.entityId)
+        return left.entityId < right.entityId ? -1 : 1;
+      return left.role < right.role ? -1 : left.role > right.role ? 1 : 0;
+    }),
   );
 }
 
