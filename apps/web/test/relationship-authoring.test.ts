@@ -490,6 +490,54 @@ it("Web 正式入口按被点名事实决定多方关系，独立事实不被压
   }
 }, 30_000);
 
+it("Web HTTP 实体查找按文字片段命中，与共享查询和重开后的持久结果同形，空标签被拒绝", async () => {
+  const root = await mkdtemp(
+    path.join(tmpdir(), "digital-disposable-web-entity-search-"),
+  );
+  await prepareWebProductData(root);
+  const network = vi
+    .spyOn(globalThis, "fetch")
+    .mockRejectedValue(new Error("离线"));
+  let product = await openProduct(root);
+  try {
+    const target = await product.entity("search/target", "星海旅人录");
+    const unrelated = await product.entity("search/unrelated", "无关作品");
+    // 片段命中同一片段所属实体，HTTP 入口暴露的就是共享包含查询。
+    const byFragment = await product.json(
+      await product.request("entities?label=星海"),
+    );
+    expect(byFragment).toEqual([
+      expect.objectContaining({
+        id: target.id,
+        label: "星海旅人录",
+        identity: "local",
+      }),
+    ]);
+    // 精确全名与片段命中同一实体，二者返回完全相同的正式投影。
+    expect(
+      await product.json(await product.request("entities?label=星海旅人录")),
+    ).toEqual(byFragment);
+    // 无关名称不会因包含而被误命中，只返回其自身。
+    expect(
+      await product.json(await product.request("entities?label=无关")),
+    ).toEqual([expect.objectContaining({ id: unrelated.id })]);
+    // 空与纯空白标签在共用边界被拒绝。
+    expect((await product.request("entities?label=")).status).toBe(400);
+    expect((await product.request("entities?label=%20")).status).toBe(400);
+    // 重开后仍从持久 SQLite 读取同一结果，HTTP 不依赖任何原型内存检索。
+    await product.close();
+    product = await openProduct(root);
+    expect(
+      await product.json(await product.request("entities?label=星海")),
+    ).toEqual(byFragment);
+    expect(network).not.toHaveBeenCalled();
+  } finally {
+    await product.close();
+    network.mockRestore();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
 it("Web 对独立人工事实的选择只看被点名的当前替代，多次更正与重开语义一致", async () => {
   const root = await mkdtemp(
     path.join(tmpdir(), "digital-disposable-web-manual-select-"),

@@ -461,6 +461,10 @@ it("人物与活动身份硬迁移后公开读取保全身份、资料、关系�
       identity: "source",
       kind: ordinaryKind,
     });
+    // 来源名称的任意文字片段都命中同一实体，证明查找按包含而非仅精确相等。
+    expect(await workflow.findRelatedEntities("优甲")).toEqual([
+      expect.objectContaining({ id: voice!.id, identity: "source" }),
+    ]);
     // 来源意义仍可追溯：DLsite 声优指称保留身份命名空间与来源键。
     expect(
       (await workflow.inspectCurrentCatalogueEntity(voice!.id))?.entity,

@@ -1577,21 +1577,42 @@ export class SqliteCatalogue
   async findRelatedEntities(
     label: string,
   ): Promise<readonly RelatedEntityIdentity[]> {
+    if (label.trim().length === 0) return [];
     const query = drizzle({ client: await this.ensure() });
     const forest = this.effectiveIdentityForestWithDrizzle(query);
+    const pattern = relatedEntityContainsPattern(label);
     const local = query
       .select()
       .from(localEntityNames)
-      .where(eq(localEntityNames.label, label))
+      .where(
+        sql`${localEntityNames.label} LIKE ${pattern} ESCAPE ${RELATED_ENTITY_CONTAINS_ESCAPE}`,
+      )
       .all();
     const sourced = query
       .select()
       .from(sourcedEntities)
-      .where(eq(sourcedEntities.label, label))
+      .where(
+        sql`${sourcedEntities.label} LIKE ${pattern} ESCAPE ${RELATED_ENTITY_CONTAINS_ESCAPE}`,
+      )
       .all();
     const observed = this.currentObservedEntityRowsWithDrizzle(query).filter(
-      (row) => row.label === label,
+      (row) => row.label.includes(label),
     );
+    // 数字资产的显示与别名名称来自正式名称断言，而不是标签列；参与查找但不建立身份等价。
+    const names = query
+      .select({
+        entityId: metadataAssertions.subjectId,
+        label: metadataAssertions.value,
+      })
+      .from(metadataAssertions)
+      .where(
+        and(
+          inArray(metadataAssertions.property, RELATED_ENTITY_NAME_PROPERTIES),
+          eq(metadataAssertions.isCurrent, 1),
+          sql`${metadataAssertions.value} LIKE ${pattern} ESCAPE ${RELATED_ENTITY_CONTAINS_ESCAPE}`,
+        ),
+      )
+      .all();
     const candidates = [
       ...local.map((row) => ({
         id: row.entityId,
@@ -1609,22 +1630,32 @@ export class SqliteCatalogue
         identity: "local" as const,
       })),
     ];
-    return [
-      ...new Map(
-        candidates.map((candidate) => {
-          const representativeId =
-            forest.representativeByEntity.get(candidate.id) ?? candidate.id;
-          return [
-            representativeId,
-            {
-              ...candidate,
-              id: representativeId,
-              kind: this.relatedEntityKindWithDrizzle(query, representativeId),
-            },
-          ] as const;
-        }),
-      ).values(),
-    ];
+    const found = new Map(
+      candidates.map((candidate) => {
+        const representativeId =
+          forest.representativeByEntity.get(candidate.id) ?? candidate.id;
+        return [
+          representativeId,
+          {
+            ...candidate,
+            id: representativeId,
+            kind: this.relatedEntityKindWithDrizzle(query, representativeId),
+          },
+        ] as const;
+      }),
+    );
+    for (const name of names) {
+      const representativeId =
+        forest.representativeByEntity.get(name.entityId) ?? name.entityId;
+      if (found.has(representativeId)) continue;
+      found.set(representativeId, {
+        id: representativeId,
+        label: name.label,
+        kind: this.relatedEntityKindWithDrizzle(query, representativeId),
+        identity: "source" as const,
+      });
+    }
+    return [...found.values()];
   }
 
   async previewEntityIdentityMerge(input: {
@@ -16713,6 +16744,21 @@ export class SqliteCatalogue
 
 function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values)];
+}
+
+/** 参与实体名称查找的正式名称合同；不泛化到任意元数据值。 */
+const RELATED_ENTITY_NAME_PROPERTIES = [
+  "asset.title",
+  "asset.title.original",
+  "asset.title.alternative",
+  "asset.title.zh-hans",
+] as const;
+
+const RELATED_ENTITY_CONTAINS_ESCAPE = "\\";
+
+/** 把输入当纯文字片段：转义 LIKE 通配符，前后各加一个真正的通配符。 */
+function relatedEntityContainsPattern(fragment: string): string {
+  return `%${fragment.replace(/[\\%_]/g, (char) => `${RELATED_ENTITY_CONTAINS_ESCAPE}${char}`)}%`;
 }
 
 /** 使用一个绑定的 JSON 值，避免展开页面触及 SQLite 变量上限。 */
