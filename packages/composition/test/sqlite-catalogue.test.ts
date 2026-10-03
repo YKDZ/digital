@@ -1279,7 +1279,8 @@ type NamedLegacyManifest = {
   selectedManualRelationshipId: string | null;
   applied: {
     namedRelationshipId: string;
-    siblingRelationshipId: string;
+    siblingRelationshipId?: string;
+    replacementRelationshipId?: string;
   }[];
   beforeMigration: Record<string, LegacyRelationship[]>;
 };
@@ -1439,6 +1440,143 @@ it("具名旧更正经正式迁移只替换被点名的来源事实，兄弟事�
     { parties: 2, position: "3", sources: 1 },
     { parties: 3, position: "4", sources: 1 },
     { parties: 3, position: "8", sources: 0 },
+  ]);
+  reopened.close();
+});
+
+/**
+ * 固定点 911a0c3 的公开连续具名更正：先点名来源事实生成人工替代，再点名该人工替代生成第二项
+ * 人工替代。两次决定必须沿同一被点名目标推进，读取时只有最后一项人工根据生效。
+ */
+it("连续具名更正经正式迁移沿同一被点名目标推进，只让最后一项人工根据生效", async () => {
+  const { manifest, root } = await openNamedLegacyFixture(
+    "legacy-named-relationship-fix-chain",
+  );
+  const catalogue = SqliteCatalogue.forProductData(root);
+  const continuation = { ...legacyFixture.state, ...manifest.continuation };
+  const workflow = reevaluationWorkflow(catalogue, continuation);
+  const factsOf = async (subject: string) =>
+    legacyFactsFor(
+      (await workflow.inspectCurrentCatalogueEntity(subject))!
+        .relationships as unknown as LegacyRelationship[],
+      subject,
+    );
+  /** 从担任 performer 的参与者反查，链式决定绝不波及它参与的其他坐标。 */
+  const performerFacts = async () =>
+    legacyShape(
+      legacyFactsFor(
+        (await workflow.inspectCurrentCatalogueEntity("journey-performer"))!
+          .relationships as unknown as LegacyRelationship[],
+        "journey-performer",
+        "performer",
+      ),
+    );
+  const oldAlternate = legacyFactsFor(
+    manifest.beforeMigration["journey-alternate"] ?? [],
+    "journey-alternate",
+  );
+  // 旧快照按整体坐标作用：同坐标来源全被压掉，只剩最后一项人工替代事实。
+  expect(legacyShape(oldAlternate)).toEqual([
+    { parties: 2, position: "3", sources: 1 },
+    { parties: 3, position: "10", sources: 0 },
+  ]);
+  const migrated = await factsOf("journey-alternate");
+  // 第二次更正沿用第一次点名的来源目标：来源与首项人工替代都不生效，
+  // 只有第二次更正的替代生效，同坐标兄弟来源恢复各自生效。
+  expect(legacyShape(migrated)).toEqual([
+    { parties: 2, position: "3", sources: 1 },
+    { parties: 3, position: "10", sources: 0 },
+    { parties: 3, position: "4", sources: 1 },
+  ]);
+  expect(migrated.find(({ sources }) => sources === 0)!.id).toBe(
+    manifest.applied[1].replacementRelationshipId,
+  );
+  expect(
+    migrated.some(({ id }) => id === manifest.applied[0].namedRelationshipId),
+  ).toBe(false);
+  expect(
+    migrated.some(({ id }) => id === manifest.applied[1].namedRelationshipId),
+  ).toBe(false);
+  expect(legacyShape(await factsOf("journey-series"))).toEqual([
+    { parties: 2, position: "1", sources: 1 },
+    { parties: 3, position: "1", sources: 1 },
+    { parties: 3, position: "4", sources: 1 },
+  ]);
+  expect(await performerFacts()).toEqual([
+    { parties: 3, position: "1", sources: 1 },
+    { parties: 3, position: "10", sources: 0 },
+    { parties: 3, position: "4", sources: 1 },
+    { parties: 3, position: "4", sources: 1 },
+  ]);
+  expect(
+    (
+      await workflow.refreshMetadata({
+        selection: {
+          version: "asset-refresh-selection/1",
+          subjects: [
+            {
+              subjectId: manifest.assetId,
+              explanations: [{ path: ["连续具名更正迁移"] }],
+            },
+          ],
+          filesystemScopes: [],
+        },
+        initiatedBy: "user:legacy",
+      })
+    ).execution.status,
+  ).toBe("completed");
+  // 刷新沿各自稳定槽位给出后继：被点名的槽位继续由最后一项人工根据生效。
+  expect(legacyShape(await factsOf("journey-alternate"))).toEqual([
+    { parties: 2, position: "3", sources: 1 },
+    { parties: 3, position: "10", sources: 0 },
+    { parties: 3, position: "5", sources: 1 },
+  ]);
+  catalogue.close();
+  const reopened = SqliteCatalogue.forProductData(root);
+  const reopenedWorkflow = reevaluationWorkflow(reopened, continuation);
+  const reopenedFacts = async () =>
+    legacyFactsFor(
+      (await reopenedWorkflow.inspectCurrentCatalogueEntity(
+        "journey-alternate",
+      ))!.relationships as unknown as LegacyRelationship[],
+      "journey-alternate",
+    );
+  expect(legacyShape(await reopenedFacts())).toEqual([
+    { parties: 2, position: "3", sources: 1 },
+    { parties: 3, position: "10", sources: 0 },
+    { parties: 3, position: "5", sources: 1 },
+  ]);
+  const replacement = (await reopenedFacts()).find(
+    ({ sources }) => sources === 0,
+  )!;
+  const decide = async (change: {
+    kind: "clear" | "select";
+    targetRelationshipId: string;
+  }) =>
+    await reopenedWorkflow.applyRelationshipChange({
+      actorId: "user:legacy",
+      preview: await reopenedWorkflow.previewRelationshipChange({
+        changes: [change],
+      }),
+    });
+  // 清除只让该目标回到当前来源推导，人工根据不被删除，其他目标不受影响。
+  expect(
+    await decide({ kind: "clear", targetRelationshipId: replacement.id }),
+  ).toBe("applied");
+  const cleared = await reopenedFacts();
+  expect(legacyShape(cleared)).toEqual([
+    { parties: 2, position: "3", sources: 1 },
+    { parties: 3, position: "5", sources: 1 },
+    { parties: 3, position: "9", sources: 1 },
+  ]);
+  // 同一项人工根据仍可被点名选中，且只生效它自己那一项。
+  expect(
+    await decide({ kind: "select", targetRelationshipId: replacement.id }),
+  ).toBe("applied");
+  expect(legacyShape(await reopenedFacts())).toEqual([
+    { parties: 2, position: "3", sources: 1 },
+    { parties: 3, position: "10", sources: 0 },
+    { parties: 3, position: "5", sources: 1 },
   ]);
   reopened.close();
 });

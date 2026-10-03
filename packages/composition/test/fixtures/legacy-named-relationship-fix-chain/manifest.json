@@ -1,0 +1,323 @@
+{
+  "schema": "digital-legacy-named-relationship-fix/1",
+  "baselineCommit": "911a0c3",
+  "actorId": "user:legacy",
+  "assetId": "entity_4b4c651a-b635-4c4b-bc37-7f793afeca76",
+  "subjects": ["journey-series", "journey-alternate", "journey-performer"],
+  "selectedManualRelationshipId": null,
+  "continuation": {
+    "observationVersion": 0,
+    "sourceVersion": 4,
+    "expanded": false,
+    "managedMissing": false,
+    "omitCover": false,
+    "explicitPlan": false,
+    "sourceRefreshAuthority": true,
+    "relatedMention": true,
+    "selectedFacts": true
+  },
+  "applied": [
+    {
+      "intent": "named-fix",
+      "bucket": "asset.membership|entity_4b4c651a-b635-4c4b-bc37-7f793afeca76::member+journey-alternate::series+journey-performer::performer",
+      "namedRelationshipId": "entity-relationship_988f759a-144a-4fb4-ba6e-21c623f8a74b",
+      "siblingRelationshipId": "source-refresh-relationship_0cc74e0a-caf0-4ea1-8593-765ca8c06140",
+      "change": {
+        "kind": "fix",
+        "definitionId": "fixture.membership-three",
+        "relationshipIds": [
+          "entity-relationship_988f759a-144a-4fb4-ba6e-21c623f8a74b"
+        ],
+        "relationship": {
+          "type": "asset.membership",
+          "participants": [
+            {
+              "entityId": "entity_4b4c651a-b635-4c4b-bc37-7f793afeca76",
+              "role": "member"
+            },
+            {
+              "entityId": "journey-alternate",
+              "role": "series"
+            },
+            {
+              "entityId": "journey-performer",
+              "role": "performer"
+            }
+          ],
+          "qualifiers": [
+            {
+              "key": "asset.membership.position",
+              "value": "8"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "intent": "named-fix-manual",
+      "bucket": "asset.membership|entity_4b4c651a-b635-4c4b-bc37-7f793afeca76::member+journey-alternate::series+journey-performer::performer",
+      "namedRelationshipId": "manual-relationship_c2cb282f7a3b676257ccf160f1fd819ba815a031",
+      "replacementRelationshipId": "manual-relationship_19b160165f729f99ad08aabb3c6128f2848c9475",
+      "change": {
+        "kind": "fix",
+        "definitionId": "fixture.membership-three",
+        "relationshipIds": [
+          "manual-relationship_c2cb282f7a3b676257ccf160f1fd819ba815a031"
+        ],
+        "relationship": {
+          "type": "asset.membership",
+          "participants": [
+            {
+              "entityId": "entity_4b4c651a-b635-4c4b-bc37-7f793afeca76",
+              "role": "member"
+            },
+            {
+              "entityId": "journey-alternate",
+              "role": "series"
+            },
+            {
+              "entityId": "journey-performer",
+              "role": "performer"
+            }
+          ],
+          "qualifiers": [
+            {
+              "key": "asset.membership.position",
+              "value": "10"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "beforeMigration": {
+    "journey-series": [
+      {
+        "id": "entity-relationship_5620a0c1-f65f-4b24-9e89-c2be246407e7",
+        "participants": [
+          {
+            "entityId": "entity_4b4c651a-b635-4c4b-bc37-7f793afeca76",
+            "role": "member"
+          },
+          {
+            "entityId": "journey-series",
+            "role": "series"
+          },
+          {
+            "entityId": "journey-performer",
+            "role": "performer"
+          }
+        ],
+        "type": "asset.membership",
+        "qualifiers": [
+          {
+            "key": "asset.membership.position",
+            "value": "1"
+          }
+        ],
+        "sources": [
+          {
+            "sourceIdentity": "reevaluation-source",
+            "nativeAddress": "opaque:reevaluation-work"
+          }
+        ]
+      },
+      {
+        "id": "entity-relationship_17aee8d9-7ee7-424b-950b-b841a6c6ab7a",
+        "participants": [
+          {
+            "entityId": "entity_4b4c651a-b635-4c4b-bc37-7f793afeca76",
+            "role": "member"
+          },
+          {
+            "entityId": "journey-series",
+            "role": "series"
+          }
+        ],
+        "type": "asset.membership",
+        "qualifiers": [
+          {
+            "key": "asset.membership.position",
+            "value": "1"
+          }
+        ],
+        "sources": [
+          {
+            "sourceIdentity": "reevaluation-source",
+            "nativeAddress": "opaque:reevaluation-work"
+          }
+        ]
+      },
+      {
+        "id": "source-refresh-relationship_25bd6729-a4a3-4cf1-967c-f36f5eb601c4",
+        "participants": [
+          {
+            "entityId": "entity_4b4c651a-b635-4c4b-bc37-7f793afeca76",
+            "role": "member"
+          },
+          {
+            "entityId": "journey-series",
+            "role": "series"
+          },
+          {
+            "entityId": "journey-performer",
+            "role": "performer"
+          }
+        ],
+        "type": "asset.membership",
+        "qualifiers": [
+          {
+            "key": "asset.membership.position",
+            "value": "4"
+          }
+        ],
+        "sources": [
+          {
+            "sourceIdentity": "reevaluation-source",
+            "nativeAddress": "opaque:reevaluation-work"
+          }
+        ]
+      }
+    ],
+    "journey-alternate": [
+      {
+        "id": "entity-relationship_08a0b2e9-4430-4340-bb58-c182f22e0db3",
+        "participants": [
+          {
+            "entityId": "entity_4b4c651a-b635-4c4b-bc37-7f793afeca76",
+            "role": "member"
+          },
+          {
+            "entityId": "journey-alternate",
+            "role": "series"
+          }
+        ],
+        "type": "asset.membership",
+        "qualifiers": [
+          {
+            "key": "asset.membership.position",
+            "value": "3"
+          }
+        ],
+        "sources": [
+          {
+            "sourceIdentity": "reevaluation-source",
+            "nativeAddress": "opaque:reevaluation-work"
+          }
+        ]
+      },
+      {
+        "id": "manual-relationship_19b160165f729f99ad08aabb3c6128f2848c9475",
+        "participants": [
+          {
+            "entityId": "entity_4b4c651a-b635-4c4b-bc37-7f793afeca76",
+            "role": "member"
+          },
+          {
+            "entityId": "journey-alternate",
+            "role": "series"
+          },
+          {
+            "entityId": "journey-performer",
+            "role": "performer"
+          }
+        ],
+        "type": "asset.membership",
+        "qualifiers": [
+          {
+            "key": "asset.membership.position",
+            "value": "10"
+          }
+        ],
+        "sources": []
+      }
+    ],
+    "journey-performer": [
+      {
+        "id": "entity-relationship_5620a0c1-f65f-4b24-9e89-c2be246407e7",
+        "participants": [
+          {
+            "entityId": "entity_4b4c651a-b635-4c4b-bc37-7f793afeca76",
+            "role": "member"
+          },
+          {
+            "entityId": "journey-series",
+            "role": "series"
+          },
+          {
+            "entityId": "journey-performer",
+            "role": "performer"
+          }
+        ],
+        "type": "asset.membership",
+        "qualifiers": [
+          {
+            "key": "asset.membership.position",
+            "value": "1"
+          }
+        ],
+        "sources": [
+          {
+            "sourceIdentity": "reevaluation-source",
+            "nativeAddress": "opaque:reevaluation-work"
+          }
+        ]
+      },
+      {
+        "id": "manual-relationship_19b160165f729f99ad08aabb3c6128f2848c9475",
+        "participants": [
+          {
+            "entityId": "entity_4b4c651a-b635-4c4b-bc37-7f793afeca76",
+            "role": "member"
+          },
+          {
+            "entityId": "journey-alternate",
+            "role": "series"
+          },
+          {
+            "entityId": "journey-performer",
+            "role": "performer"
+          }
+        ],
+        "type": "asset.membership",
+        "qualifiers": [
+          {
+            "key": "asset.membership.position",
+            "value": "10"
+          }
+        ],
+        "sources": []
+      },
+      {
+        "id": "source-refresh-relationship_25bd6729-a4a3-4cf1-967c-f36f5eb601c4",
+        "participants": [
+          {
+            "entityId": "entity_4b4c651a-b635-4c4b-bc37-7f793afeca76",
+            "role": "member"
+          },
+          {
+            "entityId": "journey-series",
+            "role": "series"
+          },
+          {
+            "entityId": "journey-performer",
+            "role": "performer"
+          }
+        ],
+        "type": "asset.membership",
+        "qualifiers": [
+          {
+            "key": "asset.membership.position",
+            "value": "4"
+          }
+        ],
+        "sources": [
+          {
+            "sourceIdentity": "reevaluation-source",
+            "nativeAddress": "opaque:reevaluation-work"
+          }
+        ]
+      }
+    ]
+  }
+}

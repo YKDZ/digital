@@ -1,6 +1,8 @@
 -- 关系决定的作用范围从「类型＋参与者」整体坐标改为被点名事实的稳定支持范围。
--- 旧决定优先按被点名事实的既有支持范围绑定目标；没有点名证据时才使用旧坐标规则。
--- 迁移绝不猜测，点名缺失或跨多个支持范围都按损坏失败闭锁，也不留下旧坐标读取路径。
+-- 旧决定优先按被点名事实的既有支持范围绑定目标，被点名的人工事实沿其创建决定的最终目标前进；
+-- 只有没有任何点名证据时才使用旧坐标规则。
+-- 迁移绝不猜测，点名缺失、跨多个支持范围或人工事实链无法落到唯一目标都按损坏失败闭锁，
+-- 也不留下旧坐标读取路径。
 
 CREATE TEMP TABLE relationship_fact_support_targets AS
 WITH candidates AS (
@@ -86,15 +88,64 @@ LEFT JOIN (
 ) AS bucket ON bucket.decision_id = decision.id
 WHERE decision.kind = 'fix';
 
-CREATE TEMP TABLE relationship_fallback_fact_targets AS
+-- 具名更正链上的人工事实必须沿创建决定的最终目标前进：先记下每项人工事实点名的后继事实，
+-- 再沿链走到锚点。锚点是带来源或观察支持的事实，或是一项本身没有点名证据的更正所生成的人工事实
+-- （只有这时才按该更正的旧坐标回退）。链不设层数上限；链断裂或成环按损坏闭锁，绝不退回未点名目标。
+-- 一项更正点名多项事实时，只有它们最终落在同一支持范围才合法，否则点名汇总会闭锁，因此链上取
+-- 哪一项点名事实都等价，这里以最小 ID 固定一个代表。
+CREATE TEMP TABLE relationship_named_fix_hops AS
+SELECT manual.relationship_id AS from_id, min(named.value) AS to_id
+FROM relationship_manual_supports AS manual
+JOIN relationship_decisions AS decision ON decision.id = manual.decision_id
+JOIN json_each(decision.relationship_ids_json) AS named
+WHERE decision.kind = 'fix' AND named.type = 'text'
+GROUP BY manual.relationship_id;
+
+CREATE TEMP TABLE relationship_named_fix_anchors AS
+WITH RECURSIVE chain(origin_id, current_id, visited) AS (
+  SELECT from_id, to_id, ',' || from_id || ',' || to_id || ','
+  FROM relationship_named_fix_hops
+  UNION ALL
+  SELECT chain.origin_id, hop.to_id, chain.visited || hop.to_id || ','
+  FROM chain
+  JOIN relationship_named_fix_hops AS hop ON hop.from_id = chain.current_id
+  WHERE instr(chain.visited, ',' || hop.to_id || ',') = 0
+)
+SELECT origin_id AS from_id, current_id AS anchor_id
+FROM chain AS step
+WHERE NOT EXISTS (
+  SELECT 1 FROM relationship_named_fix_hops AS hop
+  WHERE hop.from_id = step.current_id
+    AND instr(step.visited, ',' || hop.to_id || ',') = 0);
+
+-- 每项人工事实的最终支持范围：链锚点自带支持范围；链停在没有点名证据的人工事实上时按该事实
+-- 创建更正的旧坐标回退；本项人工事实的创建更正本就没有点名证据时按自身旧坐标回退。
+CREATE TEMP TABLE relationship_manual_targets AS
+SELECT manual.relationship_id AS relationship_id,
+       COALESCE(
+         anchor_support.target_json,
+         CASE WHEN anchor_hop.from_id IS NULL THEN anchor_fallback.target_json END,
+         CASE WHEN anchor.anchor_id IS NULL THEN own_fallback.target_json END) AS target_json
+FROM relationship_manual_supports AS manual
+LEFT JOIN relationship_named_fix_anchors AS anchor ON anchor.from_id = manual.relationship_id
+LEFT JOIN relationship_fact_support_targets AS anchor_support
+  ON anchor_support.relationship_id = anchor.anchor_id
+LEFT JOIN relationship_named_fix_hops AS anchor_hop ON anchor_hop.from_id = anchor.anchor_id
+LEFT JOIN relationship_manual_supports AS anchor_manual
+  ON anchor_manual.relationship_id = anchor.anchor_id
+LEFT JOIN relationship_fix_fallback_targets AS anchor_fallback
+  ON anchor_fallback.decision_id = anchor_manual.decision_id
+LEFT JOIN relationship_fix_fallback_targets AS own_fallback
+  ON own_fallback.decision_id = manual.decision_id;
+
+-- 事实的最终支持范围：非人工事实取自身来源或观察支持，人工事实取上面沿链解析出的目标。
+CREATE TEMP TABLE relationship_fact_targets AS
 SELECT relationship_id, target_json FROM relationship_fact_support_targets
 UNION ALL
-SELECT manual.relationship_id, fallback.target_json
-FROM relationship_manual_supports AS manual
-JOIN relationship_fix_fallback_targets AS fallback ON fallback.decision_id = manual.decision_id;
+SELECT relationship_id, target_json FROM relationship_manual_targets
+WHERE target_json IS NOT NULL;
 
--- 旧更正点名了事实时，被点名事实的支持范围优先于旧坐标；点名汇总要求逐项可解析且范围唯一。
--- 人工事实先按其创建更正的旧坐标回退范围解析，避免用尚未确定的目标反推。
+-- 点名汇总要求逐项可解析且范围唯一，被点名事实一律使用其最终支持范围。
 CREATE TEMP TABLE relationship_named_fix_bindings AS
 SELECT decision.id AS decision_id,
        min(target.target_json) AS target_json,
@@ -103,7 +154,7 @@ SELECT decision.id AS decision_id,
        count(*) AS named_total
 FROM relationship_decisions AS decision
 JOIN json_each(decision.relationship_ids_json) AS named
-LEFT JOIN relationship_fallback_fact_targets AS target ON target.relationship_id = named.value
+LEFT JOIN relationship_fact_targets AS target ON target.relationship_id = named.value
 WHERE decision.kind = 'fix' AND named.type = 'text'
 GROUP BY decision.id;
 
@@ -119,16 +170,8 @@ LEFT JOIN relationship_named_fix_bindings AS binding
  AND binding.distinct_targets = 1
 WHERE decision.kind = 'fix';
 
--- 每项事实的最终支持范围：人工事实一律跟随创建它的更正，读取时也如此推导。
-CREATE TEMP TABLE relationship_fact_targets AS
-SELECT relationship_id, target_json FROM relationship_fact_support_targets
-UNION ALL
-SELECT manual.relationship_id, fix.target_json
-FROM relationship_manual_supports AS manual
-JOIN relationship_fix_targets AS fix ON fix.decision_id = manual.decision_id;
-
 -- 损坏数据必须让迁移失败：决定头或人工支持引用缺失事实、一项人工支持同时归入多个目标、
--- 点名事实无法解析到任何支持范围，或旧坐标结构不完整。
+-- 点名事实无法解析到任何支持范围、人工事实的点名链落空或成环，或旧坐标结构不完整。
 CREATE TEMP TABLE relationship_migration_guard (
   invalid INTEGER NOT NULL CHECK (invalid = 0)
 );
@@ -156,6 +199,10 @@ WHERE json_valid(decision.coordinate_json) = 0
    OR json_array_length(decision.coordinate_json, '$.participants') < 2
    OR json_valid(decision.relationship_ids_json) = 0
    OR json_type(decision.relationship_ids_json) <> 'array';
+-- 人工事实的点名链必须落到唯一锚点：链断裂、指向缺失事实或成环都按损坏闭锁，
+-- 既不退回未点名的旧坐标，也不在多个后继中任选其一。
+INSERT INTO relationship_migration_guard
+SELECT 1 FROM relationship_manual_targets WHERE target_json IS NULL;
 -- 更正点名了缺失或跨多个支持范围的事实属损坏：既不任选其一，也不静默改回旧坐标。
 INSERT INTO relationship_migration_guard
 SELECT 1 FROM relationship_named_fix_bindings
@@ -273,8 +320,10 @@ CREATE INDEX relationship_manual_supports_decision
 
 DROP TABLE relationship_migrated_decisions;
 DROP TABLE relationship_fact_targets;
+DROP TABLE relationship_manual_targets;
+DROP TABLE relationship_named_fix_anchors;
+DROP TABLE relationship_named_fix_hops;
 DROP TABLE relationship_named_fix_bindings;
-DROP TABLE relationship_fallback_fact_targets;
 DROP TABLE relationship_fix_targets;
 DROP TABLE relationship_fix_fallback_targets;
 DROP TABLE relationship_bucket_members;
