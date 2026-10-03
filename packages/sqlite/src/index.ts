@@ -1742,12 +1742,14 @@ export class SqliteCatalogue
         retainedEntityId: input.preview.retainedEntityId,
         mergedEntityId: input.preview.mergedEntityId,
       });
+      // 撤销只能绑定预演实体对精确重算出的当前可撤销合并，调用方不能把预演指向另一目标。
+      if (current.mergeId !== mergeId) return "stale" as const;
       if (current.baseline !== input.preview.baseline) return "stale" as const;
       transaction
         .insert(entityIdentityMergeRetractions)
         .values({
           id: input.id,
-          mergeId,
+          mergeId: current.mergeId,
           actorId: input.actorId,
           commitmentId: input.commitmentId,
         })

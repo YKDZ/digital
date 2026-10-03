@@ -46,6 +46,7 @@ import type {
   ObservedRootViewModel,
 } from "./catalogue.ts";
 import type { SettingsSnapshot } from "./catalogue.ts";
+import { createIdentityMergeApi } from "./identity-merge-api.ts";
 import { libraryItems, selectLibraryPage } from "./library-query.ts";
 import { createRelationshipApi } from "./relationship-api.ts";
 
@@ -328,10 +329,15 @@ export function createWebDelivery(
   const catalogueAutomation = createCatalogueAutomation(application);
   activeCatalogueAutomation = catalogueAutomation;
   return {
-    api: createApi().route(
-      "/relationships",
-      createRelationshipApi(() => application.workflow),
-    ),
+    api: createApi()
+      .route(
+        "/relationships",
+        createRelationshipApi(() => application.workflow),
+      )
+      .route(
+        "/identity",
+        createIdentityMergeApi(() => application.workflow),
+      ),
     startCatalogueAutomation: catalogueAutomation.start,
     catalogueReady: catalogueAutomation.ready,
     catalogueReadinessFailure: catalogueAutomation.failure,

@@ -63,6 +63,34 @@ async function openProduct(root: string) {
     });
     return { status: response.status, body: await json(response) };
   };
+  const respond = async (
+    response: Response,
+  ): Promise<{ status: number; body: unknown }> => ({
+    status: response.status,
+    body: await response.json(),
+  });
+  const ipost = (route: string, body: unknown) =>
+    product.result.api.request(`/identity/${route}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  const representative = async (id: string): Promise<string> =>
+    (
+      (await json(await request(`entities/${id}`))) as {
+        entity: { id: string };
+      }
+    ).entity.id;
+  const identity = {
+    preview: async (retainedEntityId: string, mergedEntityId: string) =>
+      await respond(
+        await ipost("preview", { retainedEntityId, mergedEntityId }),
+      ),
+    apply: async (commitmentId: string, actorId: string, preview: unknown) =>
+      await respond(await ipost("apply", { commitmentId, actorId, preview })),
+    undo: async (commitmentId: string, actorId: string, preview: unknown) =>
+      await respond(await ipost("undo", { commitmentId, actorId, preview })),
+  };
   return {
     close: () => product.close(),
     json,
@@ -72,6 +100,8 @@ async function openProduct(root: string) {
     facts,
     positions,
     decide,
+    representative,
+    identity,
   };
 }
 
@@ -624,6 +654,84 @@ it("Web 对独立人工事实的选择只看被点名的当前替代，多次更
     expect(product.positions(await product.facts(series.id))).toEqual(
       only("9"),
     );
+    expect(network).not.toHaveBeenCalled();
+  } finally {
+    await product.close();
+    network.mockRestore();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
+it("Web 正式身份合并从预演、采用到指定撤销闭环，错撤目标与过期被拒且并行合并独立", async () => {
+  const root = await mkdtemp(
+    path.join(tmpdir(), "digital-disposable-web-identity-merge-"),
+  );
+  await prepareWebProductData(root);
+  const network = vi
+    .spyOn(globalThis, "fetch")
+    .mockRejectedValue(new Error("离线"));
+  let product = await openProduct(root);
+  try {
+    const [a, b, c, d] = await Promise.all([
+      product.entity("identity-a", "身份甲"),
+      product.entity("identity-b", "身份乙"),
+      product.entity("identity-c", "身份丙"),
+      product.entity("identity-d", "身份丁"),
+    ]);
+    const first = await product.identity.preview(a.id, b.id);
+    expect(first.status).toBe(200);
+    // 两个互不相干的合并都由共用产品入口成功采用（各自在生效前重新预演最新基线）。
+    expect(
+      await product.identity.apply("merge-a-b", "reader", first.body),
+    ).toEqual({ status: 200, body: { status: "applied" } });
+    const second = await product.identity.preview(c.id, d.id);
+    expect(second.status).toBe(200);
+    expect(
+      await product.identity.apply("merge-c-d", "reader", second.body),
+    ).toEqual({ status: 200, body: { status: "applied" } });
+    // 过期输入：换协作者重复提交同一份已生效预演被明确拒绝。
+    expect(
+      (await product.identity.apply("merge-a-b-copy", "other", first.body))
+        .status,
+    ).toBe(409);
+    // 业务拒绝：合并不存在的身份，共用产品入口给出稳定错误消息。
+    const missing = await product.identity.preview(a.id, "identity-missing");
+    expect(missing.status).toBe(400);
+    expect(missing.body).toEqual({
+      error: "所选身份已不可用，请重新选择",
+    });
+
+    await product.close();
+    product = await openProduct(root);
+    // 重开后公开预演定位到两个各自的指定合并及可撤销操作。
+    const locateAb = await product.identity.preview(a.id, b.id);
+    const locateCd = await product.identity.preview(c.id, d.id);
+    expect(locateAb.status).toBe(200);
+    expect(locateCd.status).toBe(200);
+    const abPreview = locateAb.body as { mergeId?: string };
+    const cdPreview = locateCd.body as { mergeId?: string };
+    expect(abPreview.mergeId).toEqual(expect.any(String));
+    expect(cdPreview.mergeId).toEqual(expect.any(String));
+    expect(abPreview.mergeId).not.toBe(cdPreview.mergeId);
+    expect(await product.representative(b.id)).toBe(a.id);
+    expect(await product.representative(d.id)).toBe(c.id);
+
+    // 只把 A/B 预演的撤销目标换成 C/D 的公开合并标识，共同内核必须拒绝，两合并都保持。
+    const crossed = await product.identity.undo("undo-crossed", "writer", {
+      ...abPreview,
+      mergeId: cdPreview.mergeId,
+    });
+    expect(crossed.status).toBe(409);
+    expect(crossed.body).toEqual({ status: "stale" });
+    expect(await product.representative(b.id)).toBe(a.id);
+    expect(await product.representative(d.id)).toBe(c.id);
+
+    // 合法的指定撤销只解除 A/B，独立的 C/D 合并保持不受影响。
+    expect(
+      await product.identity.undo("undo-a-b", "writer", abPreview),
+    ).toEqual({ status: 200, body: { status: "applied" } });
+    expect(await product.representative(b.id)).toBe(b.id);
+    expect(await product.representative(d.id)).toBe(c.id);
     expect(network).not.toHaveBeenCalled();
   } finally {
     await product.close();

@@ -1909,6 +1909,92 @@ it("公开身份合并汇集关系、让新人工关系写入代表并能撤销"
   reopened.close();
 });
 
+it("指定撤销只解除预演绑定的合并，错误目标被明确拒绝且其他合并保持独立", async () => {
+  const { root, catalogue } = await createCatalogueWithRoot();
+  const state = {
+    observationVersion: 0,
+    sourceVersion: 0,
+    expanded: false,
+    managedMissing: false,
+    omitCover: false,
+  };
+  const workflow = reevaluationWorkflow(catalogue, state);
+  const [a, b, c, d] = await Promise.all(
+    ["target/a", "target/b", "target/c", "target/d"].map(
+      async (commitmentId) =>
+        await workflow.createLocalRelatedEntity({
+          commitmentId,
+          label: commitmentId,
+          actorId: "user:甲",
+        }),
+    ),
+  );
+  // 普通本地身份本身即为当前相关实体，两个互不相干的合并可独立建立。
+  await expect(
+    workflow.applyEntityIdentityMerge({
+      commitmentId: "target/merge-a-b",
+      actorId: "user:甲",
+      preview: await workflow.previewEntityIdentityMerge({
+        retainedEntityId: a.id,
+        mergedEntityId: b.id,
+      }),
+    }),
+  ).resolves.toBe("applied");
+  await expect(
+    workflow.applyEntityIdentityMerge({
+      commitmentId: "target/merge-c-d",
+      actorId: "user:甲",
+      preview: await workflow.previewEntityIdentityMerge({
+        retainedEntityId: c.id,
+        mergedEntityId: d.id,
+      }),
+    }),
+  ).resolves.toBe("applied");
+  catalogue.close();
+  const reopened = SqliteCatalogue.forProductData(root);
+  const reopenedWorkflow = reevaluationWorkflow(reopened, state);
+  const locatedAb = await reopenedWorkflow.previewEntityIdentityMerge({
+    retainedEntityId: a.id,
+    mergedEntityId: b.id,
+  });
+  const locatedCd = await reopenedWorkflow.previewEntityIdentityMerge({
+    retainedEntityId: c.id,
+    mergedEntityId: d.id,
+  });
+  expect(locatedAb.mergeId).toBeDefined();
+  expect(locatedCd.mergeId).toBeDefined();
+  expect(locatedAb.mergeId).not.toBe(locatedCd.mergeId);
+  // 仅把 A/B 预演的撤销目标换成 C/D 的公开合并标识并以新坐标撤销，共同内核必须拒绝。
+  await expect(
+    reopenedWorkflow.undoEntityIdentityMerge({
+      commitmentId: "target/undo-crossed",
+      actorId: "user:乙",
+      preview: { ...locatedAb, mergeId: locatedCd.mergeId },
+    }),
+  ).resolves.toBe("stale");
+  await expect(
+    reopenedWorkflow.inspectCurrentCatalogueEntity(b.id),
+  ).resolves.toMatchObject({ entity: { id: a.id } });
+  await expect(
+    reopenedWorkflow.inspectCurrentCatalogueEntity(d.id),
+  ).resolves.toMatchObject({ entity: { id: c.id } });
+  // 合法的指定撤销仍只解除 A/B，后来的 C/D 合并保持独立。
+  await expect(
+    reopenedWorkflow.undoEntityIdentityMerge({
+      commitmentId: "target/undo-a-b",
+      actorId: "user:甲",
+      preview: locatedAb,
+    }),
+  ).resolves.toBe("applied");
+  await expect(
+    reopenedWorkflow.inspectCurrentCatalogueEntity(b.id),
+  ).resolves.toMatchObject({ entity: { id: b.id } });
+  await expect(
+    reopenedWorkflow.inspectCurrentCatalogueEntity(d.id),
+  ).resolves.toMatchObject({ entity: { id: c.id } });
+  reopened.close();
+});
+
 it("公开身份合并拒绝数字资产和会折叠坏的既有关系", async () => {
   const { catalogue } = await createCatalogueWithRoot();
   const workflow = reevaluationWorkflow(catalogue, {
