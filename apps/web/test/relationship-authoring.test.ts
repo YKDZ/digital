@@ -211,11 +211,11 @@ it("Web 正式入口按被点名事实决定多方关系，独立事实不被压
       ({ id }) => id === "dlsite.series-membership",
     )!;
     const entities = await Promise.all([
-      product.entity("work", "被点名作品""),
-      product.entity("series", "被点名系列""),
-      product.entity("circle", "被点名社团""),
-      product.entity("voice", "被点名声优""),
-      product.entity("scenario", "被点名脚本""),
+      product.entity("work", "被点名作品"),
+      product.entity("series", "被点名系列"),
+      product.entity("circle", "被点名社团"),
+      product.entity("voice", "被点名声优"),
+      product.entity("scenario", "被点名脚本"),
     ]);
     const [work, series, circle, voice, scenario] = entities;
     expect(contribution.roles!.map(({ role }) => role)).toEqual(
@@ -471,8 +471,8 @@ it("Web 对独立人工事实的选择只看被点名的当前替代，多次更
   let product = await openProduct(root);
   try {
     const [work, series] = await Promise.all([
-      product.entity("manual-work", "人工选择作品""),
-      product.entity("manual-series", "人工选择系列""),
+      product.entity("manual-work", "人工选择作品"),
+      product.entity("manual-series", "人工选择系列"),
     ]);
     const membership = [{ entityId: series.id, role: "dlsite.series.member" }];
     const draft = (position: string) => ({
@@ -546,8 +546,8 @@ it("Web 对独立人工事实的选择只看被点名的当前替代，多次更
 
     // 一次预演批量作用在两个相互独立的人工目标上，仍各自只按被点名事实生效。
     const [workB, seriesB] = await Promise.all([
-      product.entity("manual-work-b", "人工批量作品""),
-      product.entity("manual-series-b", "人工批量系列""),
+      product.entity("manual-work-b", "人工批量作品"),
+      product.entity("manual-series-b", "人工批量系列"),
     ]);
     const batchCreate = {
       kind: "create" as const,

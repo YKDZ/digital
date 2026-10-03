@@ -94,7 +94,7 @@ describe("production catalogue preparation", () => {
       await prepareCatalogueBeforeDescriptionTargets(productDataDirectory);
       await expect(
         prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 10 });
+      ).resolves.toEqual({ applied: 11 });
       const database = new DatabaseSync(
         path.join(productDataDirectory, "catalogue.sqlite"),
         { readOnly: true },
@@ -200,14 +200,71 @@ describe("production catalogue preparation", () => {
         sourceSlot: "sequel",
         sourceRecordIds: ["record"],
       };
+      // 命名参与者迁移只重写 relationships 条目，同一份解释文档其余结构必须仍是运行期
+      // 写入的完整来源解释批次；实体条目保留退休 kind，交给 E02 预检与硬迁移处理。
+      const batchEnvelope = {
+        id: "lineage-interpretation",
+        metadata: [],
+        producer: {
+          capabilityId: "fixture-interpreter",
+          capabilityVersion: "1",
+          contractVersion: "fixture/1",
+        },
+        sourceAddress: "address",
+        sourceArtifacts: [
+          {
+            acquisitionReference: "address",
+            id: "retained-cover",
+            mediaType: "image/png",
+            role: "asset.primary-cover",
+            sourceRecordId: "record",
+          },
+        ],
+        sourceIdentity: "fixture",
+        sourceRecordIds: ["record"],
+        entityMentions: [
+          {
+            field: "credits",
+            id: "mention",
+            identityNamespace: "fixture-namespace",
+            label: "creator",
+            role: "voice",
+            sourceIdentity: "fixture",
+            sourceKey: "key:mention",
+            sourceRecordIds: ["record"],
+          },
+        ],
+        entityResolutionDecisions: [
+          {
+            entityId: "creator",
+            id: "decision",
+            mentionId: "mention",
+            rule: "source-field-role-exact",
+            sourceRecordIds: ["record"],
+          },
+        ],
+      };
+      const ordinaryEntity = (id: string) => ({
+        id,
+        identityNamespace: "fixture-namespace",
+        label: id,
+        sourceIdentity: "fixture",
+        sourceKey: `key:${id}`,
+        sourceRecordIds: ["record"],
+      });
       legacy
         .prepare(`INSERT INTO current_source_artifact_candidate_lineages
         (subject_id, source_association_id, source_identity, native_address, coverage_id, source_record_id, interpretation_json)
         VALUES ('asset', 'association', 'fixture', 'address', 'coverage', 'record', ?)`)
         .run(
           JSON.stringify({
+            ...batchEnvelope,
+            entities: [
+              { ...ordinaryEntity("creator"), kind: "entity" },
+              { ...ordinaryEntity("season-1"), kind: "entity" },
+              { ...ordinaryEntity("season-2"), kind: "entity" },
+            ],
             relationships: [credit, sequel],
-            artifactCandidates: [{ id: "retained-cover" }],
           }),
         );
       legacy
@@ -215,7 +272,11 @@ describe("production catalogue preparation", () => {
         VALUES ('preview', 'execution', 'asset', ?)`)
         .run(
           JSON.stringify({
+            version: "change-impact-preview/2",
+            change: { kind: "recognition-retraction" },
+            current: { entities: [] },
             projected: {
+              entities: [],
               relationships: [{ ...credit, id: "credit", subjectId: "asset" }],
             },
           }),
@@ -224,7 +285,7 @@ describe("production catalogue preparation", () => {
 
       await expect(
         prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 9 });
+      ).resolves.toEqual({ applied: 10 });
       const migrated = new DatabaseSync(
         path.join(productDataDirectory, "catalogue.sqlite"),
         { readOnly: true },
@@ -255,6 +316,12 @@ describe("production catalogue preparation", () => {
         )
         .get()!;
       expect(JSON.parse(String(stored.json))).toEqual({
+        ...batchEnvelope,
+        entities: [
+          ordinaryEntity("creator"),
+          ordinaryEntity("season-1"),
+          ordinaryEntity("season-2"),
+        ],
         relationships: [
           {
             type: "asset.contribution",
@@ -276,7 +343,6 @@ describe("production catalogue preparation", () => {
             sourceRecordIds: ["record"],
           },
         ],
-        artifactCandidates: [{ id: "retained-cover" }],
       });
       const preview = migrated
         .prepare(
@@ -309,7 +375,7 @@ describe("production catalogue preparation", () => {
       await prepareLegacySourceEnrichmentCatalogue(valid, false);
       await expect(
         prepareProductionCatalogue({ productDataDirectory: valid }),
-      ).resolves.toEqual({ applied: 13 });
+      ).resolves.toEqual({ applied: 14 });
       await expect(
         inspectProductionCatalogueReadiness({ productDataDirectory: valid }),
       ).resolves.toMatchObject({ state: "ready" });
@@ -531,7 +597,7 @@ describe("production catalogue preparation", () => {
 
       await expect(
         prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 1 });
+      ).resolves.toEqual({ applied: 2 });
       const recovered = new DatabaseSync(
         path.join(productDataDirectory, "catalogue.sqlite"),
         { readOnly: true },
@@ -599,7 +665,7 @@ describe("production catalogue preparation", () => {
 
       await expect(
         prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 1 });
+      ).resolves.toEqual({ applied: 2 });
       const recovered = new DatabaseSync(
         path.join(productDataDirectory, "catalogue.sqlite"),
         { readOnly: true },
@@ -796,7 +862,7 @@ describe("production catalogue preparation", () => {
 
       await expect(
         prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 1 });
+      ).resolves.toEqual({ applied: 2 });
       await expect(
         inspectProductionCatalogueReadiness({ productDataDirectory }),
       ).resolves.toMatchObject({ state: "ready" });
@@ -1056,7 +1122,7 @@ describe("production catalogue preparation", () => {
       recovering.close();
       await expect(
         prepareProductionCatalogue({ productDataDirectory: recoveryRoot }),
-      ).resolves.toEqual({ applied: 1 });
+      ).resolves.toEqual({ applied: 2 });
       const migrated = new DatabaseSync(
         path.join(recoveryRoot, "catalogue.sqlite"),
         { readOnly: true },
@@ -1112,7 +1178,7 @@ describe("production catalogue preparation", () => {
         database.close();
         await expect(
           prepareProductionCatalogue({ productDataDirectory: legalRoot }),
-        ).resolves.toEqual({ applied: 1 });
+        ).resolves.toEqual({ applied: 2 });
       } finally {
         await rm(legalRoot, { recursive: true, force: true });
       }
@@ -1204,7 +1270,7 @@ describe("production catalogue preparation", () => {
       });
       await expect(
         prepareProductionCatalogue({ productDataDirectory: terminated }),
-      ).resolves.toEqual({ applied: 14 });
+      ).resolves.toEqual({ applied: 15 });
       const terminatedDatabase = new DatabaseSync(
         path.join(terminated, "catalogue.sqlite"),
         { readOnly: true },
@@ -1276,7 +1342,7 @@ describe("production catalogue preparation", () => {
           capabilityVersion: "1",
           contractVersion: "1",
         },
-        sourceRecordIds: [],
+        sourceRecordIds: ["record"],
         sourceIdentity: "test-source",
         sourceAddress: "test:work",
         metadata: [],
@@ -1317,7 +1383,7 @@ describe("production catalogue preparation", () => {
     try {
       await expect(
         prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 16 });
+      ).resolves.toEqual({ applied: 17 });
       const reopened = SqliteCatalogue.forProductData(productDataDirectory);
       await expect(reopened.listCurrentCatalogue()).resolves.toMatchObject([
         {
