@@ -2435,6 +2435,28 @@ export function decodeRecognitionBasis(
   return { valid: false, reason: "Recognition basis kind 无效" };
 }
 
+/** 完整来源解释批次共用的精确严格解码，与 Recognition basis 同一规则来源。 */
+export function decodeSourceInterpretationBatch(
+  value: unknown,
+):
+  | { readonly valid: true; readonly value: SourceInterpretationBatch }
+  | { readonly valid: false; readonly reason: string } {
+  return isStrictSourceInterpretationBatch(value)
+    ? { valid: true, value }
+    : { valid: false, reason: "来源解释批次无效" };
+}
+
+/** 当前形状来源实体条目的精确严格解码。 */
+export function decodeSourcedEntity(
+  value: unknown,
+):
+  | { readonly valid: true; readonly value: SourcedEntity }
+  | { readonly valid: false; readonly reason: string } {
+  return isStrictSourcedEntity(value)
+    ? { valid: true, value: value as SourcedEntity }
+    : { valid: false, reason: "来源实体条目无效" };
+}
+
 function optionalArrayEvery(
   value: unknown,
   predicate: (item: unknown) => boolean,

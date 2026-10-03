@@ -7,6 +7,8 @@ import {
   decodeRecognitionBasis,
   decodeSourceAssociationChangeProposal,
   decodeSourceAssociationDecisionCheckpoint,
+  decodeSourceInterpretationBatch,
+  decodeSourcedEntity,
   decodeWorkflowExecutionInput,
   isExactLegacySourceEnrichmentExecutionAuthority,
   type WorkflowExecution,
@@ -954,99 +956,239 @@ const retiredSourcedEntityKeys = [
 ] as const;
 
 /**
- * E02 迁移需要证明依据的全部已知持久解释位置。路径段是对象键；`"[]"` 表示按序进入
- * 数组元素。旧合同中缺省不存在的成员是合法缺省，但存在的容器必须符合声明的
- * 对象／数组类型，否则视为损坏并拒绝，不允许被数组筛选静默跳过。
+ * E02 迁移需要证明依据的全部已知持久载体。每个载体按自身版本、discriminator 与
+ * 必需／可选关系专属验证：先按固定点旧合同逐条校验旧 `entities` 条目，再仅在内存
+ * 深副本上精确删除已通过校验的 `kind`，把归一化后的完整 typed carrier 交给既有严格
+ * decoder。不修造持久数据，也不使用缺省即返回的通用路径遍历。
  */
-const ordinaryEntityInterpretationSites = [
+function isRetiredRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** 先按旧合同校验旧实体条目，再返回仅精确删除其 `kind` 的内存深副本。 */
+function normalizedRetiredEntities(
+  entities: unknown,
+  sourceRecordExists: (recordId: string) => boolean,
+): readonly unknown[] {
+  if (!Array.isArray(entities))
+    throw new Error("持久来源解释的实体容器类型无效");
+  return entities.map((entity) => {
+    assertRetiredSourcedEntity(entity, sourceRecordExists);
+    const normalized = structuredClone(entity) as Record<string, unknown>;
+    delete normalized.kind;
+    return normalized;
+  });
+}
+
+/** 整份 `SourceInterpretationBatch` 归一化旧实体条目后按既有严格规则完整解码。 */
+function assertStrictSourceInterpretationBatchCarrier(
+  value: unknown,
+  sourceRecordExists: (recordId: string) => boolean,
+): void {
+  if (!isRetiredRecord(value)) throw new Error("持久来源解释批次必须是对象");
+  const document = structuredClone(value);
+  if (document.entities !== undefined)
+    document.entities = normalizedRetiredEntities(
+      document.entities,
+      sourceRecordExists,
+    );
+  const decoded = decodeSourceInterpretationBatch(document);
+  if (!decoded.valid)
+    throw new Error(`持久来源解释批次不满足固定点必需结构：${decoded.reason}`);
+}
+
+/** 旧 `RecognitionBasis` union：只有 source-interpretation 分支携带本迁移拥有的解释。 */
+function assertRetiredRecognitionBasisCarrier(
+  value: unknown,
+  sourceRecordExists: (recordId: string) => boolean,
+): void {
+  if (!isRetiredRecord(value)) throw new Error("持久识别 basis 必须是对象");
+  if (value.kind !== "source-interpretation") {
+    // manual-boundary 与 observed-evidence 是不含解释的合法分支，原样放行，
+    // 不顺带重验分支内无关字段；未知 kind 无法证明不隐藏解释，必须拒绝。
+    if (value.kind !== "manual-boundary" && value.kind !== "observed-evidence")
+      throw new Error("持久识别 basis kind 未知，无法证明不含来源解释");
+    return;
+  }
+  const basis = structuredClone(value);
+  if (
+    isRetiredRecord(basis.interpretation) &&
+    basis.interpretation.entities !== undefined
+  )
+    basis.interpretation.entities = normalizedRetiredEntities(
+      basis.interpretation.entities,
+      sourceRecordExists,
+    );
+  const decoded = decodeRecognitionBasis(basis);
+  if (!decoded.valid)
+    throw new Error(`来源解释 basis 不满足固定点必需结构：${decoded.reason}`);
+}
+
+/** 预演按 `ChangeImpactPreview/2` 的 union 定位解释；projection 条目只按实体边界验证。 */
+function assertChangeImpactPreviewCarrier(
+  value: unknown,
+  sourceRecordExists: (recordId: string) => boolean,
+): void {
+  if (!isRetiredRecord(value) || value.version !== "change-impact-preview/2")
+    throw new Error("持久变更预演的版本或容器形状无效");
+  for (const key of ["current", "projected"] as const) {
+    const projection = value[key];
+    if (!isRetiredRecord(projection))
+      throw new Error("持久变更预演的状态投影必须是对象");
+    // AssetStateProjection 的 entities 是必需数组；它不是解释批次，
+    // 不要求批次 producer／sourceAddress 等字段。
+    for (const entity of normalizedRetiredEntities(
+      projection.entities,
+      sourceRecordExists,
+    )) {
+      const decoded = decodeSourcedEntity(entity);
+      if (!decoded.valid)
+        throw new Error(
+          `持久预演投影的实体条目不满足固定点形状：${decoded.reason}`,
+        );
+    }
+  }
+  if (value.proposal !== undefined)
+    assertPreviewRecognitionProposalBasis(
+      value.proposal,
+      sourceRecordExists,
+      "$.proposal",
+    );
+  const change = value.change;
+  if (!isRetiredRecord(change))
+    throw new Error("持久变更预演的 change 必须是对象");
+  if (change.kind === "recognition-supersession")
+    assertPreviewRecognitionProposalBasis(
+      change.proposal,
+      sourceRecordExists,
+      "$.change.proposal",
+    );
+  else if (
+    change.kind !== "source-association" &&
+    change.kind !== "recognition-retraction"
+  )
+    throw new Error("持久预演 change kind 未知，无法证明不含识别 basis");
+}
+
+function assertPreviewRecognitionProposalBasis(
+  proposal: unknown,
+  sourceRecordExists: (recordId: string) => boolean,
+  location: string,
+): void {
+  if (!isRetiredRecord(proposal) || !isRetiredRecord(proposal.basis))
+    throw new Error(`持久变更预演 ${location} 的 basis 容器形状无效`);
+  assertRetiredRecognitionBasisCarrier(proposal.basis, sourceRecordExists);
+}
+
+const retiredInterpretedSourceEnrichmentStages = new Set([
+  "association-interpreted",
+  "source-artifact-acquired",
+  "source-artifact-stored",
+  "applied",
+]);
+const retiredUninterpretedSourceEnrichmentStages = new Set([
+  "candidate-interpreted",
+  "source-records-retained",
+  "failed",
+]);
+
+/**
+ * 只按 stage union 判断解释是否必需，不顺带重验无关恢复字段。
+ * `failedSourceEnrichmentCheckpoint` 从解释后阶段失败时会合法保留 interpretation，
+ * 因此三个可选阶段只要字段实际存在，仍沿同一已知路径做旧实体先验、内存删 kind
+ * 与完整批次解码；不对 stage 外层做 exact-keys 审查。
+ */
+function assertSourceEnrichmentCheckpointCarrier(
+  value: unknown,
+  sourceRecordExists: (recordId: string) => boolean,
+): void {
+  if (!Array.isArray(value))
+    throw new Error("持久来源补充 checkpoint 必须是数组");
+  for (const checkpoint of value) {
+    if (!isRetiredRecord(checkpoint) || typeof checkpoint.stage !== "string")
+      throw new Error("持久来源补充 checkpoint 容器形状无效");
+    if (
+      !retiredInterpretedSourceEnrichmentStages.has(checkpoint.stage) &&
+      !retiredUninterpretedSourceEnrichmentStages.has(checkpoint.stage)
+    )
+      throw new Error("持久来源补充 checkpoint stage 已超出退出前的封闭词汇");
+    if (
+      checkpoint.interpretation === undefined &&
+      retiredUninterpretedSourceEnrichmentStages.has(checkpoint.stage)
+    )
+      continue;
+    assertStrictSourceInterpretationBatchCarrier(
+      checkpoint.interpretation,
+      sourceRecordExists,
+    );
+  }
+}
+
+/**
+ * 旧 pending checkpoint 可能仍携带正式 SQL 将移除并重派生的 candidate
+ * `reference`，因此不调用完整新 checkpoint decoder；只按版本、candidates 数组
+ * 与逐 interpretation 的完整批次严格解码。
+ */
+function assertSourceAssociationDecisionCarrier(
+  value: unknown,
+  sourceRecordExists: (recordId: string) => boolean,
+): void {
+  if (
+    !isRetiredRecord(value) ||
+    value.version !== "source-association-decision-checkpoint/1"
+  )
+    throw new Error("持久来源关联决定 checkpoint 的版本或容器形状无效");
+  if (!Array.isArray(value.candidates))
+    throw new Error("持久来源关联决定的候选集合容器类型无效");
+  for (const candidate of value.candidates) {
+    if (!isRetiredRecord(candidate))
+      throw new Error("持久来源关联决定候选必须是对象");
+    assertStrictSourceInterpretationBatchCarrier(
+      candidate.interpretation,
+      sourceRecordExists,
+    );
+  }
+}
+
+const ordinaryEntityMigrationCarriers = [
   {
     documents: "SELECT basis_json AS document FROM recognition_proposals",
-    paths: [["interpretation", "entities"]] as const,
+    assertDocument: assertRetiredRecognitionBasisCarrier,
   },
   {
     documents:
       "SELECT interpretation_json AS document FROM source_refresh_change_sets",
-    paths: [["entities"]] as const,
+    assertDocument: assertStrictSourceInterpretationBatchCarrier,
   },
   {
     documents:
       "SELECT interpretation_json AS document FROM current_source_artifact_candidate_lineages",
-    paths: [["entities"]] as const,
+    assertDocument: assertStrictSourceInterpretationBatchCarrier,
   },
   {
     documents: "SELECT preview_json AS document FROM change_impact_previews",
-    paths: [
-      ["current", "entities"],
-      ["projected", "entities"],
-      ["proposal", "basis", "interpretation", "entities"],
-      ["change", "proposal", "basis", "interpretation", "entities"],
-    ] as const,
+    assertDocument: assertChangeImpactPreviewCarrier,
   },
   {
     documents:
       "SELECT source_enrichments_json AS document FROM workflow_executions",
-    paths: [["[]", "interpretation", "entities"]] as const,
+    assertDocument: assertSourceEnrichmentCheckpointCarrier,
   },
   {
     documents: `
       SELECT source_association_decision_json AS document FROM workflow_executions
       WHERE source_association_decision_json IS NOT NULL`,
-    paths: [["candidates", "[]", "interpretation", "entities"]] as const,
-  },
-  {
-    documents: `
-      SELECT audit_json AS document FROM workflow_executions
-      WHERE audit_json IS NOT NULL`,
-    paths: [
-      ["payload", "sourceEnrichments", "[]", "interpretation", "entities"],
-      [
-        "payload",
-        "sourceAssociationDecision",
-        "candidates",
-        "[]",
-        "interpretation",
-        "entities",
-      ],
-    ] as const,
+    assertDocument: assertSourceAssociationDecisionCarrier,
   },
 ] as const;
 
-/** 沿已知路径逐段校验容器类型，到达 entities 容器后逐条验证旧严格实体形状。 */
-function assertKnownInterpretationEntitiesPath(
-  value: unknown,
-  steps: readonly string[],
-  sourceRecordExists: (recordId: string) => boolean,
-): void {
-  if (value === undefined) return;
-  const [step, ...rest] = steps;
-  if (step === undefined) {
-    if (!Array.isArray(value))
-      throw new Error("持久来源解释的实体容器类型无效");
-    for (const entity of value)
-      assertRetiredSourcedEntity(entity, sourceRecordExists);
-    return;
-  }
-  if (step === "[]") {
-    if (!Array.isArray(value))
-      throw new Error("持久来源解释的 checkpoint 或候选集合容器类型无效");
-    for (const item of value)
-      assertKnownInterpretationEntitiesPath(item, rest, sourceRecordExists);
-    return;
-  }
-  if (typeof value !== "object" || value === null || Array.isArray(value))
-    throw new Error("持久来源解释的中间容器类型无效");
-  assertKnownInterpretationEntitiesPath(
-    (value as Record<string, unknown>)[step],
-    rest,
-    sourceRecordExists,
-  );
-}
-
 /**
- * 人物／活动身份迁移前的窄权威预检。它先用固定点旧合同校验已知解释位置的容器与
- * 版本化旧形状，再逐条验证实体条目，并要求人物／活动身份的来源依据指向真实存在的
- * Source Record；缺省的可选成员合法，容器错形、形状未知或依据不成立时抛错，让正式
- * prepare 整体回滚。该检查只服务这次迁移，运行时没有第二套兼容解码入口。
+ * 人物／活动身份迁移前的窄权威预检。每个已知持久载体按实际旧 union、版本与必需／
+ * 可选关系严格验证：旧实体条目先经 `assertRetiredSourcedEntity` 验证身份、来源坐标
+ * 与 Source Record 依据，再仅在内存深副本上精确删除 `kind`，由既有严格 decoder 验证
+ * 完整必需结构；audit 镜像先验版本再与主列 canonical 等值。缺省的可选成员与合法
+ * 无解释 union 分支原样通过；解析、旧形状、必需结构、union／版本或镜像任一失败都
+ * 抛错，让正式 prepare 整体回滚。该检查只服务这次迁移，运行时没有第二套兼容解码入口。
  */
 export function assertOrdinaryEntityMigrationAuthority(
   database: DatabaseSync,
@@ -1054,8 +1196,12 @@ export function assertOrdinaryEntityMigrationAuthority(
   const existingSourceRecord = database.prepare(
     "SELECT 1 FROM source_records WHERE id = ?",
   );
-  for (const site of ordinaryEntityInterpretationSites) {
-    for (const { document } of database.prepare(site.documents).all() as Array<{
+  const sourceRecordExists = (recordId: string) =>
+    existingSourceRecord.get(recordId) !== undefined;
+  for (const carrier of ordinaryEntityMigrationCarriers) {
+    for (const { document } of database
+      .prepare(carrier.documents)
+      .all() as Array<{
       readonly document: string | null;
     }>) {
       if (document === null) continue;
@@ -1065,12 +1211,7 @@ export function assertOrdinaryEntityMigrationAuthority(
       } catch {
         throw new Error("持久来源解释文档无法解析");
       }
-      for (const path of site.paths)
-        assertKnownInterpretationEntitiesPath(
-          parsed,
-          path,
-          (recordId) => existingSourceRecord.get(recordId) !== undefined,
-        );
+      carrier.assertDocument(parsed, sourceRecordExists);
     }
   }
   const mirrors = database

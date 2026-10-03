@@ -562,6 +562,334 @@ describe("production catalogue preparation", () => {
     }
   });
 
+  it("keeps a source interpretation without its required producer closed before DDL and recovers the same database after repair", async () => {
+    const migrationId = "20261003010000_ordinary_people_and_personas";
+    const artifact = productionMigrationArtifacts.find(
+      ({ id }) => id === migrationId,
+    );
+    if (!artifact) throw new Error("缺少本票正式迁移产物");
+    const productDataDirectory = await ordinaryEntityFixtureRoot();
+    try {
+      const corrupted = new DatabaseSync(
+        path.join(productDataDirectory, "catalogue.sqlite"),
+      );
+      const target = requireRetiredSourceInterpretationBasis(corrupted);
+      const basis = JSON.parse(target.basis_json) as Record<string, unknown>;
+      delete (basis.interpretation as Record<string, unknown>).producer;
+      corrupted
+        .prepare("UPDATE recognition_proposals SET basis_json = ? WHERE id = ?")
+        .run(JSON.stringify(basis), target.id);
+      corrupted.close();
+
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).rejects.toThrow(`生产迁移 ${migrationId} 失败；Web 不会启动`);
+      expectRetiredMigrationBlockedBeforeDdl(productDataDirectory, migrationId);
+      await expect(
+        inspectProductionCatalogueReadiness({ productDataDirectory }),
+      ).resolves.toMatchObject({ state: "migration-failed" });
+
+      const repaired = new DatabaseSync(
+        path.join(productDataDirectory, "catalogue.sqlite"),
+      );
+      repaired
+        .prepare("UPDATE recognition_proposals SET basis_json = ? WHERE id = ?")
+        .run(target.basis_json, target.id);
+      repaired.close();
+
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).resolves.toEqual({ applied: 1 });
+      const recovered = new DatabaseSync(
+        path.join(productDataDirectory, "catalogue.sqlite"),
+        { readOnly: true },
+      );
+      expect(
+        recovered
+          .prepare(
+            "SELECT checksum FROM __digital_catalogue_migrations WHERE id = ?",
+          )
+          .get(migrationId),
+      ).toEqual({ checksum: artifact.checksum });
+      expect(
+        recovered
+          .prepare(
+            "SELECT 1 FROM __digital_catalogue_migration_failures WHERE id = ?",
+          )
+          .get(migrationId),
+      ).toBeUndefined();
+      recovered.close();
+      await expect(
+        inspectProductionCatalogueReadiness({ productDataDirectory }),
+      ).resolves.toMatchObject({ state: "ready" });
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).resolves.toEqual({ applied: 0 });
+    } finally {
+      await rm(productDataDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects every required-structure hole in a retired interpretation carrier before DDL", async () => {
+    const migrationId = "20261003010000_ordinary_people_and_personas";
+    const holes = [
+      {
+        name: "独立来源解释批次缺少必需 producer",
+        plant: (database: DatabaseSync) => {
+          const planted = database
+            .prepare(
+              `UPDATE source_refresh_change_sets
+               SET interpretation_json = json_remove(interpretation_json, '$.producer')
+               WHERE json_type(interpretation_json, '$.entities') = 'array'`,
+            )
+            .run();
+          requirePlanted(planted.changes, "独立来源解释批次");
+        },
+      },
+      {
+        name: "已解释 checkpoint 缺少整份解释批次",
+        plant: (database: DatabaseSync) => {
+          mutateRetiredCheckpointColumn(
+            database,
+            requireRetiredInterpretedExecution(database),
+            "source_enrichments_json",
+            "sourceEnrichments",
+            (document) => {
+              delete (
+                (document as Record<string, unknown>[])[0] as Record<
+                  string,
+                  unknown
+                >
+              ).interpretation;
+            },
+          );
+        },
+      },
+      {
+        name: "失败阶段保留的解释批次缺少必需 producer",
+        plant: (database: DatabaseSync) => {
+          mutateRetiredCheckpointColumn(
+            database,
+            requireRetiredInterpretedExecution(database),
+            "source_enrichments_json",
+            "sourceEnrichments",
+            (document) => {
+              const checkpoint = (
+                document as Record<string, unknown>[]
+              )[0] as Record<string, unknown>;
+              checkpoint.stage = "failed";
+              delete (checkpoint.interpretation as Record<string, unknown>)
+                .producer;
+            },
+          );
+        },
+      },
+      {
+        name: "关联决定候选的解释批次缺少必需 sourceAddress",
+        plant: (database: DatabaseSync) => {
+          mutateRetiredCheckpointColumn(
+            database,
+            requireRetiredAssociationDecisionExecution(database),
+            "source_association_decision_json",
+            "sourceAssociationDecision",
+            (document) => {
+              const candidate = (
+                (document as Record<string, unknown>).candidates as Record<
+                  string,
+                  unknown
+                >[]
+              )[0] as Record<string, unknown>;
+              delete (candidate.interpretation as Record<string, unknown>)
+                .sourceAddress;
+            },
+          );
+        },
+      },
+      {
+        name: "预演 supersession 分支的 basis 缺少必需 producer",
+        plant: (database: DatabaseSync) => {
+          const target = requireRetiredSourceInterpretationBasis(database);
+          const basis = JSON.parse(target.basis_json) as Record<
+            string,
+            unknown
+          >;
+          delete (basis.interpretation as Record<string, unknown>).producer;
+          const planted = database
+            .prepare(
+              `UPDATE change_impact_previews
+               SET preview_json = json_set(
+                 preview_json, '$.change',
+                 json_object('kind', 'recognition-supersession', 'proposal',
+                   json_object('basis', json(?))))`,
+            )
+            .run(JSON.stringify(basis));
+          requirePlanted(planted.changes, "预演 supersession 分支");
+        },
+      },
+      {
+        name: "预演投影的实体容器不是数组",
+        plant: (database: DatabaseSync) => {
+          const planted = database
+            .prepare(
+              `UPDATE change_impact_previews
+               SET preview_json = json_set(
+                 preview_json, '$.projected.entities', json('{}'))`,
+            )
+            .run();
+          requirePlanted(planted.changes, "预演投影实体容器");
+        },
+      },
+    ] as const;
+    const roots = await Promise.all(
+      holes.map(() => ordinaryEntityFixtureRoot()),
+    );
+    try {
+      for (const [index, hole] of holes.entries()) {
+        const productDataDirectory = roots[index]!;
+        const database = new DatabaseSync(
+          path.join(productDataDirectory, "catalogue.sqlite"),
+        );
+        hole.plant(database);
+        database.close();
+        await expect(
+          prepareProductionCatalogue({ productDataDirectory }),
+          `载体反例 ${hole.name}`,
+        ).rejects.toThrow(`生产迁移 ${migrationId} 失败；Web 不会启动`);
+        expectRetiredMigrationBlockedBeforeDdl(
+          productDataDirectory,
+          migrationId,
+        );
+        await expect(
+          inspectProductionCatalogueReadiness({ productDataDirectory }),
+        ).resolves.toMatchObject({ state: "migration-failed" });
+      }
+    } finally {
+      await Promise.all(
+        roots.map(
+          async (root) => await rm(root, { recursive: true, force: true }),
+        ),
+      );
+    }
+  }, 120_000);
+
+  it("keeps legal optional interpretation members absent migratable end to end", async () => {
+    const productDataDirectory = await ordinaryEntityFixtureRoot();
+    try {
+      const mutated = new DatabaseSync(
+        path.join(productDataDirectory, "catalogue.sqlite"),
+      );
+      const target = requireRetiredSourceInterpretationBasis(mutated);
+      const planted = mutated
+        .prepare(
+          `UPDATE recognition_proposals
+           SET basis_json = json_remove(
+             basis_json,
+             '$.interpretation.entities',
+             '$.interpretation.entityMentions',
+             '$.interpretation.entityResolutionDecisions',
+             '$.interpretation.relationships')
+           WHERE id = ?`,
+        )
+        .run(target.id);
+      requirePlanted(planted.changes, "可选解释成员缺省");
+      mutated.close();
+
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).resolves.toEqual({ applied: 1 });
+      await expect(
+        inspectProductionCatalogueReadiness({ productDataDirectory }),
+      ).resolves.toMatchObject({ state: "ready" });
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).resolves.toEqual({ applied: 0 });
+    } finally {
+      await rm(productDataDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps legal union branches, retained failed interpretations and mirrors passing the retired carrier precheck", async () => {
+    const productDataDirectory = await ordinaryEntityFixtureRoot();
+    const database = new DatabaseSync(
+      path.join(productDataDirectory, "catalogue.sqlite"),
+    );
+    try {
+      // 正常 fixture：含 manual-boundary 与 source-interpretation、无 entities 的
+      // 合法批次、source-association 预演分支与全部合法审计镜像。
+      expect(() =>
+        SqliteCatalogue.assertOrdinaryEntityMigrationAuthority(database),
+      ).not.toThrow();
+
+      database
+        .prepare("UPDATE recognition_proposals SET basis_json = ? WHERE id = ?")
+        .run(
+          JSON.stringify(retiredObservedEvidenceBasis),
+          (
+            database
+              .prepare(
+                `SELECT id FROM recognition_proposals
+                 WHERE json_extract(basis_json, '$.kind') = 'manual-boundary'
+                 ORDER BY id LIMIT 1`,
+              )
+              .get() as { id: string }
+          ).id,
+        );
+      expect(() =>
+        SqliteCatalogue.assertOrdinaryEntityMigrationAuthority(database),
+      ).not.toThrow();
+
+      // 公开失败 checkpoint 合法保留整份解释，以及不带解释的合法阶段。
+      const interpretedExecution = requireRetiredInterpretedExecution(database);
+      mutateRetiredCheckpointColumn(
+        database,
+        interpretedExecution,
+        "source_enrichments_json",
+        "sourceEnrichments",
+        (document) => {
+          const checkpoints = document as Record<string, unknown>[];
+          const source = checkpoints[0] as Record<string, unknown>;
+          const failed = structuredClone(source);
+          failed.stage = "failed";
+          const withoutInterpretation = structuredClone(source);
+          withoutInterpretation.stage = "candidate-interpreted";
+          delete withoutInterpretation.interpretation;
+          checkpoints.push(failed, withoutInterpretation);
+        },
+      );
+      expect(() =>
+        SqliteCatalogue.assertOrdinaryEntityMigrationAuthority(database),
+      ).not.toThrow();
+
+      // 预演 recognition-retraction 分支不含识别 basis。
+      database
+        .prepare(
+          `UPDATE change_impact_previews
+           SET preview_json = json_set(
+             preview_json, '$.change',
+             json_object('kind', 'recognition-retraction', 'intent',
+               json_object('id', 'intent', 'assetId', 'asset',
+                 'reason', 'retired', 'requestedBy', 'user')))`,
+        )
+        .run();
+      expect(() =>
+        SqliteCatalogue.assertOrdinaryEntityMigrationAuthority(database),
+      ).not.toThrow();
+
+      // 合法 NULL 审计不参与镜像等值。
+      database
+        .prepare(
+          "UPDATE workflow_executions SET audit_json = NULL WHERE id = ?",
+        )
+        .run(interpretedExecution);
+      expect(() =>
+        SqliteCatalogue.assertOrdinaryEntityMigrationAuthority(database),
+      ).not.toThrow();
+    } finally {
+      database.close();
+      await rm(productDataDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a readiness chain whose source decision no longer projects its association", async () => {
     const root = await temporaryProductData();
     try {
@@ -1022,6 +1350,167 @@ async function temporaryProductData(): Promise<string> {
     path.join(tmpdir(), "digital-disposable-production-migrations-"),
   );
 }
+
+/** 把退出前固定点 fixture 原样拷入一个新的临时产品数据根。 */
+async function ordinaryEntityFixtureRoot(): Promise<string> {
+  const productDataDirectory = await temporaryProductData();
+  await mkdir(path.join(productDataDirectory, "managed-artifacts"), {
+    recursive: true,
+  });
+  await copyFile(
+    new URL(
+      "../test/fixtures/entity-model/entity-e02-after-e01.sqlite",
+      import.meta.url,
+    ),
+    path.join(productDataDirectory, "catalogue.sqlite"),
+  );
+  return productDataDirectory;
+}
+
+/** 取一份真实携带实体数组的旧来源解释 basis，供定向破坏使用。 */
+function requireRetiredSourceInterpretationBasis(database: DatabaseSync): {
+  readonly id: string;
+  readonly basis_json: string;
+} {
+  const target = database
+    .prepare(
+      `SELECT id, basis_json FROM recognition_proposals
+       WHERE json_extract(basis_json, '$.kind') = 'source-interpretation'
+         AND json_array_length(basis_json, '$.interpretation.entities') > 0
+       ORDER BY id LIMIT 1`,
+    )
+    .get() as { id: string; basis_json: string } | undefined;
+  if (!target) throw new Error("fixture 缺少携带实体的旧来源解释 basis");
+  return target;
+}
+
+function requireRetiredInterpretedExecution(database: DatabaseSync): string {
+  const target = database
+    .prepare(
+      `SELECT id FROM workflow_executions
+       WHERE json_type(source_enrichments_json, '$[0].interpretation') = 'object'
+       ORDER BY id LIMIT 1`,
+    )
+    .get() as { id: string } | undefined;
+  if (!target) throw new Error("fixture 缺少携带解释的旧 checkpoint");
+  return target.id;
+}
+
+function requireRetiredAssociationDecisionExecution(
+  database: DatabaseSync,
+): string {
+  const target = database
+    .prepare(
+      `SELECT id FROM workflow_executions
+       WHERE json_type(
+         source_association_decision_json, '$.candidates[0].interpretation'
+       ) = 'object'
+       ORDER BY id LIMIT 1`,
+    )
+    .get() as { id: string } | undefined;
+  if (!target) throw new Error("fixture 缺少携带候选解释的旧关联决定");
+  return target.id;
+}
+
+/**
+ * 改旧 checkpoint 主列时同步其 audit 镜像，保证正式 prepare 的拒绝只可能来自
+ * 解释批次自身的严格性，而不是镜像等值。
+ */
+function mutateRetiredCheckpointColumn(
+  database: DatabaseSync,
+  executionId: string,
+  column: "source_enrichments_json" | "source_association_decision_json",
+  mirrorKey: "sourceEnrichments" | "sourceAssociationDecision",
+  mutate: (document: unknown) => void,
+): void {
+  const row = database
+    .prepare(
+      `SELECT ${column} AS document, audit_json AS audit
+       FROM workflow_executions WHERE id = ?`,
+    )
+    .get(executionId) as { document: string; audit: string | null };
+  const document = JSON.parse(row.document) as unknown;
+  mutate(document);
+  const updated = JSON.stringify(document);
+  if (row.audit === null) {
+    database
+      .prepare(`UPDATE workflow_executions SET ${column} = ? WHERE id = ?`)
+      .run(updated, executionId);
+    return;
+  }
+  const audit = JSON.parse(row.audit) as { payload: Record<string, unknown> };
+  if (mirrorKey in audit.payload) audit.payload[mirrorKey] = document;
+  database
+    .prepare(
+      `UPDATE workflow_executions SET ${column} = ?, audit_json = ? WHERE id = ?`,
+    )
+    .run(updated, JSON.stringify(audit), executionId);
+}
+
+function requirePlanted(changes: number | bigint, carrier: string): void {
+  if (Number(changes) === 0)
+    throw new Error(`fixture 未能在${carrier}上种下反例`);
+}
+
+/** 硬迁移失败必须停在 DDL 与成功账本之前，且只留下脱敏后的失败账本。 */
+function expectRetiredMigrationBlockedBeforeDdl(
+  productDataDirectory: string,
+  migrationId: string,
+): void {
+  const rejected = new DatabaseSync(
+    path.join(productDataDirectory, "catalogue.sqlite"),
+    { readOnly: true },
+  );
+  try {
+    expect(
+      rejected
+        .prepare("SELECT 1 FROM __digital_catalogue_migrations WHERE id = ?")
+        .get(migrationId),
+    ).toBeUndefined();
+    expect(
+      rejected
+        .prepare(
+          "SELECT id, message FROM __digital_catalogue_migration_failures WHERE id = ?",
+        )
+        .get(migrationId),
+    ).toEqual({ id: migrationId, message: "Error" });
+    expect(
+      rejected
+        .prepare(
+          "SELECT 1 FROM sqlite_schema WHERE name = 'entity_kind_manual_history'",
+        )
+        .get(),
+    ).toBeUndefined();
+  } finally {
+    rejected.close();
+  }
+}
+
+/** 退出前合同里合法但不含来源解释的观察证据 basis。 */
+const retiredObservedEvidenceBasis = {
+  kind: "observed-evidence",
+  producer: {
+    capabilityId: "epub-inspector",
+    capabilityVersion: "1",
+    contractVersion: "epub/3",
+  },
+  evidence: [],
+  artifactRevisions: [
+    {
+      observedArtifactReference: "book.epub",
+      blob: {
+        digest: "epub-digest",
+        mediaType: "application/epub+zip",
+        byteLength: 1,
+      },
+      producer: {
+        capabilityId: "epub-inspector",
+        capabilityVersion: "1",
+        contractVersion: "epub/3",
+      },
+    },
+  ],
+} as const;
 
 async function prepareCatalogueBeforeNamedRelationshipParticipants(
   productDataDirectory: string,
