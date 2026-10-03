@@ -2543,25 +2543,11 @@ export class SqliteCatalogue
   }
 
   private requireDefaultLocalUser(query: ReturnType<typeof drizzle>): void {
-    const bindings = query
-      .select({
-        userId: localUsers.userId,
-        personId: localUsers.personId,
-      })
+    const users = query
+      .select({ userId: localUsers.userId })
       .from(localUsers)
       .all();
-    const effective =
-      bindings.length === 1
-        ? this.entityKindStateWithDrizzle(query, bindings[0]!.personId)
-            .effective
-        : undefined;
-    if (
-      bindings.length !== 1 ||
-      bindings[0]?.userId !== "local-user" ||
-      bindings[0]?.personId !== "person:local-user" ||
-      effective?.status !== "effective" ||
-      effective.kind !== "person"
-    )
+    if (users.length !== 1 || users[0]?.userId !== "local-user")
       throw new Error("本地用户身份未准备");
   }
 

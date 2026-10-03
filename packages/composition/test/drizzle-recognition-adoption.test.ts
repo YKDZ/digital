@@ -3892,8 +3892,8 @@ it("keeps equal title, managed path, and Blob as independent identity facts", as
     blobs: 1,
     currentSourceArtifactCandidateLineages: 2,
     currentSourceAssociations: 2,
-    // 本地 Person、两个数字资产，加上第一部作品独立获取的演职员事实。
-    entities: 4,
+    // 两个数字资产，加上第一部作品独立获取的演职员实体事实。
+    entities: 3,
     locations: 2,
     metadataAssertions: 2,
     recognitionDecisions: 2,
@@ -4003,7 +4003,7 @@ function emptyAdoptionFactCounts() {
     blobs: 0,
     currentSourceArtifactCandidateLineages: 0,
     currentSourceAssociations: 0,
-    entities: 1,
+    entities: 0,
     entityMentions: 0,
     entityRelationships: 0,
     entityResolutionDecisions: 0,

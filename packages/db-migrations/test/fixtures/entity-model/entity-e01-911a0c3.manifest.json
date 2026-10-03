@@ -1,0 +1,167 @@
+{
+  "startCommit": "911a0c30cf4d094ffca18f64c4f3a164f730f6bc",
+  "contentEntityId": "entity_c7d6081a-ca7f-4392-bcd2-fb3858dd92d3",
+  "contentMetadata": [
+    {
+      "property": "asset.content-classification",
+      "value": "book",
+      "selectedAssertion": {
+        "property": "asset.content-classification",
+        "value": "book",
+        "target": {
+          "kind": "entity",
+          "entityId": "entity_c7d6081a-ca7f-4392-bcd2-fb3858dd92d3"
+        },
+        "sourceSlot": "asset.content-classification",
+        "sourceRecordIds": [],
+        "authoredBy": {
+          "initiatedBy": "interactive",
+          "proposalId": "recognition-proposal_e640eb45-5e01-41f8-8baa-af901da96caf"
+        }
+      },
+      "contributingAssertions": [
+        {
+          "property": "asset.content-classification",
+          "value": "book",
+          "target": {
+            "kind": "entity",
+            "entityId": "entity_c7d6081a-ca7f-4392-bcd2-fb3858dd92d3"
+          },
+          "sourceSlot": "asset.content-classification",
+          "sourceRecordIds": [],
+          "authoredBy": {
+            "initiatedBy": "interactive",
+            "proposalId": "recognition-proposal_e640eb45-5e01-41f8-8baa-af901da96caf"
+          }
+        }
+      ],
+      "sourceIdentity": "user",
+      "sourceRecordIds": [],
+      "sourceSlot": "asset.content-classification",
+      "alternatives": [],
+      "reasoning": {
+        "kind": "source-preference",
+        "preferredSource": "user"
+      }
+    },
+    {
+      "property": "asset.title",
+      "value": "旧合同书",
+      "selectedAssertion": {
+        "property": "asset.title",
+        "value": "旧合同书",
+        "target": {
+          "kind": "entity",
+          "entityId": "entity_c7d6081a-ca7f-4392-bcd2-fb3858dd92d3"
+        },
+        "sourceSlot": "asset.title",
+        "sourceRecordIds": [],
+        "authoredBy": {
+          "initiatedBy": "interactive",
+          "proposalId": "recognition-proposal_e640eb45-5e01-41f8-8baa-af901da96caf"
+        }
+      },
+      "contributingAssertions": [
+        {
+          "property": "asset.title",
+          "value": "旧合同书",
+          "target": {
+            "kind": "entity",
+            "entityId": "entity_c7d6081a-ca7f-4392-bcd2-fb3858dd92d3"
+          },
+          "sourceSlot": "asset.title",
+          "sourceRecordIds": [],
+          "authoredBy": {
+            "initiatedBy": "interactive",
+            "proposalId": "recognition-proposal_e640eb45-5e01-41f8-8baa-af901da96caf"
+          }
+        }
+      ],
+      "sourceIdentity": "user",
+      "sourceRecordIds": [],
+      "sourceSlot": "asset.title",
+      "alternatives": [],
+      "reasoning": {
+        "kind": "source-preference",
+        "preferredSource": "user"
+      }
+    }
+  ],
+  "revisions": [
+    {
+      "locationId": "location_af0b5967f30301cda883089e66132ea0f4f917fe821beadd0032e0431c52411b",
+      "revisionId": "artifact-revision_23965c18be92442fb2aed55d12114b4eba6c040c2606138b97c3577f751fdf98"
+    },
+    {
+      "locationId": "location_2fcf867994f0660c8b97120d920c645162d121940991692eb51189e0ef279095",
+      "revisionId": "artifact-revision_827c52e8a570b97a44471bf4f3fd00f036917be1b1376e100f6366cddb30b674"
+    }
+  ],
+  "personEntity": {
+    "id": "related-entity_a7a8369e70fb3d32808c404b42f9c0c030bdd6169acffaa4543c008a6c916a10",
+    "label": "绑定人物",
+    "kind": {
+      "status": "effective",
+      "kind": "person",
+      "basis": "assertion"
+    },
+    "identity": "local"
+  },
+  "seriesEntity": {
+    "id": "related-entity_23874112b3b17ca5065640d6abd1fae5ad860b90c0f6d9cfe3bcf222b733cc3d",
+    "label": "所属系列",
+    "kind": {
+      "status": "ordinary"
+    },
+    "identity": "local"
+  },
+  "relationshipApplied": "applied",
+  "seriesRelationships": [
+    {
+      "id": "manual-relationship_8a19fa488838977f327eff09d8ea11fef7b459bb",
+      "participants": [
+        {
+          "entityId": "entity_c7d6081a-ca7f-4392-bcd2-fb3858dd92d3",
+          "role": "asset"
+        },
+        {
+          "entityId": "related-entity_23874112b3b17ca5065640d6abd1fae5ad860b90c0f6d9cfe3bcf222b733cc3d",
+          "role": "series"
+        }
+      ],
+      "type": "asset.membership",
+      "qualifiers": [
+        {
+          "key": "position",
+          "value": "3"
+        }
+      ],
+      "sources": []
+    }
+  ],
+  "interactions": {
+    "a": {
+      "revisionId": "artifact-revision_23965c18be92442fb2aed55d12114b4eba6c040c2606138b97c3577f751fdf98",
+      "positionMilliseconds": 90000,
+      "completed": false
+    },
+    "b": {
+      "revisionId": "artifact-revision_827c52e8a570b97a44471bf4f3fd00f036917be1b1376e100f6366cddb30b674",
+      "positionMilliseconds": 0,
+      "completed": true
+    }
+  },
+  "readBack": [
+    {
+      "artifactRevisionId": "artifact-revision_23965c18be92442fb2aed55d12114b4eba6c040c2606138b97c3577f751fdf98",
+      "positionMilliseconds": 90000,
+      "completed": false
+    },
+    {
+      "artifactRevisionId": "artifact-revision_827c52e8a570b97a44471bf4f3fd00f036917be1b1376e100f6366cddb30b674",
+      "positionMilliseconds": 0,
+      "completed": true
+    }
+  ],
+  "checksumBeforeCopy": "0ad330a01d233c4d7278a4563034c830720008889a8d4a63e2274988663b425b"
+}

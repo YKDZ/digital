@@ -282,18 +282,13 @@ export const entityKindSourceSupports = sqliteTable(
   ],
 );
 
-/** 当前部署的单一本地用户与普通 Person 实体的显式绑定。 */
+/** 当前部署的单一本地用户注册；它只承载操作归属与交互状态。 */
 export const localUsers = sqliteTable(
   "local_users",
   {
     userId: text("user_id").notNull(),
-    personId: text("person_id").notNull(),
   },
-  (table) => [
-    primaryKey({ columns: [table.userId] }),
-    uniqueIndex("local_users_person").on(table.personId),
-    foreignKey({ columns: [table.personId], foreignColumns: [entities.id] }),
-  ],
+  (table) => [primaryKey({ columns: [table.userId] })],
 );
 
 export const sourceAssociations = sqliteTable(

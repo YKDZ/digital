@@ -130,6 +130,16 @@ async function prepareProductionCatalogueWithWriter(
       await cleanupUnreferencedArtifactProofs(productDataDirectory, database);
       return { applied: 0 };
     }
+    // 迁移产物用连接级 TEMP context 区分“本次 prepare 从空目录运行完整冻结历史”
+    // 与既有 catalogue。它来自耐久账本，不进入 catalogue schema。
+    database.exec(
+      "CREATE TEMP TABLE __digital_prepare_context (fresh_catalogue INTEGER NOT NULL)",
+    );
+    database
+      .prepare(
+        "INSERT INTO __digital_prepare_context (fresh_catalogue) VALUES (?)",
+      )
+      .run(hasLedgerRows ? 0 : 1);
     for (const artifact of productionMigrationArtifacts) {
       const sql = await readArtifactSql(artifact.id);
       const checksum = createHash("sha256").update(sql).digest("hex");
@@ -200,24 +210,12 @@ async function prepareProductionCatalogueWithWriter(
   }
 }
 
-/** 已审阅结构整体认领账本时，仍需补上迁移所含的本地身份初始化。 */
+/** 已审阅结构整体认领账本时，仍需补上迁移所含的本地用户注册。 */
 function establishDefaultLocalUser(database: DatabaseSync): void {
   database.exec(`
-    INSERT INTO entities (id)
-    SELECT 'person:local-user'
-    WHERE NOT EXISTS (SELECT 1 FROM entities WHERE id = 'person:local-user');
-    INSERT INTO entity_kind_assertions (id, entity_id, kind, basis, source_record_ids_json)
-    SELECT 'local-user-person-kind', 'person:local-user', 'person', 'legacy-migration', '[]'
-    WHERE NOT EXISTS (SELECT 1 FROM entity_kind_assertions WHERE entity_id = 'person:local-user' AND kind = 'person');
-    INSERT INTO local_users (user_id, person_id)
-    SELECT 'local-user', 'person:local-user'
-    WHERE EXISTS (
-      SELECT 1 FROM entity_kind_assertions
-      WHERE entity_id = 'person:local-user' AND kind = 'person'
-    )
-      AND NOT EXISTS (
-        SELECT 1 FROM local_users WHERE user_id = 'local-user'
-      );
+    INSERT INTO local_users (user_id)
+    SELECT 'local-user'
+    WHERE NOT EXISTS (SELECT 1 FROM local_users WHERE user_id = 'local-user');
   `);
 }
 

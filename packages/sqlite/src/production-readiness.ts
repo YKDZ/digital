@@ -18,7 +18,7 @@ import { matchesReviewedCatalogueSchema } from "./schema-contract.ts";
 import { canonicalJson } from "./workflow-execution-persistence.ts";
 
 export const productionCatalogueMigrationHead =
-  "20260915000000_named_relationship_snapshots";
+  "20261003000000_unbind_local_user";
 export const productionCatalogueMigrationPlan = [
   {
     id: "20260820000000_v1_catalogue_baseline",
@@ -101,9 +101,14 @@ export const productionCatalogueMigrationPlan = [
       "d70617a53f869449007dc548c71c4ca00f95b2976ea3ab357d58e20145bb9129",
   },
   {
-    id: productionCatalogueMigrationHead,
+    id: "20260915000000_named_relationship_snapshots",
     checksum:
       "d6341f130ae1f9f1c81bf4b79be0f56c54bb9afa2bec2439d6ccbf40f21e064a",
+  },
+  {
+    id: productionCatalogueMigrationHead,
+    checksum:
+      "2cec585f48aac97ed78c2d4a3b825754c279ac05290ce53ef170d460a95cc45e",
   },
 ] as const;
 
@@ -219,7 +224,7 @@ export async function inspectProductionCatalogueReadiness(options: {
           "Catalogue 结构或完整性不符合已审阅 schema；从离线备份恢复或联系部署维护者",
       };
     }
-    if (!hasValidDefaultLocalUserBinding(database)) {
+    if (!hasValidDefaultLocalUser(database)) {
       return {
         state: "catalogue-integrity-failed",
         message:
@@ -248,29 +253,11 @@ export async function inspectProductionCatalogueReadiness(options: {
   }
 }
 
-function hasValidDefaultLocalUserBinding(database: DatabaseSync): boolean {
-  const bindings = database
-    .prepare(
-      `SELECT local_users.user_id AS userId,
-              local_users.person_id AS personId,
-              entity_kind_assertions.kind AS kind
-       FROM local_users
-       LEFT JOIN entities ON entities.id = local_users.person_id
-       LEFT JOIN entity_kind_assertions
-         ON entity_kind_assertions.entity_id = entities.id
-        AND entity_kind_assertions.kind = 'person'`,
-    )
-    .all() as Array<{
-    readonly userId: string;
-    readonly personId: string;
-    readonly kind: string | null;
-  }>;
-  return (
-    bindings.length === 1 &&
-    bindings[0]?.userId === "local-user" &&
-    bindings[0]?.personId === "person:local-user" &&
-    bindings[0]?.kind === "person"
-  );
+function hasValidDefaultLocalUser(database: DatabaseSync): boolean {
+  const users = database
+    .prepare("SELECT user_id AS userId FROM local_users")
+    .all() as Array<{ readonly userId: string }>;
+  return users.length === 1 && users[0]?.userId === "local-user";
 }
 
 function hasValidSourceAssociationState(database: DatabaseSync): boolean {
