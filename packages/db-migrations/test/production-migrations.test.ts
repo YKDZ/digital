@@ -93,7 +93,7 @@ describe("production catalogue preparation", () => {
       await prepareCatalogueBeforeDescriptionTargets(productDataDirectory);
       await expect(
         prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 9 });
+      ).resolves.toEqual({ applied: 10 });
       const database = new DatabaseSync(
         path.join(productDataDirectory, "catalogue.sqlite"),
         { readOnly: true },
@@ -223,7 +223,7 @@ describe("production catalogue preparation", () => {
 
       await expect(
         prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 8 });
+      ).resolves.toEqual({ applied: 9 });
       const migrated = new DatabaseSync(
         path.join(productDataDirectory, "catalogue.sqlite"),
         { readOnly: true },
@@ -308,7 +308,7 @@ describe("production catalogue preparation", () => {
       await prepareLegacySourceEnrichmentCatalogue(valid, false);
       await expect(
         prepareProductionCatalogue({ productDataDirectory: valid }),
-      ).resolves.toEqual({ applied: 12 });
+      ).resolves.toEqual({ applied: 13 });
       await expect(
         inspectProductionCatalogueReadiness({ productDataDirectory: valid }),
       ).resolves.toMatchObject({ state: "ready" });
@@ -520,7 +520,7 @@ describe("production catalogue preparation", () => {
       });
       await expect(
         prepareProductionCatalogue({ productDataDirectory: terminated }),
-      ).resolves.toEqual({ applied: 13 });
+      ).resolves.toEqual({ applied: 14 });
       const terminatedDatabase = new DatabaseSync(
         path.join(terminated, "catalogue.sqlite"),
         { readOnly: true },
@@ -633,7 +633,7 @@ describe("production catalogue preparation", () => {
     try {
       await expect(
         prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 15 });
+      ).resolves.toEqual({ applied: 16 });
       const reopened = SqliteCatalogue.forProductData(productDataDirectory);
       await expect(reopened.listCurrentCatalogue()).resolves.toMatchObject([
         {
