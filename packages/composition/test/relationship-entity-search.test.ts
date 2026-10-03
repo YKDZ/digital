@@ -111,6 +111,25 @@ it("正式公开查找按文字包含命中显示名称、本地与已有名称�
     expect(
       (await workflow.findRelatedEntities("A_B")).map((found) => found.id),
     ).toEqual([underscore.id]);
+    // 大小写差异是不同字面片段：查找按字面区分，不因大小写不敏感而收敛命中。
+    const upper = await workflow.createLocalRelatedEntity({
+      commitmentId: "case/upper",
+      label: "AlphaSeries",
+      actorId: "user:reader",
+    });
+    const lower = await workflow.createLocalRelatedEntity({
+      commitmentId: "case/lower",
+      label: "alphaseries-control",
+      actorId: "user:reader",
+    });
+    // 片段 "alpha" 只命中字面含该片段的小写实体，绝不命中仅大小写不同的 "AlphaSeries"。
+    expect(
+      (await workflow.findRelatedEntities("alpha")).map((found) => found.id),
+    ).toEqual([lower.id]);
+    // 大小写一致的片段仍按字面命中其归属实体。
+    expect(
+      (await workflow.findRelatedEntities("Series")).map((found) => found.id),
+    ).toEqual([upper.id]);
     // 空输入维持既有语义：返回空集，而不是命中全部。
     await expect(workflow.findRelatedEntities("")).resolves.toEqual([]);
     await expect(workflow.findRelatedEntities("   ")).resolves.toEqual([]);
@@ -123,6 +142,9 @@ it("正式公开查找按文字包含命中显示名称、本地与已有名称�
     expect(
       (await product.result.findRelatedEntities("50%OFF")).map((f) => f.id),
     ).toEqual([literal.id]);
+    expect(
+      (await product.result.findRelatedEntities("alpha")).map((f) => f.id),
+    ).toEqual([lower.id]);
     expect(network).not.toHaveBeenCalled();
   } finally {
     await product.close();

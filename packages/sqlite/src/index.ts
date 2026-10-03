@@ -1580,20 +1580,15 @@ export class SqliteCatalogue
     if (label.trim().length === 0) return [];
     const query = drizzle({ client: await this.ensure() });
     const forest = this.effectiveIdentityForestWithDrizzle(query);
-    const pattern = relatedEntityContainsPattern(label);
     const local = query
       .select()
       .from(localEntityNames)
-      .where(
-        sql`${localEntityNames.label} LIKE ${pattern} ESCAPE ${RELATED_ENTITY_CONTAINS_ESCAPE}`,
-      )
+      .where(sql`instr(${localEntityNames.label}, ${label}) > 0`)
       .all();
     const sourced = query
       .select()
       .from(sourcedEntities)
-      .where(
-        sql`${sourcedEntities.label} LIKE ${pattern} ESCAPE ${RELATED_ENTITY_CONTAINS_ESCAPE}`,
-      )
+      .where(sql`instr(${sourcedEntities.label}, ${label}) > 0`)
       .all();
     const observed = this.currentObservedEntityRowsWithDrizzle(query).filter(
       (row) => row.label.includes(label),
@@ -1609,7 +1604,7 @@ export class SqliteCatalogue
         and(
           inArray(metadataAssertions.property, RELATED_ENTITY_NAME_PROPERTIES),
           eq(metadataAssertions.isCurrent, 1),
-          sql`${metadataAssertions.value} LIKE ${pattern} ESCAPE ${RELATED_ENTITY_CONTAINS_ESCAPE}`,
+          sql`instr(${metadataAssertions.value}, ${label}) > 0`,
         ),
       )
       .all();
@@ -16753,13 +16748,6 @@ const RELATED_ENTITY_NAME_PROPERTIES = [
   "asset.title.alternative",
   "asset.title.zh-hans",
 ] as const;
-
-const RELATED_ENTITY_CONTAINS_ESCAPE = "\\";
-
-/** 把输入当纯文字片段：转义 LIKE 通配符，前后各加一个真正的通配符。 */
-function relatedEntityContainsPattern(fragment: string): string {
-  return `%${fragment.replace(/[\\%_]/g, (char) => `${RELATED_ENTITY_CONTAINS_ESCAPE}${char}`)}%`;
-}
 
 /** 使用一个绑定的 JSON 值，避免展开页面触及 SQLite 变量上限。 */
 function sqliteTextSet<T extends string | number>(values: readonly T[]) {
