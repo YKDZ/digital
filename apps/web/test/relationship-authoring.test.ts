@@ -449,3 +449,175 @@ it("Web 正式入口按被点名事实决定多方关系，独立事实不被压
     await rm(root, { recursive: true, force: true });
   }
 }, 30_000);
+
+it("Web 对独立人工事实的选择只看被点名的当前替代，多次更正与重开语义一致", async () => {
+  const root = await mkdtemp(
+    path.join(tmpdir(), "digital-disposable-web-manual-select-"),
+  );
+  await prepareWebProductData(root);
+  const network = vi
+    .spyOn(globalThis, "fetch")
+    .mockRejectedValue(new Error("离线"));
+  let product = await openProduct(root);
+  try {
+    const [work, series] = await Promise.all([
+      product.entity("manual-work", "人工选择作品", "entity"),
+      product.entity("manual-series", "人工选择系列", "entity"),
+    ]);
+    const membership = [{ entityId: series.id, role: "dlsite.series.member" }];
+    const draft = (position: string) => ({
+      kind: "create" as const,
+      definitionId: "dlsite.series-membership",
+      relationship: {
+        type: "asset.membership",
+        participants: [...membership, { entityId: work.id, role: "asset" }],
+        qualifiers: [{ key: "asset.membership.position", value: position }],
+      },
+    });
+    const locate = async (position: string) =>
+      (await product.facts(work.id)).find(
+        ({ qualifiers }) => qualifiers?.[0]?.value === position,
+      )!;
+    const only = (position: string) => [{ parties: 2, position, sources: 0 }];
+
+    expect(await product.decide([draft("2")])).toEqual({
+      status: 200,
+      body: { status: "applied" },
+    });
+    const created = await locate("2");
+    // 更正把同一人工目标改写到新事实，被更正的一项退为该目标下的人工历史。
+    expect(
+      await product.decide([
+        { ...draft("7"), kind: "replace", targetRelationshipId: created.id },
+      ]),
+    ).toEqual({ status: 200, body: { status: "applied" } });
+    const replaced = await locate("7");
+    expect(replaced.id).not.toBe(created.id);
+    expect(product.positions(await product.facts(work.id))).toEqual(only("7"));
+
+    // 对当前替代事实的选择只让被点名那一项生效，既不复活被更正项也不返回全部历史。
+    expect(
+      await product.decide([
+        { kind: "select", targetRelationshipId: replaced.id },
+      ]),
+    ).toEqual({ status: 200, body: { status: "applied" } });
+    expect(product.positions(await product.facts(work.id))).toEqual(only("7"));
+    // 重复同一次选择只推进决定头，结果仍是单项当前事实。
+    expect(
+      await product.decide([
+        { kind: "select", targetRelationshipId: replaced.id },
+      ]),
+    ).toEqual({ status: 200, body: { status: "applied" } });
+    expect(product.positions(await product.facts(work.id))).toEqual(only("7"));
+    expect(product.positions(await product.facts(series.id))).toEqual(
+      only("7"),
+    );
+
+    // 再次更正、排除、选择逐项推进，任一时刻都只有一项当前事实。
+    expect(
+      await product.decide([
+        { ...draft("8"), kind: "replace", targetRelationshipId: replaced.id },
+      ]),
+    ).toEqual({ status: 200, body: { status: "applied" } });
+    const latest = await locate("8");
+    expect(product.positions(await product.facts(work.id))).toEqual(only("8"));
+    expect(
+      await product.decide([
+        { kind: "exclude", targetRelationshipId: latest.id },
+      ]),
+    ).toEqual({ status: 200, body: { status: "applied" } });
+    expect(product.positions(await product.facts(work.id))).toEqual([]);
+    expect(
+      await product.decide([
+        { kind: "select", targetRelationshipId: latest.id },
+      ]),
+    ).toEqual({ status: 200, body: { status: "applied" } });
+    expect(product.positions(await product.facts(work.id))).toEqual(only("8"));
+
+    // 一次预演批量作用在两个相互独立的人工目标上，仍各自只按被点名事实生效。
+    const [workB, seriesB] = await Promise.all([
+      product.entity("manual-work-b", "人工批量作品", "entity"),
+      product.entity("manual-series-b", "人工批量系列", "entity"),
+    ]);
+    const batchCreate = {
+      kind: "create" as const,
+      definitionId: "dlsite.series-membership",
+      relationship: {
+        type: "asset.membership",
+        participants: [
+          { entityId: seriesB.id, role: "dlsite.series.member" },
+          { entityId: workB.id, role: "asset" },
+        ],
+        qualifiers: [{ key: "asset.membership.position", value: "1" }],
+      },
+    };
+    expect(await product.decide([batchCreate])).toEqual({
+      status: 200,
+      body: { status: "applied" },
+    });
+    const batchFact = (await product.facts(workB.id))[0]!;
+    expect(product.positions(await product.facts(workB.id))).toEqual(only("1"));
+    expect(
+      await product.decide([
+        { kind: "exclude", targetRelationshipId: latest.id },
+        { kind: "select", targetRelationshipId: batchFact.id },
+      ]),
+    ).toEqual({ status: 200, body: { status: "applied" } });
+    expect(product.positions(await product.facts(work.id))).toEqual([]);
+    expect(product.positions(await product.facts(workB.id))).toEqual(only("1"));
+    expect(
+      await product.decide([
+        { kind: "select", targetRelationshipId: latest.id },
+      ]),
+    ).toEqual({ status: 200, body: { status: "applied" } });
+    expect(product.positions(await product.facts(work.id))).toEqual(only("8"));
+
+    // 陈旧预演在决定推进后被拒绝，绝不叠加到最新结果之上。
+    const stalePreview = await product.json(
+      await product.post("preview", {
+        changes: [{ kind: "exclude", targetRelationshipId: latest.id }],
+      }),
+    );
+    expect(
+      await product.decide([
+        { ...draft("9"), kind: "replace", targetRelationshipId: latest.id },
+      ]),
+    ).toEqual({ status: 200, body: { status: "applied" } });
+    const newest = await locate("9");
+    expect(
+      (
+        await product.post("apply", {
+          actorId: "reader",
+          preview: stalePreview,
+        })
+      ).status,
+    ).toBe(409);
+    expect(product.positions(await product.facts(work.id))).toEqual(only("9"));
+
+    // 人工目标没有来源事实：清除后仍为空，但人工历史保留并可再次选择。
+    expect(
+      await product.decide([
+        { kind: "clear", targetRelationshipId: newest.id },
+      ]),
+    ).toEqual({ status: 200, body: { status: "applied" } });
+    expect(product.positions(await product.facts(work.id))).toEqual([]);
+    expect(
+      await product.decide([
+        { kind: "select", targetRelationshipId: newest.id },
+      ]),
+    ).toEqual({ status: 200, body: { status: "applied" } });
+    expect(product.positions(await product.facts(work.id))).toEqual(only("9"));
+
+    await product.close();
+    product = await openProduct(root);
+    expect(product.positions(await product.facts(work.id))).toEqual(only("9"));
+    expect(product.positions(await product.facts(series.id))).toEqual(
+      only("9"),
+    );
+    expect(network).not.toHaveBeenCalled();
+  } finally {
+    await product.close();
+    network.mockRestore();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30_000);

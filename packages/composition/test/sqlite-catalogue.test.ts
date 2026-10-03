@@ -1076,13 +1076,15 @@ type LegacyFact = {
 const legacyFactsFor = (
   relationships: readonly LegacyRelationship[],
   subject: string,
+  role = "series",
 ): LegacyFact[] =>
   relationships
     .filter(
       ({ type, participants }) =>
         type === "asset.membership" &&
         participants.some(
-          ({ entityId, role }) => role === "series" && entityId === subject,
+          ({ entityId, role: participantRole }) =>
+            participantRole === role && entityId === subject,
         ),
     )
     .map(({ id, participants, qualifiers, sources }) => ({
@@ -1269,6 +1271,297 @@ it("旧坐标决定经正式迁移后按被点名事实生效，公开反查、�
     { parties: 3, position: "4", sources: 1 },
   ]);
   reopened.close();
+});
+
+type NamedLegacyManifest = {
+  assetId: string;
+  continuation: { observationVersion: number; sourceVersion: number };
+  selectedManualRelationshipId: string | null;
+  applied: {
+    namedRelationshipId: string;
+    siblingRelationshipId: string;
+  }[];
+  beforeMigration: Record<string, LegacyRelationship[]>;
+};
+
+/** 复制固定点 911a0c3 经公开更正装配的具名旧更正快照，不做任何迁移。 */
+const copyNamedLegacyFixture = async (directory: string) => {
+  const fixture = path.join(import.meta.dirname, "fixtures", directory);
+  const manifest = JSON.parse(
+    await readFile(path.join(fixture, "manifest.json"), "utf8"),
+  ) as NamedLegacyManifest;
+  const root = await mkdtemp(
+    path.join(tmpdir(), "digital-legacy-named-fix-migration-"),
+  );
+  cleanup.push(root);
+  await mkdir(path.join(root, "managed-artifacts"), { recursive: true });
+  await copyFile(
+    path.join(fixture, "catalogue.sqlite"),
+    path.join(root, "catalogue.sqlite"),
+  );
+  return { fixture, manifest, root };
+};
+
+/** 只经正式迁移读取具名旧更正快照，验证迁移本身不借助任何私表注入。 */
+const openNamedLegacyFixture = async (directory: string) => {
+  const copied = await copyNamedLegacyFixture(directory);
+  await prepareWithFormalMigration(copied.root);
+  return copied;
+};
+
+it("具名旧更正经正式迁移只替换被点名的来源事实，兄弟事实与刷新重开各自生效", async () => {
+  const { manifest, root } = await openNamedLegacyFixture(
+    "legacy-named-relationship-fix",
+  );
+  const catalogue = SqliteCatalogue.forProductData(root);
+  const continuation = { ...legacyFixture.state, ...manifest.continuation };
+  const workflow = reevaluationWorkflow(catalogue, continuation);
+  const factsOf = async (subject: string) =>
+    legacyFactsFor(
+      (await workflow.inspectCurrentCatalogueEntity(subject))!
+        .relationships as unknown as LegacyRelationship[],
+      subject,
+    );
+  /** 从担任 performer 的参与者反查，决定绝不波及它参与的其他坐标。 */
+  const performerFacts = async () =>
+    legacyShape(
+      legacyFactsFor(
+        (await workflow.inspectCurrentCatalogueEntity("journey-performer"))!
+          .relationships as unknown as LegacyRelationship[],
+        "journey-performer",
+        "performer",
+      ),
+    );
+  const oldAlternate = legacyFactsFor(
+    manifest.beforeMigration["journey-alternate"] ?? [],
+    "journey-alternate",
+  );
+  // 旧快照里整体更正压掉了同坐标全部来源事实，只剩人工替代事实。
+  expect(legacyShape(oldAlternate)).toEqual([
+    { parties: 2, position: "3", sources: 1 },
+    { parties: 3, position: "8", sources: 0 },
+  ]);
+  const migrated = await factsOf("journey-alternate");
+  expect(legacyShape(migrated)).toEqual([
+    { parties: 2, position: "3", sources: 1 },
+    { parties: 3, position: "3", sources: 1 },
+    { parties: 3, position: "8", sources: 0 },
+  ]);
+  // 替代事实仍是快照里那一项人工根据，被点名的来源事实不生效，同槽位兄弟恢复生效。
+  expect(
+    migrated.find(({ parties, position }) => parties === 3 && position === "8")!
+      .id,
+  ).toBe(oldAlternate.find(({ sources }) => sources === 0)!.id);
+  expect(
+    migrated.some(({ id }) => id === manifest.applied[0].namedRelationshipId),
+  ).toBe(false);
+  expect(legacyShape(await factsOf("journey-series"))).toEqual([
+    { parties: 2, position: "1", sources: 1 },
+    { parties: 3, position: "1", sources: 1 },
+    { parties: 3, position: "3", sources: 1 },
+  ]);
+  expect(await performerFacts()).toEqual([
+    { parties: 3, position: "1", sources: 1 },
+    { parties: 3, position: "3", sources: 1 },
+    { parties: 3, position: "3", sources: 1 },
+    { parties: 3, position: "8", sources: 0 },
+  ]);
+  expect(
+    (
+      await workflow.refreshMetadata({
+        selection: {
+          version: "asset-refresh-selection/1",
+          subjects: [
+            {
+              subjectId: manifest.assetId,
+              explanations: [{ path: ["具名旧更正迁移"] }],
+            },
+          ],
+          filesystemScopes: [],
+        },
+        initiatedBy: "user:legacy",
+      })
+    ).execution.status,
+  ).toBe("completed");
+  // 刷新只沿各自稳定槽位给出后继：被点名槽位继续由人工替代事实生效。
+  expect(legacyShape(await factsOf("journey-alternate"))).toEqual([
+    { parties: 2, position: "3", sources: 1 },
+    { parties: 3, position: "4", sources: 1 },
+    { parties: 3, position: "8", sources: 0 },
+  ]);
+  expect(legacyShape(await factsOf("journey-series"))).toEqual([
+    { parties: 2, position: "1", sources: 1 },
+    { parties: 3, position: "1", sources: 1 },
+    { parties: 3, position: "4", sources: 1 },
+  ]);
+  catalogue.close();
+  const reopened = SqliteCatalogue.forProductData(root);
+  const reopenedWorkflow = reevaluationWorkflow(reopened, continuation);
+  const reopenedFacts = async () =>
+    legacyFactsFor(
+      (await reopenedWorkflow.inspectCurrentCatalogueEntity(
+        "journey-alternate",
+      ))!.relationships as unknown as LegacyRelationship[],
+      "journey-alternate",
+    );
+  expect(legacyShape(await reopenedFacts())).toEqual([
+    { parties: 2, position: "3", sources: 1 },
+    { parties: 3, position: "4", sources: 1 },
+    { parties: 3, position: "8", sources: 0 },
+  ]);
+  const replacement = (await reopenedFacts()).find(
+    ({ sources }) => sources === 0,
+  )!;
+  const decide = async (change: {
+    kind: "clear" | "select";
+    targetRelationshipId: string;
+  }) =>
+    await reopenedWorkflow.applyRelationshipChange({
+      actorId: "user:legacy",
+      preview: await reopenedWorkflow.previewRelationshipChange({
+        changes: [change],
+      }),
+    });
+  // 清除只让被点名槽位回到当前来源推导，同坐标兄弟不受影响。
+  expect(
+    await decide({ kind: "clear", targetRelationshipId: replacement.id }),
+  ).toBe("applied");
+  expect(legacyShape(await reopenedFacts())).toEqual([
+    { parties: 2, position: "3", sources: 1 },
+    { parties: 3, position: "4", sources: 1 },
+    { parties: 3, position: "9", sources: 1 },
+  ]);
+  // 人工根据不被删除，仍可被点名选中，且只生效那一项。
+  expect(
+    await decide({ kind: "select", targetRelationshipId: replacement.id }),
+  ).toBe("applied");
+  expect(legacyShape(await reopenedFacts())).toEqual([
+    { parties: 2, position: "3", sources: 1 },
+    { parties: 3, position: "4", sources: 1 },
+    { parties: 3, position: "8", sources: 0 },
+  ]);
+  reopened.close();
+});
+
+it("旧具名选择指向人工替代事实时按同一被点名证据生效，不复活被更正来源", async () => {
+  const { manifest, root } = await openNamedLegacyFixture(
+    "legacy-named-relationship-fix-select",
+  );
+  const catalogue = SqliteCatalogue.forProductData(root);
+  const continuation = { ...legacyFixture.state, ...manifest.continuation };
+  const workflow = reevaluationWorkflow(catalogue, continuation);
+  const factsOf = async (subject: string) =>
+    legacyFactsFor(
+      (await workflow.inspectCurrentCatalogueEntity(subject))!
+        .relationships as unknown as LegacyRelationship[],
+      subject,
+    );
+  expect(legacyShape(await factsOf("journey-alternate"))).toEqual([
+    { parties: 2, position: "3", sources: 1 },
+    { parties: 3, position: "4", sources: 1 },
+    { parties: 3, position: "8", sources: 0 },
+  ]);
+  const current = await factsOf("journey-alternate");
+  expect(current.find(({ sources }) => sources === 0)!.id).toBe(
+    manifest.selectedManualRelationshipId!,
+  );
+  expect(
+    current.some(({ id }) => id === manifest.applied[0].namedRelationshipId),
+  ).toBe(false);
+  expect(
+    (
+      await workflow.refreshMetadata({
+        selection: {
+          version: "asset-refresh-selection/1",
+          subjects: [
+            {
+              subjectId: manifest.assetId,
+              explanations: [{ path: ["具名旧选择迁移"] }],
+            },
+          ],
+          filesystemScopes: [],
+        },
+        initiatedBy: "user:legacy",
+      })
+    ).execution.status,
+  ).toBe("completed");
+  expect(legacyShape(await factsOf("journey-alternate"))).toEqual([
+    { parties: 2, position: "3", sources: 1 },
+    { parties: 3, position: "5", sources: 1 },
+    { parties: 3, position: "8", sources: 0 },
+  ]);
+  catalogue.close();
+  const reopened = SqliteCatalogue.forProductData(root);
+  expect(
+    legacyFactsFor(
+      (await reevaluationWorkflow(
+        reopened,
+        continuation,
+      ).inspectCurrentCatalogueEntity("journey-alternate"))!
+        .relationships as unknown as LegacyRelationship[],
+      "journey-alternate",
+    ).map(({ parties, position, sources }) => ({
+      parties,
+      position,
+      sources,
+    })),
+  ).toEqual([
+    { parties: 2, position: "3", sources: 1 },
+    { parties: 3, position: "5", sources: 1 },
+    { parties: 3, position: "8", sources: 0 },
+  ]);
+  reopened.close();
+});
+
+it("具名旧更正点名缺失或跨目标事实令正式迁移失败闭锁", async () => {
+  // 只破坏真实公开样例的自有副本：点名事实改成不存在的引用。
+  const missing = await copyNamedLegacyFixture("legacy-named-relationship-fix");
+  const missingCorruption = new DatabaseSync(
+    path.join(missing.root, "catalogue.sqlite"),
+  );
+  missingCorruption
+    .prepare(
+      `UPDATE relationship_decisions
+          SET relationship_ids_json = '["entity-relationship_missing"]'`,
+    )
+    .run();
+  missingCorruption.close();
+  await expect(prepareWithFormalMigration(missing.root)).rejects.toThrow(
+    "formal test catalogue migration failed",
+  );
+  expect(
+    await SqliteCatalogue.inspectProductionReadiness({
+      productDataDirectory: missing.root,
+    }),
+  ).toMatchObject({ state: "migration-failed" });
+
+  // 一次更正不可能同时属于两个稳定槽位；点名跨目标同样必须闭锁而不是任选其一。
+  const crossed = await copyNamedLegacyFixture("legacy-named-relationship-fix");
+  const crossCorruption = new DatabaseSync(
+    path.join(crossed.root, "catalogue.sqlite"),
+  );
+  const named = crossCorruption
+    .prepare(
+      `SELECT json_group_array(relationship_id) AS ids FROM (
+         SELECT relationship_id FROM relationship_lifecycles
+          WHERE source_slot = 'journey.crew.tertiary'
+          UNION
+         SELECT relationship_id FROM relationship_lifecycles
+          WHERE source_slot = 'journey.alternate-pair')`,
+    )
+    .get()!;
+  crossCorruption
+    .prepare(`UPDATE relationship_decisions SET relationship_ids_json = ?`)
+    .run(String(named.ids));
+  crossCorruption.close();
+  await expect(prepareWithFormalMigration(crossed.root)).rejects.toThrow(
+    "formal test catalogue migration failed",
+  );
+  expect(
+    await SqliteCatalogue.inspectProductionReadiness({
+      productDataDirectory: crossed.root,
+    }),
+  ).toMatchObject({ state: "migration-failed" });
 });
 
 it("损坏的旧决定引用令正式迁移失败闭锁并拒绝运行时准入", async () => {

@@ -1057,7 +1057,10 @@ export class SqliteCatalogue
                   ? "fix"
                   : change.kind,
               definitionId: correction?.definitionId ?? null,
-              manualRelationshipId: manualRelationshipId ?? null,
+              manualRelationshipId:
+                manualRelationshipId ??
+                this.selectedManualEvidence(change, state) ??
+                null,
               actorId: input.actorId,
             })
             .run();
@@ -1138,6 +1141,8 @@ export class SqliteCatalogue
         targets.set(manualRelationshipId, target);
         manualRelationshipIds.add(manualRelationshipId);
       }
+      const evidence =
+        manualRelationshipId ?? this.selectedManualEvidence(change, state);
       decisions.set(key, {
         id: `preview:${key}`,
         target,
@@ -1145,7 +1150,7 @@ export class SqliteCatalogue
           change.kind === "create" || change.kind === "replace"
             ? "fix"
             : change.kind,
-        ...(manualRelationshipId === undefined ? {} : { manualRelationshipId }),
+        ...(evidence === undefined ? {} : { manualRelationshipId: evidence }),
       });
     }
     const effective = deriveEffectiveRelationships({
@@ -1237,6 +1242,20 @@ export class SqliteCatalogue
           }
         : change,
     );
+  }
+
+  /**
+   * 选择人工事实时把被点名那一项记为决定证据，使同一目标下的历史人工事实不再生效；
+   * 选择来源事实没有人工证据，沿用该目标当前的来源推导。
+   */
+  private selectedManualEvidence(
+    change: RelationshipChange,
+    state: RelationshipProjectionState,
+  ): string | undefined {
+    return change.kind === "select" &&
+      state.manualRelationshipIds.has(change.targetRelationshipId)
+      ? change.targetRelationshipId
+      : undefined;
   }
 
   /** 决定只作用于被点名事实的稳定支持范围；范围不唯一时绝不批量修改或任选其一。 */

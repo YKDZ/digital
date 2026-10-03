@@ -1,6 +1,6 @@
 -- 关系决定的作用范围从「类型＋参与者」整体坐标改为被点名事实的稳定支持范围。
--- 旧决定只有在既有证据足以唯一确定目标时才绑定该事实的目标；证据不足时把人工事实
--- 保全为独立人工目标，让各来源事实恢复各自生效。迁移绝不猜测，也不留下旧坐标读取路径。
+-- 旧决定优先按被点名事实的既有支持范围绑定目标；没有点名证据时才使用旧坐标规则。
+-- 迁移绝不猜测，点名缺失或跨多个支持范围都按损坏失败闭锁，也不留下旧坐标读取路径。
 
 CREATE TEMP TABLE relationship_fact_support_targets AS
 WITH candidates AS (
@@ -71,8 +71,8 @@ JOIN relationship_current_facts AS fact
       AND participant.role = json_extract(declared.value, '$.role')));
 
 -- 旧人工事实既没有来源生命周期也没有观察支持，只能由支持它的更正决定说明目标。
--- 恰有一项同坐标非人工当前事实时沿用该事实的目标；否则把人工修正保全为独立人工目标。
-CREATE TEMP TABLE relationship_fix_targets AS
+-- 这一回退沿用旧坐标规则：恰有一项同坐标非人工当前事实时沿用该事实的目标，否则保全为独立人工目标。
+CREATE TEMP TABLE relationship_fix_fallback_targets AS
 SELECT decision.id AS decision_id,
        COALESCE(bucket.target_json,
                 json_object('kind', 'manual', 'targetId', 'legacy-manual-' || decision.id))
@@ -86,6 +86,40 @@ LEFT JOIN (
 ) AS bucket ON bucket.decision_id = decision.id
 WHERE decision.kind = 'fix';
 
+CREATE TEMP TABLE relationship_fallback_fact_targets AS
+SELECT relationship_id, target_json FROM relationship_fact_support_targets
+UNION ALL
+SELECT manual.relationship_id, fallback.target_json
+FROM relationship_manual_supports AS manual
+JOIN relationship_fix_fallback_targets AS fallback ON fallback.decision_id = manual.decision_id;
+
+-- 旧更正点名了事实时，被点名事实的支持范围优先于旧坐标；点名汇总要求逐项可解析且范围唯一。
+-- 人工事实先按其创建更正的旧坐标回退范围解析，避免用尚未确定的目标反推。
+CREATE TEMP TABLE relationship_named_fix_bindings AS
+SELECT decision.id AS decision_id,
+       min(target.target_json) AS target_json,
+       count(target.target_json) AS resolved,
+       count(DISTINCT target.target_json) AS distinct_targets,
+       count(*) AS named_total
+FROM relationship_decisions AS decision
+JOIN json_each(decision.relationship_ids_json) AS named
+LEFT JOIN relationship_fallback_fact_targets AS target ON target.relationship_id = named.value
+WHERE decision.kind = 'fix' AND named.type = 'text'
+GROUP BY decision.id;
+
+-- 点名证据唯一确定支持范围时以其为准，没有点名证据时才使用上面的旧坐标回退。
+CREATE TEMP TABLE relationship_fix_targets AS
+SELECT decision.id AS decision_id,
+       COALESCE(binding.target_json, fallback.target_json) AS target_json
+FROM relationship_decisions AS decision
+JOIN relationship_fix_fallback_targets AS fallback ON fallback.decision_id = decision.id
+LEFT JOIN relationship_named_fix_bindings AS binding
+  ON binding.decision_id = decision.id
+ AND binding.resolved = binding.named_total
+ AND binding.distinct_targets = 1
+WHERE decision.kind = 'fix';
+
+-- 每项事实的最终支持范围：人工事实一律跟随创建它的更正，读取时也如此推导。
 CREATE TEMP TABLE relationship_fact_targets AS
 SELECT relationship_id, target_json FROM relationship_fact_support_targets
 UNION ALL
@@ -122,6 +156,10 @@ WHERE json_valid(decision.coordinate_json) = 0
    OR json_array_length(decision.coordinate_json, '$.participants') < 2
    OR json_valid(decision.relationship_ids_json) = 0
    OR json_type(decision.relationship_ids_json) <> 'array';
+-- 更正点名了缺失或跨多个支持范围的事实属损坏：既不任选其一，也不静默改回旧坐标。
+INSERT INTO relationship_migration_guard
+SELECT 1 FROM relationship_named_fix_bindings
+WHERE resolved <> named_total OR distinct_targets > 1;
 INSERT INTO relationship_migration_guard
 SELECT 1 FROM relationship_decisions AS decision
 JOIN relationship_decision_heads AS head ON head.decision_id = decision.id
@@ -153,13 +191,17 @@ JOIN relationship_fix_targets AS fix ON fix.decision_id = decision.id
 LEFT JOIN relationship_decision_heads AS head ON head.decision_id = decision.id;
 
 -- 点名的选择与排除各自绑定被点名事实的目标；同坐标其他事实不再被撤销。
+-- 选择指向人工事实时把该项记为决定证据，与运行时的单项选择语义完全一致。
 INSERT INTO relationship_migrated_decisions
-SELECT decision.id || ':' || named.value, target.target_json, decision.kind, NULL,
+SELECT decision.id || ':' || named.value, target.target_json, decision.kind,
+       CASE WHEN decision.kind = 'select' AND manual.relationship_id IS NOT NULL
+            THEN named.value END,
        decision.actor_id, decision.rowid, 1
 FROM relationship_decisions AS decision
 JOIN relationship_decision_heads AS head ON head.decision_id = decision.id
 JOIN json_each(decision.relationship_ids_json) AS named
 JOIN relationship_fact_targets AS target ON target.relationship_id = named.value
+LEFT JOIN relationship_manual_supports AS manual ON manual.relationship_id = named.value
 WHERE decision.kind IN ('select', 'exclude')
   AND json_array_length(decision.relationship_ids_json) > 0;
 
@@ -231,7 +273,10 @@ CREATE INDEX relationship_manual_supports_decision
 
 DROP TABLE relationship_migrated_decisions;
 DROP TABLE relationship_fact_targets;
+DROP TABLE relationship_named_fix_bindings;
+DROP TABLE relationship_fallback_fact_targets;
 DROP TABLE relationship_fix_targets;
+DROP TABLE relationship_fix_fallback_targets;
 DROP TABLE relationship_bucket_members;
 DROP TABLE relationship_current_facts;
 DROP TABLE relationship_fact_support_targets;

@@ -27,7 +27,7 @@ export type RelationshipDecision = {
   readonly id: string;
   readonly target: RelationshipDecisionTarget;
   readonly kind: "select" | "fix" | "exclude" | "clear";
-  /** fix 是独立且有人工作为支持的事实。 */
+  /** fix 的替代事实与 select 点名的证据事实都在此字段上，两者同样只让一项生效。 */
   readonly manualRelationshipId?: string;
 };
 
@@ -78,8 +78,16 @@ export function deriveEffectiveRelationships(
       if (decision.kind === "exclude") return [];
       if (decision.kind === "clear")
         return target.kind === "manual" ? [] : supported;
-      if (decision.kind === "select")
+      if (decision.kind === "select") {
+        // 点名的选择只让被点名那一项人工证据生效，同目标下的其它人工事实不再复活。
+        if (decision.manualRelationshipId !== undefined)
+          return manual.filter(
+            (relationship) => relationship.id === decision.manualRelationshipId,
+          );
+        // 没有点名证据的选择沿用该目标当前生效的事实。
         return target.kind === "manual" ? manual : supported;
+      }
+      // 更正只让它生成的那一项替代事实生效。
       return manual.filter(
         (relationship) => relationship.id === decision.manualRelationshipId,
       );
