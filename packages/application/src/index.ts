@@ -2549,7 +2549,6 @@ function isStrictSourcedEntity(value: unknown): boolean {
       [
         "id",
         "identityNamespace",
-        "kind",
         "label",
         "sourceIdentity",
         "sourceKey",
@@ -2557,7 +2556,6 @@ function isStrictSourcedEntity(value: unknown): boolean {
       ],
       ["producer"],
     ) &&
-    ["entity", "person", "persona"].includes(value.kind as string) &&
     [
       value.id,
       value.identityNamespace,
@@ -5097,8 +5095,6 @@ function canonicalEffectiveKindImpact(kind: EffectiveEntityKind): object {
       return { status: "ordinary" };
     case "effective":
       return { status: "effective", kind: kind.kind, basis: kind.basis };
-    case "conflict":
-      return { status: "conflict", kinds: [...kind.kinds].toSorted() };
   }
 }
 
@@ -5152,7 +5148,6 @@ export type RelatedEntityIdentityPersistence = {
     readonly commitmentId: string;
     readonly id: string;
     readonly label: string;
-    readonly kind: "entity" | "person" | "persona";
     readonly actorId: string;
   }): Promise<RelatedEntityIdentity>;
   findRelatedEntities(label: string): Promise<readonly RelatedEntityIdentity[]>;
@@ -5199,24 +5194,6 @@ export type RelatedEntityIdentityPersistence = {
   retractEntityMentionResolution(input: {
     readonly id: string;
     readonly mentionId: string;
-    readonly actorId: string;
-    readonly baseline: string;
-  }): Promise<"applied" | "stale">;
-  previewEntityKindDecision(input: {
-    readonly entityId: string;
-    readonly selectedKind?: "person" | "persona";
-  }): Promise<{
-    readonly entityId: string;
-    /** 采用时必须回传这个覆盖断言及当前决定的基线。 */
-    readonly baseline: string;
-    readonly currentDecisionId?: string;
-    readonly selectedKind?: "person" | "persona";
-    readonly effective: import("@digital/domain").EffectiveEntityKind;
-  }>;
-  applyEntityKindDecision(input: {
-    readonly id: string;
-    readonly entityId: string;
-    readonly selectedKind?: "person" | "persona";
     readonly actorId: string;
     readonly baseline: string;
   }): Promise<"applied" | "stale">;
@@ -9430,7 +9407,6 @@ export class AssetRefreshWorkflow {
   async createLocalRelatedEntity(input: {
     readonly commitmentId: string;
     readonly label: string;
-    readonly kind: "entity" | "person" | "persona";
     readonly actorId: string;
   }): Promise<RelatedEntityIdentity> {
     if (input.label.trim().length === 0)
@@ -9444,7 +9420,6 @@ export class AssetRefreshWorkflow {
         .digest("hex")}`,
       commitmentId: input.commitmentId,
       label: input.label,
-      kind: input.kind,
       actorId: input.actorId,
     });
   }
@@ -9638,27 +9613,6 @@ export class AssetRefreshWorkflow {
         ...input,
       },
     );
-  }
-
-  async previewEntityKindDecision(input: {
-    readonly entityId: string;
-    readonly selectedKind?: "person" | "persona";
-  }) {
-    return await this.requireRelatedEntityIdentity().previewEntityKindDecision(
-      input,
-    );
-  }
-
-  async applyEntityKindDecision(input: {
-    readonly entityId: string;
-    readonly selectedKind?: "person" | "persona";
-    readonly actorId: string;
-    readonly baseline: string;
-  }): Promise<"applied" | "stale"> {
-    return await this.requireRelatedEntityIdentity().applyEntityKindDecision({
-      id: id("entity-kind-decision"),
-      ...input,
-    });
   }
 
   private requireRelatedEntityIdentity(): RelatedEntityIdentityPersistence {

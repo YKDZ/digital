@@ -187,31 +187,28 @@ export const entityKindAssertions = sqliteTable(
   (table) => [
     primaryKey({ columns: [table.id] }),
     index("entity_kind_assertions_entity").on(table.entityId),
-    check(
-      "entity_kind_assertions_kind",
-      sql`kind IN ('digital-asset', 'person', 'persona')`,
-    ),
+    check("entity_kind_assertions_kind", sql`kind = 'digital-asset'`),
   ],
 );
 
-export const entityKindDecisions = sqliteTable(
-  "entity_kind_decisions",
+/**
+ * 只由正式迁移写入的已退出模型人工种类判断历史。它不参与生效种类投影，
+ * 也没有运行时写入、选择或兼容解码入口。
+ */
+export const entityKindManualHistory = sqliteTable(
+  "entity_kind_manual_history",
   {
-    id: text().notNull(),
+    sourceTable: text("source_table").notNull(),
+    sourcePrimaryKey: text("source_primary_key").notNull(),
     entityId: text("entity_id").notNull(),
-    selectedKind: text("selected_kind"),
-    basis: text().notNull(),
-    replacesDecisionId: text("replaces_decision_id"),
-    actorId: text("actor_id"),
-    operation: text().notNull().default("select"),
+    rowJson: text("row_json").notNull(),
+    migrationId: text("migration_id").notNull(),
   },
   (table) => [
-    primaryKey({ columns: [table.id] }),
-    index("entity_kind_decisions_entity").on(table.entityId),
-    check(
-      "entity_kind_decisions_kind",
-      sql`selected_kind IS NULL OR selected_kind IN ('digital-asset', 'person', 'persona')`,
-    ),
+    primaryKey({
+      columns: [table.sourceTable, table.sourcePrimaryKey],
+    }),
+    index("entity_kind_manual_history_entity").on(table.entityId),
   ],
 );
 
@@ -229,7 +226,7 @@ export const localEntityNames = sqliteTable(
   ],
 );
 
-/** 本地身份提交的窄幂等坐标；后续种类决定绝不改变原提交内容。 */
+/** 本地身份提交的窄幂等坐标。 */
 export const localEntityCommitments = sqliteTable(
   "local_entity_commitments",
   {
@@ -237,49 +234,8 @@ export const localEntityCommitments = sqliteTable(
     commitmentId: text("commitment_id").notNull(),
     entityId: text("entity_id").notNull(),
     label: text().notNull(),
-    submittedKind: text("submitted_kind").notNull(),
   },
-  (table) => [
-    primaryKey({ columns: [table.actorId, table.commitmentId] }),
-    check(
-      "local_entity_commitments_kind",
-      sql`submitted_kind IN ('entity', 'person', 'persona')`,
-    ),
-  ],
-);
-
-/** 来源实体种类的不可变支持；当前性由每个谱系的末叶投影。 */
-export const entityKindSourceSupports = sqliteTable(
-  "entity_kind_source_supports",
-  {
-    id: text().notNull(),
-    entityId: text("entity_id").notNull(),
-    sourceSubjectId: text("source_subject_id").notNull(),
-    sourceIdentity: text("source_identity").notNull(),
-    nativeAddress: text("native_address").notNull(),
-    coverageId: text("coverage_id").notNull(),
-    sourceRecordId: text("source_record_id").notNull(),
-    assertionId: text("assertion_id"),
-    predecessorId: text("predecessor_id"),
-    operation: text().notNull(),
-  },
-  (table) => [
-    primaryKey({ columns: [table.id] }),
-    uniqueIndex("entity_kind_source_support_predecessor").on(
-      table.predecessorId,
-    ),
-    index("entity_kind_source_support_scope").on(
-      table.entityId,
-      table.sourceSubjectId,
-      table.sourceIdentity,
-      table.nativeAddress,
-      table.coverageId,
-    ),
-    check(
-      "entity_kind_source_support_operation",
-      sql`operation IN ('assert', 'retract')`,
-    ),
-  ],
+  (table) => [primaryKey({ columns: [table.actorId, table.commitmentId] })],
 );
 
 /** 当前部署的单一本地用户注册；它只承载操作归属与交互状态。 */
@@ -1551,8 +1507,7 @@ export const catalogueSchema = {
   recognitionProposals,
   entities,
   entityKindAssertions,
-  entityKindDecisions,
-  entityKindSourceSupports,
+  entityKindManualHistory,
   localEntityCommitments,
   localEntityNames,
   localUsers,

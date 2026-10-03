@@ -62,17 +62,17 @@ describe("Film View", () => {
         {
           id: "director",
           label: "金秉祐",
-          kind: { status: "effective", kind: "person", basis: "assertion" },
+          kind: { status: "ordinary" },
         },
         {
           id: "cast-1",
           label: "河正宇",
-          kind: { status: "effective", kind: "person", basis: "assertion" },
+          kind: { status: "ordinary" },
         },
         {
           id: "cast-2",
           label: "李璟荣",
-          kind: { status: "effective", kind: "person", basis: "assertion" },
+          kind: { status: "ordinary" },
         },
       ],
       relationships: [

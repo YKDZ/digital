@@ -623,7 +623,6 @@ export class DlsiteSourceInterpreter implements SourceInterpreter {
     const mention = (i: {
       readonly field: string;
       readonly role: string;
-      readonly kind: "entity" | "persona";
       readonly value: string;
       readonly sourceKey?: string;
       readonly sourceRecordId: string;
@@ -645,7 +644,6 @@ export class DlsiteSourceInterpreter implements SourceInterpreter {
       if (entity === undefined) {
         entity = {
           id: sourcedEntityId(identityNamespace, sourceKey),
-          kind: i.kind,
           sourceIdentity: "dlsite",
           sourceKey,
           identityNamespace,
@@ -704,7 +702,6 @@ export class DlsiteSourceInterpreter implements SourceInterpreter {
       mention({
         field: "maker",
         role: "circle",
-        kind: "entity",
         value: makerName,
         sourceKey: makerId,
         sourceRecordId:
@@ -717,7 +714,6 @@ export class DlsiteSourceInterpreter implements SourceInterpreter {
     if (seriesId.length > 0 && seriesName !== undefined) {
       const series: SourcedEntity = {
         id: sourcedEntityId("dlsite.series", seriesId),
-        kind: "entity",
         sourceIdentity: "dlsite",
         sourceKey: seriesId,
         identityNamespace: "dlsite.series",
@@ -755,7 +751,6 @@ export class DlsiteSourceInterpreter implements SourceInterpreter {
         mention({
           field,
           role,
-          kind: "persona",
           value: credit,
           sourceRecordId: jsonCredits.length > 0 ? productRecordId : html.id,
           namespace: `dlsite.credit.${field}.${role}`,

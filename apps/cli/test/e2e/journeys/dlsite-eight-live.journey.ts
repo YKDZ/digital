@@ -348,7 +348,6 @@ const journey: CliJourney = {
         const entities = inspection.accepted?.entities ?? [];
         const circle = entities.find(
           (entity) =>
-            entity.kind === "entity" &&
             entity.identityNamespace === "dlsite.circle" &&
             entity.sourceKey === work.circleSourceKey &&
             entity.label === work.circle,
@@ -378,7 +377,6 @@ const journey: CliJourney = {
           for (const credit of expectedCredits) {
             const persona = entities.find(
               (entity) =>
-                entity.kind === "persona" &&
                 entity.identityNamespace === namespace &&
                 entity.sourceKey === credit &&
                 entity.label === credit &&

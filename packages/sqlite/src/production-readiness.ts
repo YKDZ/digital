@@ -15,10 +15,11 @@ import {
 } from "@digital/application";
 
 import { matchesReviewedCatalogueSchema } from "./schema-contract.ts";
+import { workflowExecutionAuditVersion } from "./schema.ts";
 import { canonicalJson } from "./workflow-execution-persistence.ts";
 
 export const productionCatalogueMigrationHead =
-  "20261003000000_unbind_local_user";
+  "20261003010000_ordinary_people_and_personas";
 export const productionCatalogueMigrationPlan = [
   {
     id: "20260820000000_v1_catalogue_baseline",
@@ -111,9 +112,14 @@ export const productionCatalogueMigrationPlan = [
       "e75a92ec15b4b2d8e5dd1f02c55db83cf9458f84f315d9d1baee31e88274f0cd",
   },
   {
-    id: productionCatalogueMigrationHead,
+    id: "20261003000000_unbind_local_user",
     checksum:
       "2cec585f48aac97ed78c2d4a3b825754c279ac05290ce53ef170d460a95cc45e",
+  },
+  {
+    id: productionCatalogueMigrationHead,
+    checksum:
+      "497ace5c5beefc14c1a4255990e1e7c52ea9e05d4e14ae45d1a7c8b033a3eb9a",
   },
 ] as const;
 
@@ -934,6 +940,237 @@ export function assertExactLegacySourceEnrichmentAuthority(
     })
   )
     throw new Error("旧来源补充权威结构无效");
+}
+
+/** 固定点持久来源解释快照中每个实体条目的旧严格形状。 */
+const retiredSourcedEntityKeys = [
+  "id",
+  "identityNamespace",
+  "kind",
+  "label",
+  "sourceIdentity",
+  "sourceKey",
+  "sourceRecordIds",
+] as const;
+
+/** E02 迁移需要证明依据的全部已知持久解释位置。 */
+const ordinaryEntityInterpretationSites = [
+  `SELECT entity.value AS document FROM recognition_proposals AS proposal,
+           json_each(proposal.basis_json, '$.interpretation.entities') AS entity
+   WHERE json_type(proposal.basis_json, '$.interpretation.entities') = 'array'`,
+  `SELECT entity.value AS document FROM source_refresh_change_sets AS changeset,
+           json_each(changeset.interpretation_json, '$.entities') AS entity
+   WHERE json_type(changeset.interpretation_json, '$.entities') = 'array'`,
+  `SELECT entity.value AS document FROM current_source_artifact_candidate_lineages AS lineage,
+           json_each(lineage.interpretation_json, '$.entities') AS entity
+   WHERE json_type(lineage.interpretation_json, '$.entities') = 'array'`,
+  `SELECT entity.value AS document FROM change_impact_previews AS preview,
+           json_each(preview.preview_json, '$.current.entities') AS entity
+   WHERE json_type(preview.preview_json, '$.current.entities') = 'array'`,
+  `SELECT entity.value AS document FROM change_impact_previews AS preview,
+           json_each(preview.preview_json, '$.projected.entities') AS entity
+   WHERE json_type(preview.preview_json, '$.projected.entities') = 'array'`,
+  `SELECT entity.value AS document FROM change_impact_previews AS preview,
+           json_each(preview.preview_json, '$.proposal.basis.interpretation.entities') AS entity
+   WHERE json_type(preview.preview_json, '$.proposal.basis.interpretation.entities') = 'array'`,
+  `SELECT entity.value AS document FROM change_impact_previews AS preview,
+           json_each(preview.preview_json, '$.change.proposal.basis.interpretation.entities') AS entity
+   WHERE json_type(preview.preview_json, '$.change.proposal.basis.interpretation.entities') = 'array'`,
+  `SELECT entity.value AS document FROM workflow_executions AS execution,
+           json_each(execution.source_enrichments_json) AS checkpoint,
+           json_each(checkpoint.value, '$.interpretation.entities') AS entity
+   WHERE json_type(checkpoint.value, '$.interpretation.entities') = 'array'`,
+  `SELECT entity.value AS document FROM workflow_executions AS execution,
+           json_each(execution.source_association_decision_json, '$.candidates') AS candidate,
+           json_each(candidate.value, '$.interpretation.entities') AS entity
+   WHERE json_type(execution.source_association_decision_json, '$.candidates') = 'array'
+     AND json_type(candidate.value, '$.interpretation.entities') = 'array'`,
+  `SELECT entity.value AS document FROM workflow_executions AS execution,
+           json_each(execution.audit_json, '$.payload.sourceEnrichments') AS checkpoint,
+           json_each(checkpoint.value, '$.interpretation.entities') AS entity
+   WHERE json_type(checkpoint.value, '$.interpretation.entities') = 'array'`,
+  `SELECT entity.value AS document FROM workflow_executions AS execution,
+           json_each(execution.audit_json, '$.payload.sourceAssociationDecision.candidates') AS candidate,
+           json_each(candidate.value, '$.interpretation.entities') AS entity
+   WHERE json_type(candidate.value, '$.interpretation.entities') = 'array'`,
+] as const;
+
+/**
+ * 人物／活动身份迁移前的窄权威预检。它只用固定点旧严格形状验证已知解释位置，并要求
+ * 人物／活动身份的来源依据指向真实存在的 Source Record；形状未知或依据不成立时抛错，
+ * 让正式 prepare 整体回滚。该检查只服务这次迁移，运行时没有第二套兼容解码入口。
+ */
+export function assertOrdinaryEntityMigrationAuthority(
+  database: DatabaseSync,
+): void {
+  const existingSourceRecord = database.prepare(
+    "SELECT 1 FROM source_records WHERE id = ?",
+  );
+  for (const site of ordinaryEntityInterpretationSites) {
+    for (const { document } of database.prepare(site).all() as Array<{
+      readonly document: string;
+    }>) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(document);
+      } catch {
+        throw new Error("持久来源解释实体无法解析");
+      }
+      assertRetiredSourcedEntity(
+        parsed,
+        (recordId) => existingSourceRecord.get(recordId) !== undefined,
+      );
+    }
+  }
+  const mirrors = database
+    .prepare(`
+      SELECT audit_json AS audit,
+             source_enrichments_json AS source_enrichments,
+             source_association_decision_json AS source_association_decision
+      FROM workflow_executions WHERE audit_json IS NOT NULL
+    `)
+    .all() as Array<{
+    readonly audit: string;
+    readonly source_enrichments: string;
+    readonly source_association_decision: string | null;
+  }>;
+  if (
+    mirrors.some(
+      ({ audit, source_enrichments, source_association_decision }) => {
+        try {
+          const envelope = JSON.parse(audit) as {
+            readonly version?: unknown;
+            readonly payload?: Record<string, unknown>;
+          };
+          if (
+            envelope.version !== workflowExecutionAuditVersion ||
+            typeof envelope.payload !== "object" ||
+            envelope.payload === null
+          )
+            return true;
+          if (
+            "sourceEnrichments" in envelope.payload &&
+            canonicalJson(envelope.payload.sourceEnrichments) !==
+              canonicalJson(JSON.parse(source_enrichments))
+          )
+            return true;
+          return (
+            source_association_decision !== null &&
+            "sourceAssociationDecision" in envelope.payload &&
+            canonicalJson(envelope.payload.sourceAssociationDecision) !==
+              canonicalJson(JSON.parse(source_association_decision))
+          );
+        } catch {
+          return true;
+        }
+      },
+    )
+  )
+    throw new Error("工作流执行审计镜像与持久列不再一致");
+}
+
+function assertRetiredSourcedEntity(
+  value: unknown,
+  sourceRecordExists: (recordId: string) => boolean,
+): void {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    !hasExactRetiredKeys(
+      value as Record<string, unknown>,
+      retiredSourcedEntityKeys,
+      ["producer"],
+    )
+  )
+    throw new Error("持久来源解释实体形状未知");
+  const entity = value as Record<string, unknown>;
+  if (
+    entity.kind !== "entity" &&
+    entity.kind !== "person" &&
+    entity.kind !== "persona"
+  )
+    throw new Error("持久来源解释实体种类已超出退出前的封闭词汇");
+  if (
+    ![
+      entity.id,
+      entity.identityNamespace,
+      entity.label,
+      entity.sourceIdentity,
+      entity.sourceKey,
+    ].every(isNonEmptyText)
+  )
+    throw new Error("持久来源解释实体缺少身份或来源坐标");
+  const sourceRecordIds = entity.sourceRecordIds;
+  if (
+    !Array.isArray(sourceRecordIds) ||
+    !sourceRecordIds.every(isNonEmptyText) ||
+    new Set(sourceRecordIds).size !== sourceRecordIds.length
+  )
+    throw new Error("持久来源解释实体的来源记录坐标无效");
+  if (
+    entity.producer !== undefined &&
+    !isRetiredCapabilityCoordinate(entity.producer)
+  )
+    throw new Error("持久来源解释实体的生产者坐标无效");
+  if (
+    (entity.kind === "person" || entity.kind === "persona") &&
+    (sourceRecordIds.length === 0 ||
+      !sourceRecordIds.every((recordId: string) =>
+        sourceRecordExists(recordId),
+      ))
+  )
+    throw new Error("人物或活动身份的来源依据不可追溯");
+}
+
+function hasExactRetiredKeys(
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[],
+): boolean {
+  const allowed = new Set([...required, ...optional]);
+  const keys = Object.keys(value);
+  return (
+    keys.every((key) => allowed.has(key)) &&
+    required.every((key) => keys.includes(key))
+  );
+}
+
+function isNonEmptyText(value: unknown): boolean {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isRetiredCapabilityCoordinate(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return false;
+  const coordinate = value as Record<string, unknown>;
+  return (
+    hasExactRetiredKeys(
+      coordinate,
+      ["capabilityId", "capabilityVersion", "contractVersion"],
+      [
+        "identity",
+        "implementationVersion",
+        "kind",
+        "interpretationContractVersions",
+      ],
+    ) &&
+    [
+      coordinate.capabilityId,
+      coordinate.capabilityVersion,
+      coordinate.contractVersion,
+    ].every(isNonEmptyText) &&
+    [
+      coordinate.identity,
+      coordinate.implementationVersion,
+      coordinate.kind,
+    ].every((item) => item === undefined || isNonEmptyText(item)) &&
+    (coordinate.interpretationContractVersions === undefined ||
+      (Array.isArray(coordinate.interpretationContractVersions) &&
+        coordinate.interpretationContractVersions.every(isNonEmptyText) &&
+        new Set(coordinate.interpretationContractVersions).size ===
+          coordinate.interpretationContractVersions.length))
+  );
 }
 
 function matchesCatalogueSchemaWithProductionLedger(

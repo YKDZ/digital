@@ -2658,10 +2658,6 @@ function refreshFixture(options?: {
                                   "https://source.example/other-work"
                               ? "other-work"
                               : "shared-work",
-                        kind:
-                          options?.sourceRelationshipQualifiers === true
-                            ? ("person" as const)
-                            : ("entity" as const),
                         sourceIdentity: "source",
                         sourceKey:
                           options?.sourceRelationshipQualifiers === true

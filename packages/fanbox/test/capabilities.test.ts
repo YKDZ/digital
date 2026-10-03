@@ -2635,7 +2635,6 @@ describe("FANBOX interpretation", () => {
     );
     expect(batch.entities).toMatchObject([
       {
-        kind: "entity",
         sourceKey: "customudon",
         identityNamespace: "fanbox.creator",
         label: "Custom_Udon",

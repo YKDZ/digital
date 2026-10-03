@@ -160,6 +160,7 @@ import { drizzle } from "drizzle-orm/node-sqlite";
 import { enableCatalogueWal } from "./connection.ts";
 import {
   assertExactLegacySourceEnrichmentAuthority,
+  assertOrdinaryEntityMigrationAuthority,
   assertProductionCatalogueReady,
   inspectProductionCatalogueReadiness,
   productionCatalogueMigrationPlan,
@@ -184,8 +185,6 @@ import {
   currentSourceAssociations,
   entities,
   entityKindAssertions,
-  entityKindDecisions,
-  entityKindSourceSupports,
   localEntityCommitments,
   localEntityNames,
   localUsers,
@@ -1518,7 +1517,6 @@ export class SqliteCatalogue
     readonly commitmentId: string;
     readonly id: string;
     readonly label: string;
-    readonly kind: "entity" | "person" | "persona";
     readonly actorId: string;
   }): Promise<RelatedEntityIdentity> {
     const query = drizzle({ client: await this.ensure() });
@@ -1534,10 +1532,7 @@ export class SqliteCatalogue
         )
         .get();
       if (existing !== undefined) {
-        if (
-          existing.label !== input.label ||
-          existing.submittedKind !== input.kind
-        )
+        if (existing.label !== input.label)
           throw new Error("本地身份提交坐标与既有内容冲突");
         return {
           id: existing.entityId,
@@ -1554,7 +1549,6 @@ export class SqliteCatalogue
           commitmentId: input.commitmentId,
           entityId: input.id,
           label: input.label,
-          submittedKind: input.kind,
         })
         .run();
       transaction
@@ -1571,26 +1565,10 @@ export class SqliteCatalogue
         })
         .onConflictDoNothing()
         .run();
-      if (input.kind !== "entity")
-        transaction
-          .insert(entityKindAssertions)
-          .values({
-            id: `manual-entity-kind:${input.id}`,
-            entityId: input.id,
-            kind: input.kind,
-            basis: "manual",
-            sourceRecordIdsJson: "[]",
-            actorId: input.actorId,
-          })
-          .onConflictDoNothing()
-          .run();
       return {
         id: input.id,
         label: input.label,
-        kind:
-          input.kind === "entity"
-            ? { status: "ordinary" }
-            : { status: "effective", kind: input.kind, basis: "assertion" },
+        kind: this.entityKindStateWithDrizzle(transaction, input.id).effective,
         identity: "local",
       };
     });
@@ -2026,19 +2004,14 @@ export class SqliteCatalogue
       query,
       affectedMemberIds,
     );
-    const kinds = [
-      ...new Set(
-        affectedMemberIds.flatMap((entityId) => {
-          const effective = affectedKindStates.get(entityId)!.effective;
-          return effective.status === "ordinary"
-            ? []
-            : effective.status === "conflict"
-              ? effective.kinds
-              : [effective.kind];
-        }),
-      ),
-    ];
-    if (kinds.length > 1) throw new Error("身份合并会造成相关实体种类冲突");
+    const effectiveKinds = affectedMemberIds
+      .map((entityId) => affectedKindStates.get(entityId)!.effective)
+      .filter(
+        (
+          effective,
+        ): effective is Extract<EffectiveEntityKind, { status: "effective" }> =>
+          effective.status === "effective",
+      );
     const relationshipState = this.relationshipProjectionWithDrizzle(query);
     const effectiveRelationshipIds = new Set(
       deriveEffectiveRelationships({
@@ -2099,22 +2072,7 @@ export class SqliteCatalogue
       })),
       metadataConflicts: [],
       metadataPolicyBaseline: "",
-      effectiveKind:
-        kinds.length === 0
-          ? { status: "ordinary" }
-          : {
-              status: "effective",
-              kind: kinds[0]!,
-              basis: affectedMemberIds.some((entityId) => {
-                const effective = affectedKindStates.get(entityId)!.effective;
-                return (
-                  effective.status === "effective" &&
-                  effective.basis === "decision"
-                );
-              })
-                ? "decision"
-                : "assertion",
-            },
+      effectiveKind: effectiveKinds[0] ?? { status: "ordinary" },
       baseline: sha256Text(
         JSON.stringify({
           merges,
@@ -2236,107 +2194,23 @@ export class SqliteCatalogue
     });
   }
 
-  async previewEntityKindDecision(input: {
-    readonly entityId: string;
-    readonly selectedKind?: "person" | "persona";
-  }): Promise<{
-    readonly entityId: string;
-    readonly baseline: string;
-    readonly currentDecisionId?: string;
-    readonly selectedKind?: "person" | "persona";
-    readonly effective: EffectiveEntityKind;
-  }> {
-    const query = drizzle({ client: await this.ensure() });
-    const current = this.effectiveEntityKindStateWithDrizzle(
-      query,
-      input.entityId,
-    );
-    return {
-      entityId: current.entityId,
-      baseline: current.baseline,
-      ...(current.decision === undefined
-        ? {}
-        : { currentDecisionId: current.decision.id }),
-      ...(input.selectedKind === undefined
-        ? {}
-        : { selectedKind: input.selectedKind }),
-      effective: current.effective,
-    };
-  }
-
-  async applyEntityKindDecision(input: {
-    readonly id: string;
-    readonly entityId: string;
-    readonly selectedKind?: "person" | "persona";
-    readonly actorId: string;
-    readonly baseline: string;
-  }): Promise<"applied" | "stale"> {
-    const query = drizzle({ client: await this.ensure() });
-    return query.transaction((transaction) => {
-      const representativeId =
-        this.effectiveIdentityForestWithDrizzle(
-          transaction,
-        ).representativeByEntity.get(input.entityId) ?? input.entityId;
-      if (
-        transaction
-          .select({ id: entities.id })
-          .from(entities)
-          .where(eq(entities.id, representativeId))
-          .get() === undefined
-      )
-        throw new Error("相关实体不存在");
-      const current = this.effectiveEntityKindStateWithDrizzle(
-        transaction,
-        representativeId,
-      );
-      if (current.baseline !== input.baseline) return "stale" as const;
-      transaction
-        .insert(entityKindDecisions)
-        .values({
-          id: input.id,
-          entityId: representativeId,
-          selectedKind: input.selectedKind ?? null,
-          basis: "manual",
-          replacesDecisionId: current.decision?.id ?? null,
-          actorId: input.actorId,
-          operation: input.selectedKind === undefined ? "clear" : "select",
-        })
-        .run();
-      return "applied" as const;
-    });
-  }
-
   private entityKindStateWithDrizzle(
     query: DrizzleReadQuery,
     entityId: string,
   ): {
     readonly effective: EffectiveEntityKind;
-    readonly decision?: {
-      readonly id: string;
-      readonly selectedKind: "digital-asset" | "person" | "persona";
-    };
     readonly baseline: string;
   } {
     return this.entityKindStatesWithDrizzle(query, [entityId]).get(entityId)!;
   }
 
-  /**
-   * 当前种类的唯一批量投影。来源断言只有在其谱系叶与当前来源记录头一致时才生效；
-   * 因此同种类的新支持也会成为预演基线的一部分，而不是被种类集合吞掉。
-   */
+  /** 当前种类的唯一批量投影：只由现有数字资产断言推导。 */
   private entityKindStatesWithDrizzle(
     query: DrizzleReadQuery,
     entityIds: readonly string[],
   ): ReadonlyMap<
     string,
-    {
-      readonly effective: EffectiveEntityKind;
-      readonly decision?: {
-        readonly id: string;
-        readonly selectedKind: "digital-asset" | "person" | "persona";
-      };
-      readonly baseline: string;
-    }
+    { readonly effective: EffectiveEntityKind; readonly baseline: string }
   > {
     const ids = uniqueStrings(entityIds);
     if (ids.length === 0) return new Map();
@@ -2345,155 +2219,33 @@ export class SqliteCatalogue
       .from(entityKindAssertions)
       .where(inArray(entityKindAssertions.entityId, sqliteTextSet(ids)))
       .all();
-    const decisions = query
-      .select()
-      .from(entityKindDecisions)
-      .where(inArray(entityKindDecisions.entityId, sqliteTextSet(ids)))
-      .orderBy(desc(sql<number>`${entityKindDecisions}.rowid`))
-      .all();
-    const supports = query
-      .select()
-      .from(entityKindSourceSupports)
-      .where(inArray(entityKindSourceSupports.entityId, sqliteTextSet(ids)))
-      .orderBy(desc(sql<number>`${entityKindSourceSupports}.rowid`))
-      .all();
-    const supportSubjects = uniqueStrings(
-      supports.map((support) => support.sourceSubjectId),
-    );
-    const heads =
-      supportSubjects.length === 0
-        ? []
-        : query
-            .select()
-            .from(sourceLineageHeads)
-            .where(
-              inArray(
-                sourceLineageHeads.subjectId,
-                sqliteTextSet(supportSubjects),
-              ),
-            )
-            .all();
-    const lineageKey = (input: {
-      readonly sourceSubjectId: string;
-      readonly sourceIdentity: string;
-      readonly nativeAddress: string;
-      readonly coverageId: string;
-    }) =>
-      `${input.sourceSubjectId}\u0000${input.sourceIdentity}\u0000${input.nativeAddress}\u0000${input.coverageId}`;
-    const headByLineage = new Map(
-      heads.map((head) => [
-        `${head.subjectId}\u0000${head.sourceIdentity}\u0000${head.nativeAddress}\u0000${head.coverageId}`,
-        head.sourceRecordId,
-      ]),
-    );
-    const latestByEntity = new Map<string, (typeof decisions)[number]>();
-    for (const decision of decisions)
-      if (!latestByEntity.has(decision.entityId))
-        latestByEntity.set(decision.entityId, decision);
     const assertionsByEntity = new Map<string, (typeof assertions)[number][]>();
     for (const assertion of assertions)
       (
         assertionsByEntity.get(assertion.entityId) ??
         assertionsByEntity.set(assertion.entityId, []).get(assertion.entityId)!
       ).push(assertion);
-    const leavesByEntity = new Map<string, (typeof supports)[number][]>();
-    const seenLeaves = new Set<string>();
-    for (const support of supports) {
-      const key = `${support.entityId}\u0000${lineageKey(support)}`;
-      if (seenLeaves.has(key)) continue;
-      seenLeaves.add(key);
-      (
-        leavesByEntity.get(support.entityId) ??
-        leavesByEntity.set(support.entityId, []).get(support.entityId)!
-      ).push(support);
-    }
     const result = new Map<
       string,
-      {
-        readonly effective: EffectiveEntityKind;
-        readonly decision?: {
-          readonly id: string;
-          readonly selectedKind: "digital-asset" | "person" | "persona";
-        };
-        readonly baseline: string;
-      }
+      { readonly effective: EffectiveEntityKind; readonly baseline: string }
     >();
     for (const entityId of ids) {
-      const latest = latestByEntity.get(entityId);
-      const decision =
-        latest?.operation === "select" && latest.selectedKind !== null
-          ? {
-              id: latest.id,
-              selectedKind: latest.selectedKind as
-                | "digital-asset"
-                | "person"
-                | "persona",
-            }
-          : undefined;
-      const currentSupports = (leavesByEntity.get(entityId) ?? []).filter(
-        (support) =>
-          support.operation === "assert" &&
-          support.assertionId !== null &&
-          headByLineage.get(lineageKey(support)) === support.sourceRecordId,
-      );
-      const supportedAssertionIds = new Set(
-        currentSupports.map((support) => support.assertionId!),
-      );
-      const currentAssertions = (assertionsByEntity.get(entityId) ?? []).filter(
-        (assertion) =>
-          assertion.basis !== "source" ||
-          supportedAssertionIds.has(assertion.id),
-      );
-      const kinds = [
-        ...new Set(currentAssertions.map((assertion) => assertion.kind)),
-      ].toSorted() as ("digital-asset" | "person" | "persona")[];
-      const effective: EffectiveEntityKind =
-        decision === undefined
-          ? kinds.length === 0
-            ? { status: "ordinary" }
-            : kinds.length === 1
-              ? { status: "effective", kind: kinds[0]!, basis: "assertion" }
-              : { status: "conflict", kinds }
-          : {
-              status: "effective",
-              kind: decision.selectedKind,
-              basis: "decision",
-            };
+      const currentAssertions = assertionsByEntity.get(entityId) ?? [];
+      const effective: EffectiveEntityKind = currentAssertions.some(
+        (assertion) => assertion.kind === "digital-asset",
+      )
+        ? { status: "effective", kind: "digital-asset", basis: "assertion" }
+        : { status: "ordinary" };
       const baseline = createHash("sha256")
         .update(
-          JSON.stringify({
-            assertions: currentAssertions
+          JSON.stringify(
+            currentAssertions
               .map(({ id, kind, basis }) => ({ id, kind, basis }))
               .toSorted((left, right) => left.id.localeCompare(right.id)),
-            supports: (leavesByEntity.get(entityId) ?? [])
-              .map((support) => ({
-                id: support.id,
-                assertionId: support.assertionId,
-                sourceSubjectId: support.sourceSubjectId,
-                sourceIdentity: support.sourceIdentity,
-                nativeAddress: support.nativeAddress,
-                coverageId: support.coverageId,
-                sourceRecordId: support.sourceRecordId,
-                headSourceRecordId: headByLineage.get(lineageKey(support)),
-              }))
-              .toSorted((left, right) => left.id.localeCompare(right.id)),
-            decision:
-              latest === undefined
-                ? null
-                : {
-                    id: latest.id,
-                    operation: latest.operation,
-                    selectedKind: latest.selectedKind,
-                    replacesDecisionId: latest.replacesDecisionId,
-                  },
-          }),
+          ),
         )
         .digest("hex");
-      result.set(entityId, {
-        effective,
-        ...(decision === undefined ? {} : { decision }),
-        baseline,
-      });
+      result.set(entityId, { effective, baseline });
     }
     return result;
   }
@@ -2578,10 +2330,6 @@ export class SqliteCatalogue
   ): {
     readonly entityId: string;
     readonly effective: EffectiveEntityKind;
-    readonly decision?: {
-      readonly id: string;
-      readonly selectedKind: "digital-asset" | "person" | "persona";
-    };
     readonly baseline: string;
   } {
     const forest = this.effectiveIdentityForestWithDrizzle(query);
@@ -2591,43 +2339,17 @@ export class SqliteCatalogue
       representativeId,
     ];
     const states = this.entityKindStatesWithDrizzle(query, memberIds);
-    const kinds = [
-      ...new Set(
-        memberIds.flatMap((memberId) => {
-          const effective = states.get(memberId)!.effective;
-          return effective.status === "ordinary"
-            ? []
-            : effective.status === "conflict"
-              ? effective.kinds
-              : [effective.kind];
-        }),
-      ),
-    ].toSorted();
-    const representative = states.get(representativeId)!;
-    const effective: EffectiveEntityKind =
-      kinds.length === 0
-        ? { status: "ordinary" }
-        : kinds.length === 1
-          ? {
-              status: "effective",
-              kind: kinds[0]!,
-              basis: memberIds.some((memberId) => {
-                const memberEffective = states.get(memberId)!.effective;
-                return (
-                  memberEffective.status === "effective" &&
-                  memberEffective.basis === "decision"
-                );
-              })
-                ? "decision"
-                : "assertion",
-            }
-          : { status: "conflict", kinds };
+    const effectiveKinds = memberIds
+      .map((memberId) => states.get(memberId)!.effective)
+      .filter(
+        (
+          effective,
+        ): effective is Extract<EffectiveEntityKind, { status: "effective" }> =>
+          effective.status === "effective",
+      );
     return {
       entityId: representativeId,
-      effective,
-      ...(representative.decision === undefined
-        ? {}
-        : { decision: representative.decision }),
+      effective: effectiveKinds[0] ?? { status: "ordinary" },
       baseline: sha256Text(
         JSON.stringify({
           representativeId,
@@ -2646,7 +2368,7 @@ export class SqliteCatalogue
     };
   }
 
-  /** 资产读者共享这一批量生效种类投影，避免任一断言绕过人工决定或冲突。 */
+  /** 资产读者共享这一批量生效种类投影。 */
   private currentEffectiveDigitalAssetIdsWithDrizzle(
     query: DrizzleReadQuery,
     entityIds: readonly string[],
@@ -3239,6 +2961,10 @@ export class SqliteCatalogue
     database: DatabaseSync,
   ): void {
     assertExactLegacySourceEnrichmentAuthority(database);
+  }
+
+  static assertOrdinaryEntityMigrationAuthority(database: DatabaseSync): void {
+    assertOrdinaryEntityMigrationAuthority(database);
   }
 
   /**
@@ -5791,78 +5517,9 @@ export class SqliteCatalogue
       .where(
         and(
           currentObservedMaterialPredicate(),
-          sql`(
-            EXISTS (
-              SELECT 1 FROM entity_kind_decisions decision
-              WHERE decision.entity_id = ${recognitionHeads.subjectId}
-                AND decision.rowid = (
-                  SELECT MAX(latest.rowid) FROM entity_kind_decisions latest
-                  WHERE latest.entity_id = ${recognitionHeads.subjectId}
-                )
-                AND decision.operation = 'select'
-                AND decision.selected_kind = 'digital-asset'
-            ) OR (
-              NOT EXISTS (
-                SELECT 1 FROM entity_kind_decisions decision
-                 WHERE decision.entity_id = ${recognitionHeads.subjectId}
-                   AND decision.rowid = (
-                     SELECT MAX(latest.rowid) FROM entity_kind_decisions latest
-                      WHERE latest.entity_id = ${recognitionHeads.subjectId}
-                   )
-                   AND decision.operation = 'select'
-              )
-              AND 1 = (
-                SELECT COUNT(DISTINCT current_kind.kind) FROM (
-                  SELECT assertion.kind
-                    FROM entity_kind_assertions assertion
-                   WHERE assertion.entity_id = ${recognitionHeads.subjectId}
-                     AND assertion.basis <> 'source'
-                  UNION
-                  SELECT assertion.kind
-                    FROM entity_kind_assertions assertion
-                    JOIN entity_kind_source_supports support
-                      ON support.assertion_id = assertion.id
-                    JOIN source_lineage_heads source_head
-                      ON source_head.subject_id = support.source_subject_id
-                     AND source_head.source_identity = support.source_identity
-                     AND source_head.native_address = support.native_address
-                     AND source_head.coverage_id = support.coverage_id
-                     AND source_head.source_record_id = support.source_record_id
-                   WHERE support.entity_id = ${recognitionHeads.subjectId}
-                     AND support.operation = 'assert'
-                     AND NOT EXISTS (
-                       SELECT 1 FROM entity_kind_source_supports successor
-                        WHERE successor.predecessor_id = support.id
-                     )
-                ) current_kind
-              )
-              AND EXISTS (
-                SELECT 1 FROM (
-                  SELECT assertion.kind
-                    FROM entity_kind_assertions assertion
-                   WHERE assertion.entity_id = ${recognitionHeads.subjectId}
-                     AND assertion.basis <> 'source'
-                  UNION
-                  SELECT assertion.kind
-                    FROM entity_kind_assertions assertion
-                    JOIN entity_kind_source_supports support
-                      ON support.assertion_id = assertion.id
-                    JOIN source_lineage_heads source_head
-                      ON source_head.subject_id = support.source_subject_id
-                     AND source_head.source_identity = support.source_identity
-                     AND source_head.native_address = support.native_address
-                     AND source_head.coverage_id = support.coverage_id
-                     AND source_head.source_record_id = support.source_record_id
-                   WHERE support.entity_id = ${recognitionHeads.subjectId}
-                     AND support.operation = 'assert'
-                     AND NOT EXISTS (
-                       SELECT 1 FROM entity_kind_source_supports successor
-                        WHERE successor.predecessor_id = support.id
-                     )
-                ) current_kind
-               WHERE current_kind.kind = 'digital-asset'
-              )
-            )
+          sql`EXISTS (
+            SELECT 1 FROM entity_kind_assertions assertion
+            WHERE assertion.entity_id = ${recognitionHeads.subjectId}
           )`,
           anchor === undefined
             ? undefined
@@ -11007,51 +10664,6 @@ export class SqliteCatalogue
         }
       }
     }
-    const kindSupports = query
-      .select()
-      .from(entityKindSourceSupports)
-      .where(
-        and(
-          eq(entityKindSourceSupports.sourceSubjectId, input.assetId),
-          eq(
-            entityKindSourceSupports.sourceIdentity,
-            input.record.sourceIdentity,
-          ),
-          eq(
-            entityKindSourceSupports.nativeAddress,
-            input.record.nativeAddress,
-          ),
-          eq(entityKindSourceSupports.coverageId, input.record.coverage.id),
-        ),
-      )
-      .orderBy(desc(sql<number>`${entityKindSourceSupports}.rowid`))
-      .all();
-    const currentKindSupports = new Map<
-      string,
-      (typeof kindSupports)[number]
-    >();
-    for (const support of kindSupports)
-      if (!currentKindSupports.has(support.entityId))
-        currentKindSupports.set(support.entityId, support);
-    const nextKindEntities = new Set(
-      (input.interpretation.entities ?? [])
-        .filter((entity) => entity.sourceRecordIds.includes(input.record.id))
-        .map((entity) => entity.id),
-    );
-    if (input.record.coverage.completeness === "complete")
-      for (const [entityId, support] of currentKindSupports)
-        if (support.operation === "assert" && !nextKindEntities.has(entityId))
-          changes.push({
-            kind: "retracted",
-            factReference: `entity-kind:${entityId}`,
-          });
-    if (input.record.coverage.completeness === "incomplete")
-      for (const [entityId, support] of currentKindSupports)
-        if (support.operation === "assert" && !nextKindEntities.has(entityId))
-          changes.push({
-            kind: "unchanged",
-            factReference: `entity-kind:${entityId}`,
-          });
     return deduplicateSourceRefreshChanges(changes);
   }
 
@@ -12225,21 +11837,6 @@ export class SqliteCatalogue
       .run();
     for (const entity of accepted.entities ?? [])
       this.insertOrReuseSourcedEntityWithDrizzle(transaction, entity);
-    const relatedSourceRecords = [
-      ...new Map(
-        (accepted.entities ?? [])
-          .flatMap((entity) => entity.sourceRecordIds)
-          .map((sourceRecordId) => [
-            sourceRecordId,
-            this.sourceRecordWithDrizzle(transaction, sourceRecordId),
-          ]),
-      ).values(),
-    ];
-    this.advanceSourceEntityKindsWithDrizzle(transaction, {
-      sourceSubjectId: accepted.entity.id,
-      sourceRecords: relatedSourceRecords,
-      entities: accepted.entities ?? [],
-    });
 
     const recognitionSourceAssociation = accepted.recognitionSourceAssociation;
     if (recognitionSourceAssociation !== undefined)
@@ -13843,173 +13440,6 @@ export class SqliteCatalogue
     };
   }
 
-  private advanceSourceEntityKindsWithDrizzle(
-    transaction: DrizzleWriteTransaction,
-    input: {
-      readonly sourceSubjectId: string;
-      readonly sourceRecords: readonly SourceRecord[];
-      readonly entities: readonly SourcedEntity[];
-    },
-  ): void {
-    for (const entity of input.entities)
-      for (const sourceRecordId of entity.sourceRecordIds) {
-        const context = this.sourceRecordContextWithDrizzle(
-          transaction,
-          sourceRecordId,
-        );
-        const predecessor = transaction
-          .select()
-          .from(entityKindSourceSupports)
-          .where(
-            and(
-              eq(entityKindSourceSupports.entityId, entity.id),
-              eq(
-                entityKindSourceSupports.sourceSubjectId,
-                input.sourceSubjectId,
-              ),
-              eq(
-                entityKindSourceSupports.sourceIdentity,
-                context.sourceIdentity,
-              ),
-              eq(entityKindSourceSupports.nativeAddress, context.nativeAddress),
-              eq(entityKindSourceSupports.coverageId, context.coverageId),
-            ),
-          )
-          .orderBy(desc(sql<number>`${entityKindSourceSupports}.rowid`))
-          .get();
-        const supportId = `entity-kind-support:${input.sourceSubjectId}:${entity.id}:${sourceRecordId}`;
-        const assertionId =
-          entity.kind === "entity"
-            ? null
-            : `source-kind-assertion:${input.sourceSubjectId}:${entity.id}:${sourceRecordId}:${entity.kind}`;
-        if (assertionId !== null)
-          transaction
-            .insert(entityKindAssertions)
-            .values({
-              id: assertionId,
-              entityId: entity.id,
-              kind: entity.kind,
-              basis: "source",
-              sourceRecordIdsJson: JSON.stringify([sourceRecordId]),
-              producerJson: producerJson(entity.producer),
-            })
-            .onConflictDoNothing()
-            .run();
-        transaction
-          .insert(entityKindSourceSupports)
-          .values({
-            id: supportId,
-            entityId: entity.id,
-            sourceSubjectId: input.sourceSubjectId,
-            sourceIdentity: context.sourceIdentity,
-            nativeAddress: context.nativeAddress,
-            coverageId: context.coverageId,
-            sourceRecordId,
-            assertionId,
-            predecessorId: predecessor?.id ?? null,
-            operation: entity.kind === "entity" ? "retract" : "assert",
-          })
-          .onConflictDoNothing()
-          .run();
-      }
-    for (const record of input.sourceRecords.filter(
-      (item) => item.coverage.completeness === "complete",
-    )) {
-      const context = this.sourceRecordContextWithDrizzle(
-        transaction,
-        record.id,
-      );
-      const present = new Set(
-        input.entities
-          .filter((entity) => entity.sourceRecordIds.includes(record.id))
-          .map((entity) => entity.id),
-      );
-      const previous = transaction
-        .select()
-        .from(entityKindSourceSupports)
-        .where(
-          and(
-            eq(entityKindSourceSupports.sourceSubjectId, input.sourceSubjectId),
-            eq(entityKindSourceSupports.sourceIdentity, context.sourceIdentity),
-            eq(entityKindSourceSupports.nativeAddress, context.nativeAddress),
-            eq(entityKindSourceSupports.coverageId, context.coverageId),
-          ),
-        )
-        .orderBy(desc(sql<number>`${entityKindSourceSupports}.rowid`))
-        .all();
-      const leaves = new Map<string, (typeof previous)[number]>();
-      for (const support of previous)
-        if (!leaves.has(support.entityId))
-          leaves.set(support.entityId, support);
-      for (const [entityId, predecessor] of leaves)
-        if (!present.has(entityId))
-          transaction
-            .insert(entityKindSourceSupports)
-            .values({
-              id: `entity-kind-retract:${input.sourceSubjectId}:${entityId}:${record.id}`,
-              entityId,
-              sourceSubjectId: input.sourceSubjectId,
-              sourceIdentity: context.sourceIdentity,
-              nativeAddress: context.nativeAddress,
-              coverageId: context.coverageId,
-              sourceRecordId: record.id,
-              assertionId: null,
-              predecessorId: predecessor.id,
-              operation: "retract",
-            })
-            .onConflictDoNothing()
-            .run();
-    }
-    for (const record of input.sourceRecords.filter(
-      (item) => item.coverage.completeness === "incomplete",
-    )) {
-      const context = this.sourceRecordContextWithDrizzle(
-        transaction,
-        record.id,
-      );
-      const present = new Set(
-        input.entities
-          .filter((entity) => entity.sourceRecordIds.includes(record.id))
-          .map((entity) => entity.id),
-      );
-      const previous = transaction
-        .select()
-        .from(entityKindSourceSupports)
-        .where(
-          and(
-            eq(entityKindSourceSupports.sourceSubjectId, input.sourceSubjectId),
-            eq(entityKindSourceSupports.sourceIdentity, context.sourceIdentity),
-            eq(entityKindSourceSupports.nativeAddress, context.nativeAddress),
-            eq(entityKindSourceSupports.coverageId, context.coverageId),
-          ),
-        )
-        .orderBy(desc(sql<number>`${entityKindSourceSupports}.rowid`))
-        .all();
-      const leaves = new Map<string, (typeof previous)[number]>();
-      for (const support of previous)
-        if (!leaves.has(support.entityId))
-          leaves.set(support.entityId, support);
-      for (const [entityId, predecessor] of leaves)
-        if (predecessor.operation === "assert" && !present.has(entityId))
-          transaction
-            .insert(entityKindSourceSupports)
-            .values({
-              id: `entity-kind-retained:${input.sourceSubjectId}:${entityId}:${record.id}`,
-              entityId,
-              sourceSubjectId: input.sourceSubjectId,
-              sourceIdentity: context.sourceIdentity,
-              nativeAddress: context.nativeAddress,
-              coverageId: context.coverageId,
-              sourceRecordId: record.id,
-              assertionId: predecessor.assertionId,
-              predecessorId: predecessor.id,
-              operation: "assert",
-            })
-            .onConflictDoNothing()
-            .run();
-    }
-  }
-
   private retractScopedFactsWithDrizzle(
     transaction: DrizzleWriteTransaction,
     input: {
@@ -14457,11 +13887,6 @@ export class SqliteCatalogue
         .onConflictDoNothing()
         .run();
     }
-    this.advanceSourceEntityKindsWithDrizzle(transaction, {
-      sourceSubjectId: submission.assetId,
-      sourceRecords: submission.sourceRecords,
-      entities: submission.interpretation.entities ?? [],
-    });
     for (const relationship of submission.interpretation.relationships ?? []) {
       const primary = relationship.sourceRecordIds[0];
       if (primary === undefined)
@@ -14677,13 +14102,6 @@ export class SqliteCatalogue
         .onConflictDoNothing()
         .run();
     }
-    this.advanceSourceEntityKindsWithDrizzle(transaction, {
-      sourceSubjectId: preview.assetId,
-      sourceRecords: [],
-      entities: preview.projected.entities.filter((item) =>
-        isReplacementFact(item.sourceRecordIds),
-      ),
-    });
     for (const relationship of preview.projected.relationships.filter((item) =>
       isReplacementFact(item.sourceRecordIds),
     )) {
@@ -16254,14 +15672,7 @@ export class SqliteCatalogue
               ],
         ),
       metadata,
-      entities: currentEntities.map(({ kind, ...entity }) => ({
-        ...entity,
-        kind:
-          kind.status === "effective" &&
-          (kind.kind === "person" || kind.kind === "persona")
-            ? kind.kind
-            : "entity",
-      })),
+      entities: currentEntities.map(({ kind: _kind, ...entity }) => entity),
       currentRelatedEntities: currentEntities,
       entityMentions: mentionRows.map(
         (row): EntityMention => ({
@@ -17281,14 +16692,7 @@ export class SqliteCatalogue
           ) && !endedRecognitionDecisionIds.has(support.recognitionDecisionId),
       ),
       metadata,
-      entities: currentEntities.map(({ kind, ...entity }) => ({
-        ...entity,
-        kind:
-          kind.status === "effective" &&
-          (kind.kind === "person" || kind.kind === "persona")
-            ? kind.kind
-            : "entity",
-      })),
+      entities: currentEntities.map(({ kind: _kind, ...entity }) => entity),
       currentRelatedEntities: [
         ...new Map(
           [...currentEntities, ...observedCurrentEntities].map((item) => [

@@ -402,7 +402,7 @@ async function createCatalogue(options?: SqliteCatalogueOptions) {
   return (await createCatalogueWithRoot(options)).catalogue;
 }
 
-it("公开身份旅程建立、选择并在重开后保留本地相关实体和种类决定", async () => {
+it("公开身份旅程建立同名独立实体并在重开后按提交坐标重放", async () => {
   const { root, catalogue } = await createCatalogueWithRoot();
   const workflow = reevaluationWorkflow(catalogue, {
     observationVersion: 0,
@@ -411,59 +411,42 @@ it("公开身份旅程建立、选择并在重开后保留本地相关实体和�
     managedMissing: false,
     omitCover: false,
   });
-  const person = await workflow.createLocalRelatedEntity({
-    commitmentId: "person/1",
+  const author = await workflow.createLocalRelatedEntity({
+    commitmentId: "author/1",
     label: "同名作者",
-    kind: "person",
     actorId: "user:甲",
   });
   const series = await workflow.createLocalRelatedEntity({
     commitmentId: "series/1",
     label: "同名作者",
-    kind: "entity",
     actorId: "user:甲",
   });
-  const personOverride = await workflow.previewEntityKindDecision({
-    entityId: person.id,
-    selectedKind: "persona",
+  const anotherAuthor = await workflow.createLocalRelatedEntity({
+    commitmentId: "author/2",
+    label: "同名作者",
+    actorId: "user:甲",
   });
-  await expect(
-    workflow.applyEntityKindDecision({
-      entityId: person.id,
-      selectedKind: "persona",
-      actorId: "user:甲",
-      baseline: personOverride.baseline,
-    }),
-  ).resolves.toBe("applied");
+  expect(anotherAuthor.id).not.toBe(author.id);
+  expect(author.id).not.toBe(series.id);
   await expect(
     workflow.createLocalRelatedEntity({
-      commitmentId: "person/1",
+      commitmentId: "author/1",
       label: "同名作者",
-      kind: "person",
       actorId: "user:甲",
     }),
-  ).resolves.toMatchObject({ id: person.id, identity: "local" });
+  ).resolves.toMatchObject({ id: author.id, identity: "local" });
   await expect(
     workflow.createLocalRelatedEntity({
-      commitmentId: "person/1",
+      commitmentId: "author/1",
       label: "不同名称",
-      kind: "person",
       actorId: "user:甲",
     }),
   ).rejects.toThrow("本地身份提交坐标与既有内容冲突");
-  const anotherPerson = await workflow.createLocalRelatedEntity({
-    commitmentId: "person/2",
-    label: "同名作者",
-    kind: "person",
-    actorId: "user:甲",
-  });
-  expect(anotherPerson.id).not.toBe(person.id);
-  expect(person.id).not.toBe(series.id);
   await expect(workflow.findRelatedEntities("同名作者")).resolves.toEqual(
     expect.arrayContaining([
       expect.objectContaining({
-        id: person.id,
-        kind: { status: "effective", kind: "persona", basis: "decision" },
+        id: author.id,
+        kind: { status: "ordinary" },
         identity: "local",
       }),
       expect.objectContaining({
@@ -473,73 +456,13 @@ it("公开身份旅程建立、选择并在重开后保留本地相关实体和�
       }),
     ]),
   );
-  const preview = await workflow.previewEntityKindDecision({
-    entityId: series.id,
-    selectedKind: "persona",
-  });
-  expect(preview.effective).toEqual({ status: "ordinary" });
-  await expect(
-    workflow.applyEntityKindDecision({
-      entityId: series.id,
-      selectedKind: "persona",
-      actorId: "user:甲",
-      baseline: preview.baseline,
-    }),
-  ).resolves.toBe("applied");
-  const correction = await workflow.previewEntityKindDecision({
-    entityId: series.id,
-    selectedKind: "person",
-  });
-  await expect(
-    workflow.applyEntityKindDecision({
-      entityId: series.id,
-      selectedKind: "persona",
-      actorId: "user:甲",
-      baseline: correction.baseline,
-    }),
-  ).resolves.toBe("applied");
-  await expect(
-    workflow.applyEntityKindDecision({
-      entityId: series.id,
-      selectedKind: "person",
-      actorId: "user:甲",
-      baseline: correction.baseline,
-    }),
-  ).resolves.toBe("stale");
-  const clear = await workflow.previewEntityKindDecision({
-    entityId: series.id,
-  });
-  await expect(
-    workflow.applyEntityKindDecision({
-      entityId: series.id,
-      actorId: "user:甲",
-      baseline: clear.baseline,
-    }),
-  ).resolves.toBe("applied");
-  await expect(workflow.findRelatedEntities("同名作者")).resolves.toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({ id: series.id, kind: { status: "ordinary" } }),
-    ]),
-  );
-  const repeat = await workflow.previewEntityKindDecision({
-    entityId: series.id,
-    selectedKind: "persona",
-  });
-  await expect(
-    workflow.applyEntityKindDecision({
-      entityId: series.id,
-      selectedKind: "persona",
-      actorId: "user:甲",
-      baseline: repeat.baseline,
-    }),
-  ).resolves.toBe("applied");
   await expect(
     workflow.inspectCurrentCatalogueEntity(series.id),
   ).resolves.toMatchObject({
     entity: {
       id: series.id,
       label: "同名作者",
-      kind: { status: "effective", kind: "persona", basis: "decision" },
+      kind: { status: "ordinary" },
     },
     relationships: [],
     accepted: [],
@@ -555,17 +478,20 @@ it("公开身份旅程建立、选择并在重开后保留本地相关实体和�
   });
   await expect(
     reopenedWorkflow.createLocalRelatedEntity({
-      commitmentId: "person/1",
+      commitmentId: "author/1",
       label: "同名作者",
-      kind: "person",
       actorId: "user:甲",
     }),
-  ).resolves.toMatchObject({ id: person.id });
+  ).resolves.toMatchObject({ id: author.id });
   await expect(reopened.findRelatedEntities("同名作者")).resolves.toEqual(
     expect.arrayContaining([
       expect.objectContaining({
         id: series.id,
-        kind: { status: "effective", kind: "persona", basis: "decision" },
+        kind: { status: "ordinary" },
+      }),
+      expect.objectContaining({
+        id: anotherAuthor.id,
+        kind: { status: "ordinary" },
       }),
     ]),
   );
@@ -591,13 +517,11 @@ it("公开关系旅程预演、更正多方关系内序位、重开后保留并�
     workflow.createLocalRelatedEntity({
       commitmentId: "series",
       label: "本地系列",
-      kind: "entity",
       actorId: "user:甲",
     }),
     workflow.createLocalRelatedEntity({
       commitmentId: "performer",
       label: "表演者",
-      kind: "person",
       actorId: "user:甲",
     }),
   ]);
@@ -1770,7 +1694,6 @@ it("公开身份合并汇集关系、让新人工关系写入代表并能撤销"
         await workflow.createLocalRelatedEntity({
           commitmentId,
           label,
-          kind: "entity",
           actorId: "user:甲",
         }),
     ),
@@ -1839,10 +1762,6 @@ it("公开身份合并汇集关系、让新人工关系写入代表并能撤销"
     retainedEntityId: a.id,
     mergedEntityId: b.id,
   });
-  const beforeMergeKind = await workflow.previewEntityKindDecision({
-    entityId: b.id,
-    selectedKind: "persona",
-  });
   expect(merge.members).toEqual(expect.arrayContaining([a.id, b.id]));
   await expect(
     workflow.applyEntityIdentityMerge({
@@ -1856,14 +1775,6 @@ it("公开身份合并汇集关系、让新人工关系写入代表并能撤销"
       commitmentId: "identity/merge-a-b-other",
       actorId: "user:乙",
       preview: merge,
-    }),
-  ).resolves.toBe("stale");
-  await expect(
-    workflow.applyEntityKindDecision({
-      entityId: b.id,
-      selectedKind: "persona",
-      actorId: "user:甲",
-      baseline: beforeMergeKind.baseline,
     }),
   ).resolves.toBe("stale");
   await expect(
@@ -1945,7 +1856,6 @@ it("公开身份合并汇集关系、让新人工关系写入代表并能撤销"
         await reopenedWorkflow.createLocalRelatedEntity({
           commitmentId,
           label: commitmentId,
-          kind: "entity",
           actorId: "user:甲",
         }),
     ),
@@ -1999,7 +1909,7 @@ it("公开身份合并汇集关系、让新人工关系写入代表并能撤销"
   reopened.close();
 });
 
-it("公开身份合并拒绝数字资产、种类冲突和会折叠坏的既有关系", async () => {
+it("公开身份合并拒绝数字资产和会折叠坏的既有关系", async () => {
   const { catalogue } = await createCatalogueWithRoot();
   const workflow = reevaluationWorkflow(catalogue, {
     observationVersion: 0,
@@ -2014,18 +1924,12 @@ it("公开身份合并拒绝数字资产、种类冲突和会折叠坏的既有�
     execution: acceptedExecution(),
     accepted: accepted(),
   });
-  const [a, b, person, persona] = await Promise.all(
-    [
-      ["unsafe/a", "甲", "entity"],
-      ["unsafe/b", "乙", "entity"],
-      ["unsafe/person", "人物", "person"],
-      ["unsafe/persona", "活动身份", "persona"],
-    ].map(
-      async ([commitmentId, label, kind]) =>
+  const [a, b] = await Promise.all(
+    ["unsafe/a", "unsafe/b"].map(
+      async (commitmentId) =>
         await workflow.createLocalRelatedEntity({
           commitmentId,
-          label,
-          kind: kind as "entity" | "person" | "persona",
+          label: commitmentId,
           actorId: "user:甲",
         }),
     ),
@@ -2036,12 +1940,6 @@ it("公开身份合并拒绝数字资产、种类冲突和会折叠坏的既有�
       mergedEntityId: "asset",
     }),
   ).rejects.toThrow("数字资产不能进行身份合并");
-  await expect(
-    workflow.previewEntityIdentityMerge({
-      retainedEntityId: person.id,
-      mergedEntityId: persona.id,
-    }),
-  ).rejects.toThrow("种类冲突");
   const relationship = await workflow.previewRelationshipChange({
     changes: [
       {
@@ -2085,7 +1983,6 @@ it("身份合并只让相关关系更正过期，并拒绝恢复会折叠的人�
         await workflow.createLocalRelatedEntity({
           commitmentId,
           label: commitmentId,
-          kind: "entity",
           actorId: "user:甲",
         }),
     ),
@@ -2127,7 +2024,6 @@ it("身份合并只让相关关系更正过期，并拒绝恢复会折叠的人�
         await workflow.createLocalRelatedEntity({
           commitmentId,
           label: commitmentId,
-          kind: "entity",
           actorId: "user:甲",
         }),
     ),
@@ -2299,17 +2195,14 @@ it("孤立身份合并按当前资料投影汇集值与冲突，并在撤销后�
       ),
     effectiveKind:
       preview.effectiveKind.status === "ordinary"
-        ? { status: "ordinary" as const }
-        : preview.effectiveKind.status === "effective"
-          ? {
-              basis: preview.effectiveKind.basis,
-              kind: preview.effectiveKind.kind,
-              status: "effective" as const,
-            }
-          : {
-              kinds: [...preview.effectiveKind.kinds].toReversed(),
-              status: "conflict" as const,
-            },
+        ? {
+            status: "ordinary" as const,
+          }
+        : {
+            basis: preview.effectiveKind.basis,
+            kind: preview.effectiveKind.kind,
+            status: "effective" as const,
+          },
   };
   const changedPolicyState = {
     ...alphaState,
@@ -2407,7 +2300,14 @@ it("孤立身份合并按当前资料投影汇集值与冲突，并在撤销后�
         },
       ],
     }),
-    () => ({ ...preview, effectiveKind: { status: "ordinary" as const } }),
+    () => ({
+      ...preview,
+      effectiveKind: {
+        status: "effective" as const,
+        kind: "digital-asset" as const,
+        basis: "assertion" as const,
+      },
+    }),
     () => ({ ...preview, metadataPolicyBaseline: "tampered-policy" }),
     () => ({ ...preview, baseline: "tampered-facts" }),
   ];
@@ -2495,7 +2395,6 @@ it("公开身份合并不改写来源刷新，并把随后人工关系留在代�
     explicitPlan: false,
     sourceRefreshAuthority: true,
     relatedMention: true,
-    personaKind: "persona" as const,
   };
   const workflow = reevaluationWorkflow(catalogue, state);
   const initial = await scanFixtureRegisteredObservedScope(workflow, {
@@ -2508,7 +2407,6 @@ it("公开身份合并不改写来源刷新，并把随后人工关系留在代�
   const retained = await workflow.createLocalRelatedEntity({
     commitmentId: "identity-refresh/retained",
     label: "保留身份",
-    kind: "entity",
     actorId: "user:甲",
   });
   const beforeMergeMention = await workflow.inspectEntityMentionResolution(
@@ -2643,7 +2541,6 @@ it("公开交叉旅程保留自动关系、人工更正与指定身份合并的�
     explicitPlan: false,
     sourceRefreshAuthority: true,
     relatedMention: true,
-    personaKind: "persona" as const,
   };
   const workflow = reevaluationWorkflow(catalogue, state);
   const initial = await scanFixtureRegisteredObservedScope(workflow, {
@@ -2656,7 +2553,6 @@ it("公开交叉旅程保留自动关系、人工更正与指定身份合并的�
   const retained = await workflow.createLocalRelatedEntity({
     commitmentId: "relationship-integration/retained",
     label: "保留身份",
-    kind: "entity",
     actorId: "user:甲",
   });
 
@@ -2817,7 +2713,6 @@ it("公开身份合并按根连接链，并让过期预演与同根环失败", a
         await workflow.createLocalRelatedEntity({
           commitmentId,
           label: commitmentId,
-          kind: "entity",
           actorId: "user:甲",
         }),
     ),
@@ -2880,7 +2775,6 @@ it("公开从普通实体返回自身、具名邻接关系和已收录内容，�
   });
   const isolated = {
     id: "isolated-persona",
-    kind: "persona" as const,
     sourceIdentity: "dlsite",
     sourceKey: "isolated",
     identityNamespace: "dlsite.credit.isolated",
@@ -3010,7 +2904,6 @@ it("公开从普通实体返回自身、具名邻接关系和已收录内容，�
   const localCircle = await workflow.createLocalRelatedEntity({
     commitmentId: "circle/1",
     label: "本地社团",
-    kind: "entity",
     actorId: "user:甲",
   });
   const automatic = await workflow.inspectEntityMentionResolution(
@@ -5034,8 +4927,8 @@ describe("SqliteCatalogue lifecycle", () => {
     catalogue.close();
   });
 
-  it("当前目录先筛生效数字资产再按可见项分页", async () => {
-    const { root, catalogue } = await createCatalogueWithRoot();
+  it("当前目录只分页生效数字资产，普通本地实体不进入页面", async () => {
+    const { catalogue } = await createCatalogueWithRoot();
     for (const assetId of ["a", "b", "c", "d", "e", "f"] as const) {
       const executionId = `pagination-${assetId}`;
       const record = sourceRecordFor(executionId);
@@ -5046,98 +4939,30 @@ describe("SqliteCatalogue lifecycle", () => {
         accepted: acceptedFor(assetId, record.id),
       });
     }
-    const database = new DatabaseSync(path.join(root, "catalogue.sqlite"));
-    try {
-      // 模拟已迁移的冲突和普通实体，目录读取只能公开 c/e/f 三个有效资产。
-      database
-        .prepare(
-          `INSERT INTO entity_kind_assertions
-             (id, entity_id, kind, basis, source_record_ids_json)
-           VALUES ('pagination-a-person', 'a', 'person', 'legacy-migration', '[]')`,
-        )
-        .run();
-      database
-        .prepare(
-          `INSERT INTO entity_kind_decisions
-             (id, entity_id, selected_kind, basis, replaces_decision_id, actor_id, operation)
-           VALUES ('pagination-b-person', 'b', 'person', 'manual', NULL, 'user:甲', 'select')`,
-        )
-        .run();
-      database
-        .prepare(
-          "UPDATE entity_kind_assertions SET basis = 'source' WHERE entity_id = 'd'",
-        )
-        .run();
-      const cAssociation = database
-        .prepare(
-          `SELECT source_identity, native_address
-             FROM source_associations WHERE subject_id = 'c'`,
-        )
-        .get() as {
-        readonly source_identity: string;
-        readonly native_address: string;
-      };
-      const cHead = {
-        source_identity: cAssociation.source_identity,
-        native_address: cAssociation.native_address,
-        coverage_id: "coverage-1",
-        source_record_id: "record-pagination-c",
-      };
-      database
-        .prepare(
-          `INSERT INTO source_lineage_heads
-             (subject_id, source_identity, native_address, coverage_id, source_record_id)
-           VALUES ('c', ?, ?, ?, ?)`,
-        )
-        .run(
-          cHead.source_identity,
-          cHead.native_address,
-          cHead.coverage_id,
-          cHead.source_record_id,
-        );
-      // 已结束的来源冲突必须保留历史，却不能让 hydration 把恢复后的资产漏掉。
-      database
-        .prepare(
-          `INSERT INTO entity_kind_assertions
-             (id, entity_id, kind, basis, source_record_ids_json)
-           VALUES ('pagination-c-ended-person', 'c', 'person', 'source', ?)`,
-        )
-        .run(JSON.stringify([cHead.source_record_id]));
-      database
-        .prepare(
-          `INSERT INTO entity_kind_source_supports
-             (id, entity_id, source_subject_id, source_identity, native_address,
-              coverage_id, source_record_id, assertion_id, predecessor_id, operation)
-           VALUES ('pagination-c-ended-support', 'c', 'c', ?, ?, ?, ?,
-                   'pagination-c-ended-person', NULL, 'assert'),
-                  ('pagination-c-ended-retraction', 'c', 'c', ?, ?, ?, ?,
-                   NULL, 'pagination-c-ended-support', 'retract')`,
-        )
-        .run(
-          cHead.source_identity,
-          cHead.native_address,
-          cHead.coverage_id,
-          cHead.source_record_id,
-          cHead.source_identity,
-          cHead.native_address,
-          cHead.coverage_id,
-          cHead.source_record_id,
-        );
-    } finally {
-      database.close();
-    }
+    const ordinary = await catalogue.createLocalRelatedEntity({
+      commitmentId: "pagination/ordinary",
+      id: "pagination-ordinary",
+      label: "Pagination ordinary entity",
+      actorId: "user:甲",
+    });
     const first = await catalogue.listCurrentCataloguePage({ limit: 2 });
-    expect(first.items.map((item) => item.entity.id)).toEqual(["c", "e"]);
+    expect(first.items.map((item) => item.entity.id)).toEqual(["a", "b"]);
     expect(first.nextCursor).toEqual(expect.any(String));
     const second = await catalogue.listCurrentCataloguePage({
       limit: 2,
       cursor: first.nextCursor,
     });
-    expect(second.items.map((item) => item.entity.id)).toEqual(["f"]);
-    expect(second.nextCursor).toBeUndefined();
+    expect(second.items.map((item) => item.entity.id)).toEqual(["c", "d"]);
+    const third = await catalogue.listCurrentCataloguePage({
+      limit: 2,
+      cursor: second.nextCursor,
+    });
+    expect(third.items.map((item) => item.entity.id)).toEqual(["e", "f"]);
+    expect(third.nextCursor).toBeUndefined();
+    const all = await catalogue.listCurrentCataloguePage({ limit: 100 });
+    expect(all.items.map((item) => item.entity.id)).not.toContain(ordinary.id);
     catalogue.close();
   });
-
   it("pages recent Workflow History without rebuilding older audit records", async () => {
     const { root, catalogue } = await createCatalogueWithRoot();
     for (let index = 0; index < 125; index += 1) {
@@ -7230,7 +7055,6 @@ describe("SqliteCatalogue lifecycle", () => {
     const base = accepted();
     const related = {
       id: "related-subject",
-      kind: "entity" as const,
       sourceIdentity: "source",
       sourceKey: "related",
       identityNamespace: "source.related",
@@ -8722,7 +8546,6 @@ function accepted(): AcceptedRecognition {
     entities: [
       {
         id: "persona",
-        kind: "persona" as const,
         sourceIdentity: "source",
         sourceKey: "credited-name",
         identityNamespace: "source.credit.voice",
@@ -8820,7 +8643,6 @@ function accepted(): AcceptedRecognition {
     entities: [
       {
         id: "persona",
-        kind: "persona",
         sourceIdentity: "source",
         sourceKey: "credited-name",
         identityNamespace: "source.credit.voice",
@@ -9855,7 +9677,6 @@ function reevaluationWorkflow(
     metadataPolicyConfiguration?: MetadataPolicyConfiguration;
     reverseSourceResolvedSubjectQualifiers?: boolean;
     relatedMention?: boolean;
-    personaKind?: "entity" | "person" | "persona";
     omitPersona?: boolean;
     sourceCompleteness?: "complete" | "incomplete";
     sourceAddress?: string;
@@ -10169,7 +9990,6 @@ function reevaluationWorkflow(
                   : [
                       {
                         id: "reevaluation-persona",
-                        kind: state.personaKind ?? ("persona" as const),
                         sourceIdentity: "reevaluation-source",
                         sourceKey: "persona",
                         identityNamespace: "reevaluation.persona",
@@ -10181,7 +10001,6 @@ function reevaluationWorkflow(
                   ? [
                       {
                         id: "reevaluation-editor",
-                        kind: "persona" as const,
                         sourceIdentity: "reevaluation-source",
                         sourceKey: "editor",
                         identityNamespace: "reevaluation.persona",
@@ -10195,7 +10014,6 @@ function reevaluationWorkflow(
                   : [
                       {
                         id: sourceResolvedSubject.id,
-                        kind: "persona" as const,
                         sourceIdentity: "reevaluation-source",
                         sourceKey: sourceResolvedSubject.sourceKey,
                         identityNamespace: "reevaluation.source-subject",
@@ -11375,7 +11193,6 @@ it("公开观察身份只在当前图中参与查找、合并与关系查询", a
   const retained = await workflow.createLocalRelatedEntity({
     commitmentId: "current-observed-identity/retained",
     label: "Current observed retained",
-    kind: "entity",
     actorId: "user:甲",
   });
   const merge = await workflow.previewEntityIdentityMerge({
@@ -11461,7 +11278,6 @@ it("公开观察身份只在当前图中参与查找、合并与关系查询", a
       await historicalWorkflow.createLocalRelatedEntity({
         commitmentId: `historical-observed-identity/candidate:${successorGraph}`,
         label: `Current candidate ${successorGraph}`,
-        kind: "entity",
         actorId: "user:甲",
       });
     const staleNewMerge = await historicalWorkflow.previewEntityIdentityMerge({
@@ -11940,7 +11756,6 @@ function multiRecoveryWorkflow(
               entities: [
                 {
                   id: "shared-work",
-                  kind: "entity" as const,
                   sourceIdentity: "multi",
                   sourceKey: "shared-work",
                   identityNamespace: "multi.work",
@@ -12862,7 +12677,6 @@ describe("SQLite Asset Refresh persistence", () => {
             entities: [
               {
                 id: "atomic-persona",
-                kind: "persona",
                 sourceIdentity: "source",
                 sourceKey: "atomic-persona",
                 identityNamespace: "source.credit.voice",
@@ -12898,7 +12712,6 @@ describe("SQLite Asset Refresh persistence", () => {
       entities: [
         {
           id: "atomic-persona",
-          kind: "persona",
           sourceIdentity: "source",
           sourceKey: "atomic-persona",
           identityNamespace: "source.credit.voice",
@@ -13525,7 +13338,6 @@ describe("SQLite Asset Refresh persistence", () => {
     const local = await workflow.createLocalRelatedEntity({
       commitmentId: "related-refresh/1",
       label: "本地声优",
-      kind: "entity",
       actorId: "user:甲",
     });
     const fix = {
@@ -13625,310 +13437,6 @@ describe("SQLite Asset Refresh persistence", () => {
       basis: "source",
       entityId: "reevaluation-persona",
       sourceRecordIds: ["reevaluation-record-2"],
-    });
-    reopened.close();
-  });
-
-  it("正式来源刷新以当前种类断言取代旧断言并允许人工决定清除", async () => {
-    const { root, catalogue } = await createCatalogueWithRoot();
-    const state = {
-      observationVersion: 0,
-      sourceVersion: 0,
-      expanded: false,
-      managedMissing: false,
-      omitCover: false,
-      explicitPlan: false,
-      sourceRefreshAuthority: true,
-      personaKind: "persona" as const,
-    };
-    const workflow = reevaluationWorkflow(catalogue, state);
-    const initial = await scanFixtureRegisteredObservedScope(workflow, {
-      directory: "/observed/related-refresh",
-      executionId: "kind-refresh-initial",
-      acceptTrusted: true,
-    });
-    const subject = (await catalogue.inspectExecution(initial.execution.id))!
-      .accepted!.entity.id;
-    state.personaKind = "person";
-    await workflow.refreshMetadata({
-      selection: {
-        version: "asset-refresh-selection/1",
-        subjects: [
-          { subjectId: subject, explanations: [{ path: ["种类更正"] }] },
-        ],
-        filesystemScopes: [],
-      },
-      initiatedBy: "user:甲",
-    });
-    await expect(
-      workflow.inspectCurrentCatalogueEntity("reevaluation-persona"),
-    ).resolves.toMatchObject({
-      entity: {
-        kind: { status: "effective", kind: "person", basis: "assertion" },
-      },
-    });
-    const preview = await workflow.previewEntityKindDecision({
-      entityId: "reevaluation-persona",
-      selectedKind: "persona",
-    });
-    await expect(
-      workflow.applyEntityKindDecision({
-        entityId: "reevaluation-persona",
-        selectedKind: "persona",
-        actorId: "user:甲",
-        baseline: preview.baseline,
-      }),
-    ).resolves.toBe("applied");
-    const clear = await workflow.previewEntityKindDecision({
-      entityId: "reevaluation-persona",
-    });
-    await expect(
-      workflow.applyEntityKindDecision({
-        entityId: "reevaluation-persona",
-        actorId: "user:甲",
-        baseline: clear.baseline,
-      }),
-    ).resolves.toBe("applied");
-    state.personaKind = "entity";
-    await workflow.refreshMetadata({
-      selection: {
-        version: "asset-refresh-selection/1",
-        subjects: [
-          { subjectId: subject, explanations: [{ path: ["普通实体"] }] },
-        ],
-        filesystemScopes: [],
-      },
-      initiatedBy: "user:甲",
-    });
-    await expect(
-      workflow.inspectCurrentCatalogueEntity("reevaluation-persona"),
-    ).resolves.toMatchObject({ entity: { kind: { status: "ordinary" } } });
-    catalogue.close();
-    const reopened = SqliteCatalogue.forProductData(root);
-    await expect(
-      reopened.findRelatedEntities("Stable persona"),
-    ).resolves.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ kind: { status: "ordinary" } }),
-      ]),
-    );
-    reopened.close();
-  });
-
-  it("两条来源谱系分别推进同一相关实体的当前种类", async () => {
-    const { root, catalogue } = await createCatalogueWithRoot();
-    const a = {
-      observationVersion: 0,
-      sourceVersion: 0,
-      expanded: false,
-      managedMissing: false,
-      omitCover: false,
-      explicitPlan: false,
-      sourceRefreshAuthority: true,
-      sourceAddress: "opaque:related-lineage-a",
-      sourceRecordPrefix: "related-lineage-a-record",
-      personaKind: "persona" as const,
-    };
-    const b = {
-      observationVersion: 0,
-      sourceVersion: 0,
-      expanded: false,
-      managedMissing: false,
-      omitCover: false,
-      explicitPlan: false,
-      sourceRefreshAuthority: true,
-      sourceAddress: "opaque:related-lineage-b",
-      sourceRecordPrefix: "related-lineage-b-record",
-      personaKind: "persona" as const,
-    };
-    const workflowA = reevaluationWorkflow(catalogue, a);
-    const workflowB = reevaluationWorkflow(catalogue, b);
-    const first = await scanFixtureRegisteredObservedScope(workflowA, {
-      directory: "/observed/related-lineage-a",
-      executionId: "related-lineage-a",
-      acceptTrusted: true,
-    });
-    const second = await scanFixtureRegisteredObservedScope(workflowB, {
-      directory: "/observed/related-lineage-b",
-      executionId: "related-lineage-b",
-      acceptTrusted: true,
-    });
-    expect(
-      (await catalogue.inspectExecution(first.execution.id))?.accepted?.entity
-        .id,
-    ).not.toBe(
-      (await catalogue.inspectExecution(second.execution.id))?.accepted?.entity
-        .id,
-    );
-    const firstSubject = (await catalogue.inspectExecution(first.execution.id))!
-      .accepted!.entity.id;
-    const secondSubject = (await catalogue.inspectExecution(
-      second.execution.id,
-    ))!.accepted!.entity.id;
-    const refresh = async (
-      workflow: AssetRefreshWorkflow,
-      subjectId: string,
-      path: string,
-    ) =>
-      await workflow.refreshMetadata({
-        selection: {
-          version: "asset-refresh-selection/1",
-          subjects: [{ subjectId, explanations: [{ path: [path] }] }],
-          filesystemScopes: [],
-        },
-        initiatedBy: "user:甲",
-      });
-    // 首次刷新建立 B 的当前来源头；下一次同种类支持必须仍令旧预演过期。
-    await refresh(workflowB, secondSubject, "B 建立当前支持");
-    const beforeSameKindSupport = await workflowA.previewEntityKindDecision({
-      entityId: "reevaluation-persona",
-      selectedKind: "person",
-    });
-    await refresh(workflowB, secondSubject, "B 新增同种类支持");
-    await expect(
-      workflowA.applyEntityKindDecision({
-        entityId: "reevaluation-persona",
-        selectedKind: "person",
-        actorId: "user:甲",
-        baseline: beforeSameKindSupport.baseline,
-      }),
-    ).resolves.toBe("stale");
-    a.personaKind = "person";
-    await refresh(workflowA, firstSubject, "A 更正");
-    const current = await workflowA.inspectCurrentCatalogueEntity(
-      "reevaluation-persona",
-    );
-    expect(current?.entity.kind).toEqual({
-      status: "conflict",
-      kinds: expect.arrayContaining(["person", "persona"]),
-    });
-    const relatedKindsInCatalogue = async () =>
-      (
-        (await workflowA.inspect(first.execution.id)).accepted
-          ?.currentRelatedEntities ?? []
-      )
-        .filter((entity) => entity.id === "reevaluation-persona")
-        .map((entity) => entity.kind);
-    expect(await relatedKindsInCatalogue()).toEqual(
-      expect.arrayContaining([
-        {
-          status: "conflict",
-          kinds: expect.arrayContaining(["person", "persona"]),
-        },
-      ]),
-    );
-    const override = await workflowA.previewEntityKindDecision({
-      entityId: "reevaluation-persona",
-      selectedKind: "person",
-    });
-    await expect(
-      workflowA.applyEntityKindDecision({
-        entityId: "reevaluation-persona",
-        selectedKind: "person",
-        actorId: "user:甲",
-        baseline: override.baseline,
-      }),
-    ).resolves.toBe("applied");
-    await expect(
-      workflowA.inspectCurrentCatalogueEntity("reevaluation-persona"),
-    ).resolves.toMatchObject({
-      entity: { kind: { status: "effective", kind: "person" } },
-    });
-    expect(await relatedKindsInCatalogue()).toEqual(
-      expect.arrayContaining([
-        { status: "effective", kind: "person", basis: "decision" },
-      ]),
-    );
-    const clear = await workflowA.previewEntityKindDecision({
-      entityId: "reevaluation-persona",
-    });
-    await expect(
-      workflowA.applyEntityKindDecision({
-        entityId: "reevaluation-persona",
-        actorId: "user:甲",
-        baseline: clear.baseline,
-      }),
-    ).resolves.toBe("applied");
-    await expect(
-      workflowA.inspectCurrentCatalogueEntity("reevaluation-persona"),
-    ).resolves.toMatchObject({
-      entity: {
-        kind: {
-          status: "conflict",
-          kinds: expect.arrayContaining(["person", "persona"]),
-        },
-      },
-    });
-    expect(await relatedKindsInCatalogue()).toEqual(
-      expect.arrayContaining([
-        {
-          status: "conflict",
-          kinds: expect.arrayContaining(["person", "persona"]),
-        },
-      ]),
-    );
-    a.omitPersona = true;
-    const completeMissing = await refresh(
-      workflowA,
-      firstSubject,
-      "A 完整缺失",
-    );
-    const completeMissingRun = completeMissing.sourceRefreshRuns?.[0];
-    expect(completeMissingRun).toMatchObject({
-      phase: "reviewing",
-      changeSets: [{ disposition: "pending" }],
-    });
-    await expect(
-      workflowA.reviewSourceRefreshChangeSet({
-        runId: completeMissingRun!.id,
-        changeSetId: completeMissingRun!.changeSets[0].id,
-        disposition: "approved",
-      }),
-    ).resolves.toMatchObject({ phase: "terminal", outcome: "succeeded" });
-    await expect(
-      workflowA.inspectCurrentCatalogueEntity("reevaluation-persona"),
-    ).resolves.toMatchObject({
-      entity: { kind: { status: "effective", kind: "persona" } },
-    });
-    b.omitPersona = true;
-    b.sourceCompleteness = "incomplete";
-    const incompleteMissing = await refresh(
-      workflowB,
-      secondSubject,
-      "B 不完整缺失",
-    );
-    expect(incompleteMissing.sourceRefreshRuns).toMatchObject([
-      {
-        changeSets: [
-          {
-            changes: expect.arrayContaining([
-              expect.objectContaining({ kind: "unchanged" }),
-            ]),
-          },
-        ],
-      },
-    ]);
-    await expect(
-      workflowB.inspectCurrentCatalogueEntity("reevaluation-persona"),
-    ).resolves.toMatchObject({
-      entity: { kind: { status: "effective", kind: "persona" } },
-    });
-    b.sourceCompleteness = undefined;
-    b.omitPersona = false;
-    b.personaKind = "person";
-    await refresh(workflowB, secondSubject, "B 更正");
-    await expect(
-      workflowB.inspectCurrentCatalogueEntity("reevaluation-persona"),
-    ).resolves.toMatchObject({
-      entity: { kind: { status: "effective", kind: "person" } },
-    });
-    catalogue.close();
-    const reopened = SqliteCatalogue.forProductData(root);
-    const reopenedWorkflow = reevaluationWorkflow(reopened, b);
-    await expect(
-      reopenedWorkflow.inspectCurrentCatalogueEntity("reevaluation-persona"),
-    ).resolves.toMatchObject({
-      entity: { kind: { status: "effective", kind: "person" } },
     });
     reopened.close();
   });
@@ -18522,7 +18030,6 @@ describe("SQLite Asset Refresh persistence", () => {
     };
     const newEntity = {
       id: "new-persona",
-      kind: "persona" as const,
       sourceIdentity: "source",
       sourceKey: "new-credit",
       identityNamespace: "source.credit.voice",
@@ -19906,9 +19413,7 @@ describe("SQLite Asset Refresh persistence", () => {
               ],
             },
           ],
-          entities: [
-            { kind: "persona", identityNamespace: "source.credit.voice" },
-          ],
+          entities: [{ identityNamespace: "source.credit.voice" }],
           entityMentions: [
             { id: "mention", label: "Credited name", role: "voice" },
           ],
@@ -20036,7 +19541,6 @@ describe("SQLite Asset Refresh persistence", () => {
     const base = accepted();
     const work = {
       id: "work-entity",
-      kind: "entity" as const,
       sourceIdentity: "source",
       sourceKey: "work",
       identityNamespace: "source.work",
@@ -20116,7 +19620,6 @@ describe("SQLite Asset Refresh persistence", () => {
     const { root, catalogue } = await createCatalogueWithRoot();
     const work = {
       id: "shared-work",
-      kind: "entity" as const,
       sourceIdentity: "bangumi",
       sourceKey: "243981",
       identityNamespace: "bangumi.subject",
@@ -20124,7 +19627,6 @@ describe("SQLite Asset Refresh persistence", () => {
     };
     const series = {
       id: "shared-series",
-      kind: "entity" as const,
       sourceIdentity: "bangumi",
       sourceKey: "400602",
       identityNamespace: "bangumi.subject",
@@ -20132,7 +19634,6 @@ describe("SQLite Asset Refresh persistence", () => {
     };
     const otherSeries = {
       id: "other-series",
-      kind: "entity" as const,
       sourceIdentity: "bangumi",
       sourceKey: "515759",
       identityNamespace: "bangumi.subject",

@@ -463,12 +463,25 @@ describe("DLsite collection and interpretation", () => {
     );
     expect(batch.entities ?? []).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ kind: "entity", sourceKey: "RG123" }),
-        expect.objectContaining({ kind: "persona", label: "Voice Name" }),
-        expect.objectContaining({ kind: "persona", label: "Scenario Name" }),
-        expect.objectContaining({ kind: "persona", label: "Illustrator" }),
         expect.objectContaining({
-          kind: "entity",
+          identityNamespace: "dlsite.circle",
+          sourceKey: "RG123",
+        }),
+        expect.objectContaining({
+          identityNamespace: "dlsite.credit.voice.voice.occurrence-local",
+          label: "Voice Name",
+        }),
+        expect.objectContaining({
+          identityNamespace: "dlsite.credit.scenario.scenario.occurrence-local",
+          label: "Scenario Name",
+        }),
+        expect.objectContaining({
+          identityNamespace:
+            "dlsite.credit.illustration.illustration.occurrence-local",
+          label: "Illustrator",
+        }),
+        expect.objectContaining({
+          identityNamespace: "dlsite.series",
           sourceKey: "SRI0000036577",
           label: "裏世界少女",
         }),

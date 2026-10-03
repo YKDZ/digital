@@ -27,17 +27,11 @@ export function createRelationshipApi(
     })
     .post("/entities", async (c) => {
       const input = object(await c.req.json());
-      if (
-        input.kind !== "entity" &&
-        input.kind !== "person" &&
-        input.kind !== "persona"
-      )
-        throw new Error("请选择实体种类");
+      if ("kind" in input) throw new Error("本地实体不再按种类创建");
       return c.json(
         await workflow().createLocalRelatedEntity({
           commitmentId: text(input.commitmentId),
           label: text(input.label),
-          kind: input.kind,
           actorId: text(input.actorId),
         }),
       );
@@ -79,7 +73,7 @@ function relationshipErrorMessage(error: Error): string {
     更正关系必须包含类型和参与者: "请选择关系类型和参与者",
     更正关系结构无效: "请检查参与者和补充信息",
     请填写完整的关系信息: "请填写完整的关系信息",
-    请选择实体种类: "请选择实体种类",
+    本地实体不再按种类创建: "创建实体不需要选择种类",
     请选择关系操作: "请选择关系操作",
   };
   if (error.message.startsWith("关系缺少必需角色："))

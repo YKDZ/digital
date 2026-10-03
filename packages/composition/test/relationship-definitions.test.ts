@@ -77,7 +77,6 @@ it("无来源连接的本地作品按已部署的系列定义标注，重开后�
     const series = await workflow.createLocalRelatedEntity({
       commitmentId: "local-series",
       label: "我的系列",
-      kind: "entity",
       actorId: "user:reader",
     });
     const preview = await workflow.previewRelationshipChange({
@@ -119,13 +118,11 @@ it("无来源连接的本地作品按已部署的系列定义标注，重开后�
     const circle = await workflow.createLocalRelatedEntity({
       commitmentId: "circle",
       label: "发行社团",
-      kind: "entity",
       actorId: "user:reader",
     });
     const voice = await workflow.createLocalRelatedEntity({
       commitmentId: "voice",
       label: "朗读者",
-      kind: "persona",
       actorId: "user:reader",
     });
     const contribution = await workflow.previewRelationshipChange({
@@ -197,13 +194,11 @@ it("人工新建只接受已声明的类型和角色，提交者不能删去必�
     const first = await product.result.createLocalRelatedEntity({
       commitmentId: "first",
       label: "甲",
-      kind: "entity",
       actorId: "user:reader",
     });
     const second = await product.result.createLocalRelatedEntity({
       commitmentId: "second",
       label: "乙",
-      kind: "entity",
       actorId: "user:reader",
     });
     const relationship = {
@@ -256,13 +251,11 @@ it("预演拒绝不存在的参与对象，采用仍校验限定项而不信任�
     const first = await product.result.createLocalRelatedEntity({
       commitmentId: "first",
       label: "前作",
-      kind: "entity",
       actorId: "user:reader",
     });
     const second = await product.result.createLocalRelatedEntity({
       commitmentId: "second",
       label: "续作",
-      kind: "entity",
       actorId: "user:reader",
     });
     const change = {

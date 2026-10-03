@@ -351,11 +351,11 @@ export type ObservedArtifactAssociationCandidate = {
 export type Entity = {
   readonly id: string;
   /** 当前可解释种类投影；身份本身不以此字段固定。 */
-  readonly kind: "digital-asset" | "entity" | "person" | "persona";
+  readonly kind: "digital-asset" | "entity";
 };
 
 /** Core 拥有这套封闭词汇；提供方原生标签不得进入。 */
-export type EntityKind = "digital-asset" | "person" | "persona";
+export type EntityKind = "digital-asset";
 
 export type EntityKindAssertion = {
   readonly id: string;
@@ -368,58 +368,37 @@ export type EntityKindAssertion = {
   readonly producer?: CapabilityCoordinate;
 };
 
-/** 可清除、可修订的解释；它不会重写身份主张。 */
-export type EntityKindDecision = {
-  readonly id: string;
-  readonly entityId: string;
-  readonly selectedKind?: EntityKind;
-  readonly basis: "manual" | "automatic";
-  readonly replacesDecisionId?: string;
-  /** 人工决定不能只以 basis: manual 代替其操作者。 */
-  readonly actorId?: string;
-};
-
 export type EffectiveEntityKind =
   | { readonly status: "ordinary" }
   | {
       readonly status: "effective";
       readonly kind: EntityKind;
-      readonly basis: "assertion" | "decision";
-    }
-  | { readonly status: "conflict"; readonly kinds: readonly EntityKind[] };
+      readonly basis: "assertion";
+    };
 
 /** 当前已接受图中的相关实体；种类只能来自唯一的生效投影。 */
-export type CurrentRelatedEntity = Omit<SourcedEntity, "kind"> & {
+export type CurrentRelatedEntity = SourcedEntity & {
   readonly kind: EffectiveEntityKind;
 };
 
-/** 唯一种类投影规则：当前选择优先，否则由当前断言推导。 */
+/** 唯一种类投影规则：数字资产准入事实生效，否则为普通实体。 */
 export function deriveEffectiveEntityKind(input: {
   readonly assertions: readonly EntityKindAssertion[];
-  readonly decision?: EntityKindDecision;
 }): EffectiveEntityKind {
-  if (input.decision?.selectedKind !== undefined)
-    return {
-      status: "effective",
-      kind: input.decision.selectedKind,
-      basis: "decision",
-    };
-  const kinds = [
+  const [kind] = [
     ...new Set(input.assertions.map((assertion) => assertion.kind)),
-  ].toSorted();
-  if (kinds.length === 0) return { status: "ordinary" };
-  if (kinds.length === 1)
-    return { status: "effective", kind: kinds[0]!, basis: "assertion" };
-  return { status: "conflict", kinds };
+  ];
+  if (kind === undefined) return { status: "ordinary" };
+  return { status: "effective", kind, basis: "assertion" };
 }
 
 export type DigitalAsset = Entity & {
   readonly kind: "digital-asset";
 };
 
-/** 只在精确来源命名空间内建立的通用实体或活动身份。 */
-export type SourcedEntity = Entity & {
-  readonly kind: "entity" | "person" | "persona";
+/** 只在精确来源命名空间内建立的普通实体；没有核心专门种类。 */
+export type SourcedEntity = {
+  readonly id: string;
   readonly sourceIdentity: string;
   readonly sourceKey: string;
   readonly identityNamespace: string;

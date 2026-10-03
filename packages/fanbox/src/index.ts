@@ -1390,7 +1390,6 @@ export class FanboxSourceInterpreter implements SourceInterpreter {
     const label = optionalString(post.user?.name) ?? creatorId;
     const entity: SourcedEntity = {
       id: stableEntityId("fanbox.creator", creatorId),
-      kind: "entity",
       sourceIdentity: "fanbox",
       sourceKey: creatorId,
       identityNamespace: "fanbox.creator",

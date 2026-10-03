@@ -246,9 +246,7 @@ function renderInspection(
               const kind =
                 entity.kind.status === "effective"
                   ? entity.kind.kind
-                  : entity.kind.status === "conflict"
-                    ? entity.kind.kinds.join("、")
-                    : "entity";
+                  : "entity";
               return `  ${entity.label}（${kind}）`;
             }),
             "关系与角色：",

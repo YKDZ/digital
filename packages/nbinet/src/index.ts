@@ -306,7 +306,6 @@ export class NbinetSourceInterpreter implements SourceInterpreter {
       const mentionId = relatedEntityId("mention", sourceKey);
       entities.push({
         id: entityId,
-        kind: "entity",
         sourceIdentity: "nbinet",
         sourceKey,
         identityNamespace,

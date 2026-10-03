@@ -440,8 +440,8 @@ const journey: CliJourney = {
     assert.ok(
       accepted.currentRelatedEntities?.some(
         (entity) =>
-          entity.kind.status === "effective" &&
-          entity.kind.kind === "persona" &&
+          entity.kind.status === "ordinary" &&
+          entity.identityNamespace.startsWith("dlsite.credit.voice") &&
           entity.label === oracle.projection.credits.voice[0],
       ),
     );

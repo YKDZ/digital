@@ -699,7 +699,11 @@ describe("TMDB collection and interpretation", () => {
     );
     expect(interpreted.entities).toHaveLength(11);
     expect(
-      interpreted.entities?.every((entity) => entity.kind === "person"),
+      interpreted.entities?.every(
+        (entity) =>
+          entity.identityNamespace === "tmdb.person" &&
+          entity.sourceKey.length > 0,
+      ),
     ).toBe(true);
     expect(interpreted.relationships).toEqual(
       expect.arrayContaining([

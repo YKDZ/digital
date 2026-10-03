@@ -2307,7 +2307,6 @@ it("scopes complete OMDb omissions to one subject record chain while retaining o
   const firstBRecord = await omdbSourceResult({ awards: "B award." });
   const bSecondary = {
     id: "lineage-b-secondary",
-    kind: "entity" as const,
     sourceIdentity: "omdb",
     sourceKey: "lineage-b-secondary",
     identityNamespace: "omdb.test.secondary",
@@ -4913,7 +4912,6 @@ function omdbAcceptedRecognitionForAsset(input: {
       : [
           {
             id: input.secondary.id,
-            kind: "entity" as const,
             sourceIdentity: "omdb",
             sourceKey: input.secondary.id,
             identityNamespace: "omdb.test.secondary",
@@ -5471,7 +5469,6 @@ function acceptedRecognition(): AcceptedRecognition {
     entities: [
       {
         id: "dlsite-voice",
-        kind: "persona" as const,
         sourceIdentity: "dlsite",
         sourceKey: "dlsite-voice",
         identityNamespace: "dlsite.credit.voice",
@@ -5581,7 +5578,6 @@ function acceptedRecognition(): AcceptedRecognition {
     entities: [
       {
         id: "dlsite-voice",
-        kind: "persona",
         sourceIdentity: "dlsite",
         sourceKey: "dlsite-voice",
         identityNamespace: "dlsite.credit.voice",

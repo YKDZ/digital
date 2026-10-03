@@ -1,0 +1,702 @@
+{
+  "startCommit": "09f0ec917815440414a287322ec45139913fff6d",
+  "audioEntity": {
+    "entity": {
+      "id": "entity_ae3e52da-9f8c-4979-a0e7-f42f9f6b9007",
+      "kind": {
+        "status": "effective",
+        "kind": "digital-asset",
+        "basis": "assertion"
+      },
+      "label": "带台本的音声作品"
+    },
+    "metadata": [
+      {
+        "property": "asset.release-date",
+        "value": "2026-07-17",
+        "selectedAssertion": {
+          "target": {
+            "kind": "entity",
+            "entityId": "entity_ae3e52da-9f8c-4979-a0e7-f42f9f6b9007"
+          },
+          "property": "asset.release-date",
+          "sourceSlot": "dlsite.product.release-date",
+          "value": "2026-07-17",
+          "sourceRecordIds": [
+            "source-record_31a77a08-162a-41ce-b19c-b3c7869b8c45"
+          ],
+          "producer": {
+            "capabilityId": "dlsite.product-interpretation",
+            "capabilityVersion": "1",
+            "contractVersion": "1",
+            "identity": "dlsite.product-interpretation",
+            "implementationVersion": "1",
+            "kind": "source-interpreter",
+            "interpretationContractVersions": ["1"]
+          }
+        },
+        "contributingAssertions": [
+          {
+            "target": {
+              "kind": "entity",
+              "entityId": "entity_ae3e52da-9f8c-4979-a0e7-f42f9f6b9007"
+            },
+            "property": "asset.release-date",
+            "sourceSlot": "dlsite.product.release-date",
+            "value": "2026-07-17",
+            "sourceRecordIds": [
+              "source-record_31a77a08-162a-41ce-b19c-b3c7869b8c45"
+            ],
+            "producer": {
+              "capabilityId": "dlsite.product-interpretation",
+              "capabilityVersion": "1",
+              "contractVersion": "1",
+              "identity": "dlsite.product-interpretation",
+              "implementationVersion": "1",
+              "kind": "source-interpreter",
+              "interpretationContractVersions": ["1"]
+            }
+          }
+        ],
+        "sourceIdentity": "dlsite",
+        "sourceRecordIds": [
+          "source-record_31a77a08-162a-41ce-b19c-b3c7869b8c45"
+        ],
+        "sourceSlot": "dlsite.product.release-date",
+        "alternatives": [],
+        "reasoning": {
+          "kind": "source-preference",
+          "preferredSource": "dlsite"
+        },
+        "subjectId": "entity_ae3e52da-9f8c-4979-a0e7-f42f9f6b9007"
+      },
+      {
+        "property": "asset.title",
+        "value": "带台本的音声作品",
+        "selectedAssertion": {
+          "target": {
+            "kind": "entity",
+            "entityId": "entity_ae3e52da-9f8c-4979-a0e7-f42f9f6b9007"
+          },
+          "property": "asset.title",
+          "sourceSlot": "dlsite.product.title",
+          "value": "带台本的音声作品",
+          "sourceRecordIds": [
+            "source-record_31a77a08-162a-41ce-b19c-b3c7869b8c45"
+          ],
+          "producer": {
+            "capabilityId": "dlsite.product-interpretation",
+            "capabilityVersion": "1",
+            "contractVersion": "1",
+            "identity": "dlsite.product-interpretation",
+            "implementationVersion": "1",
+            "kind": "source-interpreter",
+            "interpretationContractVersions": ["1"]
+          }
+        },
+        "contributingAssertions": [
+          {
+            "target": {
+              "kind": "entity",
+              "entityId": "entity_ae3e52da-9f8c-4979-a0e7-f42f9f6b9007"
+            },
+            "property": "asset.title",
+            "sourceSlot": "dlsite.product.title",
+            "value": "带台本的音声作品",
+            "sourceRecordIds": [
+              "source-record_31a77a08-162a-41ce-b19c-b3c7869b8c45"
+            ],
+            "producer": {
+              "capabilityId": "dlsite.product-interpretation",
+              "capabilityVersion": "1",
+              "contractVersion": "1",
+              "identity": "dlsite.product-interpretation",
+              "implementationVersion": "1",
+              "kind": "source-interpreter",
+              "interpretationContractVersions": ["1"]
+            }
+          }
+        ],
+        "sourceIdentity": "dlsite",
+        "sourceRecordIds": [
+          "source-record_31a77a08-162a-41ce-b19c-b3c7869b8c45"
+        ],
+        "sourceSlot": "dlsite.product.title",
+        "alternatives": [],
+        "reasoning": {
+          "kind": "source-preference",
+          "preferredSource": "dlsite"
+        },
+        "subjectId": "entity_ae3e52da-9f8c-4979-a0e7-f42f9f6b9007"
+      }
+    ],
+    "relationships": [
+      {
+        "id": "entity-relationship_cfde5ed9-8890-4582-945c-7dfae0c7d893",
+        "participants": [
+          {
+            "entityId": "entity_ae3e52da-9f8c-4979-a0e7-f42f9f6b9007",
+            "role": "asset"
+          },
+          {
+            "entityId": "entity_15612c16711a0d6213621340382ede8b3158dd88f939d1fabcee0224d44c83a1",
+            "role": "circle"
+          }
+        ],
+        "type": "asset.contribution",
+        "qualifiers": [],
+        "sources": [
+          {
+            "sourceIdentity": "dlsite",
+            "nativeAddress": "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html"
+          }
+        ]
+      },
+      {
+        "id": "entity-relationship_d92c8700-e772-4a4f-8517-b41094d0ec85",
+        "participants": [
+          {
+            "entityId": "entity_ae3e52da-9f8c-4979-a0e7-f42f9f6b9007",
+            "role": "asset"
+          },
+          {
+            "entityId": "entity_59f6b44b2198d1c97fa874fa39d90c272bdd2b32108c3dc420deccaf2ebaccf9",
+            "role": "dlsite.series.member"
+          }
+        ],
+        "type": "asset.membership",
+        "qualifiers": [],
+        "sources": [
+          {
+            "sourceIdentity": "dlsite",
+            "nativeAddress": "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html"
+          }
+        ]
+      },
+      {
+        "id": "entity-relationship_894afcda-5d37-4bc2-b6a0-8cd5b08aa8e0",
+        "participants": [
+          {
+            "entityId": "entity_ae3e52da-9f8c-4979-a0e7-f42f9f6b9007",
+            "role": "asset"
+          },
+          {
+            "entityId": "entity_809492cded10705237b5052dd63164b8e41b9abd48ffbef7fbb908d5586764d4",
+            "role": "voice"
+          }
+        ],
+        "type": "asset.contribution",
+        "qualifiers": [],
+        "sources": [
+          {
+            "sourceIdentity": "dlsite",
+            "nativeAddress": "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html"
+          }
+        ]
+      },
+      {
+        "id": "entity-relationship_6ed8beb4-c48a-4045-a5db-7db80533591a",
+        "participants": [
+          {
+            "entityId": "entity_ae3e52da-9f8c-4979-a0e7-f42f9f6b9007",
+            "role": "asset"
+          },
+          {
+            "entityId": "entity_3449a9ad4100c181e7b9bb36a33a64c5594dc413ecca36cade7610438181845c",
+            "role": "scenario"
+          }
+        ],
+        "type": "asset.contribution",
+        "qualifiers": [],
+        "sources": [
+          {
+            "sourceIdentity": "dlsite",
+            "nativeAddress": "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html"
+          }
+        ]
+      },
+      {
+        "id": "entity-relationship_40483e87-7743-4fb5-a191-1fd6c1b3250e",
+        "participants": [
+          {
+            "entityId": "entity_ae3e52da-9f8c-4979-a0e7-f42f9f6b9007",
+            "role": "asset"
+          },
+          {
+            "entityId": "entity_d28e6b560bc59596676ed9bb1c20f5e9fe54d22a8bab59bfc52bbf135a23c37f",
+            "role": "illustration"
+          }
+        ],
+        "type": "asset.contribution",
+        "qualifiers": [],
+        "sources": [
+          {
+            "sourceIdentity": "dlsite",
+            "nativeAddress": "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html"
+          }
+        ]
+      },
+      {
+        "id": "entity-relationship_b54b8d81-c5a0-4049-9a3c-0c619de18315",
+        "participants": [
+          {
+            "entityId": "entity_ae3e52da-9f8c-4979-a0e7-f42f9f6b9007",
+            "role": "asset"
+          },
+          {
+            "entityId": "entity_5fa8600b0693677336eb95d694d6a26f34d4e9c475379ab43886957f6130460d",
+            "role": "author"
+          }
+        ],
+        "type": "asset.contribution",
+        "qualifiers": [],
+        "sources": [
+          {
+            "sourceIdentity": "dlsite",
+            "nativeAddress": "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html"
+          }
+        ]
+      }
+    ]
+  },
+  "afterAudioRefresh": {
+    "entity": {
+      "id": "entity_ae3e52da-9f8c-4979-a0e7-f42f9f6b9007",
+      "kind": {
+        "status": "effective",
+        "kind": "digital-asset",
+        "basis": "assertion"
+      },
+      "label": "带台本的音声作品"
+    },
+    "metadata": [
+      {
+        "property": "asset.release-date",
+        "value": "2026-07-17",
+        "selectedAssertion": {
+          "target": {
+            "kind": "entity",
+            "entityId": "entity_ae3e52da-9f8c-4979-a0e7-f42f9f6b9007"
+          },
+          "property": "asset.release-date",
+          "sourceSlot": "dlsite.product.release-date",
+          "value": "2026-07-17",
+          "sourceRecordIds": [
+            "source-record_31a77a08-162a-41ce-b19c-b3c7869b8c45",
+            "source-record_58d10618-ae1e-468d-a5a6-0a311c022dc1"
+          ],
+          "producer": {
+            "capabilityId": "dlsite.product-interpretation",
+            "capabilityVersion": "1",
+            "contractVersion": "1",
+            "identity": "dlsite.product-interpretation",
+            "implementationVersion": "1",
+            "kind": "source-interpreter",
+            "interpretationContractVersions": ["1"]
+          }
+        },
+        "contributingAssertions": [
+          {
+            "target": {
+              "kind": "entity",
+              "entityId": "entity_ae3e52da-9f8c-4979-a0e7-f42f9f6b9007"
+            },
+            "property": "asset.release-date",
+            "sourceSlot": "dlsite.product.release-date",
+            "value": "2026-07-17",
+            "sourceRecordIds": [
+              "source-record_31a77a08-162a-41ce-b19c-b3c7869b8c45",
+              "source-record_58d10618-ae1e-468d-a5a6-0a311c022dc1"
+            ],
+            "producer": {
+              "capabilityId": "dlsite.product-interpretation",
+              "capabilityVersion": "1",
+              "contractVersion": "1",
+              "identity": "dlsite.product-interpretation",
+              "implementationVersion": "1",
+              "kind": "source-interpreter",
+              "interpretationContractVersions": ["1"]
+            }
+          }
+        ],
+        "sourceIdentity": "dlsite",
+        "sourceRecordIds": [
+          "source-record_31a77a08-162a-41ce-b19c-b3c7869b8c45",
+          "source-record_58d10618-ae1e-468d-a5a6-0a311c022dc1"
+        ],
+        "sourceSlot": "dlsite.product.release-date",
+        "alternatives": [],
+        "reasoning": {
+          "kind": "source-preference",
+          "preferredSource": "dlsite"
+        },
+        "subjectId": "entity_ae3e52da-9f8c-4979-a0e7-f42f9f6b9007"
+      },
+      {
+        "property": "asset.title",
+        "value": "带台本的音声作品",
+        "selectedAssertion": {
+          "target": {
+            "kind": "entity",
+            "entityId": "entity_ae3e52da-9f8c-4979-a0e7-f42f9f6b9007"
+          },
+          "property": "asset.title",
+          "sourceSlot": "dlsite.product.title",
+          "value": "带台本的音声作品",
+          "sourceRecordIds": [
+            "source-record_31a77a08-162a-41ce-b19c-b3c7869b8c45",
+            "source-record_58d10618-ae1e-468d-a5a6-0a311c022dc1"
+          ],
+          "producer": {
+            "capabilityId": "dlsite.product-interpretation",
+            "capabilityVersion": "1",
+            "contractVersion": "1",
+            "identity": "dlsite.product-interpretation",
+            "implementationVersion": "1",
+            "kind": "source-interpreter",
+            "interpretationContractVersions": ["1"]
+          }
+        },
+        "contributingAssertions": [
+          {
+            "target": {
+              "kind": "entity",
+              "entityId": "entity_ae3e52da-9f8c-4979-a0e7-f42f9f6b9007"
+            },
+            "property": "asset.title",
+            "sourceSlot": "dlsite.product.title",
+            "value": "带台本的音声作品",
+            "sourceRecordIds": [
+              "source-record_31a77a08-162a-41ce-b19c-b3c7869b8c45",
+              "source-record_58d10618-ae1e-468d-a5a6-0a311c022dc1"
+            ],
+            "producer": {
+              "capabilityId": "dlsite.product-interpretation",
+              "capabilityVersion": "1",
+              "contractVersion": "1",
+              "identity": "dlsite.product-interpretation",
+              "implementationVersion": "1",
+              "kind": "source-interpreter",
+              "interpretationContractVersions": ["1"]
+            }
+          }
+        ],
+        "sourceIdentity": "dlsite",
+        "sourceRecordIds": [
+          "source-record_31a77a08-162a-41ce-b19c-b3c7869b8c45",
+          "source-record_58d10618-ae1e-468d-a5a6-0a311c022dc1"
+        ],
+        "sourceSlot": "dlsite.product.title",
+        "alternatives": [],
+        "reasoning": {
+          "kind": "source-preference",
+          "preferredSource": "dlsite"
+        },
+        "subjectId": "entity_ae3e52da-9f8c-4979-a0e7-f42f9f6b9007"
+      }
+    ],
+    "relationships": [
+      {
+        "id": "entity-relationship_cfde5ed9-8890-4582-945c-7dfae0c7d893",
+        "participants": [
+          {
+            "entityId": "entity_ae3e52da-9f8c-4979-a0e7-f42f9f6b9007",
+            "role": "asset"
+          },
+          {
+            "entityId": "entity_15612c16711a0d6213621340382ede8b3158dd88f939d1fabcee0224d44c83a1",
+            "role": "circle"
+          }
+        ],
+        "type": "asset.contribution",
+        "qualifiers": [],
+        "sources": [
+          {
+            "sourceIdentity": "dlsite",
+            "nativeAddress": "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html"
+          }
+        ]
+      },
+      {
+        "id": "entity-relationship_d92c8700-e772-4a4f-8517-b41094d0ec85",
+        "participants": [
+          {
+            "entityId": "entity_ae3e52da-9f8c-4979-a0e7-f42f9f6b9007",
+            "role": "asset"
+          },
+          {
+            "entityId": "entity_59f6b44b2198d1c97fa874fa39d90c272bdd2b32108c3dc420deccaf2ebaccf9",
+            "role": "dlsite.series.member"
+          }
+        ],
+        "type": "asset.membership",
+        "qualifiers": [],
+        "sources": [
+          {
+            "sourceIdentity": "dlsite",
+            "nativeAddress": "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html"
+          }
+        ]
+      },
+      {
+        "id": "entity-relationship_894afcda-5d37-4bc2-b6a0-8cd5b08aa8e0",
+        "participants": [
+          {
+            "entityId": "entity_ae3e52da-9f8c-4979-a0e7-f42f9f6b9007",
+            "role": "asset"
+          },
+          {
+            "entityId": "entity_809492cded10705237b5052dd63164b8e41b9abd48ffbef7fbb908d5586764d4",
+            "role": "voice"
+          }
+        ],
+        "type": "asset.contribution",
+        "qualifiers": [],
+        "sources": [
+          {
+            "sourceIdentity": "dlsite",
+            "nativeAddress": "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html"
+          }
+        ]
+      },
+      {
+        "id": "entity-relationship_6ed8beb4-c48a-4045-a5db-7db80533591a",
+        "participants": [
+          {
+            "entityId": "entity_ae3e52da-9f8c-4979-a0e7-f42f9f6b9007",
+            "role": "asset"
+          },
+          {
+            "entityId": "entity_3449a9ad4100c181e7b9bb36a33a64c5594dc413ecca36cade7610438181845c",
+            "role": "scenario"
+          }
+        ],
+        "type": "asset.contribution",
+        "qualifiers": [],
+        "sources": [
+          {
+            "sourceIdentity": "dlsite",
+            "nativeAddress": "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html"
+          }
+        ]
+      },
+      {
+        "id": "entity-relationship_40483e87-7743-4fb5-a191-1fd6c1b3250e",
+        "participants": [
+          {
+            "entityId": "entity_ae3e52da-9f8c-4979-a0e7-f42f9f6b9007",
+            "role": "asset"
+          },
+          {
+            "entityId": "entity_d28e6b560bc59596676ed9bb1c20f5e9fe54d22a8bab59bfc52bbf135a23c37f",
+            "role": "illustration"
+          }
+        ],
+        "type": "asset.contribution",
+        "qualifiers": [],
+        "sources": [
+          {
+            "sourceIdentity": "dlsite",
+            "nativeAddress": "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html"
+          }
+        ]
+      },
+      {
+        "id": "entity-relationship_b54b8d81-c5a0-4049-9a3c-0c619de18315",
+        "participants": [
+          {
+            "entityId": "entity_ae3e52da-9f8c-4979-a0e7-f42f9f6b9007",
+            "role": "asset"
+          },
+          {
+            "entityId": "entity_5fa8600b0693677336eb95d694d6a26f34d4e9c475379ab43886957f6130460d",
+            "role": "author"
+          }
+        ],
+        "type": "asset.contribution",
+        "qualifiers": [],
+        "sources": [
+          {
+            "sourceIdentity": "dlsite",
+            "nativeAddress": "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html"
+          }
+        ]
+      }
+    ]
+  },
+  "unidentifiedAsset": {
+    "id": "entity_36f5bfe7-5d89-4f19-b3a4-25dbf3a556ce"
+  },
+  "unidentifiedAssetMetadata": [
+    {
+      "property": "asset.content-classification",
+      "value": "book",
+      "selectedAssertion": {
+        "property": "asset.content-classification",
+        "value": "book",
+        "target": {
+          "kind": "entity",
+          "entityId": "entity_36f5bfe7-5d89-4f19-b3a4-25dbf3a556ce"
+        },
+        "sourceSlot": "asset.content-classification",
+        "sourceRecordIds": [],
+        "authoredBy": {
+          "initiatedBy": "interactive",
+          "proposalId": "recognition-proposal_05627502-e460-4533-bae2-ee433f8e85a7"
+        }
+      },
+      "contributingAssertions": [
+        {
+          "property": "asset.content-classification",
+          "value": "book",
+          "target": {
+            "kind": "entity",
+            "entityId": "entity_36f5bfe7-5d89-4f19-b3a4-25dbf3a556ce"
+          },
+          "sourceSlot": "asset.content-classification",
+          "sourceRecordIds": [],
+          "authoredBy": {
+            "initiatedBy": "interactive",
+            "proposalId": "recognition-proposal_05627502-e460-4533-bae2-ee433f8e85a7"
+          }
+        }
+      ],
+      "sourceIdentity": "user",
+      "sourceRecordIds": [],
+      "sourceSlot": "asset.content-classification",
+      "alternatives": [],
+      "reasoning": {
+        "kind": "source-preference",
+        "preferredSource": "user"
+      }
+    },
+    {
+      "property": "asset.title",
+      "value": "旧合同书",
+      "selectedAssertion": {
+        "property": "asset.title",
+        "value": "旧合同书",
+        "target": {
+          "kind": "entity",
+          "entityId": "entity_36f5bfe7-5d89-4f19-b3a4-25dbf3a556ce"
+        },
+        "sourceSlot": "asset.title",
+        "sourceRecordIds": [],
+        "authoredBy": {
+          "initiatedBy": "interactive",
+          "proposalId": "recognition-proposal_05627502-e460-4533-bae2-ee433f8e85a7"
+        }
+      },
+      "contributingAssertions": [
+        {
+          "property": "asset.title",
+          "value": "旧合同书",
+          "target": {
+            "kind": "entity",
+            "entityId": "entity_36f5bfe7-5d89-4f19-b3a4-25dbf3a556ce"
+          },
+          "sourceSlot": "asset.title",
+          "sourceRecordIds": [],
+          "authoredBy": {
+            "initiatedBy": "interactive",
+            "proposalId": "recognition-proposal_05627502-e460-4533-bae2-ee433f8e85a7"
+          }
+        }
+      ],
+      "sourceIdentity": "user",
+      "sourceRecordIds": [],
+      "sourceSlot": "asset.title",
+      "alternatives": [],
+      "reasoning": {
+        "kind": "source-preference",
+        "preferredSource": "user"
+      }
+    }
+  ],
+  "enrichment": {
+    "executionId": "execution_ba4ae435-bdb0-4381-892c-e65a31bf51de",
+    "sourceEnrichments": [
+      {
+        "subjectId": "entity_36f5bfe7-5d89-4f19-b3a4-25dbf3a556ce",
+        "sourceIdentity": "nbinet",
+        "sourceAddress": "https://nbinet.primo.exlibrisgroup.com/discovery/search?inst=886NCL_NBINET&vid=886NCL_NBINET%3ANBINET&lang=zh-tw&q=isbn%2Cexact%2C9789864738281&scope=MyInstitution&tab=NBINET&skipDelivery=Y",
+        "input": {
+          "isbn": "9789864738281"
+        },
+        "status": "completed",
+        "canRetry": false
+      }
+    ]
+  },
+  "enrichmentSourceRecords": [
+    {
+      "id": "source-record_nbinet_211787e2-c888-4506-a462-74f3f6833e5d",
+      "sourceIdentity": "nbinet",
+      "nativeAddress": "https://nbinet.primo.exlibrisgroup.com/discovery/search?inst=886NCL_NBINET&vid=886NCL_NBINET%3ANBINET&lang=zh-tw&q=isbn%2Cexact%2C9789864738281&scope=MyInstitution&tab=NBINET&skipDelivery=Y",
+      "coverage": {
+        "id": "nbinet.exact-isbn",
+        "completeness": "complete",
+        "authority": "official"
+      },
+      "acquiredAt": "2026-10-03T11:36:58.130Z",
+      "digest": "65871278d8e34bbc74d2c5fd93deda84fa86b60a70826286ba0164856ff1304f"
+    }
+  ],
+  "localEntities": {
+    "person": {
+      "id": "related-entity_4fc7ad1332912faf7255978dc7e551d14aa80189d041fbb8381f5abbe62b0be3",
+      "label": "旧人物"
+    },
+    "persona": {
+      "id": "related-entity_7961622186de1b7881581aad5b1b917e3b4b3efdc7f12adb2251ba48a68c7090",
+      "label": "旧活动身份"
+    },
+    "ordinary": {
+      "id": "related-entity_ec24ada47eef4e7e675d3d8bf6e2915c3a378d84946e0d222b9014729980b3b1",
+      "label": "同名社团"
+    },
+    "sameName": {
+      "id": "related-entity_7d837cf829ff8b41d9c6e5058336217d4abca30733c03e4e9728f2320964af83",
+      "label": "同名社团"
+    }
+  },
+  "personaRelationships": [
+    {
+      "id": "manual-relationship_0d6183e40a09f3631a4f45cb1a347c3f26b112a1",
+      "participants": [
+        {
+          "entityId": "entity_36f5bfe7-5d89-4f19-b3a4-25dbf3a556ce",
+          "role": "asset"
+        },
+        {
+          "entityId": "related-entity_7961622186de1b7881581aad5b1b917e3b4b3efdc7f12adb2251ba48a68c7090",
+          "role": "circle"
+        },
+        {
+          "entityId": "related-entity_4fc7ad1332912faf7255978dc7e551d14aa80189d041fbb8381f5abbe62b0be3",
+          "role": "voice"
+        }
+      ],
+      "type": "asset.contribution",
+      "qualifiers": [],
+      "sources": []
+    }
+  ],
+  "pendingAssociation": {
+    "executionId": "execution_148b1256-4a06-41e1-b718-074ab4603856",
+    "state": "awaiting-confirmation",
+    "availableActions": ["apply", "reject"]
+  },
+  "readBack": [
+    {
+      "artifactRevisionId": "artifact-revision_24d8182dc3dbce79ecd246f2ef04eb9d60b1534bfe5175d19cb8f62cddeec958",
+      "positionMilliseconds": 0,
+      "completed": true
+    },
+    {
+      "artifactRevisionId": "artifact-revision_df34007d699af20f6c8d7c2fd0e94c5b37ac51bfc2a97cb9b847e9108bb150f6",
+      "positionMilliseconds": 45000,
+      "completed": false
+    }
+  ]
+}

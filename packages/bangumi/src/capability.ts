@@ -1468,7 +1468,6 @@ function assertion(
 function workEntity(subject: Subject, record: SourceRecord): SourcedEntity {
   return {
     id: sourcedEntityId("bangumi.subject", String(subject.id)),
-    kind: "entity",
     sourceIdentity: "bangumi",
     sourceKey: String(subject.id),
     identityNamespace: "bangumi.subject",

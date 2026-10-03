@@ -164,6 +164,8 @@ async function prepareProductionCatalogueWithWriter(
       try {
         if (artifact.id === "20260906010000_source_identity_correction")
           SqliteCatalogue.assertExactLegacySourceEnrichmentAuthority(database);
+        if (artifact.id === "20261003010000_ordinary_people_and_personas")
+          SqliteCatalogue.assertOrdinaryEntityMigrationAuthority(database);
         database.exec(sql);
         database
           .prepare(

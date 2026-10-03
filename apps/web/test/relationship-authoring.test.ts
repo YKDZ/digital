@@ -30,16 +30,11 @@ async function openProduct(root: string) {
       body: JSON.stringify(body),
     });
   const json = async (response: Response) => await response.json();
-  const entity = async (
-    commitmentId: string,
-    label: string,
-    kind: "entity" | "person" | "persona",
-  ) =>
+  const entity = async (commitmentId: string, label: string) =>
     await json(
       await post("entities", {
         commitmentId,
         label,
-        kind,
         actorId: "reader",
       }),
     );
@@ -102,8 +97,23 @@ it("Web 离线查询本地声明、建立参与实体、预演及采用，并从
         }),
       ]),
     );
-    const predecessor = await product.entity("first", "离线前作", "entity");
-    const sequel = await product.entity("second", "离线续作", "entity");
+    for (const kind of ["person", "persona", "digital-asset", "entity"]) {
+      const rejected = await product.post("entities", {
+        commitmentId: "retired",
+        label: "旧种类请求",
+        kind,
+        actorId: "reader",
+      });
+      expect(rejected.status).toBe(400);
+      expect(await rejected.json()).toEqual({
+        error: "创建实体不需要选择种类",
+      });
+    }
+    expect(
+      await (await product.request("entities?label=旧种类请求")).json(),
+    ).toEqual([]);
+    const predecessor = await product.entity("first", "离线前作");
+    const sequel = await product.entity("second", "离线续作");
     const search = await product.request("entities?label=离线前作");
     expect(await search.json()).toEqual(
       expect.arrayContaining([expect.objectContaining({ id: predecessor.id })]),
@@ -201,11 +211,11 @@ it("Web 正式入口按被点名事实决定多方关系，独立事实不被压
       ({ id }) => id === "dlsite.series-membership",
     )!;
     const entities = await Promise.all([
-      product.entity("work", "被点名作品", "entity"),
-      product.entity("series", "被点名系列", "entity"),
-      product.entity("circle", "被点名社团", "persona"),
-      product.entity("voice", "被点名声优", "person"),
-      product.entity("scenario", "被点名脚本", "person"),
+      product.entity("work", "被点名作品""),
+      product.entity("series", "被点名系列""),
+      product.entity("circle", "被点名社团""),
+      product.entity("voice", "被点名声优""),
+      product.entity("scenario", "被点名脚本""),
     ]);
     const [work, series, circle, voice, scenario] = entities;
     expect(contribution.roles!.map(({ role }) => role)).toEqual(
@@ -461,8 +471,8 @@ it("Web 对独立人工事实的选择只看被点名的当前替代，多次更
   let product = await openProduct(root);
   try {
     const [work, series] = await Promise.all([
-      product.entity("manual-work", "人工选择作品", "entity"),
-      product.entity("manual-series", "人工选择系列", "entity"),
+      product.entity("manual-work", "人工选择作品""),
+      product.entity("manual-series", "人工选择系列""),
     ]);
     const membership = [{ entityId: series.id, role: "dlsite.series.member" }];
     const draft = (position: string) => ({
@@ -536,8 +546,8 @@ it("Web 对独立人工事实的选择只看被点名的当前替代，多次更
 
     // 一次预演批量作用在两个相互独立的人工目标上，仍各自只按被点名事实生效。
     const [workB, seriesB] = await Promise.all([
-      product.entity("manual-work-b", "人工批量作品", "entity"),
-      product.entity("manual-series-b", "人工批量系列", "entity"),
+      product.entity("manual-work-b", "人工批量作品""),
+      product.entity("manual-series-b", "人工批量系列""),
     ]);
     const batchCreate = {
       kind: "create" as const,

@@ -884,7 +884,6 @@ export class TmdbSourceInterpreter implements SourceInterpreter {
       }
       const entity: SourcedEntity = {
         id: `entity_tmdb_person_${value.id}`,
-        kind: "person",
         sourceIdentity: "tmdb",
         sourceKey: value.id,
         identityNamespace: "tmdb.person",

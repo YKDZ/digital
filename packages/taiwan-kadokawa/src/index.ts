@@ -247,7 +247,6 @@ export function createTaiwanKadokawaSource(
           const mentionId = relatedEntityId("mention", sourceKey);
           entities.push({
             id: entityId,
-            kind: "entity",
             sourceIdentity,
             sourceKey,
             identityNamespace,
