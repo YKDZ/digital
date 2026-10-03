@@ -109,25 +109,22 @@ const openProduct = (productDataDirectory: string) =>
 
 const ordinaryKind = { status: "ordinary" } as const;
 
-/** 迁移副本没有网络；只为已通过正式刷新读取的来源提供同一合法样本。 */
-function mockSourceFetch(): () => void {
+/** 可刷新的合法 DLsite 来源样本；刷新时按当前可变字段重新读取。 */
+type DlsiteSourceSample = { readonly workName: string };
+
+const defaultDlsiteSourceSample: DlsiteSourceSample = {
+  workName: "带台本的音声作品",
+};
+
+/**
+ * 迁移副本没有网络；只为已通过正式刷新读取的来源提供同一合法样本。
+ * 提供方在装配时捕获 fetch，因此响应体按可变 `sample` 每次请求即时生成，
+ * 调用方可在不重装 fetch 的前提下改变来源可刷新事实。
+ */
+function mockSourceFetch(
+  sample: DlsiteSourceSample = defaultDlsiteSourceSample,
+): () => void {
   const originalFetch = globalThis.fetch;
-  const dlsiteProduct = {
-    RJ01668691: {
-      site_id: "maniax",
-      work_name: "带台本的音声作品",
-      regist_date: "2026-07-17",
-      work_image: "//img.dlsite.jp/official.jpg",
-      maker_id: "MI000001",
-      maker_name: "朗读社团",
-      title_id: "SE000001",
-      title_name: "所属系列",
-      voice: ["声优甲"],
-      scenario: ["脚本乙"],
-      illustration: ["插画丙"],
-      author: ["作者丁"],
-    },
-  };
   globalThis.fetch = async (input: string | URL | Request) => {
     const address =
       typeof input === "string"
@@ -135,6 +132,22 @@ function mockSourceFetch(): () => void {
         : input instanceof URL
           ? input.href
           : input.url;
+    const dlsiteProduct = {
+      RJ01668691: {
+        site_id: "maniax",
+        work_name: sample.workName,
+        regist_date: "2026-07-17",
+        work_image: "//img.dlsite.jp/official.jpg",
+        maker_id: "MI000001",
+        maker_name: "朗读社团",
+        title_id: "SE000001",
+        title_name: "所属系列",
+        voice: ["声优甲"],
+        scenario: ["脚本乙"],
+        illustration: ["插画丙"],
+        author: ["作者丁"],
+      },
+    };
     if (address.includes("/product/info/ajax"))
       return new Response(JSON.stringify(dlsiteProduct), {
         headers: { "content-type": "application/json" },
@@ -606,6 +619,283 @@ it("人物与活动身份硬迁移后公开读取保全身份、资料、关系�
         )
       )?.relationships,
     ).toEqual(manifest.afterAudioRefresh.relationships);
+    expect(
+      await product.result.interactions.read([
+        stateA.artifactRevisionId,
+        stateB.artifactRevisionId,
+      ]),
+    ).toEqual(manifest.readBack);
+  } finally {
+    restoreFetch();
+    await product.close();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 120_000);
+
+it("迁移后的普通实体经正式公开操作贯通预演、合并、合并后来源刷新、人工事实、重开与指定撤销", async () => {
+  const root = await temporaryProductRoot("digital-disposable-e02-merge-");
+  const data = path.join(root, "data");
+  const manifest = await entityE02Manifest();
+  await mkdir(path.join(data, "managed-artifacts"), { recursive: true });
+  await copyFile(
+    path.join(fixtureRoot, "entity-e02-after-e01.sqlite"),
+    path.join(data, "catalogue.sqlite"),
+  );
+  await prepareWithFormalMigration(data);
+  await expect(
+    SqliteCatalogue.inspectProductionReadiness({ productDataDirectory: data }),
+  ).resolves.toMatchObject({ state: "ready" });
+
+  const audioId = manifest.audioEntity.entity.id;
+  const voiceParticipant = manifest.afterAudioRefresh.relationships
+    .flatMap((relationship) => relationship.participants)
+    .find((participant) => participant.role === "voice")!;
+  const [stateA, stateB] = manifest.readBack as [
+    (typeof manifest.readBack)[0],
+    (typeof manifest.readBack)[0],
+  ];
+
+  // 装配前安装唯一来源样本；刷新时按可变 workName 即时返回新的合法事实。
+  const sourceSample = { workName: "带台本的音声作品" };
+  const restoreFetch = mockSourceFetch(sourceSample);
+  let product = openProduct(data);
+  try {
+    const application = product.result;
+    const workflow = application.workflow;
+
+    // 来源声优仍是普通实体并保留 DLsite 身份命名空间，作为被并入的 B。
+    const voice = await workflow.inspectCurrentCatalogueEntity(
+      voiceParticipant.entityId,
+    );
+    expect(voice?.entity).toMatchObject({
+      id: voiceParticipant.entityId,
+      label: "声优甲",
+      kind: ordinaryKind,
+      sourceIdentity: "dlsite",
+      identityNamespace: expect.stringContaining("dlsite.credit.voice"),
+    });
+    // 新普通本地实体作为保留代表 A。
+    const retained = await workflow.createLocalRelatedEntity({
+      commitmentId: "r03/retained",
+      label: "本地甲",
+      actorId: "local-user",
+    });
+    expect(retained).toMatchObject({ identity: "local", kind: ordinaryKind });
+
+    // 公开预演确认 B 并入 A 的真实影响，随后采用。
+    const mergePreview = await workflow.previewEntityIdentityMerge({
+      retainedEntityId: retained.id,
+      mergedEntityId: voiceParticipant.entityId,
+    });
+    expect(mergePreview.effectiveKind).toEqual(ordinaryKind);
+    expect(mergePreview.members).toEqual(
+      expect.arrayContaining([retained.id, voiceParticipant.entityId]),
+    );
+    expect(
+      await workflow.applyEntityIdentityMerge({
+        commitmentId: "r03/merge",
+        actorId: "local-user",
+        preview: mergePreview,
+      }),
+    ).toBe("applied");
+    expect(
+      (await workflow.inspectCurrentCatalogueEntity(voiceParticipant.entityId))
+        ?.entity,
+    ).toMatchObject({ id: retained.id });
+
+    // 采用后按正式部署提供方真实刷新，只改来源标题（同一 RJ 坐标，声优名不变）。
+    const mergedTitle = "带台本的音声作品（第二版）";
+    sourceSample.workName = mergedTitle;
+    const refresh = await workflow.refreshMetadata({
+      selection: {
+        version: "asset-refresh-selection/1",
+        subjects: [
+          { subjectId: audioId, explanations: [{ path: ["合并后刷新"] }] },
+        ],
+        filesystemScopes: [],
+      },
+      initiatedBy: "local-user",
+    });
+    expect(refresh.execution.outcome).toBe("accepted");
+
+    // 合并后刷新写入新来源事实：资产标题改为第二版且仍归属来源。
+    const refreshedAudio =
+      await workflow.inspectCurrentCatalogueEntity(audioId);
+    expect(refreshedAudio?.metadata).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          property: "asset.title",
+          value: mergedTitle,
+          sourceIdentity: "dlsite",
+        }),
+      ]),
+    );
+    // 来源声优事实按保留代表 A 汇集：查询 A 可见合并后的 voice 贡献。
+    const aggregated = await workflow.inspectCurrentCatalogueEntity(
+      retained.id,
+    );
+    const voiceOnRetained = aggregated?.relationships.find(
+      (relationship) =>
+        relationship.type === "asset.contribution" &&
+        relationship.participants.some(
+          ({ entityId, role }) => entityId === retained.id && role === "voice",
+        ),
+    );
+    expect(voiceOnRetained).toBeDefined();
+    // 原始归属仍在：被并入的 B 只通过代表投影出现，自身不复制资产身份或材料。
+    expect(
+      await workflow.inspectCurrentCatalogueSubject(voiceParticipant.entityId),
+    ).toBeUndefined();
+
+    // 以明确声明的角色新建人工关系并默认落在保留代表 A（引用被并入的 B）。
+    const manualPreview = await workflow.previewRelationshipChange({
+      changes: [
+        {
+          kind: "create",
+          definitionId: "dlsite.contribution",
+          relationship: {
+            type: "asset.contribution",
+            participants: [
+              { entityId: audioId, role: "asset" },
+              { entityId: voiceParticipant.entityId, role: "illustration" },
+            ],
+          },
+        },
+      ],
+    });
+    expect(
+      manualPreview.changes[0].relationship!.participants.find(
+        ({ role }) => role === "illustration",
+      )!.entityId,
+    ).toBe(retained.id);
+    expect(
+      await workflow.applyRelationshipChange({
+        actorId: "local-user",
+        preview: manualPreview,
+      }),
+    ).toBe("applied");
+
+    // R01 按项更正与合并交叉：只排除被点名的那一项来源事实，
+    // 落到代表 A 的合并来源事实与人工关系都不受影响。
+    const audioRelationships = (await workflow.inspectCurrentCatalogueEntity(
+      audioId,
+    ))!.relationships;
+    const contributionOf = (role: string) =>
+      audioRelationships.find(
+        (relationship) =>
+          relationship.type === "asset.contribution" &&
+          relationship.participants.some(
+            ({ entityId, role: participantRole }) =>
+              participantRole === role &&
+              (role === "voice" ? entityId === retained.id : true),
+          ),
+      )!;
+    const voiceFactId = contributionOf("voice").id;
+    const scenarioFactId = contributionOf("scenario").id;
+    const excluded = await workflow.previewRelationshipChange({
+      changes: [{ kind: "exclude", targetRelationshipId: scenarioFactId }],
+    });
+    expect(
+      await workflow.applyRelationshipChange({
+        actorId: "local-user",
+        preview: excluded,
+      }),
+    ).toBe("applied");
+    const audioAfterExclude = (await workflow.inspectCurrentCatalogueEntity(
+      audioId,
+    ))!.relationships;
+    expect(
+      audioAfterExclude.some(
+        (relationship) => relationship.id === scenarioFactId,
+      ),
+    ).toBe(false);
+    // 同一资产内的其他来源事实逐项保全，合并汇集到 A 的 voice 事实不受影响。
+    expect(
+      audioAfterExclude.some((relationship) => relationship.id === voiceFactId),
+    ).toBe(true);
+    // 落在代表 A 的人工关系不受来源事实排除影响。
+    expect(
+      (
+        await workflow.inspectCurrentCatalogueEntity(retained.id)
+      )?.relationships.some((relationship) =>
+        relationship.participants.some(
+          ({ entityId, role }) =>
+            entityId === retained.id && role === "illustration",
+        ),
+      ),
+    ).toBe(true);
+
+    await product.close();
+    product = openProduct(data);
+    const reopened = product.result.workflow;
+
+    // 公开重预演 (A,B) 精确带出指定合并的 mergeId，作为撤销定位依据。
+    const undoPreview = await reopened.previewEntityIdentityMerge({
+      retainedEntityId: retained.id,
+      mergedEntityId: voiceParticipant.entityId,
+    });
+    expect(undoPreview.mergeId).toBeDefined();
+    expect(
+      await reopened.undoEntityIdentityMerge({
+        commitmentId: "r03/undo",
+        actorId: "local-user",
+        preview: undoPreview,
+      }),
+    ).toBe("applied");
+
+    // 反查：撤销后来源声优恢复独立原属，B 重新以自身身份参与来源 voice 贡献。
+    const voiceAfterUndo = await reopened.inspectCurrentCatalogueEntity(
+      voiceParticipant.entityId,
+    );
+    expect(voiceAfterUndo?.entity).toMatchObject({
+      id: voiceParticipant.entityId,
+    });
+    expect(
+      voiceAfterUndo?.relationships.some(
+        (relationship) =>
+          relationship.type === "asset.contribution" &&
+          relationship.participants.some(
+            ({ entityId, role }) =>
+              entityId === voiceParticipant.entityId && role === "voice",
+          ),
+      ),
+    ).toBe(true);
+    // 人工关系不回退、留在代表 A，也不复制给被并入的 B。
+    const retainedAfterUndo = await reopened.inspectCurrentCatalogueEntity(
+      retained.id,
+    );
+    expect(
+      retainedAfterUndo?.relationships.some(
+        (relationship) =>
+          relationship.type === "asset.contribution" &&
+          relationship.participants.some(
+            ({ entityId, role }) =>
+              entityId === retained.id && role === "illustration",
+          ),
+      ),
+    ).toBe(true);
+    expect(
+      voiceAfterUndo?.relationships.some(
+        (relationship) =>
+          relationship.type === "asset.contribution" &&
+          relationship.participants.some(
+            ({ entityId, role }) =>
+              entityId === voiceParticipant.entityId && role === "illustration",
+          ),
+      ),
+    ).toBe(false);
+    // 合并后刷新结果不回退：来源标题仍是第二版。
+    expect(
+      (await reopened.inspectCurrentCatalogueEntity(audioId))?.metadata,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          property: "asset.title",
+          value: mergedTitle,
+        }),
+      ]),
+    );
+    // 用户修订版交互状态与来源依据原属保持：稳定 local-user 归属仍按精确修订版读取。
     expect(
       await product.result.interactions.read([
         stateA.artifactRevisionId,
