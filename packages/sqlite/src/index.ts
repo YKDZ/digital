@@ -111,6 +111,8 @@ import type {
   SourceAssociationRetraction,
   SourcedEntity,
   RelationshipDecision,
+  RelationshipDecisionTarget,
+  RelationshipDraft,
 } from "@digital/domain";
 import {
   beginSourceRefreshScopeAcquisition as beginDomainSourceRefreshScopeAcquisition,
@@ -132,8 +134,9 @@ import {
   validateRecognitionSupersessionSourceRetraction,
   validateSourceAssociationChange,
   recognitionSourceInterpretation,
+  canonicalRelationshipDraft,
   deriveEffectiveRelationships,
-  relationshipCoordinateKey,
+  relationshipTargetKey,
 } from "@digital/domain";
 import {
   and,
@@ -426,6 +429,84 @@ function sha256Text(value: string): string {
 
 /** Drizzle 数据库与事务共用的只读结构子集。 */
 type DrizzleReadQuery = Pick<ReturnType<typeof drizzle>, "select">;
+
+type RelationshipLifecycleRow = typeof relationshipLifecycles.$inferSelect;
+
+/** 事实的支持坐标集合：来源生命周期、观察图槽位与人工决定。 */
+type RelationshipSupportState = {
+  readonly lifecyclesByRelationshipId: ReadonlyMap<
+    string,
+    RelationshipLifecycleRow
+  >;
+  readonly retractedRelationshipIds: ReadonlySet<string>;
+  readonly supersededRelationshipIds: ReadonlySet<string>;
+  readonly observedSourceSlotsByRelationshipId: ReadonlyMap<string, string>;
+  readonly manualRelationshipIds: ReadonlySet<string>;
+  readonly targetsByRelationshipId: ReadonlyMap<
+    string,
+    RelationshipDecisionTarget
+  >;
+  readonly ambiguousRelationshipIds: ReadonlySet<string>;
+};
+
+/** 唯一生效投影读取的关系状态。 */
+type RelationshipProjectionState = {
+  readonly relationships: readonly EntityRelationship[];
+  readonly targets: ReadonlyMap<string, RelationshipDecisionTarget>;
+  readonly decisions: readonly RelationshipDecision[];
+  readonly manualRelationshipIds: ReadonlySet<string>;
+  readonly ambiguousRelationshipIds: ReadonlySet<string>;
+};
+
+function relationshipSourceTarget(
+  lifecycle: RelationshipLifecycleRow,
+): RelationshipDecisionTarget {
+  return {
+    kind: "source",
+    sourceSubjectId: lifecycle.sourceSubjectId,
+    sourceIdentity: lifecycle.sourceIdentity,
+    nativeAddress: lifecycle.nativeAddress,
+    coverageId: lifecycle.coverageId,
+    sourceSlot: lifecycle.sourceSlot,
+  };
+}
+
+/** 独立人工目标：由声明与完整语义草稿规范确定，重复预演不会另开决定范围。 */
+function manualRelationshipTarget(
+  definitionId: string,
+  draft: RelationshipDraft,
+): RelationshipDecisionTarget {
+  return {
+    kind: "manual",
+    targetId: `manual-${sha256Text(canonicalRelationshipDraft(definitionId, draft)).slice(0, 40)}`,
+  };
+}
+
+/** 人工事实 ID 含目标、声明、参与者与限定项，因此同类型同参与者的不同目标互不冲突。 */
+function manualRelationshipFactId(
+  target: RelationshipDecisionTarget,
+  definitionId: string,
+  draft: RelationshipDraft,
+): string {
+  return `manual-relationship_${sha256Text(
+    JSON.stringify({
+      target: relationshipTargetKey(target),
+      draft: canonicalRelationshipDraft(definitionId, draft),
+    }),
+  ).slice(0, 40)}`;
+}
+
+function supportedRelationshipCount(
+  state: RelationshipProjectionState,
+  target: RelationshipDecisionTarget,
+): number {
+  const key = relationshipTargetKey(target);
+  return state.relationships.filter(
+    (relationship) =>
+      !state.manualRelationshipIds.has(relationship.id) &&
+      relationshipTargetKey(state.targets.get(relationship.id)!) === key,
+  ).length;
+}
 
 type MetadataRefreshInput = {
   readonly expectedExecution: WorkflowExecution;
@@ -885,60 +966,67 @@ export class SqliteCatalogue
         );
         if (current.baseline !== input.preview.baseline)
           return "stale" as const;
-        const relations = this.relationshipProjectionWithDrizzle(transaction);
+        const state = this.relationshipProjectionWithDrizzle(transaction);
         const adoptedManualRelationshipIds = new Set<string>();
         for (const [index, change] of input.preview.changes.entries()) {
-          const coordinate = this.relationshipChangeCoordinate(
-            change,
-            relations.relationships,
-          );
-          const coordinateKey = relationshipCoordinateKey(coordinate);
+          const target = this.relationshipChangeTarget(change, state);
+          const targetKey = relationshipTargetKey(target);
           const decisionId = `${input.id}:${index}`;
-          let manualRelationshipId: string | undefined;
-          if (change.kind === "fix") {
-            const draft = change.relationship!;
-            manualRelationshipId = `manual-relationship_${sha256Text(JSON.stringify({ coordinate, qualifiers: draft.qualifiers ?? [] })).slice(0, 40)}`;
-            const current = relations.decisions.find(
+          const correction =
+            change.kind === "create" || change.kind === "replace"
+              ? {
+                  definitionId: change.definitionId,
+                  draft: change.relationship,
+                }
+              : undefined;
+          const manualRelationshipId =
+            correction === undefined
+              ? undefined
+              : manualRelationshipFactId(
+                  target,
+                  correction.definitionId,
+                  correction.draft,
+                );
+          if (manualRelationshipId !== undefined && correction !== undefined) {
+            const adopted = state.decisions.find(
               (decision) =>
-                relationshipCoordinateKey(decision.coordinate) ===
-                coordinateKey,
+                relationshipTargetKey(decision.target) === targetKey,
             );
             if (
-              current?.kind === "fix" &&
-              current.manualRelationshipId === manualRelationshipId
+              adopted?.kind === "fix" &&
+              adopted.manualRelationshipId === manualRelationshipId
             )
               continue;
             if (adoptedManualRelationshipIds.has(manualRelationshipId))
               continue;
+            const participantIds = [
+              ...new Set(
+                correction.draft.participants.map(({ entityId }) => entityId),
+              ),
+            ];
             if (
               transaction
                 .select({ id: entities.id })
                 .from(entities)
-                .where(
-                  inArray(
-                    entities.id,
-                    sqliteTextSet(
-                      draft.participants.map(({ entityId }) => entityId),
-                    ),
-                  ),
-                )
-                .all().length !==
-              new Set(draft.participants.map(({ entityId }) => entityId)).size
+                .where(inArray(entities.id, sqliteTextSet(participantIds)))
+                .all().length !== participantIds.length
             )
               throw new Error("更正关系引用了不存在的实体");
             transaction
               .insert(entityRelationships)
               .values({
                 id: manualRelationshipId,
-                type: draft.type,
-                participantsJson: JSON.stringify(draft.participants),
+                type: correction.draft.type,
+                participantsJson: JSON.stringify(correction.draft.participants),
                 sourceRecordIdsJson: "[]",
-                qualifiersJson: JSON.stringify(draft.qualifiers ?? []),
+                qualifiersJson: JSON.stringify(
+                  correction.draft.qualifiers ?? [],
+                ),
                 producerJson: null,
               })
               .onConflictDoNothing()
               .run();
-            for (const participant of draft.participants)
+            for (const participant of correction.draft.participants)
               transaction
                 .insert(entityRelationshipParticipants)
                 .values({
@@ -957,28 +1045,30 @@ export class SqliteCatalogue
               })
               .onConflictDoNothing()
               .run();
+            adoptedManualRelationshipIds.add(manualRelationshipId);
           }
           transaction
             .insert(relationshipDecisions)
             .values({
               id: decisionId,
-              coordinateJson: JSON.stringify(coordinate),
-              kind: change.kind,
-              relationshipIdsJson: JSON.stringify(change.relationshipIds ?? []),
+              targetJson: JSON.stringify(target),
+              kind:
+                change.kind === "create" || change.kind === "replace"
+                  ? "fix"
+                  : change.kind,
+              definitionId: correction?.definitionId ?? null,
               manualRelationshipId: manualRelationshipId ?? null,
               actorId: input.actorId,
             })
             .run();
           transaction
             .insert(relationshipDecisionHeads)
-            .values({ coordinateKey, decisionId })
+            .values({ targetKey, decisionId })
             .onConflictDoUpdate({
-              target: relationshipDecisionHeads.coordinateKey,
+              target: relationshipDecisionHeads.targetKey,
               set: { decisionId },
             })
             .run();
-          if (manualRelationshipId !== undefined)
-            adoptedManualRelationshipIds.add(manualRelationshipId);
         }
         return "applied" as const;
       },
@@ -996,27 +1086,30 @@ export class SqliteCatalogue
     );
     const state = this.relationshipProjectionWithDrizzle(query);
     const relationships = [...state.relationships];
-    const manualRelationshipDecisionIds = new Map(
-      state.manualRelationshipDecisionIds,
-    );
+    const targets = new Map(state.targets);
+    const manualRelationshipIds = new Set(state.manualRelationshipIds);
     const decisions = new Map(
       state.decisions.map((decision) => [
-        relationshipCoordinateKey(decision.coordinate),
+        relationshipTargetKey(decision.target),
         decision,
       ]),
     );
     for (const change of normalizedChanges) {
-      const coordinate = this.relationshipChangeCoordinate(
-        change,
-        relationships,
-      );
-      const key = relationshipCoordinateKey(coordinate);
-      const decisionId = `preview:${key}`;
+      const target = this.relationshipChangeTarget(change, state);
+      const key = relationshipTargetKey(target);
+      const correction =
+        change.kind === "create" || change.kind === "replace"
+          ? {
+              definitionId: change.definitionId,
+              draft: change.relationship,
+            }
+          : undefined;
       let manualRelationshipId: string | undefined;
-      if (change.kind === "fix") {
-        const draft = change.relationship!;
+      if (correction !== undefined) {
         const participantIds = [
-          ...new Set(draft.participants.map(({ entityId }) => entityId)),
+          ...new Set(
+            correction.draft.participants.map(({ entityId }) => entityId),
+          ),
         ];
         if (
           query
@@ -1026,32 +1119,40 @@ export class SqliteCatalogue
             .all().length !== participantIds.length
         )
           throw new Error("更正关系引用了不存在的实体");
-        manualRelationshipId = `manual-relationship_${sha256Text(JSON.stringify({ coordinate, qualifiers: draft.qualifiers ?? [] })).slice(0, 40)}`;
+        manualRelationshipId = manualRelationshipFactId(
+          target,
+          correction.definitionId,
+          correction.draft,
+        );
         if (!relationships.some(({ id }) => id === manualRelationshipId))
           relationships.push({
             id: manualRelationshipId,
-            type: draft.type,
-            participants: draft.participants,
+            type: correction.draft.type,
+            participants: correction.draft.participants,
             sourceSlot: "manual",
             sourceRecordIds: [],
-            ...(draft.qualifiers === undefined
+            ...(correction.draft.qualifiers === undefined
               ? {}
-              : { qualifiers: draft.qualifiers }),
+              : { qualifiers: correction.draft.qualifiers }),
           });
-        manualRelationshipDecisionIds.set(manualRelationshipId, decisionId);
+        targets.set(manualRelationshipId, target);
+        manualRelationshipIds.add(manualRelationshipId);
       }
       decisions.set(key, {
-        id: decisionId,
-        coordinate,
-        kind: change.kind,
-        relationshipIds: change.relationshipIds ?? [],
+        id: `preview:${key}`,
+        target,
+        kind:
+          change.kind === "create" || change.kind === "replace"
+            ? "fix"
+            : change.kind,
         ...(manualRelationshipId === undefined ? {} : { manualRelationshipId }),
       });
     }
     const effective = deriveEffectiveRelationships({
       relationships,
+      targets,
       decisions: [...decisions.values()],
-      manualRelationshipDecisionIds,
+      manualRelationshipIds,
     });
     this.assertIdentityFoldedRelationshipStructure(query, effective);
     return {
@@ -1060,6 +1161,10 @@ export class SqliteCatalogue
           relationships: state.relationships.map(({ id, sourceRecordIds }) => ({
             id,
             sourceRecordIds,
+          })),
+          targets: state.relationships.map(({ id }) => ({
+            id,
+            target: state.targets.get(id),
           })),
           decisions: state.decisions,
           merges: query.select().from(entityIdentityMerges).all(),
@@ -1115,9 +1220,8 @@ export class SqliteCatalogue
   ): readonly RelationshipChange[] {
     const forest = this.effectiveIdentityForestWithDrizzle(query);
     return changes.map((change) =>
-      change.relationship === undefined
-        ? change
-        : {
+      change.kind === "create" || change.kind === "replace"
+        ? {
             ...change,
             relationship: {
               ...change.relationship,
@@ -1130,101 +1234,211 @@ export class SqliteCatalogue
                 }),
               ),
             },
-          },
+          }
+        : change,
     );
   }
 
-  private relationshipChangeCoordinate(
+  /** 决定只作用于被点名事实的稳定支持范围；范围不唯一时绝不批量修改或任选其一。 */
+  private relationshipChangeTarget(
     change: RelationshipChange,
-    relationships: readonly EntityRelationship[],
-  ) {
-    if (change.relationship !== undefined)
-      return {
-        type: change.relationship.type,
-        participants: change.relationship.participants,
-      };
-    const target = relationships.find((relationship) =>
-      change.relationshipIds?.includes(relationship.id),
-    );
-    if (target === undefined) throw new Error("关系决定必须点名当前关系");
-    return { type: target.type, participants: target.participants };
+    state: RelationshipProjectionState,
+  ): RelationshipDecisionTarget {
+    if (change.kind === "create")
+      return manualRelationshipTarget(change.definitionId, change.relationship);
+    const target = state.targets.get(change.targetRelationshipId);
+    if (target === undefined) throw new Error("所选关系不是当前可决定的事实");
+    if (
+      state.ambiguousRelationshipIds.has(change.targetRelationshipId) ||
+      supportedRelationshipCount(state, target) > 1
+    )
+      throw new Error("所选关系范围不唯一");
+    return target;
   }
 
-  private relationshipProjectionWithDrizzle(query: DrizzleReadQuery): {
-    readonly relationships: readonly EntityRelationship[];
-    readonly decisions: readonly RelationshipDecision[];
-    readonly manualRelationshipDecisionIds: ReadonlyMap<string, string>;
-  } {
-    const rows = query
+  /**
+   * 为给定事实收集既有支持坐标。一项事实可以同时被来源槽位、观察图槽位或人工决定支持；
+   * 出现多个不同稳定支持时它无法被决定点名，投影按规范最小坐标归组而绝不合并。
+   */
+  private relationshipSupportsWithDrizzle(
+    query: DrizzleReadQuery,
+    relationshipIds: readonly string[],
+  ): RelationshipSupportState {
+    if (relationshipIds.length === 0)
+      return {
+        lifecyclesByRelationshipId: new Map(),
+        retractedRelationshipIds: new Set(),
+        supersededRelationshipIds: new Set(),
+        observedSourceSlotsByRelationshipId: new Map(),
+        manualRelationshipIds: new Set(),
+        targetsByRelationshipId: new Map(),
+        ambiguousRelationshipIds: new Set(),
+      };
+    const ids = sqliteTextSet(relationshipIds);
+    const lifecycles = query
       .select()
-      .from(entityRelationships)
-      .orderBy(asc(entityRelationships.id))
+      .from(relationshipLifecycles)
+      .where(inArray(relationshipLifecycles.relationshipId, ids))
       .all();
-    const lifecycles = query.select().from(relationshipLifecycles).all();
-    const retracted = new Set(
+    const retractedRelationshipIds = new Set(
       query
-        .select({ id: relationshipRetractions.relationshipId })
+        .select({ relationshipId: relationshipRetractions.relationshipId })
         .from(relationshipRetractions)
+        .where(inArray(relationshipRetractions.relationshipId, ids))
         .all()
-        .map(({ id }) => id),
+        .map((row) => row.relationshipId),
     );
-    const superseded = new Set(
-      lifecycles.flatMap(({ predecessorRelationshipId }) =>
-        predecessorRelationshipId === null ? [] : [predecessorRelationshipId],
-      ),
-    );
-    const lifecycleByRelationship = new Map(
-      lifecycles.map((lifecycle) => [lifecycle.relationshipId, lifecycle]),
-    );
-    const manualRelationshipDecisionIds = new Map(
+    const supersededRelationshipIds = new Set(
       query
-        .select()
-        .from(relationshipManualSupports)
+        .select({
+          predecessorId: relationshipLifecycles.predecessorRelationshipId,
+        })
+        .from(relationshipLifecycles)
+        .where(inArray(relationshipLifecycles.predecessorRelationshipId, ids))
         .all()
-        .map((row) => [row.relationshipId, row.decisionId]),
+        .flatMap((row) =>
+          row.predecessorId === null ? [] : [row.predecessorId],
+        ),
     );
     /**
      * 本地格式观察图不走 SourceRecord lifecycle；它只能由图成员、图 support
      * 与该资产当前 RecognitionDecision 共同支持，不能因为实体关系事实仍在而复活。
      */
-    const currentObservedRelationshipSourceSlots = new Map(
-      query
-        .select({
-          relationshipId: observedEntityGraphRelationships.relationshipId,
-          sourceSlot: observedEntityGraphRelationships.sourceSlot,
-        })
-        .from(observedEntityGraphRelationships)
-        .innerJoin(
-          observedEntityGraphSupports,
-          eq(
-            observedEntityGraphRelationships.graphId,
-            observedEntityGraphSupports.id,
-          ),
-        )
-        .innerJoin(
-          recognitionHeads,
-          and(
-            eq(recognitionHeads.subjectId, observedEntityGraphSupports.assetId),
-            eq(
-              recognitionHeads.recognitionDecisionId,
-              observedEntityGraphSupports.recognitionDecisionId,
-            ),
-          ),
-        )
-        .all()
-        .map(
-          ({ relationshipId, sourceSlot }) =>
-            [relationshipId, sourceSlot] as const,
+    const observedSupportRows = query
+      .select({
+        relationshipId: observedEntityGraphRelationships.relationshipId,
+        sourceSlot: observedEntityGraphRelationships.sourceSlot,
+        assetId: observedEntityGraphSupports.assetId,
+        artifactId: observedEntityGraphSupports.artifactId,
+        producerJson: observedEntityGraphSupports.producerJson,
+        coverageId: observedEntityGraphSupports.coverageId,
+      })
+      .from(observedEntityGraphRelationships)
+      .innerJoin(
+        observedEntityGraphSupports,
+        eq(
+          observedEntityGraphRelationships.graphId,
+          observedEntityGraphSupports.id,
         ),
+      )
+      .innerJoin(
+        recognitionHeads,
+        and(
+          eq(recognitionHeads.subjectId, observedEntityGraphSupports.assetId),
+          eq(
+            recognitionHeads.recognitionDecisionId,
+            observedEntityGraphSupports.recognitionDecisionId,
+          ),
+        ),
+      )
+      .where(inArray(observedEntityGraphRelationships.relationshipId, ids))
+      .all();
+    const manualSupportRows = query
+      .select({
+        relationshipId: relationshipManualSupports.relationshipId,
+        targetJson: relationshipDecisions.targetJson,
+      })
+      .from(relationshipManualSupports)
+      .innerJoin(
+        relationshipDecisions,
+        eq(relationshipManualSupports.decisionId, relationshipDecisions.id),
+      )
+      .where(inArray(relationshipManualSupports.relationshipId, ids))
+      .all();
+    const candidatesByRelationshipId = new Map<
+      string,
+      RelationshipDecisionTarget[]
+    >();
+    const addCandidate = (
+      relationshipId: string,
+      target: RelationshipDecisionTarget,
+    ): void => {
+      const candidates = candidatesByRelationshipId.get(relationshipId) ?? [];
+      if (
+        !candidates.some(
+          (candidate) =>
+            relationshipTargetKey(candidate) === relationshipTargetKey(target),
+        )
+      )
+        candidates.push(target);
+      candidatesByRelationshipId.set(relationshipId, candidates);
+    };
+    for (const lifecycle of lifecycles)
+      addCandidate(
+        lifecycle.relationshipId,
+        relationshipSourceTarget(lifecycle),
+      );
+    for (const support of observedSupportRows)
+      addCandidate(support.relationshipId, {
+        kind: "observed",
+        assetId: support.assetId,
+        artifactId: support.artifactId,
+        capabilityId: producerFromJson(support.producerJson).capabilityId,
+        coverageId: support.coverageId,
+        sourceSlot: support.sourceSlot,
+      });
+    for (const support of manualSupportRows)
+      addCandidate(
+        support.relationshipId,
+        JSON.parse(support.targetJson) as RelationshipDecisionTarget,
+      );
+    const targetsByRelationshipId = new Map<
+      string,
+      RelationshipDecisionTarget
+    >();
+    const ambiguousRelationshipIds = new Set<string>();
+    for (const [relationshipId, candidates] of candidatesByRelationshipId) {
+      if (candidates.length > 1) ambiguousRelationshipIds.add(relationshipId);
+      const target = candidates.toSorted((left, right) =>
+        relationshipTargetKey(left).localeCompare(relationshipTargetKey(right)),
+      )[0];
+      if (target !== undefined)
+        targetsByRelationshipId.set(relationshipId, target);
+    }
+    return {
+      lifecyclesByRelationshipId: new Map(
+        lifecycles.map((lifecycle) => [lifecycle.relationshipId, lifecycle]),
+      ),
+      retractedRelationshipIds,
+      supersededRelationshipIds,
+      observedSourceSlotsByRelationshipId: new Map(
+        observedSupportRows.map((support) => [
+          support.relationshipId,
+          support.sourceSlot,
+        ]),
+      ),
+      manualRelationshipIds: new Set(
+        manualSupportRows.map((support) => support.relationshipId),
+      ),
+      targetsByRelationshipId,
+      ambiguousRelationshipIds,
+    };
+  }
+
+  private relationshipProjectionWithDrizzle(
+    query: DrizzleReadQuery,
+  ): RelationshipProjectionState {
+    const rows = query
+      .select()
+      .from(entityRelationships)
+      .orderBy(asc(entityRelationships.id))
+      .all();
+    const supports = this.relationshipSupportsWithDrizzle(
+      query,
+      rows.map((row) => row.id),
     );
     const relationships = rows.flatMap((row) => {
-      const lifecycle = lifecycleByRelationship.get(row.id);
+      const lifecycle = supports.lifecyclesByRelationshipId.get(row.id);
+      const manuallySupported = supports.manualRelationshipIds.has(row.id);
+      const observedSupported =
+        supports.observedSourceSlotsByRelationshipId.has(row.id);
+      const target = supports.targetsByRelationshipId.get(row.id);
       if (
-        (lifecycle === undefined &&
-          !manualRelationshipDecisionIds.has(row.id) &&
-          !currentObservedRelationshipSourceSlots.has(row.id)) ||
-        retracted.has(row.id) ||
-        superseded.has(row.id)
+        target === undefined ||
+        (lifecycle === undefined && !manuallySupported && !observedSupported) ||
+        ((lifecycle !== undefined || manuallySupported) &&
+          (supports.retractedRelationshipIds.has(row.id) ||
+            supports.supersededRelationshipIds.has(row.id)))
       )
         return [];
       return [
@@ -1234,7 +1448,7 @@ export class SqliteCatalogue
           participants: relationshipParticipantsFromJson(row.participantsJson),
           sourceSlot:
             lifecycle?.sourceSlot ??
-            currentObservedRelationshipSourceSlots.get(row.id) ??
+            supports.observedSourceSlotsByRelationshipId.get(row.id) ??
             "manual",
           sourceRecordIds: jsonStringArray(
             row.sourceRecordIdsJson,
@@ -1249,7 +1463,21 @@ export class SqliteCatalogue
         },
       ];
     });
-    const decisions = query
+    const decisions = this.relationshipHeadDecisionsWithDrizzle(query);
+    return {
+      relationships,
+      targets: supports.targetsByRelationshipId,
+      decisions,
+      manualRelationshipIds: supports.manualRelationshipIds,
+      ambiguousRelationshipIds: supports.ambiguousRelationshipIds,
+    };
+  }
+
+  /** 每个决定目标只有一个当前头；种类与目标共同决定该目标的生效事实。 */
+  private relationshipHeadDecisionsWithDrizzle(
+    query: DrizzleReadQuery,
+  ): readonly RelationshipDecision[] {
+    return query
       .select({ decision: relationshipDecisions })
       .from(relationshipDecisionHeads)
       .innerJoin(
@@ -1259,19 +1487,12 @@ export class SqliteCatalogue
       .all()
       .map(({ decision }) => ({
         id: decision.id,
-        coordinate: JSON.parse(
-          decision.coordinateJson,
-        ) as RelationshipDecision["coordinate"],
+        target: JSON.parse(decision.targetJson) as RelationshipDecisionTarget,
         kind: decision.kind as RelationshipDecision["kind"],
-        relationshipIds: jsonStringArray(
-          decision.relationshipIdsJson,
-          "relationship decision targets",
-        ),
         ...(decision.manualRelationshipId === null
           ? {}
           : { manualRelationshipId: decision.manualRelationshipId }),
       }));
-    return { relationships, decisions, manualRelationshipDecisionIds };
   }
 
   async createLocalRelatedEntity(input: {
@@ -1803,9 +2024,9 @@ export class SqliteCatalogue
     const effectiveRelationshipIds = new Set(
       deriveEffectiveRelationships({
         relationships: relationshipState.relationships,
+        targets: relationshipState.targets,
         decisions: relationshipState.decisions,
-        manualRelationshipDecisionIds:
-          relationshipState.manualRelationshipDecisionIds,
+        manualRelationshipIds: relationshipState.manualRelationshipIds,
       }).map(({ id }) => id),
     );
     const affectedRelationships = relationshipState.relationships.filter(
@@ -1815,13 +2036,6 @@ export class SqliteCatalogue
           affectedMemberIds.includes(entityId),
         ),
     );
-    const relevantRelationshipIds = relationshipState.relationships
-      .filter((relationship) =>
-        relationship.participants.some(({ entityId }) =>
-          affectedMemberIds.includes(entityId),
-        ),
-      )
-      .map(({ id }) => id);
     const relationshipIds: string[] = [];
     for (const relationship of affectedRelationships) {
       const projectedParticipants = relationship.participants.map(
@@ -1895,14 +2109,14 @@ export class SqliteCatalogue
             baseline: affectedKindStates.get(entityId)!.baseline,
           })),
           relationships: affectedRelationships,
-          decisions: relationshipState.decisions.filter(
-            (decision) =>
-              decision.relationshipIds.some((id) =>
-                relevantRelationshipIds.includes(id),
-              ) ||
-              decision.coordinate.participants.some(({ entityId }) =>
-                affectedMemberIds.includes(entityId),
-              ),
+          // 只有会影响受关事实投影的决定才让合并预览过期，无关目标上的决定不得连带过期。
+          decisions: relationshipState.decisions.filter((decision) =>
+            affectedRelationships.some(
+              (relationship) =>
+                relationshipTargetKey(
+                  relationshipState.targets.get(relationship.id)!,
+                ) === relationshipTargetKey(decision.target),
+            ),
           ),
         }),
       ),
@@ -6074,115 +6288,13 @@ export class SqliteCatalogue
     const relationshipIds = uniqueStrings(
       relationshipRows.map((row) => row.id),
     );
-    const lifecycles =
-      relationshipIds.length === 0
-        ? []
-        : query
-            .select()
-            .from(relationshipLifecycles)
-            .where(
-              inArray(
-                relationshipLifecycles.relationshipId,
-                sqliteTextSet(relationshipIds),
-              ),
-            )
-            .all();
-    const lifecycleByRelationshipId = new Map(
-      lifecycles.map((lifecycle) => [lifecycle.relationshipId, lifecycle]),
+    const supports = this.relationshipSupportsWithDrizzle(
+      query,
+      relationshipIds,
     );
-    const observedCurrentRelationshipSourceSlots = new Map(
-      relationshipIds.length === 0
-        ? []
-        : query
-            .select({
-              relationshipId: observedEntityGraphRelationships.relationshipId,
-              sourceSlot: observedEntityGraphRelationships.sourceSlot,
-            })
-            .from(observedEntityGraphRelationships)
-            .innerJoin(
-              observedEntityGraphSupports,
-              eq(
-                observedEntityGraphRelationships.graphId,
-                observedEntityGraphSupports.id,
-              ),
-            )
-            .innerJoin(
-              recognitionHeads,
-              and(
-                eq(
-                  recognitionHeads.subjectId,
-                  observedEntityGraphSupports.assetId,
-                ),
-                eq(
-                  recognitionHeads.recognitionDecisionId,
-                  observedEntityGraphSupports.recognitionDecisionId,
-                ),
-              ),
-            )
-            .where(
-              inArray(
-                observedEntityGraphRelationships.relationshipId,
-                sqliteTextSet(relationshipIds),
-              ),
-            )
-            .all()
-            .map(
-              ({ relationshipId, sourceSlot }) =>
-                [relationshipId, sourceSlot] as const,
-            ),
-    );
-    const retractedRelationshipIds = new Set(
-      relationshipIds.length === 0
-        ? []
-        : query
-            .select({ relationshipId: relationshipRetractions.relationshipId })
-            .from(relationshipRetractions)
-            .where(
-              inArray(
-                relationshipRetractions.relationshipId,
-                sqliteTextSet(relationshipIds),
-              ),
-            )
-            .all()
-            .map((row) => row.relationshipId),
-    );
-    const supersededRelationshipIds = new Set(
-      relationshipIds.length === 0
-        ? []
-        : query
-            .select({
-              predecessorId: relationshipLifecycles.predecessorRelationshipId,
-            })
-            .from(relationshipLifecycles)
-            .where(
-              inArray(
-                relationshipLifecycles.predecessorRelationshipId,
-                sqliteTextSet(relationshipIds),
-              ),
-            )
-            .all()
-            .flatMap((row) =>
-              row.predecessorId === null ? [] : [row.predecessorId],
-            ),
-    );
-    const manualDecisionByRelationship = new Map(
-      relationshipIds.length === 0
-        ? []
-        : query
-            .select()
-            .from(relationshipManualSupports)
-            .where(
-              inArray(
-                relationshipManualSupports.relationshipId,
-                sqliteTextSet(relationshipIds),
-              ),
-            )
-            .all()
-            .map(
-              (support) =>
-                [support.relationshipId, support.decisionId] as const,
-            ),
-    );
+    const lifecycleByRelationshipId = supports.lifecyclesByRelationshipId;
+    const observedCurrentRelationshipSourceSlots =
+      supports.observedSourceSlotsByRelationshipId;
     const resolvedRelationshipMentionEntityId = (
       mentionId: string,
     ): string | undefined =>
@@ -6195,9 +6307,9 @@ export class SqliteCatalogue
     const currentRelationshipRows = relationshipRows.filter(
       (relationship) =>
         (((lifecycleByRelationshipId.has(relationship.id) ||
-          manualDecisionByRelationship.has(relationship.id)) &&
-          !retractedRelationshipIds.has(relationship.id) &&
-          !supersededRelationshipIds.has(relationship.id)) ||
+          supports.manualRelationshipIds.has(relationship.id)) &&
+          !supports.retractedRelationshipIds.has(relationship.id) &&
+          !supports.supersededRelationshipIds.has(relationship.id)) ||
           observedCurrentRelationshipSourceSlots.has(relationship.id)) &&
         relationshipParticipantsFromJson(relationship.participantsJson).some(
           (participant) =>
@@ -6270,29 +6382,9 @@ export class SqliteCatalogue
           EntityRelationship["qualifiers"]
         >,
       })),
-      decisions: query
-        .select({ decision: relationshipDecisions })
-        .from(relationshipDecisionHeads)
-        .innerJoin(
-          relationshipDecisions,
-          eq(relationshipDecisionHeads.decisionId, relationshipDecisions.id),
-        )
-        .all()
-        .map(({ decision }) => ({
-          id: decision.id,
-          coordinate: JSON.parse(
-            decision.coordinateJson,
-          ) as RelationshipDecision["coordinate"],
-          kind: decision.kind as RelationshipDecision["kind"],
-          relationshipIds: jsonStringArray(
-            decision.relationshipIdsJson,
-            "relationship decision targets",
-          ),
-          ...(decision.manualRelationshipId === null
-            ? {}
-            : { manualRelationshipId: decision.manualRelationshipId }),
-        })),
-      manualRelationshipDecisionIds: manualDecisionByRelationship,
+      targets: supports.targetsByRelationshipId,
+      decisions: this.relationshipHeadDecisionsWithDrizzle(query),
+      manualRelationshipIds: supports.manualRelationshipIds,
     });
     const effectiveRelationshipIds = new Set(effective.map(({ id }) => id));
     const effectiveRelationships = relationships.filter(({ id }) =>

@@ -106,6 +106,11 @@ export const productionCatalogueMigrationPlan = [
       "d6341f130ae1f9f1c81bf4b79be0f56c54bb9afa2bec2439d6ccbf40f21e064a",
   },
   {
+    id: "20260920000000_selected_relationship_targets",
+    checksum:
+      "d0792e3f5223432e019811910317dd9129dea3f1c078240072ab9a042572c40b",
+  },
+  {
     id: productionCatalogueMigrationHead,
     checksum:
       "2cec585f48aac97ed78c2d4a3b825754c279ac05290ce53ef170d460a95cc45e",

@@ -455,6 +455,13 @@ export type EntityRelationship = {
   }[];
 };
 
+/** 人工编写一项完整关系事实所需的有界草稿；它绝不携带来源坐标。 */
+export type RelationshipDraft = {
+  readonly type: string;
+  readonly participants: readonly EntityRelationshipParticipant[];
+  readonly qualifiers?: EntityRelationship["qualifiers"];
+};
+
 export type ProposedEntityRelationship = Omit<
   EntityRelationship,
   "id" | "participants"
@@ -471,11 +478,12 @@ export type ProposedEntityRelationship = Omit<
 };
 
 export {
+  canonicalRelationshipDraft,
   deriveEffectiveRelationships,
-  relationshipCoordinateKey,
+  relationshipTargetKey,
   type EffectiveRelationshipInput,
   type RelationshipDecision,
-  type RelationshipSemanticCoordinate,
+  type RelationshipDecisionTarget,
 } from "./effective-relationship.ts";
 export {
   deriveEffectiveEntityIdentity,

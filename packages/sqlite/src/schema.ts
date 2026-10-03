@@ -839,14 +839,14 @@ export const entityRelationshipParticipants = sqliteTable(
   ],
 );
 
-/** 仅追加的人工关系决定；决定头是可清除的投影指针，来源事实保持不变。 */
+/** 仅追加的人工关系决定；决定头按稳定支持范围指向当前决定，来源事实保持不变。 */
 export const relationshipDecisions = sqliteTable(
   "relationship_decisions",
   {
     id: text().notNull(),
-    coordinateJson: text("coordinate_json").notNull(),
+    targetJson: text("target_json").notNull(),
     kind: text().notNull(),
-    relationshipIdsJson: text("relationship_ids_json").notNull().default("[]"),
+    definitionId: text("definition_id"),
     manualRelationshipId: text("manual_relationship_id"),
     actorId: text("actor_id").notNull(),
   },
@@ -858,13 +858,13 @@ export const relationshipDecisions = sqliteTable(
 export const relationshipDecisionHeads = sqliteTable(
   "relationship_decision_heads",
   {
-    coordinateKey: text("coordinate_key").notNull(),
+    targetKey: text("target_key").notNull(),
     decisionId: text("decision_id").notNull(),
   },
   (table) => [
     primaryKey({
       name: "relationship_decision_heads_pk",
-      columns: [table.coordinateKey],
+      columns: [table.targetKey],
     }),
   ],
 );

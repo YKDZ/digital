@@ -83,7 +83,7 @@ it("无来源连接的本地作品按已部署的系列定义标注，重开后�
     const preview = await workflow.previewRelationshipChange({
       changes: [
         {
-          kind: "fix",
+          kind: "create",
           definitionId: "epub.series-membership",
           relationship: {
             type: "asset.membership",
@@ -103,7 +103,7 @@ it("无来源连接的本地作品按已部署的系列定义标注，重开后�
       }),
     ).toBe("applied");
     const relation = (await workflow.inspectCurrentCatalogueEntity(series.id))!
-      .relationships[0]!;
+      .relationships[0];
     expect(relation).toMatchObject({
       type: "asset.membership",
       participants: expect.arrayContaining([
@@ -131,7 +131,7 @@ it("无来源连接的本地作品按已部署的系列定义标注，重开后�
     const contribution = await workflow.previewRelationshipChange({
       changes: [
         {
-          kind: "fix",
+          kind: "create",
           definitionId: "dlsite.contribution",
           relationship: {
             type: "asset.contribution",
@@ -151,7 +151,7 @@ it("无来源连接的本地作品按已部署的系列定义标注，重开后�
       }),
     ).toBe("applied");
     const threeWay = (await workflow.inspectCurrentCatalogueEntity(circle.id))!
-      .relationships[0]!;
+      .relationships[0];
     expect(threeWay).toMatchObject({
       type: "asset.contribution",
       sources: [],
@@ -217,7 +217,7 @@ it("人工新建只接受已声明的类型和角色，提交者不能删去必�
       product.result.previewRelationshipChange({
         changes: [
           {
-            kind: "fix",
+            kind: "create",
             definitionId: "unknown.relationship",
             relationship,
           },
@@ -225,7 +225,7 @@ it("人工新建只接受已声明的类型和角色，提交者不能删去必�
       }),
     ).rejects.toThrow("关系类型尚未声明");
     const weakened = {
-      kind: "fix" as const,
+      kind: "create" as const,
       definitionId: "epub.series-membership",
       relationship,
       requiredRoles: [],
@@ -266,7 +266,7 @@ it("预演拒绝不存在的参与对象，采用仍校验限定项而不信任�
       actorId: "user:reader",
     });
     const change = {
-      kind: "fix" as const,
+      kind: "create" as const,
       definitionId: "bangumi.subject-sequel",
       relationship: {
         type: "bangumi.subject.related",
@@ -287,7 +287,7 @@ it("预演拒绝不存在的参与对象，采用仍校验限定项而不信任�
             relationship: {
               ...change.relationship,
               participants: [
-                change.relationship.participants[0]!,
+                change.relationship.participants[0],
                 { entityId: "missing", role: "bangumi.subject.sequel" },
               ],
             },

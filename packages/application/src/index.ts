@@ -30,6 +30,7 @@ import {
   type EntityRelationship,
   type EntityRelationshipParticipant,
   type EffectiveEntityKind,
+  type RelationshipDraft,
   type SourcedEntity,
   type SourceAssociation,
   type SourceAssociationChangeProposal,
@@ -131,6 +132,7 @@ export {
   type MetadataPolicy,
   type MetadataPolicyConflict,
   type MetadataPolicyRule,
+  type RelationshipDraft,
 } from "@digital/domain";
 export * from "./metadata-policy-configuration.ts";
 
@@ -4983,17 +4985,23 @@ export type RelationshipTraversalQueries = {
   ): Promise<CatalogueEntityRelationshipFacts | undefined>;
 };
 
-/** 有界的公开关系操作。它只使用稳定的实体标识和声明角色，绝不使用展示标签或来源快照。 */
-export type RelationshipChange = {
-  readonly kind: "select" | "fix" | "exclude" | "clear";
-  readonly definitionId?: string;
-  readonly relationshipIds?: readonly string[];
-  readonly relationship?: {
-    readonly type: string;
-    readonly participants: readonly EntityRelationshipParticipant[];
-    readonly qualifiers?: EntityRelationship["qualifiers"];
-  };
-};
+/** 有界的公开关系操作。每项修改都点名一个当前关系事实，绝不按类型与参与者整体作用。 */
+export type RelationshipChange =
+  | {
+      readonly kind: "create";
+      readonly definitionId: string;
+      readonly relationship: RelationshipDraft;
+    }
+  | {
+      readonly kind: "replace";
+      readonly targetRelationshipId: string;
+      readonly definitionId: string;
+      readonly relationship: RelationshipDraft;
+    }
+  | {
+      readonly kind: "select" | "exclude" | "clear";
+      readonly targetRelationshipId: string;
+    };
 
 export type RelationshipChangePreview = {
   readonly baseline: string;
@@ -9563,9 +9571,13 @@ export class AssetRefreshWorkflow {
   ): void {
     if (changes.length === 0) throw new Error("关系更正不能为空");
     for (const change of changes) {
-      if (change.kind !== "fix") continue;
+      if (change.kind !== "create" && change.kind !== "replace") {
+        if (change.targetRelationshipId.trim().length === 0)
+          throw new Error("关系决定必须点名当前关系事实");
+        continue;
+      }
       const relationship = change.relationship;
-      if (relationship === undefined || relationship.type.trim().length === 0)
+      if (relationship.type.trim().length === 0)
         throw new Error("更正关系必须包含类型和参与者");
       if (
         relationship.participants.length < 2 ||

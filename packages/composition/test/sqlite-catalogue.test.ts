@@ -2,9 +2,11 @@ import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   access,
+  copyFile,
   link,
   mkdir,
   mkdtemp,
+  readFile,
   rm,
   symlink,
   writeFile,
@@ -600,7 +602,7 @@ it("公开关系旅程预演、更正多方关系内序位、重开后保留并�
     }),
   ]);
   const fix = {
-    kind: "fix" as const,
+    kind: "create" as const,
     definitionId: "fixture.membership-three",
     relationship: {
       type: "asset.membership",
@@ -693,7 +695,7 @@ it("公开关系旅程预演、更正多方关系内序位、重开后保留并�
     workflow.previewRelationshipChange({
       changes: [
         {
-          kind: "fix",
+          kind: "create",
           definitionId: "fixture.membership-three",
           relationship: {
             type: "asset.membership",
@@ -720,7 +722,10 @@ it("公开关系旅程预演、更正多方关系内序位、重开后保留并�
   );
   const clear = await reopenedWorkflow.previewRelationshipChange({
     changes: [
-      { kind: "clear", relationshipIds: [current!.relationships[0]!.id] },
+      {
+        kind: "clear",
+        targetRelationshipId: current!.relationships[0].id,
+      },
     ],
   });
   await expect(
@@ -733,6 +738,580 @@ it("公开关系旅程预演、更正多方关系内序位、重开后保留并�
     reopenedWorkflow.inspectCurrentCatalogueEntity(series.id),
   ).resolves.toMatchObject({ relationships: [] });
   reopened.close();
+});
+
+it("多事实按项更正只作用于选中事实，其他来源与定义事实在刷新重开后保全", async () => {
+  const { root, catalogue } = await createCatalogueWithRoot();
+  const state: Parameters<typeof reevaluationWorkflow>[1] = {
+    observationVersion: 0,
+    sourceVersion: 0,
+    expanded: false,
+    managedMissing: false,
+    omitCover: false,
+    explicitPlan: false,
+    sourceRefreshAuthority: true,
+    relatedMention: true,
+    selectedFacts: true,
+  };
+  const workflow = reevaluationWorkflow(catalogue, state);
+  const scan = await scanFixtureRegisteredObservedScope(workflow, {
+    directory: "/observed/selected-facts",
+    executionId: "journey-initial",
+    acceptTrusted: true,
+  });
+  const assetId = (await catalogue.inspectExecution(scan.execution.id))!
+    .accepted!.entity.id;
+  const viewOf = async (entityId: string) =>
+    (await workflow.inspectCurrentCatalogueEntity(entityId))!.relationships
+      .filter(({ type }) => type === "asset.membership")
+      .toSorted((left, right) => position(left).localeCompare(position(right)));
+  const position = (relationship: Awaited<ReturnType<typeof viewOf>>[number]) =>
+    relationship.qualifiers?.[0]?.value ?? "";
+  const positions = (relationships: Awaited<ReturnType<typeof viewOf>>) =>
+    relationships.map(position);
+  const party = (relationship: Awaited<ReturnType<typeof viewOf>>[number]) =>
+    relationship.participants.length;
+
+  expect(positions(await viewOf("journey-series"))).toEqual(["1", "1", "1"]);
+  expect(positions(await viewOf("journey-alternate"))).toEqual(["1", "3", "9"]);
+  const refreshed = await workflow.refreshMetadata({
+    selection: {
+      version: "asset-refresh-selection/1",
+      subjects: [
+        { subjectId: assetId, explanations: [{ path: ["选中事实旅程"] }] },
+      ],
+      filesystemScopes: [],
+    },
+    initiatedBy: "user:甲",
+  });
+  expect(refreshed.execution.status).toBe("completed");
+  const seriesFacts = await viewOf("journey-series");
+  const alternateFacts = await viewOf("journey-alternate");
+  expect(positions(seriesFacts)).toEqual(["1", "1", "2"]);
+  expect(positions(alternateFacts)).toEqual(["2", "3", "9"]);
+  // 同一类型与参与者桶内同时有刷新后继（序位 2）与另一项稳定来源事实。
+  const bucketOf = (
+    relationships: Awaited<ReturnType<typeof viewOf>>,
+    wantedParty: number,
+    wantedPosition: string,
+  ) =>
+    relationships.filter(
+      (relationship) =>
+        party(relationship) === wantedParty &&
+        position(relationship) === wantedPosition,
+    );
+  const successorFact = bucketOf(seriesFacts, 3, "2")[0]!;
+  const stableSibling = bucketOf(seriesFacts, 3, "1")[0]!;
+  const excludedFact = bucketOf(alternateFacts, 3, "2")[0]!;
+  const stableTertiary = bucketOf(alternateFacts, 3, "9")[0]!;
+
+  const correction = {
+    kind: "replace" as const,
+    targetRelationshipId: successorFact.id,
+    definitionId: "fixture.membership-three",
+    relationship: {
+      type: "asset.membership",
+      participants: [
+        { entityId: assetId, role: "member" },
+        { entityId: "journey-series", role: "series" },
+        { entityId: "journey-performer", role: "performer" },
+      ],
+      qualifiers: [{ key: "asset.membership.position", value: "5" }],
+    },
+  };
+  const corrected = await workflow.previewRelationshipChange({
+    changes: [correction],
+  });
+  expect(
+    await workflow.applyRelationshipChange({
+      actorId: "user:甲",
+      preview: corrected,
+    }),
+  ).toBe("applied");
+  const afterCorrection = await viewOf("journey-series");
+  // 只更正选中事实的序位，不能连带压掉同参与者的另一项来源事实。
+  expect(bucketOf(afterCorrection, 3, "2")).toHaveLength(0);
+  const correctedFact = bucketOf(afterCorrection, 3, "5")[0]!;
+  expect(correctedFact.sources).toEqual([]);
+  const keptSibling = bucketOf(afterCorrection, 3, "1")[0]!;
+  expect(keptSibling.id).toBe(stableSibling.id);
+  expect(keptSibling.sources).not.toEqual([]);
+  const repeatedCorrection = await workflow.previewRelationshipChange({
+    changes: [correction],
+  });
+  expect(
+    await workflow.applyRelationshipChange({
+      actorId: "user:甲",
+      preview: repeatedCorrection,
+    }),
+  ).toBe("applied");
+  expect(bucketOf(await viewOf("journey-series"), 3, "5")).toHaveLength(1);
+
+  const replaced = await workflow.previewRelationshipChange({
+    changes: [
+      {
+        ...correction,
+        targetRelationshipId: correctedFact.id,
+        relationship: {
+          ...correction.relationship,
+          participants: [
+            { entityId: assetId, role: "member" },
+            { entityId: "journey-series", role: "series" },
+            { entityId: "reevaluation-persona", role: "performer" },
+          ],
+        },
+      },
+    ],
+  });
+  expect(
+    await workflow.applyRelationshipChange({
+      actorId: "user:甲",
+      preview: replaced,
+    }),
+  ).toBe("applied");
+  // 更换参与对象只作用于被点名的那一项，另一项同参与者事实必须原样保留。
+  expect(
+    (await viewOf("journey-series"))
+      .filter(
+        (relationship) =>
+          party(relationship) === 3 &&
+          relationship.participants.some(
+            ({ entityId }) => entityId === "journey-performer",
+          ),
+      )
+      .map(({ id }) => id),
+  ).toEqual([stableSibling.id]);
+
+  const independent = await workflow.previewRelationshipChange({
+    changes: [
+      {
+        kind: "create" as const,
+        definitionId: "fixture.membership",
+        relationship: {
+          type: "asset.membership",
+          participants: [
+            { entityId: assetId, role: "member" },
+            { entityId: "journey-series", role: "series" },
+          ],
+          qualifiers: [{ key: "asset.membership.position", value: "8" }],
+        },
+      },
+    ],
+  });
+  expect(
+    await workflow.applyRelationshipChange({
+      actorId: "user:甲",
+      preview: independent,
+    }),
+  ).toBe("applied");
+  // 独立新增人工事实不得撤销同参与者的来源二元事实，也不得拼接成多方事实。
+  expect(
+    positions((await viewOf("journey-series")).filter((r) => party(r) === 2)),
+  ).toEqual(["1", "8"]);
+
+  const excluded = await workflow.previewRelationshipChange({
+    changes: [
+      { kind: "exclude" as const, targetRelationshipId: excludedFact.id },
+    ],
+  });
+  expect(
+    await workflow.applyRelationshipChange({
+      actorId: "user:甲",
+      preview: excluded,
+    }),
+  ).toBe("applied");
+  expect(
+    (await viewOf("journey-alternate")).filter(
+      (relationship) => party(relationship) === 3,
+    ),
+  ).toHaveLength(1);
+  const revived = await workflow.previewRelationshipChange({
+    changes: [
+      { kind: "select" as const, targetRelationshipId: excludedFact.id },
+    ],
+  });
+  expect(
+    await workflow.applyRelationshipChange({
+      actorId: "user:甲",
+      preview: revived,
+    }),
+  ).toBe("applied");
+  // select 只把被点名的那一项来源事实请回来。
+  expect(
+    (await viewOf("journey-alternate")).filter(
+      (relationship) => party(relationship) === 3,
+    ),
+  ).toHaveLength(2);
+  const reExcluded = await workflow.previewRelationshipChange({
+    changes: [
+      { kind: "exclude" as const, targetRelationshipId: excludedFact.id },
+    ],
+  });
+  expect(
+    await workflow.applyRelationshipChange({
+      actorId: "user:甲",
+      preview: reExcluded,
+    }),
+  ).toBe("applied");
+  await workflow.refreshMetadata({
+    selection: {
+      version: "asset-refresh-selection/1",
+      subjects: [
+        { subjectId: assetId, explanations: [{ path: ["选中事实旅程"] }] },
+      ],
+      filesystemScopes: [],
+    },
+    initiatedBy: "user:甲",
+  });
+  catalogue.close();
+  const reopened = SqliteCatalogue.forProductData(root);
+  const reopenedWorkflow = reevaluationWorkflow(reopened, state);
+  const alternateReopened = async () =>
+    (await reopenedWorkflow.inspectCurrentCatalogueEntity(
+      "journey-alternate",
+    ))!.relationships.filter(({ type }) => type === "asset.membership");
+  // 排除跨刷新与重开保留：被点名目标随后产生的后继仍不得重新生效。
+  expect(
+    (await alternateReopened()).filter(
+      (relationship) => relationship.participants.length === 3,
+    ),
+  ).toHaveLength(1);
+  const cleared = await reopenedWorkflow.previewRelationshipChange({
+    changes: [
+      { kind: "clear" as const, targetRelationshipId: excludedFact.id },
+    ],
+  });
+  expect(
+    await reopenedWorkflow.applyRelationshipChange({
+      actorId: "user:甲",
+      preview: cleared,
+    }),
+  ).toBe("applied");
+  // clear 回到当前来源推导：后继重新可见，来源历史并未删除。
+  const alternateAfterClear = await alternateReopened();
+  expect(
+    alternateAfterClear.filter(
+      (relationship) => relationship.participants.length === 3,
+    ),
+  ).toHaveLength(2);
+  const successor = alternateAfterClear.find(
+    (relationship) =>
+      relationship.participants.length === 3 &&
+      relationship.id !== stableTertiary.id,
+  )!;
+  const stalePreview = await reopenedWorkflow.previewRelationshipChange({
+    changes: [{ kind: "exclude" as const, targetRelationshipId: successor.id }],
+  });
+  await reopenedWorkflow.refreshMetadata({
+    selection: {
+      version: "asset-refresh-selection/1",
+      subjects: [
+        { subjectId: assetId, explanations: [{ path: ["选中事实旅程"] }] },
+      ],
+      filesystemScopes: [],
+    },
+    initiatedBy: "user:甲",
+  });
+  await expect(
+    reopenedWorkflow.applyRelationshipChange({
+      actorId: "user:甲",
+      preview: stalePreview,
+    }),
+  ).resolves.toBe("stale");
+  reopened.close();
+});
+
+const legacyFixture = {
+  // 旧快照止于一次观察扫描与其后两次来源刷新，续接同一公开来源旅程必须从该版本继续。
+  state: {
+    observationVersion: 1,
+    sourceVersion: 3,
+    expanded: false,
+    managedMissing: false,
+    omitCover: false,
+    explicitPlan: false,
+    sourceRefreshAuthority: true,
+    relatedMention: true,
+    selectedFacts: true,
+  },
+  async open() {
+    const directory = path.join(
+      import.meta.dirname,
+      "fixtures/legacy-relationship-decisions",
+    );
+    const manifest = JSON.parse(
+      await readFile(path.join(directory, "manifest.json"), "utf8"),
+    ) as {
+      assetId: string;
+      beforeMigration: Record<string, LegacyRelationship[]>;
+    };
+    const root = await mkdtemp(
+      path.join(tmpdir(), "digital-legacy-relationship-migration-"),
+    );
+    cleanup.push(root);
+    await mkdir(path.join(root, "managed-artifacts"), { recursive: true });
+    await copyFile(
+      path.join(directory, "catalogue.sqlite"),
+      path.join(root, "catalogue.sqlite"),
+    );
+    await prepareWithFormalMigration(root);
+    return { manifest, root };
+  },
+};
+
+type LegacyRelationship = {
+  id: string;
+  participants: { entityId: string; role: string }[];
+  qualifiers?: { key: string; value: string }[];
+  sources: unknown[];
+};
+
+type LegacyFact = {
+  id: string;
+  parties: number;
+  position: string;
+  sources: number;
+};
+
+const legacyFactsFor = (
+  relationships: readonly LegacyRelationship[],
+  subject: string,
+): LegacyFact[] =>
+  relationships
+    .filter(
+      ({ type, participants }) =>
+        type === "asset.membership" &&
+        participants.some(
+          ({ entityId, role }) => role === "series" && entityId === subject,
+        ),
+    )
+    .map(({ id, participants, qualifiers, sources }) => ({
+      id,
+      parties: participants.length,
+      position: qualifiers?.[0]?.value ?? "",
+      sources: sources.length,
+    }))
+    .toSorted(
+      (left, right) =>
+        left.parties - right.parties ||
+        left.position.localeCompare(right.position),
+    );
+
+const legacyShape = (
+  facts: readonly LegacyFact[],
+): { parties: number; position: string; sources: number }[] =>
+  facts.map(({ parties, position, sources }) => ({
+    parties,
+    position,
+    sources,
+  }));
+
+it("旧坐标决定经正式迁移后按被点名事实生效，公开反查、刷新与重开一致", async () => {
+  const { manifest, root } = await legacyFixture.open();
+  const catalogue = SqliteCatalogue.forProductData(root);
+  const continuation = { ...legacyFixture.state };
+  const workflow = reevaluationWorkflow(catalogue, continuation);
+  const factsOf = async (subject: string) =>
+    legacyFactsFor(
+      (await workflow.inspectCurrentCatalogueEntity(subject))!
+        .relationships as unknown as LegacyRelationship[],
+      subject,
+    );
+  // 旧坐标按类型与参与者整体作用：整体选择只留下被点名事实，整体更正压掉同坐标全部来源事实。
+  expect(
+    legacyFactsFor(
+      manifest.beforeMigration["journey-series"],
+      "journey-series",
+    ),
+  ).toEqual([
+    { id: expect.any(String), parties: 2, position: "1", sources: 1 },
+    { id: expect.any(String), parties: 3, position: "1", sources: 1 },
+  ]);
+  const legacyAlternate = legacyFactsFor(
+    manifest.beforeMigration["journey-alternate"],
+    "journey-alternate",
+  );
+  expect(legacyShape(legacyAlternate)).toEqual([
+    { parties: 2, position: "4", sources: 0 },
+    { parties: 3, position: "7", sources: 0 },
+  ]);
+  // 迁移后同一坐标的每项事实各自决定：唯一目标的更正继续替换那一项来源事实，
+  // 证据不足的整体更正保全为独立人工事实，其余来源事实恢复各自生效。
+  expect(legacyShape(await factsOf("journey-series"))).toEqual([
+    { parties: 2, position: "1", sources: 1 },
+    { parties: 3, position: "1", sources: 1 },
+    { parties: 3, position: "3", sources: 1 },
+  ]);
+  const migratedAlternate = await factsOf("journey-alternate");
+  expect(legacyShape(migratedAlternate)).toEqual([
+    { parties: 2, position: "4", sources: 0 },
+    { parties: 3, position: "3", sources: 1 },
+    { parties: 3, position: "7", sources: 0 },
+    { parties: 3, position: "9", sources: 1 },
+  ]);
+  const manualAlternate = migratedAlternate.filter(
+    ({ sources }) => sources === 0,
+  );
+  expect(manualAlternate.map(({ position }) => position)).toEqual(["4", "7"]);
+  expect(manualAlternate.map(({ id }) => id)).toEqual(
+    legacyAlternate.filter(({ sources }) => sources === 0).map(({ id }) => id),
+  );
+  const excluded = migratedAlternate.find(
+    ({ parties, position }) => parties === 3 && position === "9",
+  )!;
+  const exclude = {
+    kind: "exclude" as const,
+    targetRelationshipId: excluded.id,
+  };
+  const applyExclude = async (target: typeof workflow) =>
+    await target.applyRelationshipChange({
+      actorId: "user:legacy",
+      preview: await target.previewRelationshipChange({ changes: [exclude] }),
+    });
+  expect(await applyExclude(workflow)).toBe("applied");
+  const afterExclude = legacyShape(await factsOf("journey-alternate"));
+  expect(afterExclude).toEqual([
+    { parties: 2, position: "4", sources: 0 },
+    { parties: 3, position: "3", sources: 1 },
+    { parties: 3, position: "7", sources: 0 },
+  ]);
+  // 重复采用同一决定不叠加效果，也不得改写另一项同参与者事实。
+  expect(await applyExclude(workflow)).toBe("applied");
+  expect(legacyShape(await factsOf("journey-alternate"))).toEqual(afterExclude);
+  expect(legacyShape(await factsOf("journey-series"))).toEqual([
+    { parties: 2, position: "1", sources: 1 },
+    { parties: 3, position: "1", sources: 1 },
+    { parties: 3, position: "3", sources: 1 },
+  ]);
+  // 来源刷新按新内容各自更新事实：被排除的目标继续不生效，其余目标不受影响。
+  expect(
+    (
+      await workflow.refreshMetadata({
+        selection: {
+          version: "asset-refresh-selection/1",
+          subjects: [
+            {
+              subjectId: manifest.assetId,
+              explanations: [{ path: ["旧坐标迁移"] }],
+            },
+          ],
+          filesystemScopes: [],
+        },
+        initiatedBy: "user:legacy",
+      })
+    ).execution.status,
+  ).toBe("completed");
+  expect(legacyShape(await factsOf("journey-alternate"))).toEqual([
+    { parties: 2, position: "4", sources: 0 },
+    { parties: 3, position: "4", sources: 1 },
+    { parties: 3, position: "7", sources: 0 },
+  ]);
+  expect(legacyShape(await factsOf("journey-series"))).toEqual([
+    { parties: 2, position: "1", sources: 1 },
+    { parties: 3, position: "1", sources: 1 },
+    { parties: 3, position: "4", sources: 1 },
+  ]);
+  catalogue.close();
+  const reopened = SqliteCatalogue.forProductData(root);
+  const reopenedWorkflow = reevaluationWorkflow(reopened, {
+    ...continuation,
+  });
+  const reopenedFacts = legacyShape(
+    legacyFactsFor(
+      (await reopenedWorkflow.inspectCurrentCatalogueEntity(
+        "journey-alternate",
+      ))!.relationships as unknown as LegacyRelationship[],
+      "journey-alternate",
+    ),
+  );
+  // 重新打开同一产品数据后，排除与人工根据都按持久事实一致生效。
+  expect(reopenedFacts).toEqual([
+    { parties: 2, position: "4", sources: 0 },
+    { parties: 3, position: "4", sources: 1 },
+    { parties: 3, position: "7", sources: 0 },
+  ]);
+  // 清除只回到被点名事实的当前来源推导，人工根据不被删除，其他目标不受影响。
+  expect(
+    await reopenedWorkflow.applyRelationshipChange({
+      actorId: "user:legacy",
+      preview: await reopenedWorkflow.previewRelationshipChange({
+        changes: [{ kind: "clear", targetRelationshipId: excluded.id }],
+      }),
+    }),
+  ).toBe("applied");
+  expect(
+    legacyShape(
+      legacyFactsFor(
+        (await reopenedWorkflow.inspectCurrentCatalogueEntity(
+          "journey-alternate",
+        ))!.relationships as unknown as LegacyRelationship[],
+        "journey-alternate",
+      ),
+    ),
+  ).toEqual([
+    { parties: 2, position: "4", sources: 0 },
+    { parties: 3, position: "4", sources: 1 },
+    { parties: 3, position: "7", sources: 0 },
+    { parties: 3, position: "9", sources: 1 },
+  ]);
+  expect(
+    legacyShape(
+      legacyFactsFor(
+        (await reopenedWorkflow.inspectCurrentCatalogueEntity(
+          "journey-series",
+        ))!.relationships as unknown as LegacyRelationship[],
+        "journey-series",
+      ),
+    ),
+  ).toEqual([
+    { parties: 2, position: "1", sources: 1 },
+    { parties: 3, position: "1", sources: 1 },
+    { parties: 3, position: "4", sources: 1 },
+  ]);
+  reopened.close();
+});
+
+it("损坏的旧决定引用令正式迁移失败闭锁并拒绝运行时准入", async () => {
+  const root = await mkdtemp(
+    path.join(tmpdir(), "digital-legacy-relationship-corruption-"),
+  );
+  cleanup.push(root);
+  await mkdir(path.join(root, "managed-artifacts"), { recursive: true });
+  await copyFile(
+    path.join(
+      import.meta.dirname,
+      "fixtures/legacy-relationship-decisions/catalogue.sqlite",
+    ),
+    path.join(root, "catalogue.sqlite"),
+  );
+  // 只精确破坏真实公开样例的一份副本：点名事实改成不存在的引用。
+  const corrupted = new DatabaseSync(path.join(root, "catalogue.sqlite"));
+  corrupted
+    .prepare(
+      `UPDATE relationship_decisions
+       SET relationship_ids_json = '["entity-relationship_missing"]'
+       WHERE kind = 'select'`,
+    )
+    .run();
+  corrupted.close();
+
+  await expect(prepareWithFormalMigration(root)).rejects.toThrow(
+    "formal test catalogue migration failed",
+  );
+  expect(
+    await SqliteCatalogue.inspectProductionReadiness({
+      productDataDirectory: root,
+    }),
+  ).toMatchObject({
+    state: "migration-failed",
+    message: expect.stringContaining("digital-db-migrate prepare-only"),
+  });
+  // 失败闭锁后公开产品查询不可用，绝不以未迁移的旧结构继续服务。
+  const catalogue = SqliteCatalogue.forProductData(root);
+  await expect(catalogue.listCurrentCatalogue()).rejects.toThrow(
+    "SQLite catalogue schema is not prepared",
+  );
+  catalogue.close();
 });
 
 it("公开身份合并汇集关系、让新人工关系写入代表并能撤销", async () => {
@@ -766,7 +1345,7 @@ it("公开身份合并汇集关系、让新人工关系写入代表并能撤销"
     ),
   );
   const oldRelationship = {
-    kind: "fix" as const,
+    kind: "create" as const,
     definitionId: "fixture.identity-reference",
     relationship: {
       type: "identity.reference",
@@ -794,11 +1373,9 @@ it("公开身份合并汇集关系、让新人工关系写入代表并能撤销"
     changes: [
       {
         kind: "exclude",
-        relationshipIds: [
-          oldPreview.relationships.find(
-            ({ type }) => type === "identity.reference",
-          )!.id,
-        ],
+        targetRelationshipId: oldPreview.relationships.find(
+          ({ type }) => type === "identity.reference",
+        )!.id,
       },
     ],
   });
@@ -817,11 +1394,9 @@ it("公开身份合并汇集关系、让新人工关系写入代表并能撤销"
     changes: [
       {
         kind: "select",
-        relationshipIds: [
-          oldPreview.relationships.find(
-            ({ type }) => type === "identity.reference",
-          )!.id,
-        ],
+        targetRelationshipId: oldPreview.relationships.find(
+          ({ type }) => type === "identity.reference",
+        )!.id,
       },
     ],
   });
@@ -889,7 +1464,7 @@ it("公开身份合并汇集关系、让新人工关系写入代表并能撤销"
   const newManualPreview = await workflow.previewRelationshipChange({
     changes: [
       {
-        kind: "fix",
+        kind: "create",
         definitionId: "fixture.membership",
         relationship: {
           type: "asset.membership",
@@ -902,7 +1477,7 @@ it("公开身份合并汇集关系、让新人工关系写入代表并能撤销"
       },
     ],
   });
-  expect(newManualPreview.changes[0]!.relationship!.participants[0]).toEqual({
+  expect(newManualPreview.changes[0].relationship!.participants[0]).toEqual({
     entityId: a.id,
     role: "series",
   });
@@ -1039,7 +1614,7 @@ it("公开身份合并拒绝数字资产、种类冲突和会折叠坏的既有�
   const relationship = await workflow.previewRelationshipChange({
     changes: [
       {
-        kind: "fix",
+        kind: "create",
         definitionId: "fixture.identity-ambiguous",
         relationship: {
           type: "identity.ambiguous",
@@ -1091,7 +1666,7 @@ it("身份合并只让相关关系更正过期，并拒绝恢复会折叠的人�
   const unrelatedChange = await workflow.previewRelationshipChange({
     changes: [
       {
-        kind: "fix",
+        kind: "create",
         definitionId: "fixture.identity-context",
         relationship: {
           type: "identity.context",
@@ -1129,7 +1704,7 @@ it("身份合并只让相关关系更正过期，并拒绝恢复会折叠的人�
   const unsafe = await workflow.previewRelationshipChange({
     changes: [
       {
-        kind: "fix",
+        kind: "create",
         definitionId: "fixture.identity-ambiguous",
         relationship: {
           type: "identity.ambiguous",
@@ -1149,7 +1724,7 @@ it("身份合并只让相关关系更正过期，并拒绝恢复会折叠的人�
     ({ type }) => type === "identity.ambiguous",
   )!.id;
   const exclude = await workflow.previewRelationshipChange({
-    changes: [{ kind: "exclude", relationshipIds: [unsafeId] }],
+    changes: [{ kind: "exclude", targetRelationshipId: unsafeId }],
   });
   await workflow.applyRelationshipChange({
     actorId: "user:甲",
@@ -1166,7 +1741,7 @@ it("身份合并只让相关关系更正过期，并拒绝恢复会折叠的人�
   });
   await expect(
     workflow.previewRelationshipChange({
-      changes: [{ kind: "select", relationshipIds: [unsafeId] }],
+      changes: [{ kind: "select", targetRelationshipId: unsafeId }],
     }),
   ).rejects.toThrow("身份合并会使当前关系结构无效");
   catalogue.close();
@@ -1269,13 +1844,13 @@ it("孤立身份合并按当前资料投影汇集值与冲突，并在撤销后�
   );
   const reorderedPreview = {
     ...preview,
-    members: [...preview.members].reverse(),
-    relationshipIds: [...preview.relationshipIds].reverse(),
+    members: [...preview.members].toReversed(),
+    relationshipIds: [...preview.relationshipIds].toReversed(),
     metadata: [...preview.metadata]
-      .reverse()
+      .toReversed()
       .map(({ entityId, property, value }) => ({ value, property, entityId })),
     metadataConflicts: [...preview.metadataConflicts]
-      .reverse()
+      .toReversed()
       .map(
         ({
           subjectId,
@@ -1301,7 +1876,7 @@ it("孤立身份合并按当前资料投影汇集值与冲突，并在撤销后�
               status: "effective" as const,
             }
           : {
-              kinds: [...preview.effectiveKind.kinds].reverse(),
+              kinds: [...preview.effectiveKind.kinds].toReversed(),
               status: "conflict" as const,
             },
   };
@@ -1312,7 +1887,7 @@ it("孤立身份合并按当前资料投影汇集值与冲突，并在撤销后�
       version: "isolated-identity-metadata/2",
       policies: [
         {
-          ...base.metadataPolicyConfiguration.policies[0]!,
+          ...base.metadataPolicyConfiguration.policies[0],
           rules: [
             {
               property: "entity.alias",
@@ -1511,7 +2086,7 @@ it("公开身份合并不改写来源刷新，并把随后人工关系留在代�
   const beforeMergeManual = await workflow.previewRelationshipChange({
     changes: [
       {
-        kind: "fix",
+        kind: "create",
         definitionId: "fixture.membership",
         relationship: {
           type: "asset.membership",
@@ -1578,7 +2153,7 @@ it("公开身份合并不改写来源刷新，并把随后人工关系留在代�
   const manual = await workflow.previewRelationshipChange({
     changes: [
       {
-        kind: "fix",
+        kind: "create",
         definitionId: "fixture.membership",
         relationship: {
           type: "asset.membership",
@@ -1590,7 +2165,7 @@ it("公开身份合并不改写来源刷新，并把随后人工关系留在代�
       },
     ],
   });
-  expect(manual.changes[0]!.relationship!.participants[0]!.entityId).toBe(
+  expect(manual.changes[0].relationship!.participants[0]!.entityId).toBe(
     retained.id,
   );
   await workflow.applyRelationshipChange({
@@ -1664,7 +2239,7 @@ it("公开交叉旅程保留自动关系、人工更正与指定身份合并的�
   const correction = await workflow.previewRelationshipChange({
     changes: [
       {
-        kind: "fix",
+        kind: "create",
         definitionId: "fixture.identity-reference",
         relationship: {
           type: "identity.reference",
@@ -1709,7 +2284,7 @@ it("公开交叉旅程保留自动关系、人工更正与指定身份合并的�
   const postMergeManual = await workflow.previewRelationshipChange({
     changes: [
       {
-        kind: "fix",
+        kind: "create",
         definitionId: "fixture.membership",
         relationship: {
           type: "asset.membership",
@@ -1721,7 +2296,7 @@ it("公开交叉旅程保留自动关系、人工更正与指定身份合并的�
       },
     ],
   });
-  expect(postMergeManual.changes[0]!.relationship!.participants[0]).toEqual({
+  expect(postMergeManual.changes[0].relationship!.participants[0]).toEqual({
     entityId: retained.id,
     role: "series",
   });
@@ -1930,7 +2505,7 @@ it("公开从普通实体返回自身、具名邻接关系和已收录内容，�
       },
     ],
     sourceRecords: dlsiteRecords,
-  })[0]!;
+  })[0];
   const circle = dlsite.entities!.find(
     (entity) => entity.sourceKey === "RG123",
   )!;
@@ -1945,7 +2520,7 @@ it("公开从普通实体返回自身、具名邻接关系和已收录内容，�
     ...base,
     sourceAssociations: [
       {
-        ...base.sourceAssociations[0]!,
+        ...base.sourceAssociations[0],
         sourceIdentity: "dlsite",
         nativeAddress: dlsiteRecords[0].nativeAddress,
       },
@@ -1979,7 +2554,7 @@ it("公开从普通实体返回自身、具名邻接关系和已收录内容，�
     ),
     relationships: [
       {
-        ...base.relationships![0]!,
+        ...base.relationships![0],
         ...circleRelationship,
         id: "dlsite-circle-asset",
         participants: [
@@ -2073,7 +2648,7 @@ it("公开从普通实体返回自身、具名邻接关系和已收录内容，�
     ...second,
     sourceAssociations: [
       {
-        ...second.sourceAssociations[0]!,
+        ...second.sourceAssociations[0],
         sourceIdentity: "dlsite",
         nativeAddress: secondRecord.nativeAddress,
       },
@@ -2103,7 +2678,7 @@ it("公开从普通实体返回自身、具名邻接关系和已收录内容，�
     entityResolutionDecisions: [],
     relationships: [
       {
-        ...second.relationships![0]!,
+        ...second.relationships![0],
         ...circleRelationship,
         id: "dlsite-circle-asset-2",
         participants: [
@@ -2221,6 +2796,7 @@ const fixtureObservedDirectories = [
   "/observed/related-lineage-a",
   "/observed/related-lineage-b",
   "/observed/retraction-provenance",
+  "/observed/selected-facts",
   "/observed/source-refresh-acquiring",
   "/observed/source-refresh-authority",
   "/observed/source-refresh-cancel-in-flight",
@@ -8853,6 +9429,8 @@ function reevaluationWorkflow(
     sourceCompleteness?: "complete" | "incomplete";
     sourceAddress?: string;
     sourceRecordPrefix?: string;
+    /** 同一类型与参与者的多项来源事实，用于证明按项决定互不撤销。 */
+    selectedFacts?: boolean;
   },
 ): AssetRefreshWorkflow {
   const capability = (capabilityId: string) => ({
@@ -9194,6 +9772,37 @@ function reevaluationWorkflow(
                         sourceRecordIds: [recordId],
                       },
                     ]),
+                ...(state.selectedFacts !== true
+                  ? []
+                  : [
+                      {
+                        id: "journey-series",
+                        kind: "entity" as const,
+                        sourceIdentity: "reevaluation-source",
+                        sourceKey: "journey-series",
+                        identityNamespace: "journey.series",
+                        label: "系列甲",
+                        sourceRecordIds: [recordId],
+                      },
+                      {
+                        id: "journey-performer",
+                        kind: "person" as const,
+                        sourceIdentity: "reevaluation-source",
+                        sourceKey: "journey-performer",
+                        identityNamespace: "journey.performer",
+                        label: "表演者甲",
+                        sourceRecordIds: [recordId],
+                      },
+                      {
+                        id: "journey-alternate",
+                        kind: "entity" as const,
+                        sourceIdentity: "reevaluation-source",
+                        sourceKey: "journey-alternate",
+                        identityNamespace: "journey.series",
+                        label: "系列乙",
+                        sourceRecordIds: [recordId],
+                      },
+                    ]),
               ],
               relationships: [
                 ...(state.omitPersona === true
@@ -9271,6 +9880,92 @@ function reevaluationWorkflow(
                                 { key: "scope", value: "source" },
                                 { key: "kind", value: "credit" },
                               ],
+                      },
+                    ]),
+                ...(state.selectedFacts !== true
+                  ? []
+                  : [
+                      {
+                        type: "asset.membership" as const,
+                        subjectRole: "member",
+                        sourceSlot: "journey.crew",
+                        sourceRecordIds: [recordId],
+                        participants: [
+                          { entityId: "journey-series", role: "series" },
+                          { entityId: "journey-performer", role: "performer" },
+                        ],
+                        qualifiers: [
+                          {
+                            key: "asset.membership.position",
+                            value: String(state.sourceVersion),
+                          },
+                        ],
+                      },
+                      {
+                        type: "asset.membership" as const,
+                        subjectRole: "member",
+                        sourceSlot: "journey.crew.alternate",
+                        sourceRecordIds: [recordId],
+                        participants: [
+                          { entityId: "journey-series", role: "series" },
+                          { entityId: "journey-performer", role: "performer" },
+                        ],
+                        qualifiers: [
+                          { key: "asset.membership.position", value: "1" },
+                        ],
+                      },
+                      {
+                        type: "asset.membership" as const,
+                        subjectRole: "member",
+                        sourceSlot: "journey.crew.secondary",
+                        sourceRecordIds: [recordId],
+                        participants: [
+                          { entityId: "journey-alternate", role: "series" },
+                          { entityId: "journey-performer", role: "performer" },
+                        ],
+                        qualifiers: [
+                          {
+                            key: "asset.membership.position",
+                            value: String(state.sourceVersion),
+                          },
+                        ],
+                      },
+                      {
+                        type: "asset.membership" as const,
+                        subjectRole: "member",
+                        sourceSlot: "journey.crew.tertiary",
+                        sourceRecordIds: [recordId],
+                        participants: [
+                          { entityId: "journey-alternate", role: "series" },
+                          { entityId: "journey-performer", role: "performer" },
+                        ],
+                        qualifiers: [
+                          { key: "asset.membership.position", value: "9" },
+                        ],
+                      },
+                      {
+                        type: "asset.membership" as const,
+                        subjectRole: "member",
+                        sourceSlot: "journey.pair",
+                        sourceRecordIds: [recordId],
+                        participants: [
+                          { entityId: "journey-series", role: "series" },
+                        ],
+                        qualifiers: [
+                          { key: "asset.membership.position", value: "1" },
+                        ],
+                      },
+                      {
+                        type: "asset.membership" as const,
+                        subjectRole: "member",
+                        sourceSlot: "journey.alternate-pair",
+                        sourceRecordIds: [recordId],
+                        participants: [
+                          { entityId: "journey-alternate", role: "series" },
+                        ],
+                        qualifiers: [
+                          { key: "asset.membership.position", value: "3" },
+                        ],
                       },
                     ]),
               ],
@@ -10051,12 +10746,12 @@ it("adopts only the successor's complete observed graph after SQLite reopen", as
         entities: [expect.objectContaining({ label: "Observed D1" })],
       }),
     ]);
-    const observedD1 = (await workflow.findRelatedEntities("Observed D1"))[0]!;
+    const observedD1 = (await workflow.findRelatedEntities("Observed D1"))[0];
     const automaticD1 = (await workflow.inspectCurrentCatalogueEntity(
       observedD1.id,
     ))!.relationships.find(({ type }) => type === "asset.contribution")!;
     const excludeD1 = await workflow.previewRelationshipChange({
-      changes: [{ kind: "exclude", relationshipIds: [automaticD1.id] }],
+      changes: [{ kind: "exclude", targetRelationshipId: automaticD1.id }],
     });
     await expect(
       workflow.applyRelationshipChange({
@@ -10190,14 +10885,14 @@ it("adopts only the successor's complete observed graph after SQLite reopen", as
     );
     await expect(
       resumed.previewRelationshipChange({
-        changes: [{ kind: "clear", relationshipIds: [automaticD1.id] }],
+        changes: [{ kind: "clear", targetRelationshipId: automaticD1.id }],
       }),
-    ).rejects.toThrow("关系决定必须点名当前关系");
+    ).rejects.toThrow("所选关系不是当前可决定的事实");
     await expect(resumed.findRelatedEntities("Observed D1")).resolves.toEqual(
       [],
     );
     if (successor === "d2") {
-      const observedD2 = (await resumed.findRelatedEntities("Observed D2"))[0]!;
+      const observedD2 = (await resumed.findRelatedEntities("Observed D2"))[0];
       await expect(
         resumed.inspectCurrentCatalogueEntity(observedD2.id),
       ).resolves.toMatchObject({
@@ -10240,7 +10935,7 @@ it("公开观察身份只在当前图中参与查找、合并与关系查询", a
   expect(observedD1).toEqual([
     expect.objectContaining({ label: "Observed D1", identity: "local" }),
   ]);
-  const d1 = observedD1[0]!;
+  const d1 = observedD1[0];
   await expect(
     workflow.inspectCurrentCatalogueEntity(d1.id),
   ).resolves.toMatchObject({
@@ -10330,7 +11025,7 @@ it("公开观察身份只在当前图中参与查找、合并与关系查询", a
     });
     const historicalD1 = (
       await historicalWorkflow.findRelatedEntities("Observed D1")
-    )[0]!;
+    )[0];
     const persistentCandidate =
       await historicalWorkflow.createLocalRelatedEntity({
         commitmentId: `historical-observed-identity/candidate:${successorGraph}`,
@@ -10394,7 +11089,7 @@ it("公开观察身份只在当前图中参与查找、合并与关系查询", a
       ]);
       await expect(
         historicalReopenedWorkflow.inspectCurrentCatalogueEntity(
-          observedD2[0]!.id,
+          observedD2[0].id,
         ),
       ).resolves.toMatchObject({
         relationships: [
@@ -12403,7 +13098,7 @@ describe("SQLite Asset Refresh persistence", () => {
       actorId: "user:甲",
     });
     const fix = {
-      kind: "fix" as const,
+      kind: "create" as const,
       definitionId: "fixture.membership",
       relationship: {
         type: "asset.membership",
@@ -12755,7 +13450,7 @@ describe("SQLite Asset Refresh persistence", () => {
     await expect(
       workflowA.reviewSourceRefreshChangeSet({
         runId: completeMissingRun!.id,
-        changeSetId: completeMissingRun!.changeSets[0]!.id,
+        changeSetId: completeMissingRun!.changeSets[0].id,
         disposition: "approved",
       }),
     ).resolves.toMatchObject({ phase: "terminal", outcome: "succeeded" });

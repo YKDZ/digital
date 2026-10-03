@@ -1,85 +1,142 @@
-import type {
-  EntityRelationship,
-  EntityRelationshipParticipant,
-} from "./index.ts";
+import type { EntityRelationship, RelationshipDraft } from "./index.ts";
 
-/** 坐标刻意排除 qualifier：更正后的序位仍是同一关系的竞争解释，而不是另一项全局资产属性。 */
-export type RelationshipSemanticCoordinate = {
-  readonly type: string;
-  readonly participants: readonly EntityRelationshipParticipant[];
-};
+/**
+ * 决定目标是一个既有事实支持范围的值对象：来源槽位、观察图槽位或独立人工目标。
+ * 它刻意不含类型与参与者，因此同类型同参与者的不同事实互不撤销。
+ */
+export type RelationshipDecisionTarget =
+  | {
+      readonly kind: "source";
+      readonly sourceSubjectId: string;
+      readonly sourceIdentity: string;
+      readonly nativeAddress: string;
+      readonly coverageId: string;
+      readonly sourceSlot: string;
+    }
+  | {
+      readonly kind: "observed";
+      readonly assetId: string;
+      readonly artifactId: string;
+      readonly capabilityId: string;
+      readonly coverageId: string;
+      readonly sourceSlot: string;
+    }
+  | { readonly kind: "manual"; readonly targetId: string };
 
 export type RelationshipDecision = {
   readonly id: string;
-  readonly coordinate: RelationshipSemanticCoordinate;
+  readonly target: RelationshipDecisionTarget;
   readonly kind: "select" | "fix" | "exclude" | "clear";
-  /** select/exclude 决定显式点名的来源事实。 */
-  readonly relationshipIds: readonly string[];
   /** fix 是独立且有人工作为支持的事实。 */
   readonly manualRelationshipId?: string;
 };
 
 export type EffectiveRelationshipInput = {
   readonly relationships: readonly EntityRelationship[];
+  /** 每项当前事实的稳定支持范围，由持久层按来源、观察或人工支持解析。 */
+  readonly targets: ReadonlyMap<string, RelationshipDecisionTarget>;
   readonly decisions: readonly RelationshipDecision[];
-  readonly manualRelationshipDecisionIds: ReadonlyMap<string, string>;
+  /** 由人工支持证明的不可变事实；它们只在所属决定的目标下生效。 */
+  readonly manualRelationshipIds: ReadonlySet<string>;
 };
 
-/** 唯一的关系投影器。决定作用于完整的关系语义坐标；clear 刻意回到读取时当前的来源事实。 */
+/** 唯一的关系投影器。决定头按目标覆盖，clear 刻意回到读取时当前的来源事实。 */
 export function deriveEffectiveRelationships(
   input: EffectiveRelationshipInput,
 ): readonly EntityRelationship[] {
-  const byCoordinate = new Map<string, EntityRelationship[]>();
+  const groups = new Map<
+    string,
+    {
+      readonly target: RelationshipDecisionTarget;
+      readonly supported: EntityRelationship[];
+      readonly manual: EntityRelationship[];
+    }
+  >();
   for (const relationship of input.relationships) {
-    const key = relationshipCoordinateKey(relationship);
-    byCoordinate.set(key, [...(byCoordinate.get(key) ?? []), relationship]);
+    const target = input.targets.get(relationship.id);
+    if (target === undefined) throw new Error("关系事实缺少可解析的决定目标");
+    const key = relationshipTargetKey(target);
+    const group = groups.get(key) ?? {
+      target,
+      supported: [],
+      manual: [],
+    };
+    groups.set(key, group);
+    (input.manualRelationshipIds.has(relationship.id)
+      ? group.manual
+      : group.supported
+    ).push(relationship);
   }
-  const decisionByCoordinate = new Map<string, RelationshipDecision>();
+  const decisionByTarget = new Map<string, RelationshipDecision>();
   for (const decision of input.decisions)
-    decisionByCoordinate.set(
-      relationshipCoordinateKey(decision.coordinate),
-      decision,
-    );
+    decisionByTarget.set(relationshipTargetKey(decision.target), decision);
 
-  return [...byCoordinate.entries()].flatMap(([coordinate, relationships]) => {
-    const decision = decisionByCoordinate.get(coordinate);
-    if (decision === undefined || decision.kind === "clear")
-      return relationships.filter(
-        (relationship) =>
-          input.manualRelationshipDecisionIds.get(relationship.id) ===
-          undefined,
+  return [...groups.values()].flatMap(
+    ({ target, supported, manual }): readonly EntityRelationship[] => {
+      const decision = decisionByTarget.get(relationshipTargetKey(target));
+      if (decision === undefined) return supported;
+      if (decision.kind === "exclude") return [];
+      if (decision.kind === "clear")
+        return target.kind === "manual" ? [] : supported;
+      if (decision.kind === "select")
+        return target.kind === "manual" ? manual : supported;
+      return manual.filter(
+        (relationship) => relationship.id === decision.manualRelationshipId,
       );
-    if (decision.kind === "exclude")
-      return relationships.filter(
-        (relationship) =>
-          !decision.relationshipIds.includes(relationship.id) &&
-          input.manualRelationshipDecisionIds.get(relationship.id) ===
-            undefined,
-      );
-    if (decision.kind === "select")
-      return relationships.filter((relationship) =>
-        decision.relationshipIds.includes(relationship.id),
-      );
-    return relationships.filter(
-      (relationship) =>
-        input.manualRelationshipDecisionIds.get(relationship.id) ===
-        decision.id,
-    );
-  });
+    },
+  );
 }
 
-export function relationshipCoordinateKey(
-  relationship:
-    | Pick<EntityRelationship, "type" | "participants">
-    | RelationshipSemanticCoordinate,
+/** 目标键使用固定字段顺序的规范序列化，保证同一支持范围得到同一决定头。 */
+export function relationshipTargetKey(
+  target: RelationshipDecisionTarget,
+): string {
+  return JSON.stringify(
+    target.kind === "source"
+      ? {
+          kind: "source",
+          sourceSubjectId: target.sourceSubjectId,
+          sourceIdentity: target.sourceIdentity,
+          nativeAddress: target.nativeAddress,
+          coverageId: target.coverageId,
+          sourceSlot: target.sourceSlot,
+        }
+      : target.kind === "observed"
+        ? {
+            kind: "observed",
+            assetId: target.assetId,
+            artifactId: target.artifactId,
+            capabilityId: target.capabilityId,
+            coverageId: target.coverageId,
+            sourceSlot: target.sourceSlot,
+          }
+        : { kind: "manual", targetId: target.targetId },
+  );
+}
+
+/**
+ * 人工草稿的规范内容：声明、类型、完整参与者与限定项。参与者与限定项的排列不影响结果，
+ * 因此同一人工目标重复预演得到同一事实，而相同类型与参与者但声明不同的事实仍各自成立。
+ */
+export function canonicalRelationshipDraft(
+  definitionId: string,
+  draft: RelationshipDraft,
 ): string {
   return JSON.stringify({
-    type: relationship.type,
-    participants: [...relationship.participants]
+    definitionId,
+    type: draft.type,
+    participants: [...draft.participants]
       .map(({ entityId, role }) => ({ entityId, role }))
       .toSorted((left, right) =>
         `${left.entityId}\u0000${left.role}`.localeCompare(
           `${right.entityId}\u0000${right.role}`,
+        ),
+      ),
+    qualifiers: [...(draft.qualifiers ?? [])]
+      .map(({ key, value }) => ({ key, value }))
+      .toSorted((left, right) =>
+        `${left.key}\u0000${left.value}`.localeCompare(
+          `${right.key}\u0000${right.value}`,
         ),
       ),
   });

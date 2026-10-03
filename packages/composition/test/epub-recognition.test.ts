@@ -122,14 +122,15 @@ it("普通组合资产刷新保持 exact ISBN 的官方来源依据", async () =
         expect.objectContaining({ type: "asset.contribution" }),
       ]),
     );
-    const sourceRelationship = contributorFacts!.relationships[0]!;
+    const sourceRelationship = contributorFacts!.relationships[0];
     expect(sourceRelationship.sources).toEqual([
       expect.objectContaining({ sourceIdentity: "nbinet" }),
     ]);
     const manual = await workflow.previewRelationshipChange({
       changes: [
         {
-          kind: "fix",
+          kind: "replace",
+          targetRelationshipId: sourceRelationship.id,
           definitionId: "nbinet.contribution",
           relationship: {
             type: sourceRelationship.type,
@@ -155,7 +156,7 @@ it("普通组合资产刷新保持 exact ISBN 的官方来源依据", async () =
         .sourceAssociations,
     ).toEqual(accepted!.sourceAssociations);
     const clear = await workflow.previewRelationshipChange({
-      changes: [{ kind: "clear", relationshipIds: [sourceRelationship.id] }],
+      changes: [{ kind: "clear", targetRelationshipId: sourceRelationship.id }],
     });
     expect(
       await workflow.applyRelationshipChange({
@@ -370,7 +371,7 @@ it("公开 EPUB 自动关系可被排除、重选并清除", async () => {
     )!;
 
     const exclude = await workflow.previewRelationshipChange({
-      changes: [{ kind: "exclude", relationshipIds: [automatic.id] }],
+      changes: [{ kind: "exclude", targetRelationshipId: automatic.id }],
     });
     await expect(
       workflow.applyRelationshipChange({
@@ -383,7 +384,7 @@ it("公开 EPUB 自动关系可被排除、重选并清除", async () => {
     ).resolves.toMatchObject({ relationships: [] });
 
     const select = await workflow.previewRelationshipChange({
-      changes: [{ kind: "select", relationshipIds: [automatic.id] }],
+      changes: [{ kind: "select", targetRelationshipId: automatic.id }],
     });
     await expect(
       workflow.applyRelationshipChange({ actorId: "user:甲", preview: select }),
@@ -396,7 +397,7 @@ it("公开 EPUB 自动关系可被排除、重选并清除", async () => {
     );
 
     const clear = await workflow.previewRelationshipChange({
-      changes: [{ kind: "clear", relationshipIds: [automatic.id] }],
+      changes: [{ kind: "clear", targetRelationshipId: automatic.id }],
     });
     await expect(
       workflow.applyRelationshipChange({ actorId: "user:甲", preview: clear }),

@@ -8,6 +8,78 @@ import { expect, it, vi } from "vitest";
 
 import { prepareWebProductData } from "./prepare-catalogue";
 
+type Fact = {
+  id: string;
+  type: string;
+  participants: { entityId: string; role: string }[];
+  qualifiers?: { key: string; value: string }[];
+  sources: unknown[];
+};
+
+async function openProduct(root: string) {
+  const product = runProduct(
+    { productDataDirectory: root, environment: {} },
+    { start: createWebDelivery },
+  );
+  const request = (route: string, init?: RequestInit) =>
+    product.result.api.request(`/relationships/${route}`, init);
+  const post = (route: string, body: unknown) =>
+    request(route, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  const json = async (response: Response) => await response.json();
+  const entity = async (
+    commitmentId: string,
+    label: string,
+    kind: "entity" | "person" | "persona",
+  ) =>
+    await json(
+      await post("entities", {
+        commitmentId,
+        label,
+        kind,
+        actorId: "reader",
+      }),
+    );
+  const facts = async (id: string): Promise<Fact[]> =>
+    ((await json(await request(`entities/${id}`))) as { relationships: Fact[] })
+      .relationships;
+  const positions = (relationships: readonly Fact[]) =>
+    relationships
+      .filter(({ type }) => type === "asset.membership")
+      .map(({ participants, qualifiers, sources }) => ({
+        parties: participants.length,
+        position: qualifiers?.[0]?.value ?? "",
+        sources: sources.length,
+      }))
+      .toSorted(
+        (left, right) =>
+          left.parties - right.parties ||
+          left.position.localeCompare(right.position),
+      );
+  const decide = async (
+    changes: readonly unknown[],
+  ): Promise<{ status: number; body: unknown }> => {
+    const response = await post("apply", {
+      actorId: "reader",
+      preview: await json(await post("preview", { changes })),
+    });
+    return { status: response.status, body: await json(response) };
+  };
+  return {
+    close: () => product.close(),
+    json,
+    request,
+    post,
+    entity,
+    facts,
+    positions,
+    decide,
+  };
+}
+
 it("Web 离线查询本地声明、建立参与实体、预演及采用，并从双方反查", async () => {
   const root = await mkdtemp(
     path.join(tmpdir(), "digital-disposable-web-relationships-"),
@@ -16,20 +88,9 @@ it("Web 离线查询本地声明、建立参与实体、预演及采用，并从
   const network = vi
     .spyOn(globalThis, "fetch")
     .mockRejectedValue(new Error("离线"));
-  const open = () =>
-    runProduct(
-      { productDataDirectory: root, environment: {} },
-      { start: createWebDelivery },
-    );
-  let product = open();
-  const post = (route: string, body: unknown) =>
-    product.result.api.request(`/relationships/${route}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
+  let product = await openProduct(root);
   try {
-    const types = await product.result.api.request("/relationships/types");
+    const types = await product.request("types");
     expect(types.status).toBe(200);
     expect(await types.json()).toEqual(
       expect.arrayContaining([
@@ -41,30 +102,14 @@ it("Web 离线查询本地声明、建立参与实体、预演及采用，并从
         }),
       ]),
     );
-    const predecessor = await (
-      await post("entities", {
-        commitmentId: "first",
-        label: "离线前作",
-        kind: "entity",
-        actorId: "reader",
-      })
-    ).json();
-    const sequel = await (
-      await post("entities", {
-        commitmentId: "second",
-        label: "离线续作",
-        kind: "entity",
-        actorId: "reader",
-      })
-    ).json();
-    const search = await product.result.api.request(
-      "/relationships/entities?label=离线前作",
-    );
+    const predecessor = await product.entity("first", "离线前作", "entity");
+    const sequel = await product.entity("second", "离线续作", "entity");
+    const search = await product.request("entities?label=离线前作");
     expect(await search.json()).toEqual(
       expect.arrayContaining([expect.objectContaining({ id: predecessor.id })]),
     );
     const change = {
-      kind: "fix",
+      kind: "create",
       definitionId: "bangumi.subject-sequel",
       relationship: {
         type: "bangumi.subject.related",
@@ -74,59 +119,329 @@ it("Web 离线查询本地声明、建立参与实体、预演及采用，并从
         ],
       },
     };
-    const response = await post("preview", { changes: [change] });
+    const response = await product.post("preview", { changes: [change] });
     expect(response.status).toBe(200);
     const preview = await response.json();
-    expect((await post("apply", { actorId: "reader", preview })).status).toBe(
-      200,
-    );
-    const fromFirst = await (
-      await product.result.api.request(
-        `/relationships/entities/${predecessor.id}`,
-      )
-    ).json();
-    expect(fromFirst.relationships).toMatchObject([
+    expect(
+      (await product.post("apply", { actorId: "reader", preview })).status,
+    ).toBe(200);
+    const fromFirst = await product.facts(predecessor.id);
+    expect(fromFirst).toMatchObject([
       { type: "bangumi.subject.related", sources: [] },
     ]);
     await product.close();
-    product = open();
-    const fromSecond = await (
-      await product.result.api.request(`/relationships/entities/${sequel.id}`)
-    ).json();
-    expect(fromSecond.relationships).toEqual(fromFirst.relationships);
-    const invalid = await post("preview", {
+    product = await openProduct(root);
+    expect(await product.facts(sequel.id)).toEqual(fromFirst);
+    const invalid = await product.post("preview", {
       changes: [{ ...change, definitionId: "unknown" }],
     });
     expect(invalid.status).toBe(400);
     expect(await invalid.json()).toEqual({ error: "所选关系类型暂不可用" });
-    const malformed = await product.result.api.request(
-      "/relationships/preview",
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: "{",
-      },
-    );
+    const malformed = await product.post("preview", {
+      changes: [
+        {
+          ...change,
+          relationship: { ...change.relationship, participants: null },
+        },
+      ],
+    });
     expect(malformed.status).toBe(400);
     expect(await malformed.json()).toEqual({
       error: "关系操作未完成，请刷新后重试",
     });
     expect(
       (
-        await post("preview", {
+        await product.post("preview", {
           changes: [
             {
-              ...change,
-              relationship: { ...change.relationship, participants: null },
+              kind: "create",
+              definitionId: "bangumi.subject-sequel",
+              relationship: {
+                ...change.relationship,
+                participants: [
+                  ...change.relationship.participants,
+                  {
+                    entityId: predecessor.id,
+                    role: "bangumi.subject.predecessor",
+                  },
+                ],
+              },
             },
           ],
         })
       ).status,
     ).toBe(400);
+    expect((await product.request("entities/missing")).status).toBe(404);
+    expect(network).not.toHaveBeenCalled();
+  } finally {
+    await product.close();
+    network.mockRestore();
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
+it("Web 正式入口按被点名事实决定多方关系，独立事实不被压制且排除、更正、清除与重开一致", async () => {
+  const root = await mkdtemp(
+    path.join(tmpdir(), "digital-disposable-web-relationship-targets-"),
+  );
+  await prepareWebProductData(root);
+  const network = vi
+    .spyOn(globalThis, "fetch")
+    .mockRejectedValue(new Error("离线"));
+  let product = await openProduct(root);
+  try {
+    const declared = (await product.json(await product.request("types"))) as {
+      id: string;
+      roles?: { role: string }[];
+    }[];
+    const contribution = declared.find(
+      ({ id }) => id === "dlsite.contribution",
+    )!;
+    const membership = declared.find(
+      ({ id }) => id === "dlsite.series-membership",
+    )!;
+    const entities = await Promise.all([
+      product.entity("work", "被点名作品", "entity"),
+      product.entity("series", "被点名系列", "entity"),
+      product.entity("circle", "被点名社团", "persona"),
+      product.entity("voice", "被点名声优", "person"),
+      product.entity("scenario", "被点名脚本", "person"),
+    ]);
+    const [work, series, circle, voice, scenario] = entities;
+    expect(contribution.roles!.map(({ role }) => role)).toEqual(
+      expect.arrayContaining(["asset", "circle", "voice", "scenario"]),
+    );
+    expect(membership.roles!.map(({ role }) => role)).toEqual(
+      expect.arrayContaining(["asset", "dlsite.series.member"]),
+    );
+
+    // 多方人工事实：五个已声明角色各自保留，从每一位参与者都能反查同一项完整事实。
     expect(
-      (await product.result.api.request("/relationships/entities/missing"))
-        .status,
-    ).toBe(404);
+      await product.decide([
+        {
+          kind: "create",
+          definitionId: "dlsite.contribution",
+          relationship: {
+            type: "asset.contribution",
+            participants: [
+              { entityId: work.id, role: "asset" },
+              { entityId: circle.id, role: "circle" },
+              { entityId: voice.id, role: "voice" },
+              { entityId: scenario.id, role: "scenario" },
+              { entityId: series.id, role: "author" },
+            ],
+          },
+        },
+      ]),
+    ).toEqual({ status: 200, body: { status: "applied" } });
+    const contributionViews = await Promise.all(
+      entities.map(async ({ id }) =>
+        (await product.facts(id)).filter(
+          ({ type, participants }) =>
+            type === "asset.contribution" && participants.length === 5,
+        ),
+      ),
+    );
+    expect(contributionViews).toHaveLength(5);
+    const workContribution = contributionViews[0]!;
+    expect(workContribution).toHaveLength(1);
+    for (const view of contributionViews)
+      expect(view).toEqual(workContribution);
+    expect(workContribution[0]!).toMatchObject({
+      sources: [],
+      participants: [
+        { role: "asset" },
+        { role: "circle" },
+        { role: "voice" },
+        { role: "scenario" },
+        { role: "author" },
+      ],
+    });
+
+    // 同一类型与同一参与者的两项事实各自成立，后一项不再压掉前一项。
+    const seriesFacts = [{ entityId: series.id, role: "dlsite.series.member" }];
+    expect(
+      await product.decide([
+        {
+          kind: "create",
+          definitionId: "dlsite.series-membership",
+          relationship: {
+            type: "asset.membership",
+            participants: [
+              ...seriesFacts,
+              { entityId: work.id, role: "asset" },
+            ],
+            qualifiers: [{ key: "asset.membership.position", value: "2" }],
+          },
+        },
+        {
+          kind: "create",
+          definitionId: "dlsite.series-membership",
+          relationship: {
+            type: "asset.membership",
+            participants: [
+              ...seriesFacts,
+              { entityId: work.id, role: "asset" },
+            ],
+            qualifiers: [{ key: "asset.membership.position", value: "5" }],
+          },
+        },
+      ]),
+    ).toEqual({ status: 200, body: { status: "applied" } });
+    const created = await product.facts(work.id);
+    expect(product.positions(created)).toEqual([
+      { parties: 2, position: "2", sources: 0 },
+      { parties: 2, position: "5", sources: 0 },
+    ]);
+    expect(product.positions(await product.facts(series.id))).toEqual(
+      product.positions(created),
+    );
+    const second = created.find(
+      ({ qualifiers }) => qualifiers?.[0]?.value === "5",
+    )!;
+    const first = created.find(
+      ({ qualifiers }) => qualifiers?.[0]?.value === "2",
+    )!;
+
+    // 排除只作用于被点名事实，另一项同坐标事实与多方署名事实都不受影响。
+    expect(
+      await product.decide([
+        { kind: "exclude", targetRelationshipId: first.id },
+      ]),
+    ).toEqual({ status: 200, body: { status: "applied" } });
+    expect(product.positions(await product.facts(work.id))).toEqual([
+      { parties: 2, position: "5", sources: 0 },
+    ]);
+    expect(product.positions(await product.facts(series.id))).toEqual([
+      { parties: 2, position: "5", sources: 0 },
+    ]);
+    expect(
+      (await product.facts(circle.id)).filter(
+        ({ type }) => type === "asset.membership",
+      ),
+    ).toHaveLength(0);
+    expect(
+      (await product.facts(voice.id)).filter(
+        ({ type, participants }) =>
+          type === "asset.contribution" && participants.length === 5,
+      ),
+    ).toHaveLength(1);
+
+    // 更正只替换被点名事实，随后清除让人工事实退回其当前来源推导。
+    expect(
+      await product.decide([
+        {
+          kind: "replace",
+          targetRelationshipId: second.id,
+          definitionId: "dlsite.series-membership",
+          relationship: {
+            type: "asset.membership",
+            participants: [
+              ...seriesFacts,
+              { entityId: work.id, role: "asset" },
+            ],
+            qualifiers: [{ key: "asset.membership.position", value: "6" }],
+          },
+        },
+      ]),
+    ).toEqual({ status: 200, body: { status: "applied" } });
+    expect(product.positions(await product.facts(work.id))).toEqual([
+      { parties: 2, position: "6", sources: 0 },
+    ]);
+    const replaced = (await product.facts(work.id)).find(
+      ({ qualifiers }) => qualifiers?.[0]?.value === "6",
+    )!;
+    expect(
+      await product.decide([
+        { kind: "clear", targetRelationshipId: replaced.id },
+      ]),
+    ).toEqual({ status: 200, body: { status: "applied" } });
+    expect(product.positions(await product.facts(work.id))).toEqual([]);
+    // 被点名排除的事实仍在，可重新选用；多方署名事实的人工根据不被上述决定删除。
+    expect(
+      await product.decide([
+        { kind: "select", targetRelationshipId: first.id },
+      ]),
+    ).toEqual({ status: 200, body: { status: "applied" } });
+    expect(product.positions(await product.facts(work.id))).toEqual([
+      { parties: 2, position: "2", sources: 0 },
+    ]);
+    expect(
+      (await product.facts(voice.id)).filter(
+        ({ type, participants }) =>
+          type === "asset.contribution" && participants.length === 5,
+      ),
+    ).toHaveLength(1);
+
+    // 陈旧预演在采用时被冲突拒绝，绝不叠加到已推进的决定之后。
+    const stalePreview = await product.json(
+      await product.post("preview", {
+        changes: [{ kind: "exclude", targetRelationshipId: first.id }],
+      }),
+    );
+    expect(
+      await product.decide([
+        { kind: "select", targetRelationshipId: first.id },
+      ]),
+    ).toEqual({ status: 200, body: { status: "applied" } });
+    expect(
+      (
+        await product.post("apply", {
+          actorId: "reader",
+          preview: stalePreview,
+        })
+      ).status,
+    ).toBe(409);
+    expect(product.positions(await product.facts(work.id))).toEqual([
+      { parties: 2, position: "2", sources: 0 },
+    ]);
+
+    await product.close();
+    product = await openProduct(root);
+    expect(product.positions(await product.facts(work.id))).toEqual([
+      { parties: 2, position: "2", sources: 0 },
+    ]);
+    expect(
+      (await product.facts(circle.id)).filter(
+        ({ type }) => type === "asset.membership",
+      ),
+    ).toHaveLength(0);
+    expect(
+      (await product.facts(voice.id)).filter(
+        ({ type, participants }) =>
+          type === "asset.contribution" && participants.length === 5,
+      ),
+    ).toHaveLength(1);
+
+    // 旧整体坐标合同没有产品读取路径：陈旧负载在共同边界被拒绝，不写任何决定。
+    const legacyFix = await product.post("preview", {
+      changes: [
+        {
+          kind: "fix",
+          definitionId: "dlsite.series-membership",
+          relationship: {
+            type: "asset.membership",
+            participants: [
+              ...seriesFacts,
+              { entityId: work.id, role: "asset" },
+            ],
+            qualifiers: [{ key: "asset.membership.position", value: "9" }],
+          },
+        },
+      ],
+    });
+    expect(legacyFix.status).toBe(400);
+    expect(await legacyFix.json()).toEqual({ error: "请选择关系操作" });
+    const legacyNamed = await product.post("preview", {
+      changes: [{ kind: "select", relationshipIds: [first.id] }],
+    });
+    expect(legacyNamed.status).toBe(400);
+    expect(await legacyNamed.json()).toEqual({
+      error: "请填写完整的关系信息",
+    });
+    expect(product.positions(await product.facts(work.id))).toEqual([
+      { parties: 2, position: "2", sources: 0 },
+    ]);
     expect(network).not.toHaveBeenCalled();
   } finally {
     await product.close();

@@ -1,4 +1,7 @@
-import type { RelationshipChange } from "@digital/application";
+import type {
+  RelationshipChange,
+  RelationshipDraft,
+} from "@digital/application";
 import type { ProductWorkflowOperations } from "@digital/product-application";
 import { Hono } from "hono";
 
@@ -69,6 +72,9 @@ function relationshipErrorMessage(error: Error): string {
     关系包含未声明的角色: "请选择适用的参与角色",
     关系包含未声明的限定项: "请重新检查补充信息",
     更正关系引用了不存在的实体: "所选内容已不可用，请重新选择",
+    关系决定必须点名当前关系事实: "请先选择需要调整的关系",
+    所选关系不是当前可决定的事实: "所选内容已不可用，请重新选择",
+    所选关系范围不唯一: "所选内容的范围不唯一，请重新选择",
     更正关系不能为空: "请先选择需要调整的关系",
     更正关系必须包含类型和参与者: "请选择关系类型和参与者",
     更正关系结构无效: "请检查参与者和补充信息",
@@ -103,37 +109,19 @@ function array(value: unknown): readonly unknown[] {
 function changes(value: unknown): readonly RelationshipChange[] {
   return array(value).map((value): RelationshipChange => {
     const input = object(value);
-    if (input.kind === "fix") {
-      const relationship = object(input.relationship);
+    if (input.kind === "create")
       return {
-        kind: "fix",
+        kind: "create",
         definitionId: text(input.definitionId),
-        ...(input.relationshipIds === undefined
-          ? {}
-          : { relationshipIds: array(input.relationshipIds).map(text) }),
-        relationship: {
-          type: text(relationship.type),
-          participants: array(relationship.participants).map((value) => {
-            const participant = object(value);
-            return {
-              entityId: text(participant.entityId),
-              role: text(participant.role),
-            };
-          }),
-          ...(relationship.qualifiers === undefined
-            ? {}
-            : {
-                qualifiers: array(relationship.qualifiers).map((value) => {
-                  const qualifier = object(value);
-                  return {
-                    key: text(qualifier.key),
-                    value: text(qualifier.value),
-                  };
-                }),
-              }),
-        },
+        relationship: draft(object(input.relationship)),
       };
-    }
+    if (input.kind === "replace")
+      return {
+        kind: "replace",
+        targetRelationshipId: text(input.targetRelationshipId),
+        definitionId: text(input.definitionId),
+        relationship: draft(object(input.relationship)),
+      };
     if (
       input.kind !== "select" &&
       input.kind !== "exclude" &&
@@ -142,7 +130,28 @@ function changes(value: unknown): readonly RelationshipChange[] {
       throw new Error("请选择关系操作");
     return {
       kind: input.kind,
-      relationshipIds: array(input.relationshipIds).map(text),
+      targetRelationshipId: text(input.targetRelationshipId),
     };
   });
+}
+
+function draft(relationship: Record<string, unknown>): RelationshipDraft {
+  return {
+    type: text(relationship.type),
+    participants: array(relationship.participants).map((value) => {
+      const participant = object(value);
+      return {
+        entityId: text(participant.entityId),
+        role: text(participant.role),
+      };
+    }),
+    ...(relationship.qualifiers === undefined
+      ? {}
+      : {
+          qualifiers: array(relationship.qualifiers).map((value) => {
+            const qualifier = object(value);
+            return { key: text(qualifier.key), value: text(qualifier.value) };
+          }),
+        }),
+  };
 }
