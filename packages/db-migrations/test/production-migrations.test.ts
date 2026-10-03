@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import {
+  copyFile,
   lstat,
   mkdir,
   mkdtemp,
@@ -440,6 +441,126 @@ describe("production catalogue preparation", () => {
       );
     }
   }, 30_000);
+
+  it("fails the ordinary-entity hard migration closed on a wrong-shaped entities container and recovers the same database after repair", async () => {
+    const migrationId = "20261003010000_ordinary_people_and_personas";
+    const artifact = productionMigrationArtifacts.find(
+      ({ id }) => id === migrationId,
+    );
+    if (!artifact) throw new Error("缺少本票正式迁移产物");
+    const productDataDirectory = await temporaryProductData();
+    try {
+      await mkdir(path.join(productDataDirectory, "managed-artifacts"), {
+        recursive: true,
+      });
+      await copyFile(
+        new URL(
+          "../test/fixtures/entity-model/entity-e02-after-e01.sqlite",
+          import.meta.url,
+        ),
+        path.join(productDataDirectory, "catalogue.sqlite"),
+      );
+      const corrupted = new DatabaseSync(
+        path.join(productDataDirectory, "catalogue.sqlite"),
+      );
+      const target = corrupted
+        .prepare(
+          `SELECT id, basis_json FROM recognition_proposals
+           WHERE json_type(basis_json, '$.interpretation.entities') = 'array'
+             AND json_array_length(basis_json, '$.interpretation.entities') > 0
+           ORDER BY id LIMIT 1`,
+        )
+        .get() as { id: string; basis_json: string };
+      corrupted
+        .prepare(
+          `UPDATE recognition_proposals
+           SET basis_json = json_set(
+             basis_json, '$.interpretation.entities', json('{}'))
+           WHERE id = ?`,
+        )
+        .run(target.id);
+      corrupted.close();
+
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).rejects.toThrow(`生产迁移 ${migrationId} 失败；Web 不会启动`);
+
+      const rejected = new DatabaseSync(
+        path.join(productDataDirectory, "catalogue.sqlite"),
+        { readOnly: true },
+      );
+      expect(
+        rejected
+          .prepare("SELECT 1 FROM __digital_catalogue_migrations WHERE id = ?")
+          .get(migrationId),
+      ).toBeUndefined();
+      expect(
+        rejected
+          .prepare(
+            "SELECT id, message FROM __digital_catalogue_migration_failures WHERE id = ?",
+          )
+          .get(migrationId),
+      ).toEqual({ id: migrationId, message: "Error" });
+      expect(
+        rejected
+          .prepare(
+            "SELECT 1 FROM sqlite_schema WHERE name = 'entity_kind_decisions'",
+          )
+          .get(),
+      ).toBeDefined();
+      expect(
+        rejected
+          .prepare(
+            `SELECT json_type(basis_json, '$.interpretation.entities') AS type
+             FROM recognition_proposals WHERE id = ?`,
+          )
+          .get(target.id),
+      ).toEqual({ type: "object" });
+      rejected.close();
+      await expect(
+        inspectProductionCatalogueReadiness({ productDataDirectory }),
+      ).resolves.toMatchObject({ state: "migration-failed" });
+
+      const repaired = new DatabaseSync(
+        path.join(productDataDirectory, "catalogue.sqlite"),
+      );
+      repaired
+        .prepare("UPDATE recognition_proposals SET basis_json = ? WHERE id = ?")
+        .run(target.basis_json, target.id);
+      repaired.close();
+
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).resolves.toEqual({ applied: 1 });
+      const recovered = new DatabaseSync(
+        path.join(productDataDirectory, "catalogue.sqlite"),
+        { readOnly: true },
+      );
+      expect(
+        recovered
+          .prepare(
+            "SELECT checksum FROM __digital_catalogue_migrations WHERE id = ?",
+          )
+          .get(migrationId),
+      ).toEqual({ checksum: artifact.checksum });
+      expect(
+        recovered
+          .prepare(
+            "SELECT 1 FROM __digital_catalogue_migration_failures WHERE id = ?",
+          )
+          .get(migrationId),
+      ).toBeUndefined();
+      recovered.close();
+      await expect(
+        inspectProductionCatalogueReadiness({ productDataDirectory }),
+      ).resolves.toMatchObject({ state: "ready" });
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).resolves.toEqual({ applied: 0 });
+    } finally {
+      await rm(productDataDirectory, { recursive: true, force: true });
+    }
+  });
 
   it("rejects a readiness chain whose source decision no longer projects its association", async () => {
     const root = await temporaryProductData();

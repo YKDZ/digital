@@ -953,52 +953,100 @@ const retiredSourcedEntityKeys = [
   "sourceRecordIds",
 ] as const;
 
-/** E02 迁移需要证明依据的全部已知持久解释位置。 */
+/**
+ * E02 迁移需要证明依据的全部已知持久解释位置。路径段是对象键；`"[]"` 表示按序进入
+ * 数组元素。旧合同中缺省不存在的成员是合法缺省，但存在的容器必须符合声明的
+ * 对象／数组类型，否则视为损坏并拒绝，不允许被数组筛选静默跳过。
+ */
 const ordinaryEntityInterpretationSites = [
-  `SELECT entity.value AS document FROM recognition_proposals AS proposal,
-           json_each(proposal.basis_json, '$.interpretation.entities') AS entity
-   WHERE json_type(proposal.basis_json, '$.interpretation.entities') = 'array'`,
-  `SELECT entity.value AS document FROM source_refresh_change_sets AS changeset,
-           json_each(changeset.interpretation_json, '$.entities') AS entity
-   WHERE json_type(changeset.interpretation_json, '$.entities') = 'array'`,
-  `SELECT entity.value AS document FROM current_source_artifact_candidate_lineages AS lineage,
-           json_each(lineage.interpretation_json, '$.entities') AS entity
-   WHERE json_type(lineage.interpretation_json, '$.entities') = 'array'`,
-  `SELECT entity.value AS document FROM change_impact_previews AS preview,
-           json_each(preview.preview_json, '$.current.entities') AS entity
-   WHERE json_type(preview.preview_json, '$.current.entities') = 'array'`,
-  `SELECT entity.value AS document FROM change_impact_previews AS preview,
-           json_each(preview.preview_json, '$.projected.entities') AS entity
-   WHERE json_type(preview.preview_json, '$.projected.entities') = 'array'`,
-  `SELECT entity.value AS document FROM change_impact_previews AS preview,
-           json_each(preview.preview_json, '$.proposal.basis.interpretation.entities') AS entity
-   WHERE json_type(preview.preview_json, '$.proposal.basis.interpretation.entities') = 'array'`,
-  `SELECT entity.value AS document FROM change_impact_previews AS preview,
-           json_each(preview.preview_json, '$.change.proposal.basis.interpretation.entities') AS entity
-   WHERE json_type(preview.preview_json, '$.change.proposal.basis.interpretation.entities') = 'array'`,
-  `SELECT entity.value AS document FROM workflow_executions AS execution,
-           json_each(execution.source_enrichments_json) AS checkpoint,
-           json_each(checkpoint.value, '$.interpretation.entities') AS entity
-   WHERE json_type(checkpoint.value, '$.interpretation.entities') = 'array'`,
-  `SELECT entity.value AS document FROM workflow_executions AS execution,
-           json_each(execution.source_association_decision_json, '$.candidates') AS candidate,
-           json_each(candidate.value, '$.interpretation.entities') AS entity
-   WHERE json_type(execution.source_association_decision_json, '$.candidates') = 'array'
-     AND json_type(candidate.value, '$.interpretation.entities') = 'array'`,
-  `SELECT entity.value AS document FROM workflow_executions AS execution,
-           json_each(execution.audit_json, '$.payload.sourceEnrichments') AS checkpoint,
-           json_each(checkpoint.value, '$.interpretation.entities') AS entity
-   WHERE json_type(checkpoint.value, '$.interpretation.entities') = 'array'`,
-  `SELECT entity.value AS document FROM workflow_executions AS execution,
-           json_each(execution.audit_json, '$.payload.sourceAssociationDecision.candidates') AS candidate,
-           json_each(candidate.value, '$.interpretation.entities') AS entity
-   WHERE json_type(candidate.value, '$.interpretation.entities') = 'array'`,
+  {
+    documents: "SELECT basis_json AS document FROM recognition_proposals",
+    paths: [["interpretation", "entities"]] as const,
+  },
+  {
+    documents:
+      "SELECT interpretation_json AS document FROM source_refresh_change_sets",
+    paths: [["entities"]] as const,
+  },
+  {
+    documents:
+      "SELECT interpretation_json AS document FROM current_source_artifact_candidate_lineages",
+    paths: [["entities"]] as const,
+  },
+  {
+    documents: "SELECT preview_json AS document FROM change_impact_previews",
+    paths: [
+      ["current", "entities"],
+      ["projected", "entities"],
+      ["proposal", "basis", "interpretation", "entities"],
+      ["change", "proposal", "basis", "interpretation", "entities"],
+    ] as const,
+  },
+  {
+    documents:
+      "SELECT source_enrichments_json AS document FROM workflow_executions",
+    paths: [["[]", "interpretation", "entities"]] as const,
+  },
+  {
+    documents: `
+      SELECT source_association_decision_json AS document FROM workflow_executions
+      WHERE source_association_decision_json IS NOT NULL`,
+    paths: [["candidates", "[]", "interpretation", "entities"]] as const,
+  },
+  {
+    documents: `
+      SELECT audit_json AS document FROM workflow_executions
+      WHERE audit_json IS NOT NULL`,
+    paths: [
+      ["payload", "sourceEnrichments", "[]", "interpretation", "entities"],
+      [
+        "payload",
+        "sourceAssociationDecision",
+        "candidates",
+        "[]",
+        "interpretation",
+        "entities",
+      ],
+    ] as const,
+  },
 ] as const;
 
+/** 沿已知路径逐段校验容器类型，到达 entities 容器后逐条验证旧严格实体形状。 */
+function assertKnownInterpretationEntitiesPath(
+  value: unknown,
+  steps: readonly string[],
+  sourceRecordExists: (recordId: string) => boolean,
+): void {
+  if (value === undefined) return;
+  const [step, ...rest] = steps;
+  if (step === undefined) {
+    if (!Array.isArray(value))
+      throw new Error("持久来源解释的实体容器类型无效");
+    for (const entity of value)
+      assertRetiredSourcedEntity(entity, sourceRecordExists);
+    return;
+  }
+  if (step === "[]") {
+    if (!Array.isArray(value))
+      throw new Error("持久来源解释的 checkpoint 或候选集合容器类型无效");
+    for (const item of value)
+      assertKnownInterpretationEntitiesPath(item, rest, sourceRecordExists);
+    return;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    throw new Error("持久来源解释的中间容器类型无效");
+  assertKnownInterpretationEntitiesPath(
+    (value as Record<string, unknown>)[step],
+    rest,
+    sourceRecordExists,
+  );
+}
+
 /**
- * 人物／活动身份迁移前的窄权威预检。它只用固定点旧严格形状验证已知解释位置，并要求
- * 人物／活动身份的来源依据指向真实存在的 Source Record；形状未知或依据不成立时抛错，
- * 让正式 prepare 整体回滚。该检查只服务这次迁移，运行时没有第二套兼容解码入口。
+ * 人物／活动身份迁移前的窄权威预检。它先用固定点旧合同校验已知解释位置的容器与
+ * 版本化旧形状，再逐条验证实体条目，并要求人物／活动身份的来源依据指向真实存在的
+ * Source Record；缺省的可选成员合法，容器错形、形状未知或依据不成立时抛错，让正式
+ * prepare 整体回滚。该检查只服务这次迁移，运行时没有第二套兼容解码入口。
  */
 export function assertOrdinaryEntityMigrationAuthority(
   database: DatabaseSync,
@@ -1007,19 +1055,22 @@ export function assertOrdinaryEntityMigrationAuthority(
     "SELECT 1 FROM source_records WHERE id = ?",
   );
   for (const site of ordinaryEntityInterpretationSites) {
-    for (const { document } of database.prepare(site).all() as Array<{
-      readonly document: string;
+    for (const { document } of database.prepare(site.documents).all() as Array<{
+      readonly document: string | null;
     }>) {
+      if (document === null) continue;
       let parsed: unknown;
       try {
         parsed = JSON.parse(document);
       } catch {
-        throw new Error("持久来源解释实体无法解析");
+        throw new Error("持久来源解释文档无法解析");
       }
-      assertRetiredSourcedEntity(
-        parsed,
-        (recordId) => existingSourceRecord.get(recordId) !== undefined,
-      );
+      for (const path of site.paths)
+        assertKnownInterpretationEntitiesPath(
+          parsed,
+          path,
+          (recordId) => existingSourceRecord.get(recordId) !== undefined,
+        );
     }
   }
   const mirrors = database
