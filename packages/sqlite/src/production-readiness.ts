@@ -1004,10 +1004,13 @@ function assertRetiredRecognitionBasisCarrier(
 ): void {
   if (!isRetiredRecord(value)) throw new Error("持久识别 basis 必须是对象");
   if (value.kind !== "source-interpretation") {
-    // manual-boundary 与 observed-evidence 是不含解释的合法分支，原样放行，
-    // 不顺带重验分支内无关字段；未知 kind 无法证明不隐藏解释，必须拒绝。
+    // manual-boundary 与 observed-evidence 是不含解释的合法分支，不顺带重验分支内
+    // 无关字段；但正式 SQL 只看解释路径是否实际存在，所以必须证明该不相容成员
+    // 真的不存在（含 null 与错形），未知 kind 也无法证明，一律拒绝。
     if (value.kind !== "manual-boundary" && value.kind !== "observed-evidence")
       throw new Error("持久识别 basis kind 未知，无法证明不含来源解释");
+    if (Object.hasOwn(value, "interpretation"))
+      throw new Error("持久识别 basis 的无解释分支携带来源解释成员");
     return;
   }
   const basis = structuredClone(value);
@@ -1024,7 +1027,10 @@ function assertRetiredRecognitionBasisCarrier(
     throw new Error(`来源解释 basis 不满足固定点必需结构：${decoded.reason}`);
 }
 
-/** 预演按 `ChangeImpactPreview/2` 的 union 定位解释；projection 条目只按实体边界验证。 */
+/**
+ * 预演按 `ChangeImpactPreview/2` 的 union 定位解释；projection 条目只按实体边界验证。
+ * change 的 union 与识别提议／basis 成员互斥：非识别取代分支必须证明它们不存在。
+ */
 function assertChangeImpactPreviewCarrier(
   value: unknown,
   sourceRecordExists: (recordId: string) => boolean,
@@ -1048,26 +1054,44 @@ function assertChangeImpactPreviewCarrier(
         );
     }
   }
-  if (value.proposal !== undefined)
-    assertPreviewRecognitionProposalBasis(
-      value.proposal,
-      sourceRecordExists,
-      "$.proposal",
-    );
   const change = value.change;
   if (!isRetiredRecord(change))
     throw new Error("持久变更预演的 change 必须是对象");
-  if (change.kind === "recognition-supersession")
+  if (change.kind === "recognition-supersession") {
+    if (value.proposal !== undefined)
+      assertPreviewRecognitionProposalBasis(
+        value.proposal,
+        sourceRecordExists,
+        "$.proposal",
+      );
     assertPreviewRecognitionProposalBasis(
       change.proposal,
       sourceRecordExists,
       "$.change.proposal",
     );
-  else if (
+    return;
+  }
+  // 只有识别取代预演携带识别提议与其兼容视图；来源关联的提议是
+  // SourceAssociationChangeProposal，撤回只携带 intent。正式 SQL 仍只看
+  // `$.proposal.basis`／`$.change.proposal` 路径是否存在，因此这两个分支必须证明
+  // 该不相容成员确实不存在，未知 change kind 同样拒绝。
+  if (
     change.kind !== "source-association" &&
     change.kind !== "recognition-retraction"
   )
     throw new Error("持久预演 change kind 未知，无法证明不含识别 basis");
+  if (Object.hasOwn(value, "proposal"))
+    throw new Error("持久变更预演的非识别取代分支携带识别提议兼容视图");
+  if (change.kind === "recognition-retraction") {
+    if (Object.hasOwn(change, "proposal"))
+      throw new Error("持久变更预演的撤回分支携带识别提议");
+    return;
+  }
+  if (
+    isRetiredRecord(change.proposal) &&
+    Object.hasOwn(change.proposal, "basis")
+  )
+    throw new Error("持久变更预演的来源关联提议携带识别 basis");
 }
 
 function assertPreviewRecognitionProposalBasis(
@@ -1186,9 +1210,11 @@ const ordinaryEntityMigrationCarriers = [
  * 人物／活动身份迁移前的窄权威预检。每个已知持久载体按实际旧 union、版本与必需／
  * 可选关系严格验证：旧实体条目先经 `assertRetiredSourcedEntity` 验证身份、来源坐标
  * 与 Source Record 依据，再仅在内存深副本上精确删除 `kind`，由既有严格 decoder 验证
- * 完整必需结构；audit 镜像先验版本再与主列 canonical 等值。缺省的可选成员与合法
- * 无解释 union 分支原样通过；解析、旧形状、必需结构、union／版本或镜像任一失败都
- * 抛错，让正式 prepare 整体回滚。该检查只服务这次迁移，运行时没有第二套兼容解码入口。
+ * 完整必需结构；audit 镜像先验版本再与主列 canonical 等值。缺省的可选成员通过；
+ * 合法无解释 union 分支还必须按自身 discriminator 证明本迁移拥有的解释／识别提议
+ * 成员确实不存在，因为正式 SQL 只看路径是否存在。解析、旧形状、必需结构、
+ * union／版本或镜像任一失败都抛错，让正式 prepare 整体回滚。该检查只服务这次
+ * 迁移，运行时没有第二套兼容解码入口。
  */
 export function assertOrdinaryEntityMigrationAuthority(
   database: DatabaseSync,

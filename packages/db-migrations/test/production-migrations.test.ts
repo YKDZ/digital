@@ -442,7 +442,7 @@ describe("production catalogue preparation", () => {
     }
   }, 30_000);
 
-  it("fails the ordinary-entity hard migration closed on a wrong-shaped entities container and recovers the same database after repair", async () => {
+  it("实体容器错形时人物硬迁移整体闭锁并在同一库修复后恢复", async () => {
     const migrationId = "20261003010000_ordinary_people_and_personas";
     const artifact = productionMigrationArtifacts.find(
       ({ id }) => id === migrationId,
@@ -562,7 +562,7 @@ describe("production catalogue preparation", () => {
     }
   });
 
-  it("keeps a source interpretation without its required producer closed before DDL and recovers the same database after repair", async () => {
+  it("来源解释缺少必需 producer 时在 DDL 前闭锁并在同一库修复后恢复", async () => {
     const migrationId = "20261003010000_ordinary_people_and_personas";
     const artifact = productionMigrationArtifacts.find(
       ({ id }) => id === migrationId,
@@ -630,7 +630,7 @@ describe("production catalogue preparation", () => {
     }
   });
 
-  it("rejects every required-structure hole in a retired interpretation carrier before DDL", async () => {
+  it("退役解释载体的每一处必需结构缺口都在 DDL 前被拒绝", async () => {
     const migrationId = "20261003010000_ordinary_people_and_personas";
     const holes = [
       {
@@ -772,7 +772,7 @@ describe("production catalogue preparation", () => {
     }
   }, 120_000);
 
-  it("keeps legal optional interpretation members absent migratable end to end", async () => {
+  it("合法可选解释成员缺省时仍可完整迁移", async () => {
     const productDataDirectory = await ordinaryEntityFixtureRoot();
     try {
       const mutated = new DatabaseSync(
@@ -808,7 +808,7 @@ describe("production catalogue preparation", () => {
     }
   });
 
-  it("keeps legal union branches, retained failed interpretations and mirrors passing the retired carrier precheck", async () => {
+  it("合法 union 分支、保留的 failed 解释与镜像都通过退役载体预检", async () => {
     const productDataDirectory = await ordinaryEntityFixtureRoot();
     const database = new DatabaseSync(
       path.join(productDataDirectory, "catalogue.sqlite"),
@@ -889,6 +889,241 @@ describe("production catalogue preparation", () => {
       await rm(productDataDirectory, { recursive: true, force: true });
     }
   });
+
+  it("闭锁携带隐藏识别成员的无解释 union 分支并在同一库恢复后可迁移", async () => {
+    const migrationId = "20261003010000_ordinary_people_and_personas";
+    const artifact = productionMigrationArtifacts.find(
+      ({ id }) => id === migrationId,
+    );
+    if (!artifact) throw new Error("缺少本票正式迁移产物");
+    // 每个反例都种在正式 SQL 真正改写的已知路径上：合法无解释的 union 分支不能
+    // 因 discriminator 而被无条件放行，否则坏 carrier 照样取得一次性成功账本。
+    const hiddenMembers = [
+      {
+        name: "manual-boundary basis 携带来源解释",
+        carrier: "basis",
+        path: "$.interpretation.entities",
+        plant: (database: DatabaseSync) => {
+          const source = requireRetiredSourceInterpretationBasis(database);
+          const target = requireRetiredManualBoundaryBasis(database);
+          pristineManual = target;
+          const basis = JSON.parse(target.basis_json) as Record<
+            string,
+            unknown
+          >;
+          const interpretation = (
+            JSON.parse(source.basis_json) as {
+              interpretation: Record<string, unknown>;
+            }
+          ).interpretation;
+          delete interpretation.producer;
+          basis.interpretation = interpretation;
+          database
+            .prepare(
+              "UPDATE recognition_proposals SET basis_json = ? WHERE id = ?",
+            )
+            .run(JSON.stringify(basis), target.id);
+          return target.id;
+        },
+      },
+      {
+        name: "observed-evidence basis 携带来源解释",
+        carrier: "basis",
+        path: "$.interpretation.entities",
+        plant: (database: DatabaseSync) => {
+          const source = requireRetiredSourceInterpretationBasis(database);
+          const target = requireRetiredManualBoundaryBasis(database);
+          const basis = {
+            ...structuredClone(retiredObservedEvidenceBasis),
+            interpretation: (
+              JSON.parse(source.basis_json) as Record<string, unknown>
+            ).interpretation,
+          };
+          database
+            .prepare(
+              "UPDATE recognition_proposals SET basis_json = ? WHERE id = ?",
+            )
+            .run(JSON.stringify(basis), target.id);
+          return target.id;
+        },
+      },
+      {
+        name: "来源关联预演的提议携带识别 basis",
+        carrier: "preview",
+        path: "$.change.proposal.basis.interpretation.entities",
+        plant: (database: DatabaseSync) => {
+          const source = requireRetiredSourceInterpretationBasis(database);
+          const target = requireRetiredAssociationPreview(database);
+          const planted = database
+            .prepare(
+              `UPDATE change_impact_previews
+               SET preview_json = json_set(
+                 preview_json, '$.change.proposal.basis', json(?))
+               WHERE id = ?`,
+            )
+            .run(source.basis_json, target.id);
+          requirePlanted(planted.changes, "来源关联预演提议");
+          return target.id;
+        },
+      },
+      {
+        name: "撤回预演携带识别提议",
+        carrier: "preview",
+        path: "$.change.proposal.basis.interpretation.entities",
+        plant: (database: DatabaseSync) => {
+          const source = requireRetiredSourceInterpretationBasis(database);
+          const target = requireRetiredAssociationPreview(database);
+          const planted = database
+            .prepare(
+              `UPDATE change_impact_previews
+               SET preview_json = json_set(
+                 preview_json, '$.change',
+                 json_object('kind', 'recognition-retraction', 'intent',
+                   json_object('id', 'intent', 'assetId', 'asset',
+                     'reason', 'retired', 'requestedBy', 'user'),
+                   'proposal', json_object('basis', json(?))))
+               WHERE id = ?`,
+            )
+            .run(source.basis_json, target.id);
+          requirePlanted(planted.changes, "撤回预演");
+          return target.id;
+        },
+      },
+      {
+        name: "来源关联预演携带识别取代兼容视图",
+        carrier: "preview",
+        path: "$.proposal.basis.interpretation.entities",
+        plant: (database: DatabaseSync) => {
+          const source = requireRetiredSourceInterpretationBasis(database);
+          const target = requireRetiredAssociationPreview(database);
+          const planted = database
+            .prepare(
+              `UPDATE change_impact_previews
+               SET preview_json = json_set(
+                 preview_json, '$.proposal', json_object('basis', json(?)))
+               WHERE id = ?`,
+            )
+            .run(source.basis_json, target.id);
+          requirePlanted(planted.changes, "识别取代兼容视图");
+          return target.id;
+        },
+      },
+    ] as const;
+    // 记录 manual 分支被破坏前的合法字节，供同一库恢复段原样写回。
+    let pristineManual:
+      | { readonly id: string; readonly basis_json: string }
+      | undefined;
+    const roots = await Promise.all(
+      hiddenMembers.map(() => ordinaryEntityFixtureRoot()),
+    );
+    try {
+      for (const [index, hidden] of hiddenMembers.entries()) {
+        const productDataDirectory = roots[index]!;
+        const database = new DatabaseSync(
+          path.join(productDataDirectory, "catalogue.sqlite"),
+        );
+        const targetId = hidden.plant(database);
+        requireRetiredSqlPathHit(
+          database,
+          hidden.carrier,
+          targetId,
+          hidden.path,
+        );
+        database.close();
+        await expect(
+          prepareProductionCatalogue({ productDataDirectory }),
+          `相斥反例 ${hidden.name}`,
+        ).rejects.toThrow(`生产迁移 ${migrationId} 失败；Web 不会启动`);
+        expectRetiredMigrationBlockedBeforeDdl(
+          productDataDirectory,
+          migrationId,
+        );
+        await expect(
+          inspectProductionCatalogueReadiness({ productDataDirectory }),
+        ).resolves.toMatchObject({ state: "migration-failed" });
+      }
+
+      // 同一库仅把 manual basis 改回原合法形状：必须按原 checksum 成功并复入 0。
+      if (pristineManual === undefined)
+        throw new Error("未记录 manual 分支被破坏前的合法字节");
+      const recoveryRoot = roots[0]!;
+      const recovering = new DatabaseSync(
+        path.join(recoveryRoot, "catalogue.sqlite"),
+      );
+      recovering
+        .prepare("UPDATE recognition_proposals SET basis_json = ? WHERE id = ?")
+        .run(pristineManual.basis_json, pristineManual.id);
+      recovering.close();
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory: recoveryRoot }),
+      ).resolves.toEqual({ applied: 1 });
+      const migrated = new DatabaseSync(
+        path.join(recoveryRoot, "catalogue.sqlite"),
+        { readOnly: true },
+      );
+      expect(
+        migrated
+          .prepare(
+            "SELECT checksum FROM __digital_catalogue_migrations WHERE id = ?",
+          )
+          .get(migrationId),
+      ).toEqual({ checksum: artifact.checksum });
+      expect(
+        migrated
+          .prepare(
+            "SELECT 1 FROM __digital_catalogue_migration_failures WHERE id = ?",
+          )
+          .get(migrationId),
+      ).toBeUndefined();
+      migrated.close();
+      await expect(
+        inspectProductionCatalogueReadiness({
+          productDataDirectory: recoveryRoot,
+        }),
+      ).resolves.toMatchObject({ state: "ready" });
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory: recoveryRoot }),
+      ).resolves.toEqual({ applied: 0 });
+
+      // 识别取代分支合法携带兼容视图与自身 basis：互斥检查不得误拒。
+      const legalRoot = await ordinaryEntityFixtureRoot();
+      try {
+        const database = new DatabaseSync(
+          path.join(legalRoot, "catalogue.sqlite"),
+        );
+        const source = requireRetiredSourceInterpretationBasis(database);
+        const preview = requireRetiredAssociationPreview(database);
+        const planted = database
+          .prepare(
+            `UPDATE change_impact_previews
+             SET preview_json = json_set(
+               json_set(preview_json, '$.proposal',
+                 json_object('basis', json(?))),
+               '$.change',
+               json_object('kind', 'recognition-supersession', 'proposal',
+                 json_object('basis', json(?))))
+             WHERE id = ?`,
+          )
+          .run(source.basis_json, source.basis_json, preview.id);
+        requirePlanted(planted.changes, "识别取代预演");
+        expect(() =>
+          SqliteCatalogue.assertOrdinaryEntityMigrationAuthority(database),
+        ).not.toThrow();
+        database.close();
+        await expect(
+          prepareProductionCatalogue({ productDataDirectory: legalRoot }),
+        ).resolves.toEqual({ applied: 1 });
+      } finally {
+        await rm(legalRoot, { recursive: true, force: true });
+      }
+    } finally {
+      await Promise.all(
+        roots.map(
+          async (root) => await rm(root, { recursive: true, force: true }),
+        ),
+      );
+    }
+  }, 120_000);
 
   it("rejects a readiness chain whose source decision no longer projects its association", async () => {
     const root = await temporaryProductData();
@@ -1382,6 +1617,60 @@ function requireRetiredSourceInterpretationBasis(database: DatabaseSync): {
     .get() as { id: string; basis_json: string } | undefined;
   if (!target) throw new Error("fixture 缺少携带实体的旧来源解释 basis");
   return target;
+}
+
+/** 取一份真实不含解释的人工边界 basis，供把来源解释藏进该分支使用。 */
+function requireRetiredManualBoundaryBasis(database: DatabaseSync): {
+  readonly id: string;
+  readonly basis_json: string;
+} {
+  const target = database
+    .prepare(
+      `SELECT id, basis_json FROM recognition_proposals
+       WHERE json_extract(basis_json, '$.kind') = 'manual-boundary'
+       ORDER BY id LIMIT 1`,
+    )
+    .get() as { id: string; basis_json: string } | undefined;
+  if (!target) throw new Error("fixture 缺少不含解释的人工边界 basis");
+  return target;
+}
+
+/** 取一份真实来源关联预演，其 change union 分支本不应携带识别提议或 basis。 */
+function requireRetiredAssociationPreview(database: DatabaseSync): {
+  readonly id: string;
+} {
+  const target = database
+    .prepare(
+      `SELECT id FROM change_impact_previews
+       WHERE json_extract(preview_json, '$.change.kind') = 'source-association'
+       ORDER BY id LIMIT 1`,
+    )
+    .get() as { id: string } | undefined;
+  if (!target) throw new Error("fixture 缺少来源关联预演");
+  return target;
+}
+
+/**
+ * 确认反例真的种在正式 SQL 按路径存在性改写的已知位置：该行的该 JSON 路径必须是
+ * 数组，否则拒绝只来自测试自定义形状，无法证明迁移前预检与实际硬迁移同源。
+ */
+function requireRetiredSqlPathHit(
+  database: DatabaseSync,
+  carrier: "basis" | "preview",
+  id: string,
+  jsonPath: string,
+): void {
+  const table =
+    carrier === "basis" ? "recognition_proposals" : "change_impact_previews";
+  const column = carrier === "basis" ? "basis_json" : "preview_json";
+  const hits = database
+    .prepare(
+      `SELECT COUNT(*) AS n FROM ${table}
+       WHERE id = ? AND json_type(${column}, ?) = 'array'`,
+    )
+    .get(id, jsonPath) as { n: number | bigint };
+  if (Number(hits.n) !== 1)
+    throw new Error(`反例未命中正式 SQL 路径 ${table}.${column} ${jsonPath}`);
 }
 
 function requireRetiredInterpretedExecution(database: DatabaseSync): string {
