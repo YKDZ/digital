@@ -1,0 +1,73 @@
+{
+  "schema": "digital-old-contract-fixture/1",
+  "generatedFrom": "911a0c30cf4d094ffca18f64c4f3a164f730f6bc",
+  "observedRootId": "observed_root_b3679c03-9487-48ff-afbe-9649f6491c02",
+  "assets": {
+    "directoryPackage": "entity_68499e21-c989-4ded-b182-e8a9e781c55e",
+    "gone": "entity_941f3e9f-c1a7-475e-b481-f54c4eb6ce11",
+    "directoryPackageGone": "entity_c40094d2-10cf-4c4a-a4eb-99d54f973141",
+    "kept": "entity_ea89397c-8a9a-42dd-bb2d-f45f64184d76"
+  },
+  "baselineCurrentPage": [
+    {
+      "id": "entity_68499e21-c989-4ded-b182-e8a9e781c55e",
+      "locations": [
+        {
+          "address": "/media/film",
+          "kind": "observed"
+        }
+      ],
+      "deliveredArtifacts": [
+        {
+          "artifactId": "artifact_14efa5a5-8f53-462e-a87d-c4b6b4566fe4",
+          "associationId": "artifact-association_47dadfc79bfb985983dc4d09274cf57804753f4d5635c222c2365d87e2d4b14c"
+        }
+      ]
+    },
+    {
+      "id": "entity_941f3e9f-c1a7-475e-b481-f54c4eb6ce11",
+      "locations": [
+        {
+          "address": "/media/gone.txt",
+          "kind": "observed"
+        }
+      ],
+      "deliveredArtifacts": [
+        {
+          "artifactId": "artifact_d78781c3-31cd-478b-aff1-d18f54fee377",
+          "associationId": "artifact-association_4ce06249a16c8919ac6c66c4a324d01af272bf122a63571875540cdde6e467c6"
+        }
+      ]
+    },
+    {
+      "id": "entity_c40094d2-10cf-4c4a-a4eb-99d54f973141",
+      "locations": [
+        {
+          "address": "/media/film-gone",
+          "kind": "observed"
+        }
+      ],
+      "deliveredArtifacts": [
+        {
+          "artifactId": "artifact_37267526-479c-43c7-b74f-6a436fb6db7d",
+          "associationId": "artifact-association_29972f071c40be02051d4432573fb2e71c30c89ac16f7b5c7310ce58b870ae17"
+        }
+      ]
+    },
+    {
+      "id": "entity_ea89397c-8a9a-42dd-bb2d-f45f64184d76",
+      "locations": [
+        {
+          "address": "/media/kept.txt",
+          "kind": "observed"
+        }
+      ],
+      "deliveredArtifacts": [
+        {
+          "artifactId": "artifact_ef1fc408-19c6-4cf3-8b15-29718bd1ed0e",
+          "associationId": "artifact-association_84eb126768c123300c2c199494ca30489d511e247f0ace5b8a269018003b2bcf"
+        }
+      ]
+    }
+  ]
+}

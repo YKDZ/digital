@@ -8,6 +8,8 @@ import {
   mkdtemp,
   readFile,
   rm,
+  unlink,
+  rename,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -63,6 +65,7 @@ import {
 } from "@digital/test-support";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
+import { runProduct } from "../src/index.ts";
 import {
   composeAssetRefresh,
   composeOwnedAutomationHost,
@@ -75,6 +78,96 @@ import {
 
 const cleanup: string[] = [];
 const execFileAsync = promisify(execFile);
+/** store-only zip：合成 EPUB 只需要未压缩条目即可通过真实格式提供方。 */
+function storedZip(
+  entries: readonly (readonly [string, Uint8Array])[],
+): Uint8Array {
+  const localParts: Uint8Array[] = [];
+  const centralParts: Uint8Array[] = [];
+  let offset = 0;
+  for (const [name, bytes] of entries) {
+    const nameBytes = new TextEncoder().encode(name);
+    const local = new Uint8Array(30 + nameBytes.length + bytes.length);
+    const localView = new DataView(local.buffer);
+    localView.setUint32(0, 0x04034b50, true);
+    localView.setUint16(4, 20, true);
+    localView.setUint32(18, bytes.length, true);
+    localView.setUint32(22, bytes.length, true);
+    localView.setUint16(26, nameBytes.length, true);
+    local.set(nameBytes, 30);
+    local.set(bytes, 30 + nameBytes.length);
+    localParts.push(local);
+    const central = new Uint8Array(46 + nameBytes.length);
+    const centralView = new DataView(central.buffer);
+    centralView.setUint32(0, 0x02014b50, true);
+    centralView.setUint16(4, 20, true);
+    centralView.setUint16(6, 20, true);
+    centralView.setUint32(20, bytes.length, true);
+    centralView.setUint32(24, bytes.length, true);
+    centralView.setUint16(28, nameBytes.length, true);
+    centralView.setUint32(42, offset, true);
+    central.set(nameBytes, 46);
+    centralParts.push(central);
+    offset += local.length;
+  }
+  const centralLength = centralParts.reduce(
+    (sum, part) => sum + part.length,
+    0,
+  );
+  const end = new Uint8Array(22);
+  const endView = new DataView(end.buffer);
+  endView.setUint32(0, 0x06054b50, true);
+  endView.setUint16(8, entries.length, true);
+  endView.setUint16(10, entries.length, true);
+  endView.setUint32(12, centralLength, true);
+  endView.setUint32(16, offset, true);
+  const all = [...localParts, ...centralParts, end];
+  const result = new Uint8Array(
+    all.reduce((sum, part) => sum + part.length, 0),
+  );
+  let cursor = 0;
+  for (const part of all) {
+    result.set(part, cursor);
+    cursor += part.length;
+  }
+  return result;
+}
+
+/** 只有作者可变的合法 EPUB，用来触发真实识别身份取代。 */
+function syntheticEpub(creator: string): Uint8Array {
+  const container =
+    '<?xml version="1.0"?><container><rootfiles><rootfile full-path="OPS/book.opf"/></rootfiles></container>';
+  const packageDocument = `<?xml version="1.0"?><package xmlns:dc="http://purl.org/dc/elements/1.1/"><metadata><dc:title>公开预演出版物</dc:title><dc:creator role="aut">${creator}</dc:creator><dc:publisher>本地出版社</dc:publisher><dc:date>2026</dc:date><dc:language>zh</dc:language><meta name="cover" content="cover"/></metadata><manifest><item id="cover" href="cover.png" media-type="image/png"/></manifest></package>`;
+  return storedZip([
+    ["META-INF/container.xml", new TextEncoder().encode(container)],
+    ["OPS/book.opf", new TextEncoder().encode(packageDocument)],
+    ["OPS/cover.png", new Uint8Array([1, 2, 3])],
+  ]);
+}
+
+/** 合法单文件 PDF，用于把已接受目录包换成同址文件材料。 */
+function syntheticPdf(): Uint8Array {
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] >>",
+    "<< /Author (替换作者) /Title (同址替换文件) >>",
+  ];
+  let source = "%PDF-1.7\n";
+  const offsets = [0];
+  for (const [index, object] of objects.entries()) {
+    offsets.push(new TextEncoder().encode(source).byteLength);
+    source += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  }
+  const crossReferenceOffset = new TextEncoder().encode(source).byteLength;
+  source += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  source += offsets
+    .slice(1)
+    .map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`)
+    .join("");
+  source += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R /Info 4 0 R >>\nstartxref\n${crossReferenceOffset}\n%%EOF\n`;
+  return new TextEncoder().encode(source);
+}
 
 function collectObservedRootCleanupFailure(): {
   readonly cleanupFailures: unknown[];
@@ -3359,6 +3452,70 @@ function rewriteChangeImpactPreviewsSchema(
   for (const index of indexes) database.exec(index.sql);
 }
 
+type OldContractManifest = {
+  readonly stripRoot: string;
+  readonly roots: Record<string, string>;
+  readonly assets: Record<string, string>;
+  readonly observedRootId: string;
+  readonly outerRootId: string;
+  readonly parentRootId: string;
+  readonly childRootId: string;
+  readonly duplicateAddress: string;
+  readonly observedLocations: readonly { readonly locationId: string }[];
+  readonly media: readonly {
+    readonly relativePath: string;
+    readonly kind: "directory" | "file";
+    readonly content?: string;
+  }[];
+};
+
+/** 把本票真实旧合同库经正式迁移 CLI 装入一次性产品根。 */
+async function migratedOldContractCatalogue(fixture: string): Promise<{
+  readonly productDataDirectory: string;
+  readonly manifest: OldContractManifest;
+}> {
+  const fixtureDirectory = path.resolve(
+    import.meta.dirname,
+    "../../db-migrations/test/fixtures",
+    fixture,
+  );
+  const productDataDirectory = await mkdtemp(
+    path.join(tmpdir(), "digital-disposable-test-"),
+  );
+  cleanup.push(productDataDirectory);
+  await mkdir(path.join(productDataDirectory, "managed-artifacts"), {
+    recursive: true,
+  });
+  await copyFile(
+    path.join(fixtureDirectory, "catalogue.sqlite"),
+    path.join(productDataDirectory, "catalogue.sqlite"),
+  );
+  const manifest = JSON.parse(
+    await readFile(path.join(fixtureDirectory, "manifest.json"), "utf8"),
+  ) as OldContractManifest;
+  await prepareWithFormalMigration(productDataDirectory);
+  return { productDataDirectory, manifest };
+}
+
+/** 按 fixture 记录的相对路径与字节重建自有临时样本媒体，供迁移后的公开观察操作使用。 */
+async function materializeOldContractMedia(
+  manifest: OldContractManifest,
+): Promise<void> {
+  cleanup.push(manifest.stripRoot);
+  for (const entry of manifest.media) {
+    const target = path.join(
+      manifest.stripRoot,
+      ...entry.relativePath.split("/"),
+    );
+    if (entry.kind === "directory") {
+      await mkdir(target, { recursive: true });
+      continue;
+    }
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, entry.content ?? "");
+  }
+}
+
 describe("SqliteCatalogue lifecycle", () => {
   it("persists an observed root registration across restart without creating automation", async () => {
     const { root: productDataDirectory, catalogue } =
@@ -4900,6 +5057,18 @@ describe("SqliteCatalogue lifecycle", () => {
       ) VALUES (
         'package-location', 'package-root', 1, '/observed', '[]'
       );
+      INSERT INTO observed_material_boundaries (
+        location_id, artifact_id, material_kind, derivation_kind
+      ) VALUES (
+        'package-location', 'package-artifact', 'directory', 'accepted-exact'
+      );
+      INSERT INTO current_observed_material_supports (
+        location_id, observed_root_id, observed_root_version, material_kind,
+        snapshot_id, observed_at, observed_root_path, authorized_targets_json
+      ) VALUES (
+        'package-location', 'package-root', 1, 'directory',
+        'snapshot-package', '2026-09-15T00:00:00.000Z', '/observed', '[]'
+      );
     `);
     database.close();
 
@@ -4916,6 +5085,962 @@ describe("SqliteCatalogue lifecycle", () => {
     ]);
     catalogue.close();
   });
+
+  it("keeps a migrated duplicate package current through the product entry point", async () => {
+    const { productDataDirectory, manifest } =
+      await migratedOldContractCatalogue(
+        "legacy-duplicate-package-before-current-supports",
+      );
+    const product = runProduct(
+      { productDataDirectory, environment: {} },
+      { start: (application) => application },
+    );
+    try {
+      const current = await product.result.workflow.listCurrentCatalogue();
+      // 同址重复目录包在正式迁移后仍是一个资产、两个观察位置，公开产品入口可读。
+      expect(current.map(({ entity }) => entity.id)).toEqual([
+        manifest.assets.duplicatePackage,
+      ]);
+      expect(
+        current[0]?.locations.map(({ id, address }) => `${id}@${address}`),
+      ).toEqual(
+        manifest.observedLocations
+          .map(
+            ({ locationId }) =>
+              `${locationId}@${path.join(manifest.stripRoot, manifest.duplicateAddress)}`,
+          )
+          .toSorted(),
+      );
+    } finally {
+      await product.close();
+    }
+  }, 60_000);
+
+  it("keeps each migrated overlapping root decisive through public observation operations", async () => {
+    const { productDataDirectory, manifest } =
+      await migratedOldContractCatalogue(
+        "overlapping-roots-before-current-supports",
+      );
+    await materializeOldContractMedia(manifest);
+    const workflow = composeAssetRefresh(productDataDirectory, {});
+    const currentIds = async () =>
+      (await workflow.listCurrentCatalogue())
+        .map(({ entity }) => entity.id)
+        .toSorted();
+    try {
+      expect(await currentIds()).toEqual(
+        Object.values(manifest.assets).toSorted(),
+      );
+
+      // 撤销父根 A：只有 A 正项的 book 材料退出，子根 B 自己确认的 dual 与 solo 保持。
+      await workflow.observedRootRegistrations.deactivate({
+        id: manifest.parentRootId,
+        expectedVersion: 1,
+      });
+      expect(await currentIds()).toEqual(
+        [
+          manifest.assets.bothRootsFile,
+          manifest.assets.childOnlyFile,
+        ].toSorted(),
+      );
+
+      // 只有子根 B 的新完整扫描把 book 重新确认为在场，成员资格才恢复。
+      await workflow.scanObservedScope({
+        registrationId: manifest.childRootId,
+        relativeScope: ".",
+        acceptTrusted: false,
+      });
+      expect(await currentIds()).toEqual(
+        Object.values(manifest.assets).toSorted(),
+      );
+
+      const database = new DatabaseSync(
+        path.join(productDataDirectory, "catalogue.sqlite"),
+        { readOnly: true },
+      );
+      try {
+        const bookAddress = path.join(
+          manifest.stripRoot,
+          "media/child/book.txt",
+        );
+        // 同一地址在公开扫描后仍是唯一有效 Location，恢复没有靠新建位置达成。
+        const bookLocations = database
+          .prepare("SELECT id FROM locations WHERE address = ?")
+          .all(bookAddress) as readonly { id: string }[];
+        expect(bookLocations).toHaveLength(1);
+        const [bookLocation] = bookLocations;
+        if (bookLocation === undefined) throw new Error("缺少重叠根位置");
+        const bookLocationId = bookLocation.id;
+        // 已撤销父根的旧正项被其冻结版本号隔离，永远不再计数；恢复只来自子根自己的新完整事件。
+        const rows = database
+          .prepare(
+            `SELECT s.observed_root_id AS rootId,
+                    (r.config_version = s.observed_root_version AND r.status = 'active') AS live,
+                    s.snapshot_id AS snapshotId
+             FROM current_observed_material_supports s
+             INNER JOIN observed_root_registrations r ON r.id = s.observed_root_id
+             WHERE s.location_id = ? ORDER BY s.observed_root_id`,
+          )
+          .all(bookLocationId) as readonly {
+          rootId: string;
+          live: number;
+          snapshotId: string;
+        }[];
+        expect(rows.map(({ rootId, live }) => ({ rootId, live }))).toEqual([
+          { rootId: manifest.parentRootId, live: 0 },
+          { rootId: manifest.childRootId, live: 1 },
+        ]);
+        expect(rows[0]?.snapshotId).not.toBe(rows[1]?.snapshotId);
+      } finally {
+        database.close();
+      }
+    } finally {
+      await workflow.close();
+    }
+  }, 60_000);
+
+  it("把已迁移目录包内的新文件材料接受为真正新建的观察位置", async () => {
+    const { productDataDirectory, manifest } =
+      await migratedOldContractCatalogue(
+        "legacy-duplicate-package-before-current-supports",
+      );
+    await materializeOldContractMedia(manifest);
+    const workflow = composeAssetRefresh(productDataDirectory, {});
+    const packageAddress = path.join(
+      manifest.stripRoot,
+      manifest.duplicateAddress,
+    );
+    const fileAddress = path.join(packageAddress, "notes.txt");
+    const readShapeFacts = () => {
+      const database = new DatabaseSync(
+        path.join(productDataDirectory, "catalogue.sqlite"),
+        { readOnly: true },
+      );
+      try {
+        return {
+          boundaries: database
+            .prepare(
+              `SELECT l.address AS address, b.material_kind AS kind,
+                      b.derivation_kind AS derivation
+               FROM observed_material_boundaries b
+               INNER JOIN locations l ON l.id = b.location_id ORDER BY l.id`,
+            )
+            .all() as readonly {
+            address: string;
+            kind: string;
+            derivation: string;
+          }[],
+          acceptances: database
+            .prepare(
+              `SELECT a.acceptance_kind AS kind, l.address AS address
+               FROM observed_material_acceptances a
+               INNER JOIN locations l ON l.id = a.location_id ORDER BY l.id`,
+            )
+            .all() as readonly { kind: string; address: string }[],
+          supports: database
+            .prepare(
+              `SELECT l.address AS address, s.material_kind AS kind
+               FROM current_observed_material_supports s
+               INNER JOIN locations l ON l.id = s.location_id ORDER BY l.id`,
+            )
+            .all() as readonly { address: string; kind: string }[],
+        };
+      } finally {
+        database.close();
+      }
+    };
+    try {
+      const before = (await workflow.listCurrentCatalogue())[0];
+      if (before === undefined) throw new Error("缺少已迁移当前资产");
+      expect(before.locations.map(({ address }) => address)).toEqual([
+        packageAddress,
+        packageAddress,
+      ]);
+      const initial = readShapeFacts();
+      expect(
+        initial.boundaries.map((row) => `${row.kind}:${row.derivation}`),
+      ).toEqual([
+        "directory:legacy-kind-equivalent",
+        "directory:legacy-kind-equivalent",
+      ]);
+      expect(initial.acceptances).toEqual([]);
+
+      await writeFile(fileAddress, "包内新增单文件材料");
+      const prepared = await workflow.prepareObservedMaterialAssociation({
+        targetAssetId: before.entity.id,
+        registrationId: manifest.observedRootId,
+        relativeScope: ".",
+        relativePaths: ["item/notes.txt"],
+        initiatedBy: "接入人",
+      });
+      expect(
+        (
+          await workflow.confirmObservedMaterialAssociation({
+            executionId: prepared.executionId,
+            confirmedBy: "确认人",
+          })
+        ).status,
+      ).toBe("accepted");
+
+      const after = (await workflow.listCurrentCatalogue())[0];
+      if (after === undefined) throw new Error("缺少确认后的当前资产");
+      // 新文件不是将目录包位置改写成 file，而是自己获得一个有效 Location。
+      expect(after.locations.map(({ address }) => address).toSorted()).toEqual([
+        packageAddress,
+        packageAddress,
+        fileAddress,
+      ]);
+      const facts = readShapeFacts();
+      expect(facts.acceptances).toEqual([
+        { kind: "c-association", address: fileAddress },
+      ]);
+      expect(
+        facts.boundaries
+          .map((row) => `${row.kind}:${row.derivation}`)
+          .toSorted(),
+      ).toEqual([
+        "directory:legacy-kind-equivalent",
+        "directory:legacy-kind-equivalent",
+        "file:accepted-exact",
+      ]);
+      expect(facts.boundaries.map(({ address }) => address).toSorted()).toEqual(
+        [packageAddress, packageAddress, fileAddress],
+      );
+      // 新位置的正项来自本次确认自己的完整事件，不借用目录包的迁移正项。
+      expect(
+        facts.supports.filter((row) => row.address === fileAddress),
+      ).toEqual([{ address: fileAddress, kind: "file" }]);
+    } finally {
+      await workflow.close();
+    }
+  }, 60_000);
+
+  it("受信扫描接受为每个确认材料写下自身边界、接受事件与正向支持", async () => {
+    const data = await preparedCatalogueRoot();
+    const media = await mkdtemp(
+      path.join(tmpdir(), "digital-disposable-trusted-scan-"),
+    );
+    // 观察根本身就是作品目录，根内只有散文件：受信接受没有可限定的工作项范围。
+    const workDirectory = path.join(media, "RJ01668691");
+    const fileAddress = path.join(workDirectory, "notes.txt");
+    await mkdir(workDirectory, { recursive: true });
+    await writeFile(fileAddress, "音声附带材料");
+    vi.stubGlobal(
+      "fetch",
+      async (address: string) =>
+        new Response(
+          address.includes("ajax")
+            ? JSON.stringify({
+                RJ01668691: {
+                  site_id: "maniax",
+                  work_name: "雨夜的来信",
+                  regist_date: "2025-01-02",
+                },
+              })
+            : "<html></html>",
+          {
+            headers: {
+              "content-type": address.includes("ajax")
+                ? "application/json"
+                : "text/html",
+            },
+          },
+        ),
+    );
+    const product = runProduct(
+      { productDataDirectory: data, environment: {} },
+      { start: (application) => application },
+    );
+    try {
+      const application = product.result;
+      const root = await application.workflow.observedRootRegistrations.create({
+        displayName: "受信扫描",
+        containerPath: workDirectory,
+        readOnly: true,
+        symlinkMode: "do-not-follow",
+        allowedTargetRootIds: [],
+      });
+      const scan = await application.workflow.scanObservedScope({
+        registrationId: root.id,
+        relativeScope: ".",
+        acceptTrusted: true,
+      });
+      expect(scan.execution.outcome).toBe("accepted");
+      // 这条受信接受没有可限定材料的工作项，载体只能来自 accepted 自己交付的材料。
+      expect(scan.execution.workItems ?? []).toEqual([]);
+
+      const current = await application.workflow.listCurrentCatalogue();
+      expect(current).toHaveLength(1);
+      const observedAddresses = (current[0]?.locations ?? [])
+        .filter((location) => location.kind === "observed")
+        .map(({ address }) => address)
+        .toSorted();
+      expect(observedAddresses).toEqual([fileAddress]);
+
+      const database = new DatabaseSync(path.join(data, "catalogue.sqlite"), {
+        readOnly: true,
+      });
+      try {
+        const carriers = database
+          .prepare(
+            `SELECT l.address AS address,
+                    b.material_kind AS kind,
+                    b.derivation_kind AS derivation,
+                    (SELECT COUNT(*) FROM observed_material_acceptances a
+                      WHERE a.location_id = b.location_id) AS acceptances,
+                    (SELECT COUNT(*) FROM current_observed_material_supports s
+                      WHERE s.location_id = b.location_id) AS supports
+             FROM observed_material_boundaries b
+             INNER JOIN locations l ON l.id = b.location_id
+             ORDER BY l.address`,
+          )
+          .all() as unknown as readonly {
+          address: string;
+          kind: string;
+          derivation: string;
+          acceptances: number;
+          supports: number;
+        }[];
+        // 没有工作项限定的公开受信接受同样必须写下自己的三份载体，成员资格不靠补写。
+        expect(carriers).toEqual([
+          {
+            address: fileAddress,
+            kind: "file",
+            derivation: "accepted-exact",
+            acceptances: 1,
+            supports: 1,
+          },
+        ]);
+      } finally {
+        database.close();
+      }
+      await expect(
+        SqliteCatalogue.inspectProductionReadiness({
+          productDataDirectory: data,
+        }),
+      ).resolves.toMatchObject({ state: "ready" });
+
+      const reopened = await application.workflow.listCurrentCatalogue();
+      expect(reopened.map(({ entity }) => entity.id)).toEqual([
+        current[0]?.entity.id,
+      ]);
+    } finally {
+      await product.close();
+      vi.unstubAllGlobals();
+      await rm(data, { recursive: true, force: true });
+      await rm(media, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("公开 EPUB 同址文件对象替换经确认预演写下全新位置并在重开后保持决定支持", async () => {
+    const data = await preparedCatalogueRoot();
+    const media = await mkdtemp(
+      path.join(tmpdir(), "digital-disposable-public-epub-preview-"),
+    );
+    const fileAddress = path.join(media, "publication.epub");
+    await writeFile(fileAddress, syntheticEpub("第一作者"));
+    const informationRequirement = {
+      metadataUsageContext: "asset.ordinary" as const,
+      metadata: [],
+      artifactRoles: [],
+      relationshipTypes: [
+        { type: "asset.contribution", necessity: "required" as const },
+      ],
+    };
+    const materialFacts = () => {
+      const database = new DatabaseSync(path.join(data, "catalogue.sqlite"), {
+        readOnly: true,
+      });
+      try {
+        return {
+          previews: database
+            .prepare(
+              `SELECT status AS status,
+                      json_array_length(preview_json, '$.current.locations') AS currentCount,
+                      json_array_length(preview_json, '$.projected.locations') AS projectedCount
+               FROM change_impact_previews ORDER BY rowid`,
+            )
+            .all() as unknown as readonly {
+            status: string;
+            currentCount: number;
+            projectedCount: number;
+          }[],
+          acceptances: database
+            .prepare(
+              `SELECT acceptance_kind AS kind, observed_reference AS reference,
+                      location_id AS locationId, execution_id AS executionId,
+                      association_id AS associationId
+               FROM observed_material_acceptances ORDER BY rowid`,
+            )
+            .all() as unknown as readonly {
+            kind: string;
+            reference: string;
+            locationId: string;
+            executionId: string;
+            associationId: string;
+          }[],
+          boundaries: database
+            .prepare(
+              `SELECT b.location_id AS locationId, l.address AS address,
+                      b.material_kind AS kind, b.derivation_kind AS derivation
+               FROM observed_material_boundaries b
+               INNER JOIN locations l ON l.id = b.location_id ORDER BY b.rowid`,
+            )
+            .all() as unknown as readonly {
+            locationId: string;
+            address: string;
+            kind: string;
+            derivation: string;
+          }[],
+          supports: database
+            .prepare(
+              `SELECT location_id AS locationId, material_kind AS kind,
+                      snapshot_id AS snapshotId, observed_root_id AS rootId,
+                      observed_root_version AS rootVersion
+               FROM current_observed_material_supports ORDER BY rowid`,
+            )
+            .all() as unknown as readonly {
+            locationId: string;
+            kind: string;
+            snapshotId: string;
+            rootId: string;
+            rootVersion: number;
+          }[],
+          supersessions: database
+            .prepare(
+              `SELECT COUNT(*) AS count FROM recognition_decision_supersessions`,
+            )
+            .get() as unknown as { count: number },
+        };
+      } finally {
+        database.close();
+      }
+    };
+    let product = runProduct(
+      { productDataDirectory: data, environment: {} },
+      { start: (application) => application },
+    );
+    try {
+      const workflow = product.result.workflow;
+      const registration = await workflow.observedRootRegistrations.create({
+        displayName: "公开 EPUB 预演",
+        containerPath: media,
+        readOnly: true,
+        symlinkMode: "do-not-follow",
+        allowedTargetRootIds: [],
+      });
+      const first = await workflow.scanObservedScope({
+        registrationId: registration.id,
+        relativeScope: ".",
+        acceptTrusted: true,
+        informationRequirement,
+      });
+      expect(first.execution.outcome).toBe("accepted");
+      const initialAssetId = first.itemResults?.[0]?.accepted?.entity.id;
+      const initialLocationId =
+        first.itemResults?.[0]?.accepted?.locations[0]?.id;
+      if (initialAssetId === undefined || initialLocationId === undefined)
+        throw new Error("首次接受缺少资产或观察位置");
+
+      // 删除后改名得到另一个文件对象：地址不变，但公开看到的是同址的新材料。
+      const stagedAddress = path.join(media, "replacement.epub");
+      await writeFile(stagedAddress, syntheticEpub("第二作者"));
+      await unlink(fileAddress);
+      await rename(stagedAddress, fileAddress);
+
+      const second = await workflow.scanObservedScope({
+        registrationId: registration.id,
+        relativeScope: ".",
+        acceptTrusted: true,
+        informationRequirement,
+      });
+      expect(second.execution.outcome).toBe("proposal");
+      const preview = second.changeImpactPreview;
+      if (preview === undefined)
+        throw new Error("识别身份取代未产生变更影响预演");
+      const projectedLocationId = preview.projected.locations[0]?.id;
+      if (projectedLocationId === undefined)
+        throw new Error("预演投影缺少观察位置");
+      // 公开当前与预演投影确实是两条不同 Location，而不是同一条记录被改写形态。
+      expect(preview.current.locations.map(({ id }) => id)).toEqual([
+        initialLocationId,
+      ]);
+      expect(projectedLocationId).not.toBe(initialLocationId);
+      expect(
+        await workflow.inspectChangeImpactPreview(preview.id),
+      ).toMatchObject({ status: "awaiting-confirmation" });
+      expect(
+        (
+          await workflow.applyChangeImpactPreview({
+            previewId: preview.id,
+            confirmedBy: "确认人",
+          })
+        ).status,
+      ).toBe("applied");
+
+      const afterApply = await workflow.listCurrentCatalogue();
+      const observedLocationsOf = (
+        asset: (typeof afterApply)[number],
+      ): readonly { id: string; address: string }[] =>
+        (asset?.locations ?? [])
+          .filter((location) => location.kind === "observed")
+          .map(({ id, address }) => ({ id, address }))
+          .toSorted((left, right) => left.id.localeCompare(right.id));
+      // 取代保留资产身份，两条同址位置都留在当前目录。
+      expect(afterApply.map(({ entity }) => entity.id)).toEqual([
+        initialAssetId,
+      ]);
+      expect(observedLocationsOf(afterApply[0]).map(({ id }) => id)).toEqual(
+        [initialLocationId, projectedLocationId].toSorted((left, right) =>
+          left.localeCompare(right),
+        ),
+      );
+      expect(
+        observedLocationsOf(afterApply[0]).map(({ address }) => address),
+      ).toEqual([fileAddress, fileAddress]);
+
+      const appliedFacts = materialFacts();
+      expect(appliedFacts.previews).toEqual([
+        { status: "applied", currentCount: 1, projectedCount: 1 },
+      ]);
+      // 新位置由自己的 a-preview 事件支持，指向后继执行与全新映射。
+      expect(
+        appliedFacts.acceptances.map(
+          ({ kind, reference }) => `${kind}@${reference}`,
+        ),
+      ).toEqual(["a-work-item@publication.epub", "a-preview@publication.epub"]);
+      expect(
+        appliedFacts.acceptances.map(({ locationId }) => locationId).toSorted(),
+      ).toEqual([initialLocationId, projectedLocationId].toSorted());
+      expect(
+        new Set(appliedFacts.acceptances.map(({ executionId }) => executionId))
+          .size,
+      ).toBe(2);
+      expect(
+        new Set(
+          appliedFacts.acceptances.map(({ associationId }) => associationId),
+        ).size,
+      ).toBe(2);
+      expect(
+        appliedFacts.boundaries
+          .map(
+            ({ locationId, kind, derivation }) =>
+              `${locationId}:${kind}:${derivation}`,
+          )
+          .toSorted(),
+      ).toEqual(
+        [
+          `${initialLocationId}:file:accepted-exact`,
+          `${projectedLocationId}:file:accepted-exact`,
+        ].toSorted(),
+      );
+      expect(appliedFacts.boundaries.map(({ address }) => address)).toEqual([
+        fileAddress,
+        fileAddress,
+      ]);
+      expect(
+        appliedFacts.supports.map(
+          ({ kind, rootVersion }) => `${kind}@${rootVersion}`,
+        ),
+      ).toEqual(["file@1", "file@1"]);
+      expect(
+        appliedFacts.supports.map(({ locationId }) => locationId).toSorted(),
+      ).toEqual([initialLocationId, projectedLocationId].toSorted());
+      // 两份正项来自本次确认应用的同一个完整事件与同一观察根版本。
+      expect(
+        new Set(appliedFacts.supports.map(({ snapshotId }) => snapshotId)).size,
+      ).toBe(1);
+      expect(
+        new Set(appliedFacts.supports.map(({ rootId }) => rootId)).size,
+      ).toBe(1);
+      expect(appliedFacts.supersessions.count).toBe(1);
+
+      await expect(
+        SqliteCatalogue.inspectProductionReadiness({
+          productDataDirectory: data,
+        }),
+      ).resolves.toMatchObject({ state: "ready" });
+
+      // 重复检查既不补写也不抹掉载体：接受与边界原样保留，正项仍是同样两条同址同形态记录，
+      // 只把指针推进到这一次新的完整观察事件。
+      const repeated = await workflow.scanObservedScope({
+        registrationId: registration.id,
+        relativeScope: ".",
+        acceptTrusted: true,
+        informationRequirement,
+      });
+      expect(repeated.execution.outcome).toBe("proposal");
+      const afterRepeat = materialFacts();
+      expect(afterRepeat.acceptances).toEqual(appliedFacts.acceptances);
+      expect(afterRepeat.boundaries).toEqual(appliedFacts.boundaries);
+      expect(
+        afterRepeat.supports.map(
+          ({ locationId, kind, rootVersion }) =>
+            `${locationId}:${kind}@${rootVersion}`,
+        ),
+      ).toEqual(
+        appliedFacts.supports.map(
+          ({ locationId, kind, rootVersion }) =>
+            `${locationId}:${kind}@${rootVersion}`,
+        ),
+      );
+      expect(
+        new Set(afterRepeat.supports.map(({ snapshotId }) => snapshotId)).size,
+      ).toBe(1);
+
+      await product.close();
+      product = runProduct(
+        { productDataDirectory: data, environment: {} },
+        { start: (application) => application },
+      );
+      const reopened = await product.result.workflow.listCurrentCatalogue();
+      expect(reopened.map(({ entity }) => entity.id)).toEqual([initialAssetId]);
+      expect(observedLocationsOf(reopened[0])).toEqual(
+        observedLocationsOf(afterApply[0]),
+      );
+      await expect(
+        SqliteCatalogue.inspectProductionReadiness({
+          productDataDirectory: data,
+        }),
+      ).resolves.toMatchObject({ state: "ready" });
+
+      // a-preview 的自身载体就是这条已确认应用的识别取代预演本身：受控副本里把公开旅程
+      // 留下的 a-preview 接受换成另一条真实执行现有的 proposal 后，正式 readiness 必须闭锁，
+      // 公开当前目录查询也必须被挡住。
+      const damaged = await mkdtemp(
+        path.join(tmpdir(), "digital-disposable-epub-preview-carrier-"),
+      );
+      try {
+        await mkdir(path.join(damaged, "managed-artifacts"), {
+          recursive: true,
+        });
+        await copyFile(
+          path.join(data, "catalogue.sqlite"),
+          path.join(damaged, "catalogue.sqlite"),
+        );
+        const borrow = new DatabaseSync(path.join(damaged, "catalogue.sqlite"));
+        try {
+          const foreign = borrow
+            .prepare(
+              `SELECT other.proposal_id AS proposal_id
+               FROM observed_material_acceptances AS other
+               INNER JOIN recognition_proposals AS borrowed
+                 ON borrowed.id = other.proposal_id
+               WHERE other.acceptance_kind = 'a-work-item'
+                 AND borrowed.execution_id <> (
+                   SELECT execution_id FROM observed_material_acceptances
+                   WHERE acceptance_kind = 'a-preview' LIMIT 1)
+               LIMIT 1`,
+            )
+            .get() as { proposal_id: string } | undefined;
+          if (foreign === undefined)
+            throw new Error(
+              "fixture 缺少 a-preview 可借用的另一真实执行 proposal",
+            );
+          borrow
+            .prepare(
+              `UPDATE observed_material_acceptances SET proposal_id = ?
+               WHERE acceptance_kind = 'a-preview'`,
+            )
+            .run(foreign.proposal_id);
+        } finally {
+          borrow.close();
+        }
+        await expect(
+          SqliteCatalogue.inspectProductionReadiness({
+            productDataDirectory: damaged,
+          }),
+        ).resolves.toMatchObject({ state: "catalogue-integrity-failed" });
+        const damagedCatalogue = SqliteCatalogue.forProductData(damaged);
+        try {
+          await expect(damagedCatalogue.listCurrentCatalogue()).rejects.toThrow(
+            "观察材料决定支持链损坏",
+          );
+        } finally {
+          damagedCatalogue.close();
+        }
+      } finally {
+        await rm(damaged, { recursive: true, force: true });
+      }
+    } finally {
+      await product.close();
+      await rm(data, { recursive: true, force: true });
+      await rm(media, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it("公开目录包换成同址合法 PDF 时新文件自得接受与支持且旧包边界历史保留", async () => {
+    const data = await preparedCatalogueRoot();
+    const media = await mkdtemp(
+      path.join(tmpdir(), "digital-disposable-package-to-pdf-"),
+    );
+    const packageAddress = path.join(media, "film");
+    await mkdir(path.join(packageAddress, "BDMV", "PLAYLIST"), {
+      recursive: true,
+    });
+    await mkdir(path.join(packageAddress, "BDMV", "STREAM"), {
+      recursive: true,
+    });
+    await writeFile(path.join(packageAddress, "BDMV", "index.bdmv"), "index");
+    await writeFile(
+      path.join(packageAddress, "BDMV", "MovieObject.bdmv"),
+      "movie",
+    );
+    await writeFile(
+      path.join(packageAddress, "BDMV", "STREAM", "00000.m2ts"),
+      "stream",
+    );
+    vi.stubGlobal(
+      "fetch",
+      async () =>
+        new Response(
+          JSON.stringify({
+            docs: [
+              {
+                pnx: {
+                  display: { title: ["初始目录包"] },
+                  addata: { isbn: ["9789864738281"] },
+                },
+              },
+            ],
+          }),
+          { headers: { "content-type": "application/json" } },
+        ),
+    );
+    const materialFacts = () => {
+      const database = new DatabaseSync(path.join(data, "catalogue.sqlite"), {
+        readOnly: true,
+      });
+      try {
+        return {
+          previews: database
+            .prepare(
+              `SELECT status AS status FROM change_impact_previews ORDER BY rowid`,
+            )
+            .all() as unknown as readonly { status: string }[],
+          acceptances: database
+            .prepare(
+              `SELECT a.acceptance_kind AS kind, a.observed_reference AS reference,
+                      a.location_id AS locationId, l.address AS address
+               FROM observed_material_acceptances a
+               INNER JOIN locations l ON l.id = a.location_id ORDER BY a.rowid`,
+            )
+            .all() as unknown as readonly {
+            kind: string;
+            reference: string;
+            locationId: string;
+            address: string;
+          }[],
+          boundaries: database
+            .prepare(
+              `SELECT b.location_id AS locationId, l.address AS address,
+                      b.material_kind AS kind, b.derivation_kind AS derivation
+               FROM observed_material_boundaries b
+               INNER JOIN locations l ON l.id = b.location_id ORDER BY b.rowid`,
+            )
+            .all() as unknown as readonly {
+            locationId: string;
+            address: string;
+            kind: string;
+            derivation: string;
+          }[],
+          supports: database
+            .prepare(
+              `SELECT s.location_id AS locationId, s.material_kind AS kind,
+                      l.address AS address
+               FROM current_observed_material_supports s
+               INNER JOIN locations l ON l.id = s.location_id ORDER BY s.rowid`,
+            )
+            .all() as unknown as readonly {
+            locationId: string;
+            kind: string;
+            address: string;
+          }[],
+        };
+      } finally {
+        database.close();
+      }
+    };
+    const product = runProduct(
+      { productDataDirectory: data, environment: {} },
+      { start: (application) => application },
+    );
+    try {
+      const workflow = product.result.workflow;
+      const registration = await workflow.observedRootRegistrations.create({
+        displayName: "公开包转文件",
+        containerPath: media,
+        readOnly: true,
+        symlinkMode: "do-not-follow",
+        allowedTargetRootIds: [],
+      });
+      const directed =
+        await workflow.directedRecognitionSourceInputObservedScope({
+          registrationId: registration.id,
+          relativeScope: "film",
+          sourceIdentity: "nbinet",
+          sourceInput: { isbn: "9789864738281" },
+        });
+      expect(directed.execution.outcome).toBe("accepted");
+      const packageAssetId = directed.itemResults?.[0]?.accepted?.entity.id;
+      if (packageAssetId === undefined) throw new Error("定向接受缺少资产");
+
+      await rm(packageAddress, { recursive: true, force: true });
+      await writeFile(packageAddress, syntheticPdf());
+      const scanned = await workflow.scanObservedScope({
+        registrationId: registration.id,
+        relativeScope: ".",
+        acceptTrusted: true,
+      });
+      // 目录包换成单文件走完整扫描的工作项接受，不产生任何变更影响预演。
+      expect(scanned.execution.outcome).toBe("accepted");
+      expect(scanned.changeImpactPreview).toBeUndefined();
+      const fileAssetId = scanned.itemResults?.[0]?.accepted?.entity.id;
+      if (fileAssetId === undefined) throw new Error("同址新文件缺少接受资产");
+      expect(fileAssetId).not.toBe(packageAssetId);
+
+      const current = await workflow.listCurrentCatalogue();
+      expect(current.map(({ entity }) => entity.id)).toEqual([fileAssetId]);
+      const fileLocations = (current[0]?.locations ?? []).filter(
+        (location) => location.kind === "observed",
+      );
+      expect(fileLocations.map(({ address }) => address)).toEqual([
+        packageAddress,
+      ]);
+
+      const facts = materialFacts();
+      expect(facts.previews).toEqual([]);
+      expect(
+        facts.acceptances.map(({ kind, reference }) => `${kind}@${reference}`),
+      ).toEqual(["a-work-item@.", "a-work-item@film"]);
+      expect(
+        new Set(facts.acceptances.map(({ locationId }) => locationId)).size,
+      ).toBe(2);
+      expect(facts.acceptances.map(({ address }) => address)).toEqual([
+        packageAddress,
+        packageAddress,
+      ]);
+      // 旧目录包的边界是历史证据：保留，但不因同址新文件被改写成 file。
+      expect(
+        facts.boundaries
+          .map(({ kind, derivation }) => `${kind}:${derivation}`)
+          .toSorted(),
+      ).toEqual(["directory:accepted-exact", "file:accepted-exact"]);
+      expect(facts.boundaries.map(({ address }) => address).toSorted()).toEqual(
+        [packageAddress, packageAddress],
+      );
+      // 只有新文件位置得到本次事件的正项，目录边界不在支持集合里。
+      expect(facts.supports).toHaveLength(1);
+      expect(facts.supports[0]?.kind).toBe("file");
+      expect(facts.supports[0]?.locationId).toBe(
+        facts.acceptances.find(({ reference }) => reference === "film")
+          ?.locationId,
+      );
+
+      await product.close();
+      const reopened = runProduct(
+        { productDataDirectory: data, environment: {} },
+        { start: (application) => application },
+      );
+      try {
+        const reopenedCurrent =
+          await reopened.result.workflow.listCurrentCatalogue();
+        expect(reopenedCurrent.map(({ entity }) => entity.id)).toEqual([
+          fileAssetId,
+        ]);
+        await expect(
+          SqliteCatalogue.inspectProductionReadiness({
+            productDataDirectory: data,
+          }),
+        ).resolves.toMatchObject({ state: "ready" });
+      } finally {
+        await reopened.close();
+      }
+    } finally {
+      await product.close();
+      vi.unstubAllGlobals();
+      await rm(data, { recursive: true, force: true });
+      await rm(media, { recursive: true, force: true });
+    }
+  }, 120_000);
+  it("把已迁移同址形态错配保持在公开当前目录之外", async () => {
+    const { productDataDirectory, manifest } =
+      await migratedOldContractCatalogue(
+        "observed-material-shape-swap-before-current-supports",
+      );
+    await materializeOldContractMedia(manifest);
+    const workflow = composeAssetRefresh(productDataDirectory, {});
+    try {
+      const scan = await workflow.scanObservedScope({
+        registrationId: manifest.observedRootId,
+        relativeScope: ".",
+        acceptTrusted: false,
+      });
+      expect(scan.execution.status).toBe("completed");
+      const current = await workflow.listCurrentCatalogue();
+      // 互换形态的两个地址在公开根完整扫描后仍然退出，只有形态与材料一致的
+      // 目录包与文件留在当前目录；同址热观察不会把 file 边界升成 directory 支持。
+      expect(current.map(({ entity }) => entity.id).toSorted()).toEqual(
+        [manifest.assets.directoryPackage, manifest.assets.keptFile].toSorted(),
+      );
+      const attention = await workflow.listCurrentAttentionPage();
+      expect(attention.items).toEqual([]);
+      const database = new DatabaseSync(
+        path.join(productDataDirectory, "catalogue.sqlite"),
+        { readOnly: true },
+      );
+      try {
+        const boundaries = database
+          .prepare(
+            `SELECT substr(l.address, instr(l.address, '/media')) AS address,
+                    b.material_kind AS kind, b.derivation_kind AS derivation
+             FROM observed_material_boundaries b
+             INNER JOIN locations l ON l.id = b.location_id
+             ORDER BY l.address, b.derivation_kind`,
+          )
+          .all() as readonly {
+          address: string;
+          kind: string;
+          derivation: string;
+        }[];
+        const supportAddresses = database
+          .prepare(
+            `SELECT substr(l.address, instr(l.address, '/media')) AS address
+             FROM current_observed_material_supports s
+             INNER JOIN locations l ON l.id = s.location_id
+             ORDER BY l.address`,
+          )
+          .all() as readonly { address: string }[];
+        // 热观察不会把 fileToDir 的边界升级成 directory，也不会让 pkgToFile 的
+        // 目录边界因同址新文件而复活：两个边界仍记录各自被接受时的形态。
+        expect(
+          boundaries
+            .filter(
+              ({ address }) =>
+                address === "/media/fileToDir" ||
+                address === "/media/pkgToFile",
+            )
+            .map(
+              ({ address, kind, derivation }) =>
+                `${address}:${kind}:${derivation}`,
+            ),
+        ).toEqual([
+          "/media/fileToDir:file:legacy-exact",
+          "/media/pkgToFile:directory:legacy-exact",
+        ]);
+        // 同址形态错配的材料拿不到任何正项，当前目录因此只剩形态相符的两项。
+        expect(supportAddresses.map(({ address }) => address)).toEqual([
+          "/media/kept.txt",
+          "/media/kept.txt",
+          "/media/pkgKept",
+        ]);
+      } finally {
+        database.close();
+      }
+    } finally {
+      await workflow.close();
+    }
+  }, 60_000);
 
   it("pages each current accepted asset once without replaying Workflow History", async () => {
     const { root, catalogue } = await createCatalogueWithRoot();

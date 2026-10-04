@@ -1,0 +1,46 @@
+{
+  "schema": "digital-old-contract-fixture/1",
+  "stripRoot": "/tmp/digital-disposable-c01-carriers",
+  "observedRootId": "observed_root_42fe1e8c-7557-4316-b9ca-8ff380660df0",
+  "assets": {
+    "caseSuperseded": "entity_e6253b06-af13-426b-bdf1-536514d179b9",
+    "previewSameAddress": "entity_fefd18c9-8ab1-4968-babd-bbf80dc97a45",
+    "previewDualFiles": "entity_8d2981a5-3620-4833-98cf-1106ff3bca08"
+  },
+  "media": [
+    {
+      "relativePath": "media/case",
+      "kind": "file",
+      "content": "同址普通文件"
+    },
+    {
+      "relativePath": "media/preview",
+      "kind": "file",
+      "content": "预演同址文件"
+    },
+    {
+      "relativePath": "media/preview-dual.pdf",
+      "kind": "file",
+      "content": "预演主文件"
+    },
+    {
+      "relativePath": "media/preview-dual.srt",
+      "kind": "file",
+      "content": "预演字幕"
+    }
+  ],
+  "baselineCurrent": [
+    {
+      "id": "entity_8d2981a5-3620-4833-98cf-1106ff3bca08",
+      "locations": ["/media/preview-dual"]
+    },
+    {
+      "id": "entity_e6253b06-af13-426b-bdf1-536514d179b9",
+      "locations": ["/media/case", "/media/case"]
+    },
+    {
+      "id": "entity_fefd18c9-8ab1-4968-babd-bbf80dc97a45",
+      "locations": ["/media/preview"]
+    }
+  ]
+}

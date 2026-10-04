@@ -1052,7 +1052,7 @@ export type AcceptedRecognition = {
   readonly observedEntityGraphs?: readonly AcceptedObservedEntityGraph[];
 };
 
-function validateObservedEntityGraphCandidates(
+export function validateObservedEntityGraphCandidates(
   graphs: readonly ObservedEntityGraphCandidate[],
 ): void {
   for (const graph of graphs) {

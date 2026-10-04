@@ -94,7 +94,7 @@ describe("production catalogue preparation", () => {
       await prepareCatalogueBeforeDescriptionTargets(productDataDirectory);
       await expect(
         prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 11 });
+      ).resolves.toEqual({ applied: 12 });
       const database = new DatabaseSync(
         path.join(productDataDirectory, "catalogue.sqlite"),
         { readOnly: true },
@@ -285,7 +285,7 @@ describe("production catalogue preparation", () => {
 
       await expect(
         prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 10 });
+      ).resolves.toEqual({ applied: 11 });
       const migrated = new DatabaseSync(
         path.join(productDataDirectory, "catalogue.sqlite"),
         { readOnly: true },
@@ -375,7 +375,7 @@ describe("production catalogue preparation", () => {
       await prepareLegacySourceEnrichmentCatalogue(valid, false);
       await expect(
         prepareProductionCatalogue({ productDataDirectory: valid }),
-      ).resolves.toEqual({ applied: 14 });
+      ).resolves.toEqual({ applied: 15 });
       await expect(
         inspectProductionCatalogueReadiness({ productDataDirectory: valid }),
       ).resolves.toMatchObject({ state: "ready" });
@@ -597,7 +597,7 @@ describe("production catalogue preparation", () => {
 
       await expect(
         prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 2 });
+      ).resolves.toEqual({ applied: 3 });
       const recovered = new DatabaseSync(
         path.join(productDataDirectory, "catalogue.sqlite"),
         { readOnly: true },
@@ -665,7 +665,7 @@ describe("production catalogue preparation", () => {
 
       await expect(
         prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 2 });
+      ).resolves.toEqual({ applied: 3 });
       const recovered = new DatabaseSync(
         path.join(productDataDirectory, "catalogue.sqlite"),
         { readOnly: true },
@@ -862,7 +862,7 @@ describe("production catalogue preparation", () => {
 
       await expect(
         prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 2 });
+      ).resolves.toEqual({ applied: 3 });
       await expect(
         inspectProductionCatalogueReadiness({ productDataDirectory }),
       ).resolves.toMatchObject({ state: "ready" });
@@ -1122,7 +1122,7 @@ describe("production catalogue preparation", () => {
       recovering.close();
       await expect(
         prepareProductionCatalogue({ productDataDirectory: recoveryRoot }),
-      ).resolves.toEqual({ applied: 2 });
+      ).resolves.toEqual({ applied: 3 });
       const migrated = new DatabaseSync(
         path.join(recoveryRoot, "catalogue.sqlite"),
         { readOnly: true },
@@ -1178,7 +1178,7 @@ describe("production catalogue preparation", () => {
         database.close();
         await expect(
           prepareProductionCatalogue({ productDataDirectory: legalRoot }),
-        ).resolves.toEqual({ applied: 2 });
+        ).resolves.toEqual({ applied: 3 });
       } finally {
         await rm(legalRoot, { recursive: true, force: true });
       }
@@ -1270,7 +1270,7 @@ describe("production catalogue preparation", () => {
       });
       await expect(
         prepareProductionCatalogue({ productDataDirectory: terminated }),
-      ).resolves.toEqual({ applied: 15 });
+      ).resolves.toEqual({ applied: 16 });
       const terminatedDatabase = new DatabaseSync(
         path.join(terminated, "catalogue.sqlite"),
         { readOnly: true },
@@ -1383,7 +1383,7 @@ describe("production catalogue preparation", () => {
     try {
       await expect(
         prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 17 });
+      ).resolves.toEqual({ applied: 18 });
       const reopened = SqliteCatalogue.forProductData(productDataDirectory);
       await expect(reopened.listCurrentCatalogue()).resolves.toMatchObject([
         {
@@ -1644,7 +1644,1308 @@ describe("production catalogue preparation", () => {
       await rm(deploymentDirectory, { recursive: true, force: true });
     }
   }, 120_000);
+
+  it("rebuilds current material membership from a real old-contract catalogue", async () => {
+    // fixture 由固定点 911a0c3 的正式装配与公开产品操作生成：注册观察根、普通文件
+    // 人工准入、两个 BDMV 目录定向识别，然后删除其中一个已准入文件与其中一个已准入
+    // 目录包，再以根完整扫描确认缺失。
+    const productDataDirectory = await temporaryProductData();
+    const oldContract = JSON.parse(
+      await readFile(
+        new URL(
+          "./fixtures/observed-material-before-current-supports/manifest.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ) as {
+      assets: Record<
+        "gone" | "kept" | "directoryPackage" | "directoryPackageGone",
+        string
+      >;
+      baselineCurrentPage: readonly { id: string }[];
+    };
+    try {
+      await mkdir(path.join(productDataDirectory, "managed-artifacts"), {
+        recursive: true,
+      });
+      await copyFile(
+        new URL(
+          "./fixtures/observed-material-before-current-supports/catalogue.sqlite",
+          import.meta.url,
+        ),
+        path.join(productDataDirectory, "catalogue.sqlite"),
+      );
+      // 旧合同下四者的公开当前页都包含已消失材料的资产。
+      expect(oldContract.baselineCurrentPage.map(({ id }) => id)).toEqual(
+        expect.arrayContaining([
+          oldContract.assets.gone,
+          oldContract.assets.kept,
+          oldContract.assets.directoryPackage,
+          oldContract.assets.directoryPackageGone,
+        ]),
+      );
+
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).resolves.toEqual({ applied: 4 });
+      await expect(
+        inspectProductionCatalogueReadiness({ productDataDirectory }),
+      ).resolves.toMatchObject({ state: "ready" });
+
+      const catalogue = SqliteCatalogue.forProductData(productDataDirectory);
+      const migratedIds = (await catalogue.listCurrentCatalogue()).map(
+        ({ entity }) => entity.id,
+      );
+      // 材料仍在的普通文件与目录包各自迁入正向支持；失去唯一文件的旧覆盖支持、以及
+      // 被更晚完整扫描确认缺失的目录包历史条目都不提供成员资格。
+      expect(migratedIds.toSorted()).toEqual(
+        [oldContract.assets.kept, oldContract.assets.directoryPackage].sort(),
+      );
+      const history = await catalogue.listWorkflowHistoryPage({ limit: 50 });
+      for (const exited of [
+        oldContract.assets.gone,
+        oldContract.assets.directoryPackageGone,
+      ])
+        expect(
+          history.items.some(({ resultReferences }) =>
+            resultReferences.acceptedAssetIds.includes(exited),
+          ),
+        ).toBe(true);
+      catalogue.close();
+
+      const database = new DatabaseSync(
+        path.join(productDataDirectory, "catalogue.sqlite"),
+        { readOnly: true },
+      );
+      try {
+        const goneLocation = database
+          .prepare("SELECT id FROM locations WHERE address LIKE '%/gone.txt'")
+          .get() as { id: string };
+        // 只读核对迁移投影：旧覆盖支持保留，但没有正向材料支持。
+        expect(
+          database
+            .prepare(
+              "SELECT COUNT(*) AS count FROM current_file_observation_supports WHERE location_id = ?",
+            )
+            .get(goneLocation.id),
+        ).toEqual({ count: 1 });
+        expect(
+          database
+            .prepare(
+              "SELECT COUNT(*) AS count FROM current_observed_material_supports WHERE location_id = ?",
+            )
+            .get(goneLocation.id),
+        ).toEqual({ count: 0 });
+        expect(
+          database
+            .prepare(
+              `SELECT COUNT(*) AS count FROM artifact_associations
+               WHERE subject_id = ? AND role = 'asset.material-delivered'`,
+            )
+            .get(oldContract.assets.gone),
+        ).toEqual({ count: 1 });
+
+        // 目录包负项同理：更晚的根完整扫描确认缺失后，旧目录条目不迁入正向支持，
+        // 但已接受的交付事实与覆盖支持都保留。
+        const gonePackage = database
+          .prepare("SELECT id FROM locations WHERE address LIKE '%/film-gone'")
+          .get() as { id: string };
+        expect(
+          database
+            .prepare(
+              "SELECT COUNT(*) AS count FROM current_file_observation_supports WHERE location_id = ?",
+            )
+            .get(gonePackage.id),
+        ).toEqual({ count: 1 });
+        expect(
+          database
+            .prepare(
+              "SELECT COUNT(*) AS count FROM current_observed_material_supports WHERE location_id = ?",
+            )
+            .get(gonePackage.id),
+        ).toEqual({ count: 0 });
+        expect(
+          database
+            .prepare(
+              `SELECT COUNT(*) AS count FROM artifact_associations
+               WHERE subject_id = ? AND role = 'asset.material-delivered'`,
+            )
+            .get(oldContract.assets.directoryPackageGone),
+        ).toEqual({ count: 1 });
+        // 仍存在的目录包由最近一次覆盖它的完整扫描迁入目录正向支持。
+        const keptPackage = database
+          .prepare("SELECT id FROM locations WHERE address LIKE '%/film'")
+          .get() as { id: string };
+        expect(
+          database
+            .prepare(
+              `SELECT material_kind FROM current_observed_material_supports WHERE location_id = ?`,
+            )
+            .get(keptPackage.id),
+        ).toEqual({ material_kind: "directory" });
+      } finally {
+        database.close();
+      }
+
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).resolves.toEqual({ applied: 0 });
+      const reopened = SqliteCatalogue.forProductData(productDataDirectory);
+      expect(
+        (await reopened.listCurrentCatalogue()).map(({ entity }) => entity.id),
+      ).toEqual(migratedIds);
+      reopened.close();
+    } finally {
+      await rm(productDataDirectory, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("keeps a healthy legacy duplicate package current without inventing acceptance provenance", async () => {
+    // fixture 由固定点 911a0c3 的公开产品操作生成：内层根定向接受一个 BDMV 目录包，外层
+    // 重叠根完成一次完整扫描，随后内层根只改动成员 mtime 的公开重扫再次接受同一地址。
+    const { productDataDirectory, manifest } = await oldContractFixture(
+      "legacy-duplicate-package-before-current-supports",
+    );
+    try {
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).resolves.toEqual({ applied: 4 });
+      await expect(
+        inspectProductionCatalogueReadiness({ productDataDirectory }),
+      ).resolves.toMatchObject({ state: "ready" });
+
+      const catalogue = SqliteCatalogue.forProductData(productDataDirectory);
+      const current = await catalogue.listCurrentCatalogue();
+      catalogue.close();
+      // 同 asset 同址的重复 package 不阻断迁移，资产仍公开 current。
+      expect(current.map(({ entity }) => entity.id)).toEqual([
+        manifest.assets.duplicatePackage,
+      ]);
+
+      const database = new DatabaseSync(
+        path.join(productDataDirectory, "catalogue.sqlite"),
+        { readOnly: true },
+      );
+      try {
+        const locations = database
+          .prepare(
+            "SELECT id FROM locations WHERE address LIKE '%/media/item' ORDER BY rowid",
+          )
+          .all() as unknown as readonly { id: string }[];
+        expect(locations.map(({ id }) => id).toSorted()).toEqual(
+          (current[0]?.locations ?? []).map(({ id }) => id).toSorted(),
+        );
+        expect(locations).toHaveLength(2);
+        // 重复目录只固定形态：两个 Location 都是 legacy-kind-equivalent 的 directory 边界，
+        // 且没有任何执行→Location 的接受映射被伪造出来。
+        expect(
+          database
+            .prepare(
+              `SELECT material_kind AS kind, derivation_kind AS derivation,
+                 COUNT(*) AS count
+               FROM observed_material_boundaries
+               GROUP BY material_kind, derivation_kind`,
+            )
+            .all(),
+        ).toEqual([
+          {
+            kind: "directory",
+            derivation: "legacy-kind-equivalent",
+            count: 2,
+          },
+        ]);
+        expect(
+          database
+            .prepare(
+              "SELECT COUNT(*) AS count FROM observed_material_acceptances",
+            )
+            .get(),
+        ).toEqual({ count: 0 });
+        // 每个等价 Location 在自己的每个覆盖根上各有一行正向支持：内层根的最近接受事件和
+        // 外层根更早的完整扫描都不被对方的时间截断。
+        expect(
+          database
+            .prepare(
+              `SELECT location_id AS locationId, COUNT(*) AS count
+               FROM current_observed_material_supports
+               GROUP BY location_id ORDER BY location_id`,
+            )
+            .all(),
+        ).toEqual(
+          locations
+            .map(({ id }) => ({ locationId: id, count: 2 }))
+            .toSorted((a, b) => (a.locationId < b.locationId ? -1 : 1)),
+        );
+        expect(
+          database
+            .prepare(
+              `SELECT observed_root_id AS rootId, COUNT(DISTINCT location_id) AS locations
+               FROM current_observed_material_supports
+               GROUP BY observed_root_id ORDER BY observed_root_id`,
+            )
+            .all(),
+        ).toEqual(
+          [
+            { rootId: manifest.observedRootId, locations: 2 },
+            { rootId: manifest.outerRootId, locations: 2 },
+          ].toSorted((a, b) => (a.rootId! < b.rootId! ? -1 : 1)),
+        );
+        expect(supportsOutsideTheirOwnFrozenEvent(database)).toEqual([]);
+      } finally {
+        database.close();
+      }
+
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).resolves.toEqual({ applied: 0 });
+      const reopened = SqliteCatalogue.forProductData(productDataDirectory);
+      expect(
+        (await reopened.listCurrentCatalogue()).map(({ entity }) => entity.id),
+      ).toEqual(current.map(({ entity }) => entity.id));
+      reopened.close();
+    } finally {
+      await rm(productDataDirectory, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("keeps each overlapping root's own latest complete observation decisive", async () => {
+    // fixture 由固定点 911a0c3 的公开产品操作生成：父根人工准入两份材料，子根覆盖同一
+    // 目录；随后同一 inode 的 rename 使子根最近完整扫描缺失 book.txt，父根再次完整扫描
+    // 确认它在。dual.txt 是两根最近完整事件都为 present 的正项。
+    const { productDataDirectory, manifest } = await oldContractFixture(
+      "overlapping-roots-before-current-supports",
+    );
+    try {
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).resolves.toEqual({ applied: 4 });
+      const catalogue = SqliteCatalogue.forProductData(productDataDirectory);
+      const current = await catalogue.listCurrentCatalogue();
+      catalogue.close();
+      expect(current.map(({ entity }) => entity.id).toSorted()).toEqual(
+        Object.values(manifest.assets).toSorted(),
+      );
+
+      const database = new DatabaseSync(
+        path.join(productDataDirectory, "catalogue.sqlite"),
+        { readOnly: true },
+      );
+      try {
+        const locationId = (suffix: string) =>
+          (
+            database
+              .prepare("SELECT id FROM locations WHERE address LIKE ?")
+              .get(`%${suffix}`) as { id: string }
+          ).id;
+        const rootRole = (rootId: string) =>
+          rootId === manifest.parentRootId
+            ? "parent"
+            : rootId === manifest.childRootId
+              ? "child"
+              : `unknown:${rootId}`;
+        const supports = (suffix: string) =>
+          supportRows(database, locationId(suffix))
+            .map(({ rootId, kind }) => `${rootRole(rootId)}:${kind}`)
+            .toSorted();
+        const coverage = (suffix: string) =>
+          coverageRows(database, locationId(suffix)).map(rootRole).toSorted();
+        // 子根 B 的最近完整事件缺失 book.txt，因此 B 坐标只有覆盖历史而没有正向支持；
+        // 父根 A 的最近完整事件为 present，只按 A 自己的坐标给出支持。
+        expect(supports("/child/book.txt")).toEqual(["parent:file"]);
+        expect(coverage("/child/book.txt")).toEqual(["child", "parent"]);
+        // 两根最近完整事件都为 present 的材料各自保留自己的正项，不互相借用。
+        expect(supports("/child/dual.txt")).toEqual([
+          "child:file",
+          "parent:file",
+        ]);
+        expect(coverage("/child/dual.txt")).toEqual(["child", "parent"]);
+        expect(supportsOutsideTheirOwnFrozenEvent(database)).toEqual([]);
+      } finally {
+        database.close();
+      }
+    } finally {
+      await rm(productDataDirectory, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("never promotes a same-address shape change into the other material kind", async () => {
+    // fixture 由固定点 911a0c3 的公开产品操作生成：普通文件与 BDMV 目录包各自被人工准入
+    // 或定向接受，随后两个地址互换形态，再由一次根完整扫描确认。
+    const { productDataDirectory, manifest } = await oldContractFixture(
+      "observed-material-shape-swap-before-current-supports",
+    );
+    try {
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).resolves.toEqual({ applied: 4 });
+      await expect(
+        inspectProductionCatalogueReadiness({ productDataDirectory }),
+      ).resolves.toMatchObject({ state: "ready" });
+
+      const catalogue = SqliteCatalogue.forProductData(productDataDirectory);
+      const current = await catalogue.listCurrentCatalogue();
+      const history = await catalogue.listWorkflowHistoryPage({ limit: 50 });
+      catalogue.close();
+      // 两个互换形态的资产都退出普通 current 查询；形态后来的热观察不能将 file 边界
+      // 升级为 directory 支持，目录边界也不能因同址新文件而复活。
+      const healthy = fixtureAssetIds(manifest, [
+        "keptFile",
+        "directoryPackage",
+      ]);
+      expect(current.map(({ entity }) => entity.id).toSorted()).toEqual(
+        healthy.toSorted(),
+      );
+      for (const exited of fixtureAssetIds(manifest, [
+        "fileToDirectory",
+        "directoryToFile",
+      ]))
+        expect(
+          history.items.some(({ resultReferences }) =>
+            resultReferences.acceptedAssetIds.includes(exited),
+          ),
+        ).toBe(true);
+
+      const database = new DatabaseSync(
+        path.join(productDataDirectory, "catalogue.sqlite"),
+        { readOnly: true },
+      );
+      try {
+        expect(
+          database
+            .prepare(
+              `SELECT substr(l.address, instr(l.address, '/media')) AS address,
+                 b.material_kind AS kind, b.derivation_kind AS derivation
+               FROM observed_material_boundaries AS b
+               INNER JOIN locations AS l ON l.id = b.location_id
+               ORDER BY l.address`,
+            )
+            .all(),
+        ).toEqual([
+          {
+            address: "/media/fileToDir",
+            kind: "file",
+            derivation: "legacy-exact",
+          },
+          {
+            address: "/media/kept.txt",
+            kind: "file",
+            derivation: "legacy-exact",
+          },
+          {
+            address: "/media/pkgKept",
+            kind: "directory",
+            derivation: "legacy-exact",
+          },
+          {
+            address: "/media/pkgToFile",
+            kind: "directory",
+            derivation: "legacy-exact",
+          },
+        ]);
+        expect(
+          database
+            .prepare(
+              `SELECT substr(l.address, instr(l.address, '/media')) AS address,
+                 s.material_kind AS kind
+               FROM current_observed_material_supports AS s
+               INNER JOIN locations AS l ON l.id = s.location_id
+               ORDER BY l.address`,
+            )
+            .all(),
+        ).toEqual([
+          { address: "/media/kept.txt", kind: "file" },
+          { address: "/media/pkgKept", kind: "directory" },
+        ]);
+        expect(supportsOutsideTheirOwnFrozenEvent(database)).toEqual([]);
+      } finally {
+        database.close();
+      }
+    } finally {
+      await rm(productDataDirectory, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("attributes each material carrier to the execution that created its Location", async () => {
+    // fixture 由固定点 911a0c3 的公开产品操作生成：三个 BDMV 目录包各自被定向识别接受，
+    // 随后 /media/case 的目录被替换成同址普通文件、由观察材料追加补到同一资产；另外两个
+    // 降格包各留下一份尚未 apply 的识别取代预演。
+    const { productDataDirectory, manifest } = await oldContractFixture(
+      "observed-material-carriers-before-current-supports",
+    );
+    try {
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).resolves.toEqual({ applied: 4 });
+      await expect(
+        inspectProductionCatalogueReadiness({ productDataDirectory }),
+      ).resolves.toMatchObject({ state: "ready" });
+
+      const catalogue = SqliteCatalogue.forProductData(productDataDirectory);
+      const current = await catalogue.listCurrentCatalogue();
+      catalogue.close();
+      expect(current.map(({ entity }) => entity.id).toSorted()).toEqual(
+        Object.values(manifest.assets).toSorted(),
+      );
+      // 追加进来的同址普通文件真正新增了一个观察 Location，与原目录包并存而不是被并入它。
+      expect(
+        (
+          current.find(
+            ({ entity }) => entity.id === manifest.assets.caseSuperseded,
+          )?.locations ?? []
+        )
+          .filter(({ kind }) => kind === "observed")
+          .map(({ address }) => address.slice(address.lastIndexOf("/media")))
+          .toSorted(),
+      ).toEqual(["/media/case", "/media/case"]);
+
+      const database = new DatabaseSync(
+        path.join(productDataDirectory, "catalogue.sqlite"),
+        { readOnly: true },
+      );
+      try {
+        // 每个 Location 保留自己那份精确边界：同址重复的 file 与 directory 都是 legacy-exact，
+        // 没有一行被降级成 legacy-kind-equivalent 的形态固定。
+        expect(
+          database
+            .prepare(
+              `SELECT material_kind AS kind, derivation_kind AS derivation,
+                 COUNT(*) AS count
+               FROM observed_material_boundaries
+               GROUP BY kind, derivation
+               ORDER BY kind`,
+            )
+            .all(),
+        ).toEqual([
+          { kind: "directory", derivation: "legacy-exact", count: 3 },
+          { kind: "file", derivation: "legacy-exact", count: 1 },
+        ]);
+        expect(
+          database
+            .prepare(
+              `SELECT substr(l.address, instr(l.address, '/media')) AS address,
+                 a.acceptance_kind AS acceptanceKind,
+                 a.work_item_key AS workItemKey, a.observed_reference AS reference,
+                 e.operation_kind AS operation, b.material_kind AS kind
+               FROM observed_material_acceptances AS a
+               INNER JOIN observed_material_boundaries AS b ON b.location_id = a.location_id
+               INNER JOIN locations AS l ON l.id = a.location_id
+               INNER JOIN workflow_executions AS e ON e.id = a.execution_id
+               ORDER BY address, acceptanceKind`,
+            )
+            .all(),
+        ).toEqual([
+          {
+            address: "/media/case",
+            acceptanceKind: "a-work-item",
+            workItemKey: "directed-recognition",
+            reference: ".",
+            operation: "scan-filesystem",
+            kind: "directory",
+          },
+          {
+            address: "/media/case",
+            acceptanceKind: "c-association",
+            workItemKey: "",
+            reference: "case",
+            operation: "associate-observed-material",
+            kind: "file",
+          },
+          {
+            address: "/media/preview",
+            acceptanceKind: "a-work-item",
+            workItemKey: "directed-recognition",
+            reference: ".",
+            operation: "scan-filesystem",
+            kind: "directory",
+          },
+          {
+            address: "/media/preview-dual",
+            acceptanceKind: "a-work-item",
+            workItemKey: "directed-recognition",
+            reference: ".",
+            operation: "scan-filesystem",
+            kind: "directory",
+          },
+        ]);
+        // 两份预演都还停留在未 apply 状态，因此不构成历史接受来源，迁移不写任何 a-preview 绑定。
+        expect(
+          database
+            .prepare(
+              "SELECT COUNT(*) AS count FROM change_impact_previews WHERE status = 'awaiting-confirmation'",
+            )
+            .get(),
+        ).toEqual({ count: 2 });
+        expect(
+          database
+            .prepare(
+              `SELECT COUNT(*) AS count FROM observed_material_acceptances
+               WHERE acceptance_kind = 'a-preview'`,
+            )
+            .get(),
+        ).toEqual({ count: 0 });
+        // 每个 Location 在自己的那个观察根上各有一行正向支持，形态与自己的边界一致。
+        expect(
+          database
+            .prepare(
+              `SELECT substr(l.address, instr(l.address, '/media')) AS address,
+                 s.material_kind AS kind, s.observed_root_id AS rootId, COUNT(*) AS count
+               FROM current_observed_material_supports AS s
+               INNER JOIN locations AS l ON l.id = s.location_id
+               GROUP BY s.location_id, s.observed_root_id
+               ORDER BY address, kind`,
+            )
+            .all(),
+        ).toEqual([
+          {
+            address: "/media/case",
+            kind: "directory",
+            rootId: manifest.observedRootId,
+            count: 1,
+          },
+          {
+            address: "/media/case",
+            kind: "file",
+            rootId: manifest.observedRootId,
+            count: 1,
+          },
+          {
+            address: "/media/preview",
+            kind: "directory",
+            rootId: manifest.observedRootId,
+            count: 1,
+          },
+          {
+            address: "/media/preview-dual",
+            kind: "directory",
+            rootId: manifest.observedRootId,
+            count: 1,
+          },
+        ]);
+        expect(
+          database
+            .prepare(
+              `SELECT COUNT(*) AS mismatched
+               FROM current_observed_material_supports AS s
+               INNER JOIN observed_material_boundaries AS b ON b.location_id = s.location_id
+               WHERE s.material_kind <> b.material_kind`,
+            )
+            .get(),
+        ).toEqual({ mismatched: 0 });
+        expect(supportsOutsideTheirOwnFrozenEvent(database)).toEqual([]);
+      } finally {
+        database.close();
+      }
+
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).resolves.toEqual({ applied: 0 });
+      const reopened = SqliteCatalogue.forProductData(productDataDirectory);
+      expect(
+        (await reopened.listCurrentCatalogue()).map(({ entity }) => entity.id),
+      ).toEqual(current.map(({ entity }) => entity.id));
+      reopened.close();
+    } finally {
+      await rm(productDataDirectory, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("rolls the material support migration back after its durable DDL and recovers the same database", async () => {
+    const { productDataDirectory } = await oldContractFixture(
+      "legacy-duplicate-package-before-current-supports",
+    );
+    const head = productionMigrationArtifacts.find(
+      ({ id }) => id === "20261003000000_current_observed_material_supports",
+    )!;
+    try {
+      // 让本迁移在持久 DDL 之后的回填语句上失败：保留的完整快照 JSON 已不可解析。
+      const corrupting = new DatabaseSync(
+        path.join(productDataDirectory, "catalogue.sqlite"),
+      );
+      let snapshots: string | undefined;
+      try {
+        const row = corrupting
+          .prepare(
+            `SELECT filesystem_snapshots_json AS json FROM workflow_executions
+             WHERE filesystem_snapshots_json IS NOT NULL LIMIT 1`,
+          )
+          .get() as { json: string };
+        snapshots = row.json;
+        corrupting
+          .prepare(
+            `UPDATE workflow_executions SET filesystem_snapshots_json = '['
+             WHERE filesystem_snapshots_json = ?`,
+          )
+          .run(row.json);
+      } finally {
+        corrupting.close();
+      }
+
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).rejects.toThrow();
+      const closed = new DatabaseSync(
+        path.join(productDataDirectory, "catalogue.sqlite"),
+        { readOnly: true },
+      );
+      try {
+        // DDL、回填与账本同属一个事务：中断点之后的表与账本行都不留下。
+        expect(
+          closed
+            .prepare(
+              `SELECT name FROM sqlite_master WHERE name IN
+               ('observed_material_boundaries', 'observed_material_acceptances',
+                'current_observed_material_supports')`,
+            )
+            .all(),
+        ).toEqual([]);
+        expect(
+          closed
+            .prepare(
+              "SELECT id FROM __digital_catalogue_migrations WHERE id = ?",
+            )
+            .get(head.id),
+        ).toBeUndefined();
+        expect(
+          closed
+            .prepare(
+              "SELECT id FROM __digital_catalogue_migration_failures WHERE id = ?",
+            )
+            .get(head.id),
+        ).toEqual({ id: head.id });
+      } finally {
+        closed.close();
+      }
+      await expect(
+        inspectProductionCatalogueReadiness({ productDataDirectory }),
+      ).resolves.toMatchObject({ state: "migration-failed" });
+
+      const repairing = new DatabaseSync(
+        path.join(productDataDirectory, "catalogue.sqlite"),
+      );
+      try {
+        repairing
+          .prepare(
+            `UPDATE workflow_executions SET filesystem_snapshots_json = ?
+             WHERE filesystem_snapshots_json = '['`,
+          )
+          .run(snapshots!);
+      } finally {
+        repairing.close();
+      }
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).resolves.toEqual({ applied: 4 });
+      await expect(
+        inspectProductionCatalogueReadiness({ productDataDirectory }),
+      ).resolves.toMatchObject({ state: "ready" });
+      const ledger = new DatabaseSync(
+        path.join(productDataDirectory, "catalogue.sqlite"),
+        { readOnly: true },
+      );
+      try {
+        expect(
+          ledger
+            .prepare(
+              "SELECT checksum FROM __digital_catalogue_migrations WHERE id = ?",
+            )
+            .get(head.id),
+        ).toEqual({ checksum: head.checksum });
+        expect(
+          ledger
+            .prepare(
+              "SELECT id FROM __digital_catalogue_migration_failures WHERE id = ?",
+            )
+            .get(head.id),
+        ).toBeUndefined();
+      } finally {
+        ledger.close();
+      }
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).resolves.toEqual({ applied: 0 });
+    } finally {
+      await rm(productDataDirectory, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("当耐久当前材料内容与其冻结坐标不再匹配时闭锁正式 readiness", async () => {
+    // 三张新表都是当前资料库查询不可缺的耐久合同。逐表把一行已审阅内容的决定性字段
+    // 改成同形但不同源的值，正式 readiness 必须闭锁；恢复原值后同一个库重新 ready。
+    const { productDataDirectory } = await oldContractFixture(
+      "observed-material-before-current-supports",
+    );
+    const databasePath = path.join(productDataDirectory, "catalogue.sqlite");
+    const corruptions = [
+      {
+        table: "current_observed_material_supports",
+        column: "authorized_targets_json",
+        damaged: "{",
+      },
+      {
+        table: "observed_material_boundaries",
+        column: "artifact_id",
+        damaged: "damaged-artifact",
+      },
+      {
+        table: "observed_material_acceptances",
+        column: "association_id",
+        damaged: "damaged-association",
+      },
+    ] as const;
+    try {
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).resolves.toEqual({ applied: 4 });
+      await expect(
+        inspectProductionCatalogueReadiness({ productDataDirectory }),
+      ).resolves.toMatchObject({ state: "ready" });
+
+      for (const { table, column, damaged } of corruptions) {
+        const damaging = new DatabaseSync(databasePath);
+        let rowId: number;
+        let original: string;
+        try {
+          const row = damaging
+            .prepare(
+              `SELECT rowid AS row_id, ${column} AS value FROM ${table} ORDER BY rowid LIMIT 1`,
+            )
+            .get() as { row_id: number; value: string };
+          rowId = row.row_id;
+          original = row.value;
+          damaging
+            .prepare(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`)
+            .run(damaged, rowId);
+        } finally {
+          damaging.close();
+        }
+
+        await expect(
+          inspectProductionCatalogueReadiness({ productDataDirectory }),
+        ).resolves.toMatchObject({ state: "catalogue-integrity-failed" });
+        const catalogue = SqliteCatalogue.forProductData(productDataDirectory);
+        try {
+          await expect(catalogue.listCurrentCatalogue()).rejects.toThrow(
+            "观察材料决定支持链损坏",
+          );
+        } finally {
+          catalogue.close();
+        }
+
+        const restored = new DatabaseSync(databasePath);
+        try {
+          restored
+            .prepare(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`)
+            .run(original, rowId);
+        } finally {
+          restored.close();
+        }
+        await expect(
+          inspectProductionCatalogueReadiness({ productDataDirectory }),
+        ).resolves.toMatchObject({ state: "ready" });
+      }
+
+      // 自身载体一致性：a-work-item 的 proposal 与 work item key 都必须落在它自己执行的
+      // work_items_json 上。把它们换成库里另一条真实执行持有的引用后，正式 readiness 必须
+      // 闭锁并挡住公开查询；换回原值后同一个库重新 ready。
+      const carrierProbe = new DatabaseSync(databasePath, { readOnly: true });
+      let carrierRowId: number;
+      let foreignProposalId: string;
+      let foreignWorkItemKey: string;
+      try {
+        carrierRowId = (
+          carrierProbe
+            .prepare(
+              `SELECT rowid AS row_id FROM observed_material_acceptances
+               WHERE acceptance_kind = 'a-work-item' AND work_item_key <> ''
+               ORDER BY rowid LIMIT 1`,
+            )
+            .get() as { row_id: number }
+        ).row_id;
+        const foreignProposal = carrierProbe
+          .prepare(
+            `SELECT (SELECT p.id FROM recognition_proposals p
+                      WHERE p.execution_id <> a.execution_id LIMIT 1) AS other_id
+             FROM observed_material_acceptances a WHERE a.rowid = ?`,
+          )
+          .get(carrierRowId) as { other_id: string | null };
+        const foreignItem = carrierProbe
+          .prepare(
+            `SELECT json_extract(item.value, '$.key') AS other_key
+             FROM workflow_executions e
+             CROSS JOIN json_each(COALESCE(e.work_items_json, '[]')) item
+             WHERE e.id <> (SELECT execution_id FROM observed_material_acceptances WHERE rowid = ?)
+               AND json_extract(item.value, '$.key') IS NOT NULL
+               AND json_extract(item.value, '$.key') <>
+                   (SELECT work_item_key FROM observed_material_acceptances WHERE rowid = ?)
+             LIMIT 1`,
+          )
+          .get(carrierRowId, carrierRowId) as { other_key: string | null };
+        if (foreignProposal.other_id === null || foreignItem.other_key === null)
+          throw new Error(
+            "fixture 缺少另一条真实执行持有的 proposal 或 work item 引用",
+          );
+        foreignProposalId = foreignProposal.other_id;
+        foreignWorkItemKey = foreignItem.other_key;
+      } finally {
+        carrierProbe.close();
+      }
+
+      for (const [column, foreignValue] of [
+        ["proposal_id", foreignProposalId],
+        ["work_item_key", foreignWorkItemKey],
+      ] as const) {
+        const damaging = new DatabaseSync(databasePath);
+        let original: string;
+        try {
+          original = (
+            damaging
+              .prepare(
+                `SELECT ${column} AS value FROM observed_material_acceptances WHERE rowid = ?`,
+              )
+              .get(carrierRowId) as { value: string }
+          ).value;
+          damaging
+            .prepare(
+              `UPDATE observed_material_acceptances SET ${column} = ? WHERE rowid = ?`,
+            )
+            .run(foreignValue, carrierRowId);
+        } finally {
+          damaging.close();
+        }
+        await expect(
+          inspectProductionCatalogueReadiness({ productDataDirectory }),
+        ).resolves.toMatchObject({ state: "catalogue-integrity-failed" });
+        const catalogue = SqliteCatalogue.forProductData(productDataDirectory);
+        try {
+          await expect(catalogue.listCurrentCatalogue()).rejects.toThrow(
+            "观察材料决定支持链损坏",
+          );
+        } finally {
+          catalogue.close();
+        }
+        const restored = new DatabaseSync(databasePath);
+        try {
+          restored
+            .prepare(
+              `UPDATE observed_material_acceptances SET ${column} = ? WHERE rowid = ?`,
+            )
+            .run(original, carrierRowId);
+        } finally {
+          restored.close();
+        }
+        await expect(
+          inspectProductionCatalogueReadiness({ productDataDirectory }),
+        ).resolves.toMatchObject({ state: "ready" });
+      }
+
+      // 自身载体的来源遗漏：清掉真实 work item 的 key，或让不带工作项的 b-local 与
+      // c-association 借用另一条真实执行现有的 proposal，都必须被同一份耐久闭锁接住；
+      // 换回原值后同一个库重新 ready，公开查询恢复。
+      const closesOwnCarrierOmission = async (
+        directory: string,
+        acceptanceKind: "a-work-item" | "b-local" | "c-association",
+        column: "work_item_key" | "proposal_id",
+      ) => {
+        const target = path.join(directory, "catalogue.sqlite");
+        const probe = new DatabaseSync(target, { readOnly: true });
+        let rowId: number;
+        let damagedValue: string;
+        try {
+          rowId = (
+            probe
+              .prepare(
+                `SELECT rowid AS row_id FROM observed_material_acceptances
+                 WHERE acceptance_kind = ?
+                   AND (? <> 'a-work-item' OR work_item_key <> '')
+                 ORDER BY rowid LIMIT 1`,
+              )
+              .get(acceptanceKind, acceptanceKind) as { row_id: number }
+          ).row_id;
+          if (column === "work_item_key") {
+            damagedValue = "";
+          } else {
+            damagedValue =
+              (
+                probe
+                  .prepare(
+                    `SELECT other.proposal_id AS other_id
+                   FROM observed_material_acceptances AS other
+                   INNER JOIN recognition_proposals AS borrowed
+                     ON borrowed.id = other.proposal_id
+                   WHERE other.rowid <> ? AND borrowed.execution_id <>
+                         (SELECT execution_id FROM observed_material_acceptances WHERE rowid = ?)
+                   LIMIT 1`,
+                  )
+                  .get(rowId, rowId) as { other_id: string | undefined }
+              ).other_id ?? "";
+          }
+        } finally {
+          probe.close();
+        }
+        if (damagedValue === "" && column === "proposal_id")
+          throw new Error(
+            `fixture 缺少 ${acceptanceKind} 可借用的另一真实执行 proposal`,
+          );
+
+        const damaging = new DatabaseSync(target);
+        let original: string;
+        try {
+          original = (
+            damaging
+              .prepare(
+                `SELECT ${column} AS value FROM observed_material_acceptances WHERE rowid = ?`,
+              )
+              .get(rowId) as { value: string }
+          ).value;
+          damaging
+            .prepare(
+              `UPDATE observed_material_acceptances SET ${column} = ? WHERE rowid = ?`,
+            )
+            .run(damagedValue, rowId);
+        } finally {
+          damaging.close();
+        }
+        await expect(
+          inspectProductionCatalogueReadiness({
+            productDataDirectory: directory,
+          }),
+        ).resolves.toMatchObject({ state: "catalogue-integrity-failed" });
+        const catalogue = SqliteCatalogue.forProductData(directory);
+        try {
+          await expect(catalogue.listCurrentCatalogue()).rejects.toThrow(
+            "观察材料决定支持链损坏",
+          );
+        } finally {
+          catalogue.close();
+        }
+        const restored = new DatabaseSync(target);
+        try {
+          restored
+            .prepare(
+              `UPDATE observed_material_acceptances SET ${column} = ? WHERE rowid = ?`,
+            )
+            .run(original, rowId);
+        } finally {
+          restored.close();
+        }
+        await expect(
+          inspectProductionCatalogueReadiness({
+            productDataDirectory: directory,
+          }),
+        ).resolves.toMatchObject({ state: "ready" });
+      };
+
+      await closesOwnCarrierOmission(
+        productDataDirectory,
+        "a-work-item",
+        "work_item_key",
+      );
+      await closesOwnCarrierOmission(
+        productDataDirectory,
+        "b-local",
+        "proposal_id",
+      );
+
+      // c-association 的自身载体是该执行自己的 accepted checkpoint，逐文件投影精确归属。
+      const carriers = await oldContractFixture(
+        "observed-material-carriers-before-current-supports",
+      );
+      try {
+        await expect(
+          prepareProductionCatalogue({
+            productDataDirectory: carriers.productDataDirectory,
+          }),
+        ).resolves.toEqual({ applied: 4 });
+        await expect(
+          inspectProductionCatalogueReadiness({
+            productDataDirectory: carriers.productDataDirectory,
+          }),
+        ).resolves.toMatchObject({ state: "ready" });
+        await closesOwnCarrierOmission(
+          carriers.productDataDirectory,
+          "c-association",
+          "proposal_id",
+        );
+      } finally {
+        await rm(carriers.productDataDirectory, {
+          recursive: true,
+          force: true,
+        });
+      }
+    } finally {
+      await rm(productDataDirectory, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("当旧合同 Location 同时被见证为文件与目录包时拒绝选定单一材料形态", async () => {
+    // 受控损坏副本：只复用该 fixture 已部署 filesystem-package producer 留下的工作项，
+    // 把它与它自己冻结的 snapshot root 指向库里真实存在的观察文件 Location，从而在同一
+    // Location 上同时留下 file 与 package directory witness。
+    const { productDataDirectory, manifest } = await oldContractFixture(
+      "observed-material-shape-swap-before-current-supports",
+    );
+    const head = productionMigrationArtifacts.find(
+      ({ id }) => id === "20261003000000_current_observed_material_supports",
+    )!;
+    const databasePath = path.join(productDataDirectory, "catalogue.sqlite");
+    try {
+      const damaging = new DatabaseSync(databasePath);
+      let frozen: {
+        workItems: string;
+        snapshot: string;
+        filesystemSnapshots: string;
+      };
+      let packageExecutionId: string;
+      try {
+        const targetAssetId = manifest.assets["fileToDirectory"];
+        if (targetAssetId === undefined)
+          throw new Error("fixture manifest 缺少 fileToDirectory 资产");
+        const target = damaging
+          .prepare(
+            `SELECT l.address AS address, aa.subject_id AS assetId,
+                    rd.proposal_id AS proposalId
+             FROM locations AS l
+             INNER JOIN artifact_associations AS aa
+               ON aa.artifact_id = l.artifact_id
+              AND aa.role = 'asset.material-delivered'
+             INNER JOIN recognition_decisions AS rd ON rd.asset_id = aa.subject_id
+             WHERE l.kind = 'observed' AND aa.subject_id = ?
+               AND l.address LIKE '%/fileToDir'
+             LIMIT 1`,
+          )
+          .get(targetAssetId) as {
+          address: string;
+          assetId: string;
+          proposalId: string;
+        };
+        const packageExecution = damaging
+          .prepare(
+            `SELECT id, work_items_json AS workItems, snapshot_json AS snapshot,
+                    filesystem_snapshots_json AS filesystemSnapshots
+             FROM workflow_executions
+             WHERE work_items_json LIKE '%filesystem-package%'
+               AND filesystem_snapshots_json IS NOT NULL
+             LIMIT 1`,
+          )
+          .get() as {
+          id: string;
+          workItems: string;
+          snapshot: string;
+          filesystemSnapshots: string;
+        };
+        packageExecutionId = packageExecution.id;
+        frozen = {
+          workItems: packageExecution.workItems,
+          snapshot: packageExecution.snapshot,
+          filesystemSnapshots: packageExecution.filesystemSnapshots,
+        };
+        damaging
+          .prepare(
+            `UPDATE workflow_executions
+             SET work_items_json = json_set(work_items_json,
+                   '$[0].proposalId', ?, '$[0].acceptedAssetId', ?,
+                   '$[0].outcome', 'accepted', '$[0].key', 'damaged-package-witness'),
+                 snapshot_json = json_set(snapshot_json, '$.root', ?),
+                 filesystem_snapshots_json = json_set(filesystem_snapshots_json,
+                   '$[0].root', ?)
+             WHERE id = ?`,
+          )
+          .run(
+            target.proposalId,
+            target.assetId,
+            target.address,
+            target.address,
+            packageExecutionId,
+          );
+      } finally {
+        damaging.close();
+      }
+
+      let rejection: unknown;
+      try {
+        await prepareProductionCatalogue({ productDataDirectory });
+      } catch (error) {
+        rejection = error;
+      }
+      expect(rejection).toEqual(
+        expect.objectContaining({
+          message: expect.stringContaining("生产迁移"),
+          cause: expect.objectContaining({
+            message: expect.stringContaining(
+              "digital_c01_legacy_material_carrier_ambiguous",
+            ),
+          }),
+        }),
+      );
+
+      const rolledBack = new DatabaseSync(databasePath, { readOnly: true });
+      try {
+        // 跨形态 witness 在第 7 步 guard 前不被抹掉：矛盾证据让 DDL、三张新表回填、
+        // business 写入与成功账本一起回滚。
+        expect(
+          rolledBack
+            .prepare(
+              `SELECT name FROM sqlite_master WHERE name IN
+               ('observed_material_boundaries', 'observed_material_acceptances',
+                'current_observed_material_supports')`,
+            )
+            .all(),
+        ).toEqual([]);
+        expect(
+          rolledBack
+            .prepare(
+              "SELECT id FROM __digital_catalogue_migrations WHERE id = ?",
+            )
+            .get(head.id),
+        ).toBeUndefined();
+      } finally {
+        rolledBack.close();
+      }
+      await expect(
+        inspectProductionCatalogueReadiness({ productDataDirectory }),
+      ).resolves.toMatchObject({ state: "migration-failed" });
+
+      const repairing = new DatabaseSync(databasePath);
+      try {
+        repairing
+          .prepare(
+            `UPDATE workflow_executions
+             SET work_items_json = ?, snapshot_json = ?, filesystem_snapshots_json = ?
+             WHERE id = ?`,
+          )
+          .run(
+            frozen.workItems,
+            frozen.snapshot,
+            frozen.filesystemSnapshots,
+            packageExecutionId,
+          );
+      } finally {
+        repairing.close();
+      }
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).resolves.toEqual({ applied: 4 });
+      await expect(
+        inspectProductionCatalogueReadiness({ productDataDirectory }),
+      ).resolves.toMatchObject({ state: "ready" });
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).resolves.toEqual({ applied: 0 });
+    } finally {
+      await rm(productDataDirectory, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
+
+type OldContractManifest = {
+  readonly assets: Record<string, string>;
+  readonly observedRootId?: string;
+  readonly outerRootId?: string;
+  readonly parentRootId?: string;
+  readonly childRootId?: string;
+};
+
+async function oldContractFixture(fixture: string): Promise<{
+  readonly productDataDirectory: string;
+  readonly manifest: OldContractManifest;
+}> {
+  const productDataDirectory = await temporaryProductData();
+  await mkdir(path.join(productDataDirectory, "managed-artifacts"), {
+    recursive: true,
+  });
+  await copyFile(
+    new URL(`./fixtures/${fixture}/catalogue.sqlite`, import.meta.url),
+    path.join(productDataDirectory, "catalogue.sqlite"),
+  );
+  return {
+    productDataDirectory,
+    manifest: JSON.parse(
+      await readFile(
+        new URL(`./fixtures/${fixture}/manifest.json`, import.meta.url),
+        "utf8",
+      ),
+    ) as OldContractManifest,
+  };
+}
+
+function fixtureAssetIds(
+  manifest: OldContractManifest,
+  keys: readonly string[],
+): readonly string[] {
+  return keys.map((key) => {
+    const id = manifest.assets[key];
+    if (id === undefined) throw new Error(`fixture manifest 缺少资产 ${key}`);
+    return id;
+  });
+}
+
+function supportRows(database: DatabaseSync, locationId: string) {
+  return database
+    .prepare(
+      `SELECT observed_root_id AS rootId, material_kind AS kind
+       FROM current_observed_material_supports WHERE location_id = ?
+       ORDER BY observed_root_id`,
+    )
+    .all(locationId) as unknown as readonly { rootId: string; kind: string }[];
+}
+
+function coverageRows(database: DatabaseSync, locationId: string) {
+  return (
+    database
+      .prepare(
+        `SELECT observed_root_id AS rootId FROM current_file_observation_supports
+         WHERE location_id = ? ORDER BY observed_root_id`,
+      )
+      .all(locationId) as unknown as readonly { rootId: string }[]
+  ).map(({ rootId }) => rootId);
+}
+
+/**
+ * 每行正向支持必须整体来自同一执行自己的完整冻结事件：snapshot、时刻、根坐标与授权闭包
+ * 都出自那一行，任何跨根或跨事件拼接都会出现在结果里。
+ */
+function supportsOutsideTheirOwnFrozenEvent(database: DatabaseSync) {
+  return database
+    .prepare(
+      `SELECT supports.location_id AS locationId, supports.observed_root_id AS rootId
+       FROM current_observed_material_supports AS supports
+       WHERE NOT EXISTS (
+         SELECT 1 FROM workflow_executions AS executions
+         CROSS JOIN json_each(executions.filesystem_snapshots_json) AS snapshot
+         CROSS JOIN json_each(
+           COALESCE(json_extract(executions.workflow_input_json, '$.observedRoots'), '[]')
+         ) AS root
+         WHERE json_extract(snapshot.value, '$.id') = supports.snapshot_id
+           AND json_extract(snapshot.value, '$.observedAt') = supports.observed_at
+           AND json_extract(root.value, '$.id') = supports.observed_root_id
+           AND CAST(json_extract(root.value, '$.configVersion') AS INTEGER) =
+             supports.observed_root_version
+           AND json_extract(root.value, '$.containerPath') = supports.observed_root_path
+           AND COALESCE(json_extract(root.value, '$.authorizedTargetRoots'), '[]') =
+             supports.authorized_targets_json
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM workflow_executions AS executions
+         CROSS JOIN json_each(executions.filesystem_snapshots_json) AS snapshot
+         CROSS JOIN json_each(
+           COALESCE(json_extract(executions.resolved_selection_json, '$.filesystemScopes'), '[]')
+         ) AS scope
+         WHERE json_extract(snapshot.value, '$.id') = supports.snapshot_id
+           AND json_extract(snapshot.value, '$.observedAt') = supports.observed_at
+           AND json_extract(scope.value, '$.observedRoot.id') = supports.observed_root_id
+           AND CAST(json_extract(scope.value, '$.observedRoot.configVersion') AS INTEGER) =
+             supports.observed_root_version
+           AND json_extract(scope.value, '$.observedRoot.containerPath') =
+             supports.observed_root_path
+           AND COALESCE(
+             json_extract(scope.value, '$.observedRoot.authorizedTargetRoots'), '[]'
+           ) = supports.authorized_targets_json
+       )
+       ORDER BY supports.rowid`,
+    )
+    .all() as readonly Record<string, string>[];
+}
 
 async function temporaryProductData(): Promise<string> {
   return await mkdtemp(

@@ -1,0 +1,57 @@
+{
+  "schema": "digital-old-contract-fixture/1",
+  "generatedFrom": "911a0c30cf4d094ffca18f64c4f3a164f730f6bc",
+  "stripRoot": "/tmp/digital-disposable-c01-duplicate-package",
+  "observedRootId": "observed_root_cb1b1c8a-7ddd-4f15-bb30-ca9677cf96fc",
+  "outerRootId": "observed_root_8391d986-de33-4642-a4c9-87d8573e1952",
+  "roots": {
+    "accepting": "outer/media",
+    "outer": "outer"
+  },
+  "assets": {
+    "duplicatePackage": "entity_5b525fee-d3af-49dc-b662-6ee337d63834"
+  },
+  "media": [
+    {
+      "relativePath": "outer/media/item",
+      "kind": "directory"
+    },
+    {
+      "relativePath": "outer/media/item/BDMV/index.bdmv",
+      "kind": "file",
+      "content": "index"
+    },
+    {
+      "relativePath": "outer/media/item/BDMV/MovieObject.bdmv",
+      "kind": "file",
+      "content": "movie"
+    },
+    {
+      "relativePath": "outer/media/item/BDMV/STREAM/00000.m2ts",
+      "kind": "file",
+      "content": "stream"
+    },
+    {
+      "relativePath": "outer/media/item/BDMV/PLAYLIST",
+      "kind": "directory"
+    }
+  ],
+  "duplicateAddress": "/outer/media/item",
+  "observedLocations": [
+    {
+      "locationId": "location_5a9871e1dd1f204241d0fd585005ad769252994daf21d9821b81af5c5476886e",
+      "address": "/outer/media/item",
+      "artifactId": "artifact_16fe323e-2b00-4905-b8fb-2d3d031e52cd",
+      "kind": "observed",
+      "observations": 0
+    },
+    {
+      "locationId": "location_c718b7181448cc4f40ff4f74c28c68c730550bb5fe3e4cfb37d585be5f5100dd",
+      "address": "/outer/media/item",
+      "artifactId": "artifact_cdbde8ed-b121-42ea-ae19-50f385928de3",
+      "kind": "observed",
+      "observations": 0
+    }
+  ],
+  "baselineCurrentIds": ["entity_5b525fee-d3af-49dc-b662-6ee337d63834"]
+}

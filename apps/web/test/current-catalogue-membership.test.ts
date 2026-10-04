@@ -480,6 +480,114 @@ it("uses an observed-material association's frozen target closure for current me
   }
 }, 60_000);
 
+it("keeps the last confirmed membership when a scan cannot complete", async () => {
+  const temporary = await mkdtemp(
+    path.join(tmpdir(), "digital-disposable-current-catalogue-incomplete-"),
+  );
+  const data = path.join(temporary, "data");
+  const media = path.join(temporary, "media");
+  const outside = path.join(temporary, "outside.mkv");
+  await mkdir(media, { recursive: true });
+  await writeFile(path.join(media, "local.txt"), "已确认的本地内容");
+  await writeFile(outside, "范围外内容");
+  await prepareWebProductData(data);
+  const product = productFor(data);
+  try {
+    const root = await createRoot(product, media);
+    const assetId = await admitManualContent(product, root.id, "local.txt");
+
+    await symlink(outside, path.join(media, "unfollowable.mkv"));
+    const scan = await startRefresh(product, root.id);
+    await expect
+      .poll(async () => intakeExecution(product, root.id, scan.id))
+      .toMatchObject({ execution: { status: "failed" } });
+
+    // 无法完成的检查不是材料不存在，已确认身份与成员资格都保持。
+    await expect(currentCatalogue(product)).resolves.toMatchObject({
+      assets: [expect.objectContaining({ id: assetId, title: "本地内容" })],
+    });
+    await expect(
+      product.result.api.request(`/catalogue/${assetId}`),
+    ).resolves.toMatchObject({ status: 200 });
+  } finally {
+    await product.close();
+    await rm(temporary, { recursive: true, force: true });
+  }
+}, 60_000);
+
+it("keeps pages, the search total, and a reopened database consistent as the middle material exits", async () => {
+  const temporary = await mkdtemp(
+    path.join(tmpdir(), "digital-disposable-current-catalogue-pagination-"),
+  );
+  const data = path.join(temporary, "data");
+  const media = path.join(temporary, "media");
+  await mkdir(media, { recursive: true });
+  const names = ["a.txt", "b.txt", "c.txt"] as const;
+  for (const name of names)
+    await writeFile(path.join(media, name), `已确认内容-${name}`);
+  await prepareWebProductData(data);
+  let product: WebProduct | undefined = productFor(data);
+  try {
+    const root = await createRoot(product, media);
+    const admitted: string[] = [];
+    for (const name of names)
+      admitted.push(await admitManualContent(product, root.id, name));
+    expect(await currentPageIds(product)).toHaveLength(3);
+    expect(await currentSearchTotal(product)).toBe(3);
+
+    await unlink(path.join(media, "b.txt"));
+    const scan = await startRefresh(product, root.id);
+    const beforeReopen = product;
+    await expect
+      .poll(async () => intakeExecution(beforeReopen, root.id, scan.id))
+      .toMatchObject({ execution: { status: "completed" } });
+
+    const survivor = admitted.find((id) => id !== admitted[1])!;
+    const afterRemoval = await currentPageIds(product);
+    expect(afterRemoval).toHaveLength(2);
+    expect(afterRemoval).not.toContain(admitted[1]);
+    expect(afterRemoval).toContain(survivor);
+    expect(await currentSearchTotal(product)).toBe(2);
+    await expect(
+      product.result.api.request(`/catalogue/${admitted[1]}`),
+    ).resolves.toMatchObject({ status: 404 });
+
+    await product.close();
+    product = productFor(data);
+    expect(await currentPageIds(product)).toEqual(afterRemoval);
+    expect(await currentSearchTotal(product)).toBe(2);
+  } finally {
+    await product?.close();
+    await rm(temporary, { recursive: true, force: true });
+  }
+}, 60_000);
+
+async function currentPageIds(product: WebProduct): Promise<readonly string[]> {
+  const ids: string[] = [];
+  let cursor: string | undefined;
+  for (;;) {
+    const page = await (
+      await product.result.api.request(
+        `/catalogue?surface=current-catalogue&limit=1${
+          cursor === undefined ? "" : `&cursor=${cursor}`
+        }`,
+      )
+    ).json();
+    for (const asset of page.assets) ids.push(asset.id as string);
+    cursor = page.pagination?.nextCursor;
+    if (cursor === undefined) return ids;
+  }
+}
+
+async function currentSearchTotal(product: WebProduct): Promise<number> {
+  const page = await (
+    await product.result.api.request(
+      "/catalogue?surface=current-catalogue&sort=recent&limit=1",
+    )
+  ).json();
+  return page.total as number;
+}
+
 function productFor(data: string): WebProduct {
   return runProduct(
     { productDataDirectory: data, environment: {} },

@@ -1,0 +1,65 @@
+{
+  "schema": "digital-old-contract-fixture/1",
+  "generatedFrom": "911a0c30cf4d094ffca18f64c4f3a164f730f6bc",
+  "stripRoot": "/tmp/digital-disposable-c01-overlapping-roots",
+  "parentRootId": "observed_root_106bef32-9b57-4b0a-a121-555bb03dc058",
+  "childRootId": "observed_root_3f1b9743-452d-4d57-b7ad-fb68cb1c262e",
+  "roots": {
+    "parent": "media",
+    "child": "media/child"
+  },
+  "assets": {
+    "childOnlyFile": "entity_7736d914-4054-43b6-8ff8-84c407ec0820",
+    "bothRootsFile": "entity_d4ac593e-5bac-4ade-b692-9b38c8645c21",
+    "parentOnlyFile": "entity_e9cd2717-1553-4df6-a408-194d81c86844"
+  },
+  "media": [
+    {
+      "relativePath": "media/child",
+      "kind": "directory"
+    },
+    {
+      "relativePath": "media/child/book.txt",
+      "kind": "file",
+      "content": "重叠根材料"
+    },
+    {
+      "relativePath": "media/child/dual.txt",
+      "kind": "file",
+      "content": "两根都在的材料"
+    },
+    {
+      "relativePath": "media/child/solo.txt",
+      "kind": "file",
+      "content": "只属子根材料"
+    }
+  ],
+  "observedLocations": [
+    {
+      "locationId": "location_d64d0f38d80112ff902895faf075c71db7cbf3ae74dff1c7dafb71612bc56476",
+      "address": "/media/child/book.txt",
+      "artifactId": "artifact_754d8128-72f4-46a9-9506-23f0b0b86d56",
+      "kind": "observed",
+      "observations": 1
+    },
+    {
+      "locationId": "location_6962c85d5f82699ecaf2fc17e777b50df2e69e0770c753761711136088dfbbd2",
+      "address": "/media/child/dual.txt",
+      "artifactId": "artifact_d7a99425-c65e-4a59-9f4c-a5f77189188c",
+      "kind": "observed",
+      "observations": 1
+    },
+    {
+      "locationId": "location_4ed955b940f73134e72734ae7a616eaac706ea77a51682cabcf0ebad7dc3f5f4",
+      "address": "/media/child/solo.txt",
+      "artifactId": "artifact_7b8e4a49-c73e-4b0a-bdbd-e19d6727b551",
+      "kind": "observed",
+      "observations": 1
+    }
+  ],
+  "baselineCurrentIds": [
+    "entity_7736d914-4054-43b6-8ff8-84c407ec0820",
+    "entity_d4ac593e-5bac-4ade-b692-9b38c8645c21",
+    "entity_e9cd2717-1553-4df6-a408-194d81c86844"
+  ]
+}

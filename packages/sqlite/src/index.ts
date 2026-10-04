@@ -69,6 +69,8 @@ import type {
   RelationshipChange,
   RelationshipChangePreview,
   RelationshipDecisionPersistence,
+  FilesystemPackageSnapshot,
+  ObservedMaterialAcceptanceBinding,
 } from "@digital/application";
 import {
   createObservedRootAuthorityIndex,
@@ -181,6 +183,7 @@ import {
   changeImpactPreviews,
   currentFileObservations,
   currentFileObservationSupports,
+  currentObservedMaterialSupports,
   currentSourceArtifactCandidateLineages,
   currentSourceAssociations,
   entities,
@@ -192,6 +195,8 @@ import {
   entityRelationshipParticipants,
   entityRelationships,
   entityResolutionDecisions,
+  observedMaterialAcceptances,
+  observedMaterialBoundaries,
   observedEntities,
   observedEntityMentions,
   observedEntityResolutions,
@@ -622,8 +627,10 @@ type ChangeImpactAttentionRow = {
 };
 
 /**
- * 只有曾由登记位置成功观察支持、且没有任何仍适用支持的材料才退出当前资料库。
- * 来源型和托管型内容继续由既有识别头进入投影。
+ * 受观察覆盖历史管理的资产，必须至少有一项仍有效的正向材料支持才留在当前资料库：
+ * 某个 active 观察根版本完整确认了其耐久材料边界所固定形态的文件或目录。
+ * 覆盖历史本身不证明材料存在；封面等描述／展示产物也不提供成员资格。
+ * 没有观察覆盖历史的资产沿用既有来源型／托管型进入规则。
  */
 function currentObservedMaterialPredicate(): SQL {
   return sql`(
@@ -654,15 +661,17 @@ function currentObservedMaterialPredicate(): SQL {
     FROM ${artifactAssociations}
     INNER JOIN ${locations}
       ON ${locations.artifactId} = ${artifactAssociations.artifactId}
-    INNER JOIN ${currentFileObservationSupports}
-      ON ${currentFileObservationSupports.locationId} = ${locations.id}
+    INNER JOIN ${currentObservedMaterialSupports}
+      ON ${currentObservedMaterialSupports.locationId} = ${locations.id}
+    INNER JOIN ${observedMaterialBoundaries}
+      ON ${observedMaterialBoundaries.locationId} = ${locations.id}
     INNER JOIN ${observedRootRegistrations}
-     ON ${observedRootRegistrations.id} = ${currentFileObservationSupports.observedRootId}
-     AND ${observedRootRegistrations.configVersion} = ${currentFileObservationSupports.observedRootVersion}
+     ON ${observedRootRegistrations.id} = ${currentObservedMaterialSupports.observedRootId}
+     AND ${observedRootRegistrations.configVersion} = ${currentObservedMaterialSupports.observedRootVersion}
      AND ${observedRootRegistrations.status} = 'active'
     WHERE NOT EXISTS (
       SELECT 1
-      FROM json_each(${currentFileObservationSupports.authorizedTargetsJson}) AS frozen_target
+      FROM json_each(${currentObservedMaterialSupports.authorizedTargetsJson}) AS frozen_target
       LEFT JOIN ${observedRootRegistrations} AS current_target
         ON current_target.id = json_extract(frozen_target.value, '$.id')
        AND current_target.config_version = json_extract(frozen_target.value, '$.configVersion')
@@ -4276,6 +4285,9 @@ export class SqliteCatalogue
     readonly expectedExecution: WorkflowExecution;
     readonly execution: WorkflowExecution;
     readonly accepted: AcceptedRecognition;
+    readonly observedMaterialAcceptances?:
+      | readonly ObservedMaterialAcceptanceBinding[]
+      | undefined;
     readonly expectedUnassignedMaterials?: readonly Pick<
       Location,
       "artifactId" | "address"
@@ -4363,10 +4375,10 @@ export class SqliteCatalogue
             input.accepted.proposal,
           );
           this.insertAcceptedFactsWithDrizzle(transaction, input.accepted);
-          this.projectCurrentFileObservationsWithDrizzle(
+          this.recordObservedMaterialAcceptancesWithDrizzle(
             transaction,
             input.execution,
-            input.accepted.locations,
+            input.observedMaterialAcceptances ?? [],
           );
           this.invalidateStaleChangeImpactPreviewsWithDrizzle(transaction, [
             input.accepted.entity.id,
@@ -4377,6 +4389,13 @@ export class SqliteCatalogue
             {
               auditJson: baseline.auditJson,
             },
+          );
+          // 目录资格链要能在同一事务内被观察到，投影必须跑在终态执行、决定与
+          // 关联支持都已写入之后。
+          this.projectCurrentFileObservationsWithDrizzle(
+            transaction,
+            input.execution,
+            input.accepted.locations,
           );
         },
         { behavior: "immediate" },
@@ -4493,17 +4512,23 @@ export class SqliteCatalogue
               input.submission,
               input.submission.recognitionDecision.assetId,
             );
-            this.projectCurrentFileObservationsWithDrizzle(
-              transaction,
-              input.expectedExecution,
-              input.submission.locations,
-            );
             for (const support of input.submission.supports)
               transaction
                 .insert(artifactAssociationRecognitionSupports)
                 .values(support)
                 .onConflictDoNothing()
                 .run();
+            this.recordObservedMaterialAcceptancesWithDrizzle(
+              transaction,
+              input.expectedExecution,
+              this.observedMaterialAssociationBindings(input.submission),
+            );
+            // 追加材料的正向支持依赖已提交的 boundary 与关联，投影因此跑在其后。
+            this.projectCurrentFileObservationsWithDrizzle(
+              transaction,
+              input.expectedExecution,
+              input.submission.locations,
+            );
             outcome = "accepted";
           }
           const next =
@@ -7485,6 +7510,9 @@ export class SqliteCatalogue
     readonly execution: WorkflowExecution;
     readonly current: AcceptedRecognition;
     readonly accepted: AcceptedRecognition;
+    readonly observedMaterialAcceptances?:
+      | readonly ObservedMaterialAcceptanceBinding[]
+      | undefined;
     readonly sourceRecords: readonly SourceRecord[];
     readonly expectedLineageHeads: MetadataRefreshSubmission["expectedLineageHeads"];
     readonly resumeClaim?: { readonly token: string; readonly now: string };
@@ -7597,10 +7625,10 @@ export class SqliteCatalogue
             input.current,
             input.accepted,
           );
-          this.projectCurrentFileObservationsWithDrizzle(
+          this.recordObservedMaterialAcceptancesWithDrizzle(
             transaction,
             input.execution,
-            input.accepted.locations,
+            input.observedMaterialAcceptances ?? [],
           );
           this.invalidateStaleChangeImpactPreviewsWithDrizzle(transaction, [
             input.current.entity.id,
@@ -7611,6 +7639,11 @@ export class SqliteCatalogue
             {
               auditJson: baseline.auditJson,
             },
+          );
+          this.projectCurrentFileObservationsWithDrizzle(
+            transaction,
+            input.execution,
+            input.accepted.locations,
           );
         },
         { behavior: "immediate" },
@@ -9097,6 +9130,11 @@ export class SqliteCatalogue
             currentAccepted,
             nextAccepted,
           );
+          this.applyAppliedPreviewMaterialBindingsWithDrizzle(
+            transaction,
+            waitingExecution,
+            { ...currentPreview, status: "applied" },
+          );
           this.invalidateStaleChangeImpactPreviewsWithDrizzle(transaction, [
             currentPreview.assetId,
           ]);
@@ -9178,6 +9216,11 @@ export class SqliteCatalogue
           { ...currentPreview, proposal: replacementProposal },
           currentHead.recognitionDecisionId,
           decisionId,
+        );
+        this.applyAppliedPreviewMaterialBindingsWithDrizzle(
+          transaction,
+          waitingExecution,
+          { ...currentPreview, status: "applied" },
         );
         this.invalidateStaleChangeImpactPreviewsWithDrizzle(transaction, [
           currentPreview.assetId,
@@ -13039,6 +13082,11 @@ export class SqliteCatalogue
         .filter((location) => location.kind === "observed")
         .map((location) => location.id),
     );
+    const boundaries =
+      this.observedMaterialBoundaryKindsWithDrizzle(transaction);
+    const materialKindFor = (
+      locationId: string,
+    ): "file" | "directory" | undefined => boundaries.get(locationId);
     const affectedArtifactIds = new Set(
       acceptedLocations.map((location) => location.artifactId),
     );
@@ -13065,15 +13113,28 @@ export class SqliteCatalogue
               )
               .split(path.sep)[0] !== "..",
         );
-        if (explicitlyUnavailable)
+        if (explicitlyUnavailable) {
           transaction
             .delete(currentFileObservations)
             .where(eq(currentFileObservations.locationId, previous.id))
             .run();
+          this.removeCurrentObservedMaterialSupportsWithDrizzle(
+            transaction,
+            execution,
+            previous.id,
+          );
+        }
       }
     }
     for (const location of acceptedLocations) {
       if (location.kind !== "observed") continue;
+      this.projectCurrentObservedMaterialSupportForLocation(
+        transaction,
+        execution,
+        location.address,
+        location.id,
+        materialKindFor(location.id),
+      );
       const matches = snapshots.flatMap((snapshot) =>
         snapshot.files
           .filter(
@@ -13218,6 +13279,47 @@ export class SqliteCatalogue
               execution,
               alias.locationId,
             );
+            if (
+              snapshot.complete &&
+              materialKindFor(alias.locationId) === "file"
+            )
+              this.recordCurrentObservedMaterialSupportsWithDrizzle(
+                transaction,
+                execution,
+                alias.locationId,
+                snapshot,
+                "file",
+              );
+          }
+        }
+        // 目录位置没有文件观察行，但仍需在同一相对换算下由新扫描重新确认存在。
+        for (const directory of snapshot.complete
+          ? (snapshot.directories ?? [])
+          : []) {
+          const scopedRelativePath = path.join(
+            path.relative(root.containerPath, snapshot.root),
+            directory.relativePath,
+          );
+          for (const alias of aliases) {
+            if (
+              path.relative(alias.priorPath, alias.address) !==
+              scopedRelativePath
+            )
+              continue;
+            if (materialKindFor(alias.locationId) !== "directory") continue;
+            this.recordCurrentFileObservationSupportsWithDrizzle(
+              transaction,
+              execution,
+              alias.locationId,
+            );
+            this.recordCurrentObservedMaterialSupportsWithDrizzle(
+              transaction,
+              execution,
+              alias.locationId,
+              snapshot,
+              "directory",
+            );
+            break;
           }
         }
       }
@@ -13246,7 +13348,42 @@ export class SqliteCatalogue
       .from(locations)
       .where(eq(locations.kind, "observed"))
       .all();
+    const boundaries =
+      this.observedMaterialBoundaryKindsWithDrizzle(transaction);
+    const trackedFileLocationByAddress = new Map(
+      transaction
+        .select({
+          address: currentFileObservations.address,
+          locationId: currentFileObservations.locationId,
+        })
+        .from(currentFileObservations)
+        .all()
+        .map((row) => [path.resolve(row.address), row.locationId]),
+    );
+    const soleFileLocationByAddress = new Map<string, string | undefined>();
     for (const location of observedLocations) {
+      if (boundaries.get(location.id) !== "file") continue;
+      const address = path.resolve(location.address);
+      soleFileLocationByAddress.set(
+        address,
+        soleFileLocationByAddress.has(address) ? undefined : location.id,
+      );
+    }
+    const exactFileLocationFor = (address: string): string | undefined => {
+      const resolved = path.resolve(address);
+      const tracked = trackedFileLocationByAddress.get(resolved);
+      return tracked ?? soleFileLocationByAddress.get(resolved);
+    };
+    for (const location of observedLocations) {
+      this.projectCurrentObservedMaterialSupportForLocation(
+        transaction,
+        execution,
+        location.address,
+        location.id,
+        boundaries.get(location.id),
+        boundaries.get(location.id) === "directory" ||
+          exactFileLocationFor(location.address) === location.id,
+      );
       const matches = snapshots.flatMap((snapshot) =>
         !pathIsWithin(snapshot.root, location.address)
           ? []
@@ -13322,11 +13459,13 @@ export class SqliteCatalogue
     this.projectCurrentFileObservationsWithDrizzle(transaction, execution, []);
   }
 
-  private recordCurrentFileObservationSupportsWithDrizzle(
-    transaction: DrizzleWriteTransaction,
-    execution: WorkflowExecution,
-    locationId: string,
-  ): void {
+  /** 本次执行冻结的观察根坐标；覆盖历史与正向支持共用。 */
+  private observedSupportRootsFor(execution: WorkflowExecution): Array<{
+    readonly id: string;
+    readonly version: number;
+    readonly path: string;
+    readonly authorizedTargetsJson: string;
+  }> {
     const roots: Array<{
       readonly id: string;
       readonly version: number;
@@ -13353,7 +13492,402 @@ export class SqliteCatalogue
           authorizedTargetsJson: JSON.stringify(root.authorizedTargetRoots),
         });
     }
-    for (const root of roots) {
+    return roots;
+  }
+
+  /**
+   * Location 的耐久材料边界：一旦确认，其材料形态不再由同址条目改变。正向支持与
+   * current 查询都只读该边界，绝不从保留的 workflow JSON 重新解释形态。
+   */
+  private observedMaterialBoundaryKindsWithDrizzle(
+    transaction: DrizzleWriteTransaction,
+  ): Map<string, "file" | "directory"> {
+    return new Map(
+      transaction
+        .select({
+          locationId: observedMaterialBoundaries.locationId,
+          materialKind: observedMaterialBoundaries.materialKind,
+        })
+        .from(observedMaterialBoundaries)
+        .all()
+        .map((row) => [
+          row.locationId,
+          row.materialKind as "file" | "directory",
+        ]),
+    );
+  }
+
+  /**
+   * 接受事务把本次 accepted 对象到 Artifact／Location／association／snapshot 的精确
+   * 绑定耐久写下，并建立或核对材料边界。任一事实不一致都让整笔事务回滚；重试按
+   * 主键幂等。
+   */
+  private recordObservedMaterialAcceptancesWithDrizzle(
+    transaction: DrizzleWriteTransaction,
+    execution: WorkflowExecution,
+    bindings: readonly ObservedMaterialAcceptanceBinding[],
+  ): void {
+    if (bindings.length === 0) return;
+    const snapshots =
+      execution.filesystemSnapshots ??
+      (execution.snapshot === undefined ? [] : [execution.snapshot]);
+    for (const binding of bindings) {
+      const location = transaction
+        .select({
+          artifactId: locations.artifactId,
+          kind: locations.kind,
+          address: locations.address,
+        })
+        .from(locations)
+        .where(eq(locations.id, binding.locationId))
+        .get();
+      if (location === undefined || location.kind !== "observed")
+        throw new Error("观察材料接受缺少已存在的观察 Location");
+      if (location.artifactId !== binding.artifactId)
+        throw new Error("观察材料接受的 Artifact 与 Location 不一致");
+      const association = transaction
+        .select({
+          subjectId: artifactAssociations.subjectId,
+          artifactId: artifactAssociations.artifactId,
+          role: artifactAssociations.role,
+        })
+        .from(artifactAssociations)
+        .where(eq(artifactAssociations.id, binding.associationId))
+        .get();
+      if (
+        association === undefined ||
+        association.role !== "asset.material-delivered" ||
+        association.subjectId !== binding.assetId ||
+        association.artifactId !== binding.artifactId
+      )
+        throw new Error("观察材料接受缺少该内容的 delivered 材料关联");
+      const proposal = transaction
+        .select({ id: recognitionProposals.id })
+        .from(recognitionProposals)
+        .where(eq(recognitionProposals.id, binding.proposalId))
+        .get();
+      if (proposal === undefined) throw new Error("观察材料接受缺少对应提案");
+      const snapshot = snapshots.find(
+        (candidate) => candidate.id === binding.snapshotId,
+      );
+      if (snapshot === undefined)
+        throw new Error("观察材料接受的 snapshot 不属于本次执行");
+      const reference =
+        binding.materialKind === "directory"
+          ? snapshot.root
+          : path.resolve(snapshot.root, binding.observedReference);
+      if (reference !== path.resolve(location.address))
+        throw new Error("观察材料接受与原始 snapshot 坐标不一致");
+      if (
+        binding.materialKind === "file" &&
+        !snapshot.files.some(
+          (file) =>
+            path.resolve(snapshot.root, file.relativePath) ===
+            path.resolve(snapshot.root, binding.observedReference),
+        )
+      )
+        throw new Error("观察材料接受的文件不在原始 snapshot 中");
+      const boundary = transaction
+        .select({
+          materialKind: observedMaterialBoundaries.materialKind,
+        })
+        .from(observedMaterialBoundaries)
+        .where(eq(observedMaterialBoundaries.locationId, binding.locationId))
+        .get();
+      if (
+        boundary !== undefined &&
+        boundary.materialKind !== binding.materialKind
+      )
+        throw new Error("同一观察位置的材料形态发生冲突");
+      transaction
+        .insert(observedMaterialBoundaries)
+        .values({
+          locationId: binding.locationId,
+          artifactId: binding.artifactId,
+          materialKind: binding.materialKind,
+          derivationKind: "accepted-exact",
+        })
+        .onConflictDoNothing()
+        .run();
+      transaction
+        .insert(observedMaterialAcceptances)
+        .values({
+          executionId: execution.id,
+          proposalId: binding.proposalId,
+          workItemKey: binding.workItemKey,
+          acceptanceKind: binding.acceptanceKind,
+          assetId: binding.assetId,
+          artifactId: binding.artifactId,
+          locationId: binding.locationId,
+          associationId: binding.associationId,
+          snapshotId: binding.snapshotId,
+          observedReference: binding.observedReference,
+        })
+        .onConflictDoNothing()
+        .run();
+    }
+  }
+
+  /** 追加材料以版本化 checkpoint 的 submission projections 为逐项权威。 */
+  private observedMaterialAssociationBindings(
+    submission: ObservedMaterialAssociationSubmission,
+  ): ObservedMaterialAcceptanceBinding[] {
+    const basis = submission.proposal.basis;
+    if (basis.kind !== "manual-boundary")
+      throw new Error("观察材料追加必须携带人工边界依据");
+    return submission.projections.map((projection) => ({
+      workItemKey: "",
+      acceptanceKind: "c-association" as const,
+      proposalId: submission.proposal.id,
+      assetId: submission.recognitionDecision.assetId,
+      artifactId: projection.artifactId,
+      locationId: projection.locationId,
+      associationId: projection.associationId,
+      snapshotId: basis.observationSnapshotId,
+      observedReference: projection.observedArtifactReference,
+      materialKind: "file" as const,
+    }));
+  }
+
+  /**
+   * 已确认应用的识别取代 preview 只把 `projected - current` 的精确新增观察
+   * Location／关联算作本次接受；preview 自身的 execution／proposal 是坐标来源。
+   */
+  private observedMaterialPreviewBindings(
+    execution: WorkflowExecution | undefined,
+    preview: ChangeImpactPreview,
+  ): ObservedMaterialAcceptanceBinding[] {
+    if (
+      execution === undefined ||
+      preview.status !== "applied" ||
+      preview.change.kind !== "recognition-supersession"
+    )
+      return [];
+    const snapshots = (
+      execution.filesystemSnapshots ??
+      (execution.snapshot === undefined ? [] : [execution.snapshot])
+    ).filter((snapshot) => snapshot.complete);
+    const currentLocationIds = new Set(
+      preview.current.locations.map((location) => location.id),
+    );
+    const currentAssociationIds = new Set(
+      preview.current.artifactAssociations.map((association) => association.id),
+    );
+    const bindings: ObservedMaterialAcceptanceBinding[] = [];
+    for (const location of preview.projected.locations) {
+      if (location.kind !== "observed" || currentLocationIds.has(location.id))
+        continue;
+      const association = preview.projected.artifactAssociations.find(
+        (candidate) =>
+          !currentAssociationIds.has(candidate.id) &&
+          candidate.role === "asset.material-delivered" &&
+          candidate.target.kind === "entity" &&
+          candidate.target.entityId === preview.assetId &&
+          candidate.artifactId === location.artifactId,
+      );
+      if (association === undefined) continue;
+      const snapshot = snapshots.find(
+        (candidate) =>
+          path.resolve(candidate.root) === path.resolve(location.address) ||
+          candidate.files.some(
+            (file) =>
+              path.resolve(candidate.root, file.relativePath) ===
+              path.resolve(location.address),
+          ),
+      );
+      if (snapshot === undefined) continue;
+      const isRoot =
+        path.resolve(snapshot.root) === path.resolve(location.address);
+      bindings.push({
+        workItemKey: "",
+        acceptanceKind: "a-preview",
+        proposalId: preview.change.proposal.id,
+        assetId: preview.assetId,
+        artifactId: location.artifactId,
+        locationId: location.id,
+        associationId: association.id,
+        snapshotId: snapshot.id,
+        observedReference: isRoot
+          ? "."
+          : path.relative(snapshot.root, location.address),
+        materialKind: isRoot ? "directory" : "file",
+      });
+    }
+    return bindings;
+  }
+
+  /**
+   * 已确认应用的识别取代 preview：写 exact boundary／binding，并以该 preview 执行自己的
+   * snapshot 为新增 Location 建立正向事件。
+   */
+  private applyAppliedPreviewMaterialBindingsWithDrizzle(
+    transaction: DrizzleWriteTransaction,
+    execution: WorkflowExecution | undefined,
+    preview: ChangeImpactPreview,
+  ): void {
+    if (execution === undefined) return;
+    const bindings = this.observedMaterialPreviewBindings(execution, preview);
+    this.recordObservedMaterialAcceptancesWithDrizzle(
+      transaction,
+      execution,
+      bindings,
+    );
+    const addressByLocation = new Map(
+      preview.projected.locations.map((location) => [
+        location.id,
+        location.address,
+      ]),
+    );
+    for (const binding of bindings) {
+      const address = addressByLocation.get(binding.locationId);
+      if (address === undefined) continue;
+      this.projectCurrentObservedMaterialSupportForLocation(
+        transaction,
+        execution,
+        address,
+        binding.locationId,
+        binding.materialKind,
+      );
+    }
+  }
+
+  /**
+   * 正向材料支持表达“该观察根版本在一次成功完整观察中把此 Location 确认为文件或目录”。
+   * 只有与本次执行冻结根相交的完整 snapshot 才能建立它。
+   */
+  private recordCurrentObservedMaterialSupportsWithDrizzle(
+    transaction: DrizzleWriteTransaction,
+    execution: WorkflowExecution,
+    locationId: string,
+    snapshot: FilesystemPackageSnapshot,
+    materialKind: "file" | "directory",
+  ): void {
+    for (const root of this.observedSupportRootsFor(execution)) {
+      if (!pathIsWithin(root.path, snapshot.root)) continue;
+      transaction
+        .insert(currentObservedMaterialSupports)
+        .values({
+          locationId,
+          observedRootId: root.id,
+          observedRootVersion: root.version,
+          materialKind,
+          snapshotId: snapshot.id,
+          observedAt: snapshot.observedAt,
+          observedRootPath: root.path,
+          authorizedTargetsJson: root.authorizedTargetsJson,
+        })
+        .onConflictDoUpdate({
+          target: [
+            currentObservedMaterialSupports.locationId,
+            currentObservedMaterialSupports.observedRootId,
+            currentObservedMaterialSupports.observedRootVersion,
+          ],
+          set: {
+            materialKind,
+            snapshotId: snapshot.id,
+            observedAt: snapshot.observedAt,
+            observedRootPath: root.path,
+            authorizedTargetsJson: root.authorizedTargetsJson,
+          },
+        })
+        .run();
+    }
+  }
+
+  /** 完整精确覆盖内消失的位置只撤销本次冻结根版本的正向支持。 */
+  private removeCurrentObservedMaterialSupportsWithDrizzle(
+    transaction: DrizzleWriteTransaction,
+    execution: WorkflowExecution,
+    locationId: string,
+  ): void {
+    for (const root of this.observedSupportRootsFor(execution)) {
+      transaction
+        .delete(currentObservedMaterialSupports)
+        .where(
+          and(
+            eq(currentObservedMaterialSupports.locationId, locationId),
+            eq(currentObservedMaterialSupports.observedRootId, root.id),
+            eq(
+              currentObservedMaterialSupports.observedRootVersion,
+              root.version,
+            ),
+          ),
+        )
+        .run();
+    }
+  }
+
+  /**
+   * 按 Location 的耐久材料边界，用完整 snapshot 的精确条目决定它当前的正向支持。
+   * 形态只由 boundary 决定：文件位置的同址目录不升级，目录位置的同址文件不降格。
+   * 文件 present 只属于该地址的精确 Location（对象身份／当前观察解析），缺失则撤销
+   * 同址全部文件位置，避免按地址把历史同形态 Location 一起复活。
+   */
+  private projectCurrentObservedMaterialSupportForLocation(
+    transaction: DrizzleWriteTransaction,
+    execution: WorkflowExecution,
+    address: string,
+    locationId: string,
+    materialKind: "file" | "directory" | undefined,
+    presentEligible = true,
+  ): void {
+    if (materialKind === undefined) return;
+    const snapshots = (
+      execution.filesystemSnapshots ??
+      (execution.snapshot === undefined ? [] : [execution.snapshot])
+    ).filter((snapshot) => snapshot.complete);
+    const resolved = path.resolve(address);
+    const latest = <T extends { snapshot: FilesystemPackageSnapshot }>(
+      matches: readonly T[],
+    ): T | undefined =>
+      matches.toSorted((left, right) =>
+        right.snapshot.observedAt.localeCompare(left.snapshot.observedAt),
+      )[0];
+    const present = latest(
+      snapshots.flatMap((snapshot) =>
+        !pathIsWithin(snapshot.root, address)
+          ? []
+          : (materialKind === "file"
+              ? snapshot.files
+              : (snapshot.directories ?? [])
+            )
+              .filter(
+                (entry) =>
+                  path.resolve(snapshot.root, entry.relativePath) === resolved,
+              )
+              .map(() => ({ snapshot })),
+      ),
+    );
+    if (present !== undefined) {
+      this.recordCurrentFileObservationSupportsWithDrizzle(
+        transaction,
+        execution,
+        locationId,
+      );
+      if (presentEligible)
+        this.recordCurrentObservedMaterialSupportsWithDrizzle(
+          transaction,
+          execution,
+          locationId,
+          present.snapshot,
+          materialKind,
+        );
+      return;
+    }
+    if (snapshots.some((snapshot) => pathIsWithin(snapshot.root, address)))
+      this.removeCurrentObservedMaterialSupportsWithDrizzle(
+        transaction,
+        execution,
+        locationId,
+      );
+  }
+
+  private recordCurrentFileObservationSupportsWithDrizzle(
+    transaction: DrizzleWriteTransaction,
+    execution: WorkflowExecution,
+    locationId: string,
+  ): void {
+    for (const root of this.observedSupportRootsFor(execution)) {
       transaction
         .delete(currentFileObservationSupports)
         .where(

@@ -544,6 +544,155 @@ it("无内嵌 ISBN 的新 PDF 通过同一 NBINet 输入能力完成定向识别
   }
 }, 60000);
 
+it("运行时目录包上的识别取代预演不会伪造包内文件位置与接受映射", async () => {
+  const data = await preparedCatalogueRoot();
+  const media = await mkdtemp(
+    path.join(tmpdir(), "digital-package-preview-isbn-"),
+  );
+  const packagePath = path.join(media, "film");
+  await mkdir(path.join(packagePath, "BDMV", "PLAYLIST"), { recursive: true });
+  await mkdir(path.join(packagePath, "BDMV", "STREAM"), { recursive: true });
+  await writeFile(path.join(packagePath, "BDMV", "index.bdmv"), "index");
+  await writeFile(
+    path.join(packagePath, "BDMV", "MovieObject.bdmv"),
+    "movie-object",
+  );
+  await writeFile(
+    path.join(packagePath, "BDMV", "STREAM", "00000.m2ts"),
+    "stream",
+  );
+  let requests = 0;
+  const documents = [
+    { isbn: "9789864738281", title: "初始书名" },
+    { isbn: "9787000000001", title: "取代书名" },
+  ];
+  vi.stubGlobal("fetch", async () => {
+    const document = documents[Math.min(requests, documents.length - 1)]!;
+    requests += 1;
+    return new Response(
+      JSON.stringify({
+        docs: [
+          {
+            pnx: {
+              display: { title: [document.title] },
+              addata: { isbn: [document.isbn] },
+            },
+          },
+        ],
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  });
+  const workflow = composeAssetRefresh(data, {});
+  const catalogue = SqliteCatalogue.forProductData(data);
+  const readMaterialFacts = () => {
+    const database = new DatabaseSync(path.join(data, "catalogue.sqlite"), {
+      readOnly: true,
+    });
+    try {
+      return {
+        acceptances: database
+          .prepare(
+            `SELECT a.acceptance_kind AS kind, a.observed_reference AS reference,
+                    l.address AS address
+             FROM observed_material_acceptances a
+             INNER JOIN locations l ON l.id = a.location_id ORDER BY l.address, a.acceptance_kind`,
+          )
+          .all() as readonly {
+          kind: string;
+          reference: string;
+          address: string;
+        }[],
+        boundaries: database
+          .prepare(
+            `SELECT b.material_kind AS kind, b.derivation_kind AS derivation,
+                    l.address AS address
+             FROM observed_material_boundaries b
+             INNER JOIN locations l ON l.id = b.location_id ORDER BY l.address`,
+          )
+          .all() as readonly {
+          kind: string;
+          derivation: string;
+          address: string;
+        }[],
+        supportCount: (
+          database
+            .prepare(
+              "SELECT COUNT(*) AS count FROM current_observed_material_supports",
+            )
+            .get() as { readonly count: number }
+        ).count,
+      };
+    } finally {
+      database.close();
+    }
+  };
+  try {
+    const root = await workflow.observedRootRegistrations.create({
+      displayName: "定向识别的目录包",
+      containerPath: media,
+      readOnly: true,
+      symlinkMode: "do-not-follow",
+      allowedTargetRootIds: [],
+    });
+    const directed = {
+      registrationId: root.id,
+      relativeScope: "film",
+      sourceIdentity: "nbinet",
+      sourceInput: { isbn: "ISBN 978-986-473-828-1" },
+    };
+    const first =
+      await workflow.directedRecognitionSourceInputObservedScope(directed);
+    expect(first.execution.outcome).toBe("accepted");
+    const initial = readMaterialFacts();
+    // 目录包由包边界本身支持，而不是借一条伪造的包内文件观察。
+    expect(
+      initial.boundaries.map(
+        ({ address, kind, derivation }) => `${address}:${kind}:${derivation}`,
+      ),
+    ).toEqual([`${packagePath}:directory:accepted-exact`]);
+    expect(
+      initial.acceptances.map(
+        ({ address, kind, reference }) => `${address}:${kind}:${reference}`,
+      ),
+    ).toEqual([`${packagePath}:a-work-item:.`]);
+    expect(initial.supportCount).toBe(1);
+
+    const second = await workflow.directedRecognitionSourceInputObservedScope({
+      ...directed,
+      sourceInput: { isbn: "9787000000001" },
+    });
+    expect(second.execution.outcome).toBe("proposal");
+    const preview = await catalogue.inspectChangeImpactPreviewForExecution(
+      second.execution.id,
+    );
+    if (preview === undefined) throw new Error("缺少目录包识别取代预演");
+    expect(
+      await workflow.applyChangeImpactPreview({
+        previewId: preview.id,
+        confirmedBy: "user:甲",
+      }),
+    ).toMatchObject({ status: "applied" });
+
+    const after = readMaterialFacts();
+    // 取代只改写来源解释；没有新的完整材料事件，就不许凭空造出位置、边界或接受映射。
+    expect(after.boundaries).toEqual(initial.boundaries);
+    expect(after.acceptances).toEqual(initial.acceptances);
+    expect(after.supportCount).toBe(initial.supportCount);
+    const current = (await catalogue.listCurrentCataloguePage()).items;
+    expect(current).toHaveLength(1);
+    expect(current[0]?.locations.map(({ address }) => address)).toEqual([
+      packagePath,
+    ]);
+  } finally {
+    await workflow.close();
+    catalogue.close();
+    vi.unstubAllGlobals();
+    await rm(data, { recursive: true, force: true });
+    await rm(media, { recursive: true, force: true });
+  }
+}, 60000);
+
 it("人工多文档的持久 support 投影被篡改后刷新不消费坏链", async () => {
   const data = await preparedCatalogueRoot();
   const media = await mkdtemp(path.join(tmpdir(), "digital-manual-pdf-"));
@@ -1087,69 +1236,180 @@ it("观察材料等待确认在重开后保持，确认恢复续行且畸形检�
   }
 }, 60000);
 
-it("观察材料原子提交故障时不留下部分领域事实并可重试", async () => {
+it("观察材料接受在任一写入目标故障时全有或全无", async () => {
   const data = await preparedCatalogueRoot();
   const observed = await mkdtemp(
-    path.join(tmpdir(), "digital-material-rollback-"),
+    path.join(tmpdir(), "digital-material-all-or-nothing-"),
   );
   await writeFile(
     path.join(observed, "initial.pdf"),
-    syntheticPdf({ pageCount: 1 }),
+    syntheticPdf({ author: "Fault Author", pageCount: 1 }),
   );
+  await writeFile(path.join(observed, "appendix.txt"), "故障重试材料");
+  const faultCounts = () => {
+    const database = new DatabaseSync(path.join(data, "catalogue.sqlite"), {
+      readOnly: true,
+    });
+    const countOf = (table: string) =>
+      (
+        database.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as {
+          n: number;
+        }
+      ).n;
+    try {
+      return {
+        domain: countOf("artifact_association_recognition_supports"),
+        hotObservations: countOf("current_file_observation_supports"),
+        boundaries: countOf("observed_material_boundaries"),
+        acceptances: countOf("observed_material_acceptances"),
+        supports: countOf("current_observed_material_supports"),
+      };
+    } finally {
+      database.close();
+    }
+  };
+  const injectFault = (target: MaterialFaultTarget) => {
+    const database = new DatabaseSync(path.join(data, "catalogue.sqlite"));
+    try {
+      database.exec(`
+        CREATE TRIGGER reject_observed_material_fault
+        BEFORE ${target.event} ON ${target.table}
+        BEGIN SELECT RAISE(ABORT, 'injected observed material fault'); END;
+      `);
+    } finally {
+      database.close();
+    }
+  };
+  const healFault = () => {
+    const database = new DatabaseSync(path.join(data, "catalogue.sqlite"));
+    try {
+      database.exec("DROP TRIGGER IF EXISTS reject_observed_material_fault");
+    } finally {
+      database.close();
+    }
+  };
   const workflow = composeAssetRefresh(data, {});
   try {
     const root = await workflow.observedRootRegistrations.create({
-      displayName: "Material rollback",
+      displayName: "Fault acceptance",
       containerPath: observed,
       readOnly: true,
       symlinkMode: "do-not-follow",
       allowedTargetRootIds: [],
     });
-    await workflow.scanObservedScope({
-      registrationId: root.id,
-      relativeScope: ".",
-      acceptTrusted: true,
-    });
-    const before = (await workflow.listCurrentCatalogue())[0];
-    await writeFile(path.join(observed, "appendix.txt"), "rollback material");
-    const prepared = await workflow.prepareObservedMaterialAssociation({
-      targetAssetId: before.entity.id,
-      registrationId: root.id,
-      relativeScope: ".",
+    const scanFaultedMaterial = () =>
+      workflow.scanObservedScope({
+        registrationId: root.id,
+        relativeScope: ".",
+        acceptTrusted: true,
+      });
+    // 任一写入目标失败时接受必须整体不生效：既不写材料事实，也不留下已接受执行。
+    // 早期 checkpoint 故障直接抛出，接受事务故障则被记为该次操作的失败结果。
+    const expectAllOrNothing = async (
+      target: MaterialFaultTarget,
+      attempt: () => Promise<boolean>,
+      baseline: ReturnType<typeof faultCounts>,
+      currentLength: number,
+    ) => {
+      injectFault(target);
+      let accepted = false;
+      try {
+        accepted = await attempt();
+      } catch {
+        accepted = false;
+      }
+      healFault();
+      expect(accepted, target.table).toBe(false);
+      expect(faultCounts(), target.table).toEqual(baseline);
+      expect((await workflow.listCurrentCatalogue()).length, target.table).toBe(
+        currentLength,
+      );
+    };
+    const emptyCounts = faultCounts();
+    // A：受信任观察接受。
+    const acceptByWorkItem = () =>
+      scanFaultedMaterial().then(
+        (result) => result.itemResults?.[0]?.accepted !== undefined,
+      );
+    for (const target of materialFaultTargets([
+      "artifact_association_recognition_supports",
+      "current_file_observation_supports",
+    ]))
+      await expectAllOrNothing(target, acceptByWorkItem, emptyCounts, 0);
+    expect((await scanFaultedMaterial()).execution.outcome).toBe("accepted");
+    const afterWorkItem = faultCounts();
+    expect(afterWorkItem.acceptances).toBeGreaterThan(0);
+
+    // B：人工本地确认。
+    const preparedLocal = await workflow.prepareLocalContent({
+      executionId: (await scanFaultedMaterial()).execution.id,
       relativePaths: ["appendix.txt"],
-      initiatedBy: "prepare-person",
     });
-    const database = new DatabaseSync(path.join(data, "catalogue.sqlite"));
-    database.exec(`
-      CREATE TRIGGER reject_material_support
-      BEFORE INSERT ON artifact_association_recognition_supports
-      BEGIN SELECT RAISE(ABORT, 'injected material support failure'); END;
-    `);
-    database.close();
-    await expect(
-      workflow.confirmObservedMaterialAssociation({
-        executionId: prepared.executionId,
-        confirmedBy: "confirm-person",
-      }),
-    ).rejects.toThrow("injected material support failure");
-    expect((await workflow.listCurrentCatalogue())[0]).toEqual(before);
-    const repair = new DatabaseSync(path.join(data, "catalogue.sqlite"));
-    repair.exec("DROP TRIGGER reject_material_support");
-    repair.close();
-    expect(
-      (
-        await workflow.confirmObservedMaterialAssociation({
-          executionId: prepared.executionId,
+    const confirmLocal = () =>
+      workflow
+        .confirmLocalContent({ executionId: preparedLocal.executionId })
+        .then((result) => result.status === "accepted");
+    for (const target of materialFaultTargets([
+      "current_file_observation_supports",
+    ]))
+      await expectAllOrNothing(target, confirmLocal, afterWorkItem, 1);
+    expect(await confirmLocal()).toBe(true);
+    const afterLocal = faultCounts();
+
+    // C：观察材料关联确认。
+    const preparedAssociation =
+      await workflow.prepareObservedMaterialAssociation({
+        targetAssetId: (await workflow.listCurrentCatalogue())[0]!.entity.id,
+        registrationId: root.id,
+        relativeScope: ".",
+        relativePaths: ["appendix.txt"],
+        initiatedBy: "prepare-person",
+      });
+    const confirmAssociation = () =>
+      workflow
+        .confirmObservedMaterialAssociation({
+          executionId: preparedAssociation.executionId,
           confirmedBy: "confirm-person",
         })
-      ).status,
-    ).toBe("accepted");
+        .then((result) => result.status === "accepted");
+    const currentAfterLocal = (await workflow.listCurrentCatalogue()).length;
+    for (const target of materialFaultTargets([
+      "artifact_association_recognition_supports",
+    ]))
+      await expectAllOrNothing(
+        target,
+        confirmAssociation,
+        afterLocal,
+        currentAfterLocal,
+      );
+    expect(await confirmAssociation()).toBe(true);
+    expect(faultCounts().acceptances).toBeGreaterThan(afterLocal.acceptances);
   } finally {
     await workflow.close();
+    healFault();
     await rm(observed, { recursive: true, force: true });
     await rm(data, { recursive: true, force: true });
   }
-}, 60000);
+}, 60_000);
+
+/**
+ * 材料接受写入的目标：该载体的领域正项、私有边界、私有绑定、当前正项与执行生命周期。
+ */
+type MaterialFaultTarget = {
+  readonly table: string;
+  readonly event: "INSERT" | "UPDATE";
+};
+const materialFaultTargets = (
+  domainTables: readonly string[],
+): readonly MaterialFaultTarget[] => [
+  ...domainTables.map(
+    (table): MaterialFaultTarget => ({ table, event: "INSERT" }),
+  ),
+  { table: "observed_material_boundaries", event: "INSERT" },
+  { table: "observed_material_acceptances", event: "INSERT" },
+  { table: "current_observed_material_supports", event: "INSERT" },
+  { table: "workflow_executions", event: "UPDATE" },
+];
 
 function syntheticPdf(input: {
   readonly author: string;

@@ -114,6 +114,11 @@ export const productionCatalogueMigrationPlan = [
       "e75a92ec15b4b2d8e5dd1f02c55db83cf9458f84f315d9d1baee31e88274f0cd",
   },
   {
+    id: "20261003000000_current_observed_material_supports",
+    checksum:
+      "b658bbee7ae5146e5f6d7ccddbfedd76774115fc1879cbb27e3374f2c289125a",
+  },
+  {
     id: "20261003000000_unbind_local_user",
     checksum:
       "2cec585f48aac97ed78c2d4a3b825754c279ac05290ce53ef170d460a95cc45e",
@@ -247,6 +252,7 @@ export async function inspectProductionCatalogueReadiness(options: {
     if (
       !hasValidObservedMaterialCheckpoints(database) ||
       !hasValidObservedMaterialSupports(database) ||
+      !hasValidCurrentObservedMaterialRecords(database) ||
       !hasValidSourceAssociationState(database)
     ) {
       return {
@@ -632,6 +638,261 @@ function hasValidSourceAssociationState(database: DatabaseSync): boolean {
     currentProjectionMismatch === undefined &&
     invalidDecision === undefined
   );
+}
+
+/**
+ * 每个执行自己冻结的观察根坐标与完整 snapshot。耐久材料行只由这两个来源写入（正式迁移
+ * 回放与运行时接受），所以它们的根、snapshot、时刻与授权闭包必须能在同源坐标里解释。
+ */
+const observedMaterialFrozenCoordinates = `
+	frozen_roots AS (
+		SELECT executions.id AS execution_id,
+					 json_extract(root.value, '$.id') AS root_id,
+					 CAST(json_extract(root.value, '$.configVersion') AS INTEGER) AS root_version,
+					 json_extract(root.value, '$.containerPath') AS root_path,
+					 COALESCE(json_extract(root.value, '$.authorizedTargetRoots'), '[]')
+					 AS authorized_targets_json
+		FROM workflow_executions AS executions
+		CROSS JOIN json_each(
+			COALESCE(json_extract(executions.workflow_input_json, '$.observedRoots'), '[]')
+		) AS root
+		UNION ALL
+		-- 追加材料的 workflow input 不带根，只取该执行 resolved selection 的冻结根。
+		SELECT executions.id,
+					 json_extract(scope.value, '$.observedRoot.id'),
+					 CAST(json_extract(scope.value, '$.observedRoot.configVersion') AS INTEGER),
+					 json_extract(scope.value, '$.observedRoot.containerPath'),
+					 COALESCE(
+						 json_extract(scope.value, '$.observedRoot.authorizedTargetRoots'), '[]')
+		FROM workflow_executions AS executions
+		CROSS JOIN json_each(
+			COALESCE(
+				json_extract(executions.resolved_selection_json, '$.filesystemScopes'), '[]')
+		) AS scope
+		WHERE json_extract(executions.material_association_json, '$.version') =
+					'observed-material-association-checkpoint/1'
+			AND json_extract(executions.material_association_json, '$.state') = 'accepted'
+	),
+	frozen_snapshots AS (
+		SELECT executions.id AS execution_id,
+					 json_extract(snapshot.value, '$.id') AS snapshot_id,
+					 json_extract(snapshot.value, '$.root') AS snapshot_root,
+					 json_extract(snapshot.value, '$.observedAt') AS observed_at,
+					 json_extract(snapshot.value, '$.complete') AS complete
+		FROM workflow_executions AS executions
+		CROSS JOIN json_each(COALESCE(executions.filesystem_snapshots_json, '[]')) AS snapshot
+		UNION ALL
+		SELECT executions.id,
+					 json_extract(executions.snapshot_json, '$.id'),
+					 json_extract(executions.snapshot_json, '$.root'),
+					 json_extract(executions.snapshot_json, '$.observedAt'),
+					 json_extract(executions.snapshot_json, '$.complete')
+		FROM workflow_executions AS executions
+		WHERE executions.snapshot_json IS NOT NULL
+			AND executions.filesystem_snapshots_json IS NULL
+	)
+`;
+
+/**
+ * 三张当前材料表的耐久内容闭锁。只校验已依赖的固定关系与本执行冻结的根、snapshot
+ * 坐标同源；没有正向支持、旧根版本与 inactive 登记都是健康状态，不在这里判坏。
+ */
+function hasValidCurrentObservedMaterialRecords(
+  database: DatabaseSync,
+): boolean {
+  const invalidBoundary = database
+    .prepare(
+      `
+      SELECT 1
+      FROM observed_material_boundaries AS boundary
+      LEFT JOIN locations AS location ON location.id = boundary.location_id
+      WHERE location.kind IS NOT 'observed'
+         OR location.artifact_id IS NOT boundary.artifact_id
+         OR boundary.material_kind NOT IN ('file', 'directory')
+         OR boundary.derivation_kind NOT IN
+            ('accepted-exact', 'legacy-exact', 'legacy-kind-equivalent')
+      LIMIT 1
+    `,
+    )
+    .get();
+  if (invalidBoundary !== undefined) return false;
+
+  const invalidAcceptance = database
+    .prepare(
+      `
+      WITH ${observedMaterialFrozenCoordinates}
+      SELECT 1
+      FROM observed_material_acceptances AS acceptance
+      LEFT JOIN locations AS location ON location.id = acceptance.location_id
+      LEFT JOIN artifact_associations AS association
+        ON association.id = acceptance.association_id
+      LEFT JOIN workflow_executions AS execution ON execution.id = acceptance.execution_id
+      LEFT JOIN recognition_proposals AS proposal ON proposal.id = acceptance.proposal_id
+      LEFT JOIN observed_material_boundaries AS boundary
+        ON boundary.location_id = acceptance.location_id
+      WHERE location.kind IS NOT 'observed'
+         OR location.artifact_id IS NOT acceptance.artifact_id
+         OR (association.id IS NULL
+             OR association.artifact_id IS NOT acceptance.artifact_id
+             OR association.role IS NOT 'asset.material-delivered'
+             OR association.target_kind IS NOT 'entity'
+             OR association.subject_id IS NOT acceptance.asset_id)
+         OR execution.id IS NULL
+         OR proposal.id IS NULL
+         -- 沿 acceptance_kind 校验该记录自己的载体来源：a-work-item 的 key、proposal、
+         -- acceptedAsset 必须落在同一执行 work_items_json 的同一个 item 上，没有工作项的
+         -- 受信接受则必须由该执行自己的顶层 proposal／acceptedAsset 解释；b-local 取顶层
+         -- manual-boundary 执行自身；c-association 取同执行 accepted checkpoint 的
+         -- submission；a-preview 取自己那条已确认应用的识别取代预演。
+         OR (acceptance.acceptance_kind = 'a-work-item'
+             AND acceptance.work_item_key <> ''
+             AND NOT EXISTS (
+               SELECT 1 FROM json_each(COALESCE(execution.work_items_json, '[]')) AS item
+               WHERE json_extract(item.value, '$.key') IS acceptance.work_item_key
+                 AND json_extract(item.value, '$.proposalId') IS acceptance.proposal_id
+                 AND json_extract(item.value, '$.acceptedAssetId') IS acceptance.asset_id))
+         OR (acceptance.acceptance_kind = 'a-work-item'
+             AND acceptance.work_item_key = ''
+             AND (execution.proposal_id IS NOT acceptance.proposal_id
+                  OR execution.accepted_asset_id IS NOT acceptance.asset_id))
+         OR (acceptance.acceptance_kind = 'b-local'
+             AND (execution.proposal_id IS NOT acceptance.proposal_id
+                  OR execution.accepted_asset_id IS NOT acceptance.asset_id
+                  OR json_extract(proposal.basis_json, '$.kind') IS NOT 'manual-boundary'))
+         OR (acceptance.acceptance_kind = 'c-association'
+             AND (json_extract(execution.material_association_json, '$.version')
+                    IS NOT 'observed-material-association-checkpoint/1'
+                  OR json_extract(execution.material_association_json, '$.state')
+                       IS NOT 'accepted'
+                  OR json_extract(execution.material_association_json,
+                       '$.submission.proposal.id') IS NOT acceptance.proposal_id
+                  OR json_extract(execution.material_association_json,
+                       '$.submission.recognitionDecision.assetId') IS NOT acceptance.asset_id
+                  OR json_extract(execution.material_association_json, '$.snapshot.id')
+                       IS NOT acceptance.snapshot_id
+                  OR NOT EXISTS (
+                    SELECT 1 FROM json_each(
+                      json_extract(execution.material_association_json,
+                        '$.submission.projections')) AS projection
+                    WHERE json_extract(projection.value, '$.locationId')
+                            IS acceptance.location_id
+                      AND json_extract(projection.value, '$.associationId')
+                            IS acceptance.association_id
+                      AND json_extract(projection.value, '$.artifactId')
+                            IS acceptance.artifact_id
+                      AND json_extract(projection.value, '$.observedArtifactReference')
+                            IS acceptance.observed_reference)))
+         OR (acceptance.acceptance_kind = 'a-preview'
+             AND NOT EXISTS (
+               SELECT 1 FROM change_impact_previews AS preview
+               WHERE preview.execution_id IS acceptance.execution_id
+                 AND preview.status = 'applied'
+                 AND preview.asset_id IS acceptance.asset_id
+                 AND json_extract(preview.preview_json, '$.change.kind')
+                       = 'recognition-supersession'
+                 AND json_extract(preview.preview_json, '$.change.proposal.id')
+                       IS acceptance.proposal_id
+                 AND EXISTS (
+                   SELECT 1 FROM json_each(
+                     json_extract(preview.preview_json, '$.projected.locations'))
+                     AS projected_location
+                   WHERE json_extract(projected_location.value, '$.id')
+                           IS acceptance.location_id)
+                 AND NOT EXISTS (
+                   SELECT 1 FROM json_each(
+                     json_extract(preview.preview_json, '$.current.locations'))
+                     AS current_location
+                   WHERE json_extract(current_location.value, '$.id')
+                           IS acceptance.location_id)
+                 AND EXISTS (
+                   SELECT 1 FROM json_each(
+                     json_extract(preview.preview_json, '$.projected.artifactAssociations'))
+                     AS projected_association
+                   WHERE json_extract(projected_association.value, '$.id')
+                           IS acceptance.association_id)
+                 AND NOT EXISTS (
+                   SELECT 1 FROM json_each(
+                     json_extract(preview.preview_json, '$.current.artifactAssociations'))
+                     AS current_association
+                   WHERE json_extract(current_association.value, '$.id')
+                           IS acceptance.association_id)))
+         OR (acceptance.acceptance_kind <> 'a-work-item'
+             AND acceptance.work_item_key <> '')
+         OR boundary.location_id IS NULL
+         OR NOT EXISTS (
+           SELECT 1 FROM frozen_snapshots AS snapshot
+           WHERE snapshot.execution_id IS acceptance.execution_id
+             AND snapshot.snapshot_id IS acceptance.snapshot_id
+             AND snapshot.complete = 1
+             AND location.address = CASE acceptance.observed_reference
+               WHEN '.' THEN snapshot.snapshot_root
+               ELSE snapshot.snapshot_root || '/' || acceptance.observed_reference
+             END
+         )
+      LIMIT 1
+    `,
+    )
+    .get();
+  if (invalidAcceptance !== undefined) return false;
+
+  const invalidSupport = database
+    .prepare(
+      `
+      WITH ${observedMaterialFrozenCoordinates}
+      SELECT 1
+      FROM current_observed_material_supports AS support
+      LEFT JOIN locations AS location ON location.id = support.location_id
+      LEFT JOIN observed_material_boundaries AS boundary
+        ON boundary.location_id = support.location_id
+      WHERE location.kind IS NOT 'observed'
+         OR boundary.location_id IS NULL
+         OR boundary.material_kind IS NOT support.material_kind
+         OR support.material_kind NOT IN ('file', 'directory')
+         OR json_valid(support.authorized_targets_json) <> 1
+         OR json_type(support.authorized_targets_json) <> 'array'
+         OR NOT EXISTS (
+           SELECT 1
+           FROM frozen_roots AS root
+           INNER JOIN frozen_snapshots AS snapshot
+             ON snapshot.execution_id IS root.execution_id
+            AND snapshot.snapshot_id IS support.snapshot_id
+            AND snapshot.observed_at IS support.observed_at
+            AND snapshot.complete = 1
+            AND (snapshot.snapshot_root = root.root_path
+              OR substr(snapshot.snapshot_root, 1, length(root.root_path) + 1) =
+                 root.root_path || '/')
+            AND (location.address = snapshot.snapshot_root
+              OR substr(location.address, 1, length(snapshot.snapshot_root) + 1) =
+                 snapshot.snapshot_root || '/')
+           WHERE root.root_id IS support.observed_root_id
+             AND root.root_version = support.observed_root_version
+             AND root.root_path IS support.observed_root_path
+             AND json_array_length(root.authorized_targets_json) =
+                 json_array_length(support.authorized_targets_json)
+             AND NOT EXISTS (
+               SELECT 1 FROM json_each(support.authorized_targets_json) AS stored
+               WHERE NOT EXISTS (
+                 SELECT 1 FROM json_each(root.authorized_targets_json) AS frozen
+                 WHERE json_extract(frozen.value, '$.id') IS json_extract(stored.value, '$.id')
+                   AND CAST(json_extract(frozen.value, '$.configVersion') AS INTEGER) =
+                       CAST(json_extract(stored.value, '$.configVersion') AS INTEGER)
+               )
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM json_each(root.authorized_targets_json) AS frozen
+               WHERE NOT EXISTS (
+                 SELECT 1 FROM json_each(support.authorized_targets_json) AS stored
+                 WHERE json_extract(stored.value, '$.id') IS json_extract(frozen.value, '$.id')
+                   AND CAST(json_extract(stored.value, '$.configVersion') AS INTEGER) =
+                       CAST(json_extract(frozen.value, '$.configVersion') AS INTEGER)
+               )
+             )
+         )
+      LIMIT 1
+    `,
+    )
+    .get();
+  return invalidSupport === undefined;
 }
 
 function hasValidObservedMaterialCheckpoints(database: DatabaseSync): boolean {

@@ -9,6 +9,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { runProduct } from "@digital/composition";
 import { captureRawFilesystemSnapshot } from "@digital/test-support";
@@ -1023,7 +1024,268 @@ describe("Asset Refresh CLI", () => {
     await expect(runCli(command.runtime), command.stderr()).resolves.toBe(0);
     expect(JSON.parse(command.stdout())).toMatchObject({ items: [] });
   });
+
+  it("keeps a directory package current from the directory itself until a completed scan confirms it is gone", async () => {
+    const media = await temporaryDirectory("digital-cli-directory-package-");
+    const data = await disposableProductDataDirectory();
+    const packageDirectory = path.join(media, "film");
+    await mkdir(path.join(packageDirectory, "BDMV", "PLAYLIST"), {
+      recursive: true,
+    });
+    await mkdir(path.join(packageDirectory, "BDMV", "STREAM"), {
+      recursive: true,
+    });
+    await writeFile(path.join(packageDirectory, "BDMV", "index.bdmv"), "index");
+    await writeFile(
+      path.join(packageDirectory, "BDMV", "MovieObject.bdmv"),
+      "movie-object",
+    );
+    await writeFile(
+      path.join(packageDirectory, "BDMV", "STREAM", "00000.m2ts"),
+      "stream",
+    );
+    // 观察根必须继续可读：删除整个根会被当作位置不可访问，而不是材料消失。
+    await writeFile(path.join(media, "note.txt"), "同级材料");
+    await prepareCliProductData(data);
+    const env = { DIGITAL_PRODUCT_DATA: data };
+    vi.stubGlobal(
+      "fetch",
+      async () =>
+        new Response(
+          JSON.stringify({
+            docs: [
+              {
+                pnx: {
+                  display: { title: ["CLI 目录影片"] },
+                  addata: { isbn: ["9789864738281"] },
+                },
+              },
+            ],
+          }),
+          { headers: { "content-type": "application/json" } },
+        ),
+    );
+
+    const rootId = await registerRoot({ source: media, cwd: media, env });
+    const scrape = runtime(
+      [
+        "scrape-source",
+        rootId,
+        "nbinet",
+        JSON.stringify({ isbn: "9789864738281" }),
+        "--scope",
+        "film",
+        "--json",
+      ],
+      { cwd: media, env },
+    );
+    expect(await runCli(scrape.runtime), scrape.stderr()).toBe(0);
+    expect(
+      (JSON.parse(scrape.stdout()) as { execution: { outcome: string } })
+        .execution.outcome,
+    ).toBe("accepted");
+    const admitted = await currentCatalogueIds(media, env);
+    expect(admitted).toHaveLength(1);
+    const assetId = admitted[0]!;
+
+    const database = new DatabaseSync(path.join(data, "catalogue.sqlite"), {
+      readOnly: true,
+    });
+    try {
+      // 目录材料由目录本身支持，而不是伪造一条文件观察。
+      expect(
+        (
+          database
+            .prepare("SELECT COUNT(*) AS count FROM current_file_observations")
+            .get() as { readonly count: number }
+        ).count,
+      ).toBe(0);
+    } finally {
+      database.close();
+    }
+
+    await rm(path.join(packageDirectory, "BDMV", "STREAM", "00000.m2ts"));
+    await rm(path.join(packageDirectory, "BDMV", "index.bdmv"));
+    await rm(path.join(packageDirectory, "BDMV", "MovieObject.bdmv"));
+    await expect(scanRoot(media, env, rootId)).resolves.toMatchObject({
+      execution: { status: "completed" },
+    });
+    await expect(currentCatalogueIds(media, env)).resolves.toEqual([assetId]);
+
+    await rm(packageDirectory, { recursive: true, force: true });
+    await expect(scanRoot(media, env, rootId)).resolves.toMatchObject({
+      execution: { status: "completed" },
+    });
+    await expect(currentCatalogueIds(media, env)).resolves.toEqual([]);
+    // 重复扫描保持退出结果稳定。
+    await expect(scanRoot(media, env, rootId)).resolves.toMatchObject({
+      execution: { status: "completed" },
+    });
+    await expect(currentCatalogueIds(media, env)).resolves.toEqual([]);
+
+    const history = new DatabaseSync(path.join(data, "catalogue.sqlite"), {
+      readOnly: true,
+    });
+    try {
+      // 退出当前查询不删除历史身份。
+      expect(
+        history
+          .prepare("SELECT id FROM entities WHERE id = ?")
+          .get(assetId) as { readonly id: string },
+      ).toMatchObject({ id: assetId });
+    } finally {
+      history.close();
+    }
+    const historyPage = runtime(
+      ["catalogue-surface", "--surface", "workflow-history"],
+      { cwd: media, env },
+    );
+    await expect(
+      runCli(historyPage.runtime),
+      historyPage.stderr(),
+    ).resolves.toBe(0);
+    expect(
+      (JSON.parse(historyPage.stdout()) as { items: readonly unknown[] }).items
+        .length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("主封面不提供当前成员资格，但另一个仍存在的交付材料提供", async () => {
+    const fixture = await temporaryDirectory("digital-cli-mixed-material-");
+    const source = path.join(fixture, "RJ01668691");
+    const data = await disposableProductDataDirectory();
+    await mkdir(path.join(source, "台本"), { recursive: true });
+    await writeFile(path.join(source, "track.wav"), new Uint8Array(44));
+    await writeFile(path.join(source, "台本", "script.pdf"), syntheticPdf());
+    await prepareCliProductData(data);
+    vi.stubGlobal("fetch", async (input: string | URL | Request) => {
+      const address =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      if (address.includes("/product/info/ajax")) {
+        return new Response(
+          JSON.stringify({
+            RJ01668691: {
+              site_id: "maniax",
+              work_name: "带台本的音声作品",
+              regist_date: "2026-07-17",
+              work_image: "//img.dlsite.jp/official.jpg",
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      if (address === "https://img.dlsite.jp/official.jpg") {
+        return new Response(new Uint8Array([1, 2, 3, 4]), {
+          headers: { "content-type": "image/jpeg" },
+        });
+      }
+      return new Response("<html></html>", {
+        headers: { "content-type": "text/html" },
+      });
+    });
+    const env = { DIGITAL_PRODUCT_DATA: data };
+    const rootId = await registerRoot({ source, cwd: source, env });
+    const admitted = runtime(
+      [
+        "scan",
+        rootId,
+        "--require-artifact-role",
+        "asset.primary-cover",
+        "--json",
+      ],
+      { cwd: source, env },
+    );
+    expect(await runCli(admitted.runtime), admitted.stderr()).toBe(0);
+    const ids = await currentCatalogueIds(source, env);
+    expect(ids).toHaveLength(1);
+    const assetId = ids[0]!;
+
+    // 限定范围的完整扫描不能撤销范围外材料的支持。
+    await rm(path.join(source, "台本", "script.pdf"));
+    await expect(scanRoot(source, env, rootId, "台本")).resolves.toMatchObject({
+      execution: { status: "completed" },
+    });
+    await expect(currentCatalogueIds(source, env)).resolves.toEqual([assetId]);
+
+    // 全部交付材料消失后，托管主封面不提供普通当前集合的成员资格。
+    await rm(path.join(source, "track.wav"));
+    await expect(scanRoot(source, env, rootId)).resolves.toMatchObject({
+      execution: { status: "completed" },
+    });
+    await expect(currentCatalogueIds(source, env)).resolves.toEqual([]);
+
+    const history = new DatabaseSync(path.join(data, "catalogue.sqlite"), {
+      readOnly: true,
+    });
+    try {
+      expect(
+        history
+          .prepare(
+            `SELECT COUNT(*) AS count FROM artifact_associations
+             WHERE subject_id = ? AND role = 'asset.primary-cover'`,
+          )
+          .get(assetId),
+      ).toEqual({ count: 1 });
+    } finally {
+      history.close();
+    }
+    const historyPage = runtime(
+      ["catalogue-surface", "--surface", "workflow-history"],
+      { cwd: source, env },
+    );
+    await expect(
+      runCli(historyPage.runtime),
+      historyPage.stderr(),
+    ).resolves.toBe(0);
+    expect(
+      (JSON.parse(historyPage.stdout()) as { items: readonly unknown[] }).items
+        .length,
+    ).toBeGreaterThan(0);
+  }, 60_000);
 });
+
+async function currentCatalogueIds(
+  cwd: string,
+  env: Record<string, string>,
+): Promise<readonly string[]> {
+  const command = runtime(
+    ["catalogue-surface", "--surface", "current-catalogue"],
+    {
+      cwd,
+      env,
+    },
+  );
+  await expect(runCli(command.runtime), command.stderr()).resolves.toBe(0);
+  const page = JSON.parse(command.stdout()) as {
+    readonly items: readonly { readonly entity: { readonly id: string } }[];
+  };
+  return page.items.map((item) => item.entity.id);
+}
+
+async function scanRoot(
+  cwd: string,
+  env: Record<string, string>,
+  rootId: string,
+  scope?: string,
+) {
+  const command = runtime(
+    [
+      "scan",
+      rootId,
+      ...(scope === undefined ? [] : ["--scope", scope]),
+      "--json",
+    ],
+    { cwd, env },
+  );
+  await expect(runCli(command.runtime), command.stderr()).resolves.toBe(0);
+  return JSON.parse(command.stdout()) as {
+    readonly execution: { readonly status: string; readonly outcome: string };
+  };
+}
 
 function syntheticPdf(): Uint8Array {
   const objects = [

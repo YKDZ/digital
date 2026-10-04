@@ -1,0 +1,67 @@
+{
+  "schema": "digital-old-contract-fixture/1",
+  "generatedFrom": "911a0c30cf4d094ffca18f64c4f3a164f730f6bc",
+  "stripRoot": "/tmp/digital-disposable-c01-shape-swap",
+  "observedRootId": "observed_root_eea28f3e-7dbc-4625-bea0-8239a1021aa4",
+  "roots": {
+    "shape": "media"
+  },
+  "assets": {
+    "fileToDirectory": "entity_312daae4-004e-4221-8ef0-fd3586f419a0",
+    "directoryPackage": "entity_3ef0bf33-64fd-4d23-b282-27084e9dc5b3",
+    "keptFile": "entity_561e4899-cba0-46dd-991e-b4260679175c",
+    "directoryToFile": "entity_fe76a203-0ddb-4049-9351-469c2e188793"
+  },
+  "media": [
+    {
+      "relativePath": "media/fileToDir",
+      "kind": "directory"
+    },
+    {
+      "relativePath": "media/fileToDir/inner.txt",
+      "kind": "file",
+      "content": "同址目录内文件"
+    },
+    {
+      "relativePath": "media/kept.txt",
+      "kind": "file",
+      "content": "旧合同仍在材料"
+    },
+    {
+      "relativePath": "media/pkgKept",
+      "kind": "directory"
+    },
+    {
+      "relativePath": "media/pkgKept/BDMV/index.bdmv",
+      "kind": "file",
+      "content": "index"
+    },
+    {
+      "relativePath": "media/pkgKept/BDMV/MovieObject.bdmv",
+      "kind": "file",
+      "content": "movie"
+    },
+    {
+      "relativePath": "media/pkgKept/BDMV/STREAM/00000.m2ts",
+      "kind": "file",
+      "content": "stream"
+    },
+    {
+      "relativePath": "media/pkgToFile",
+      "kind": "file",
+      "content": "同址普通文件"
+    }
+  ],
+  "baselineCurrentBeforeSwap": [
+    "entity_312daae4-004e-4221-8ef0-fd3586f419a0",
+    "entity_3ef0bf33-64fd-4d23-b282-27084e9dc5b3",
+    "entity_561e4899-cba0-46dd-991e-b4260679175c",
+    "entity_fe76a203-0ddb-4049-9351-469c2e188793"
+  ],
+  "baselineCurrentAfterSwap": [
+    "entity_312daae4-004e-4221-8ef0-fd3586f419a0",
+    "entity_3ef0bf33-64fd-4d23-b282-27084e9dc5b3",
+    "entity_561e4899-cba0-46dd-991e-b4260679175c",
+    "entity_fe76a203-0ddb-4049-9351-469c2e188793"
+  ]
+}

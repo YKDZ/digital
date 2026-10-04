@@ -45,6 +45,7 @@ import {
   recognitionSourceInterpretation,
   validateAcceptedRecognition,
   validateMetadataPolicy,
+  validateObservedEntityGraphCandidates,
   validateRecognitionProposal,
   validateObservedMaterialAssociationSubmission,
   validateReevaluatedRecognition,
@@ -3159,13 +3160,18 @@ function isStrictRecognitionEvidence(value: unknown): boolean {
   const inspection = value.inspection;
   return (
     isStringRecord(inspection) &&
-    hasExactKeys(inspection, [
-      "identifiers",
-      "observedArtifactReference",
-      "revision",
-      "metadata",
-      "parts",
-    ]) &&
+    hasExactKeys(
+      inspection,
+      [
+        "identifiers",
+        "observedArtifactReference",
+        "revision",
+        "metadata",
+        "parts",
+      ],
+      ["entityGraph"],
+    ) &&
+    isStrictInspectionEntityGraph(inspection.entityGraph) &&
     isNonEmptyString(inspection.observedArtifactReference) &&
     isStrictBlob(inspection.revision) &&
     Array.isArray(inspection.identifiers) &&
@@ -3205,6 +3211,20 @@ function isStrictRecognitionEvidence(value: unknown): boolean {
         [part.role, part.locator, part.mediaType].every(isNonEmptyString),
     )
   );
+}
+
+/** 观察实体图的结构由领域唯一权威判定，readiness 只确认它仍然自洽。 */
+function isStrictInspectionEntityGraph(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!isStringRecord(value)) return false;
+  try {
+    validateObservedEntityGraphCandidates([
+      value as unknown as ObservedEntityGraphCandidate,
+    ]);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function hasStrictObservedMaterialSubmissionShape(value: unknown): boolean {
@@ -4721,6 +4741,10 @@ type CataloguePersistenceOperations = {
     readonly expectedExecution: WorkflowExecution;
     readonly execution: WorkflowExecution;
     readonly accepted: AcceptedRecognition;
+    /** 本次接受建立的精确材料映射；与领域事实在同一事务原子写入。 */
+    readonly observedMaterialAcceptances?:
+      | readonly ObservedMaterialAcceptanceBinding[]
+      | undefined;
     /** 首次人工整理的并发基线；不是材料只能服务一个资产的领域约束。 */
     readonly expectedUnassignedMaterials?: readonly Pick<
       Location,
@@ -4831,6 +4855,10 @@ type CataloguePersistenceOperations = {
     readonly execution: WorkflowExecution;
     readonly current: AcceptedRecognition;
     readonly accepted: AcceptedRecognition;
+    /** 本工作项明确创建或复用的材料的精确映射；无关位置不参与。 */
+    readonly observedMaterialAcceptances?:
+      | readonly ObservedMaterialAcceptanceBinding[]
+      | undefined;
     readonly sourceRecords: readonly SourceRecord[];
     readonly expectedLineageHeads: MetadataRefreshSubmission["expectedLineageHeads"];
     readonly resumeClaim?: { readonly token: string; readonly now: string };
@@ -8909,6 +8937,13 @@ export class AssetRefreshWorkflow {
             expectedExecution: initial,
             execution: finished,
             accepted,
+            observedMaterialAcceptances: observedMaterialAcceptanceBindings({
+              accepted,
+              snapshot: selected,
+              workItemKey: "",
+              acceptanceKind: "b-local",
+              relativePaths: basis.materialReferences,
+            }),
             expectedUnassignedMaterials: accepted.locations.filter(
               (location) => location.kind === "observed",
             ),
@@ -12948,12 +12983,32 @@ export class AssetRefreshWorkflow {
         stage: "source-artifacts-stored",
         acceptedAssetId: accepted.entity.id,
       };
+      const acceptanceWorkItem = (acceptedExecution.workItems ?? []).find(
+        (candidate) => candidate.proposalId === proposal.id,
+      );
       if (currentAccepted === undefined) {
         validateAcceptedRecognition(accepted);
         await this.ports.recognitionAcceptance.acceptRecognition({
           expectedExecution: lastPersistedExecution,
           execution: acceptedExecution,
           accepted,
+          observedMaterialAcceptances: observedMaterialAcceptanceBindings({
+            accepted,
+            snapshot,
+            workItemKey: acceptanceWorkItem?.key ?? "",
+            acceptanceKind: "a-work-item",
+            relativePaths:
+              acceptanceWorkItem?.relativePaths ??
+              (proposal.observedArtifactAssociations ?? []).map(
+                (reference) => reference.observedArtifactReference,
+              ),
+            ...(acceptanceWorkItem?.observedArtifactBoundary === undefined
+              ? {}
+              : {
+                  observedArtifactBoundary:
+                    acceptanceWorkItem.observedArtifactBoundary,
+                }),
+          }),
         });
       } else {
         validateReevaluatedRecognition({
@@ -12981,6 +13036,23 @@ export class AssetRefreshWorkflow {
           execution: acceptedExecution,
           current: currentAccepted,
           accepted,
+          observedMaterialAcceptances: observedMaterialAcceptanceBindings({
+            accepted,
+            snapshot,
+            workItemKey: acceptanceWorkItem?.key ?? "",
+            acceptanceKind: "a-work-item",
+            relativePaths:
+              acceptanceWorkItem?.relativePaths ??
+              (proposal.observedArtifactAssociations ?? []).map(
+                (reference) => reference.observedArtifactReference,
+              ),
+            ...(acceptanceWorkItem?.observedArtifactBoundary === undefined
+              ? {}
+              : {
+                  observedArtifactBoundary:
+                    acceptanceWorkItem.observedArtifactBoundary,
+                }),
+          }),
           sourceRecords,
           expectedLineageHeads,
         });
@@ -13380,6 +13452,16 @@ export class AssetRefreshWorkflow {
             execution,
             current: retained.accepted,
             accepted,
+            observedMaterialAcceptances: observedMaterialAcceptanceBindings({
+              accepted,
+              snapshot: selectedSnapshot,
+              workItemKey: plan.key,
+              acceptanceKind: "a-work-item",
+              relativePaths: plan.relativePaths,
+              ...(plan.observedArtifactBoundary === undefined
+                ? {}
+                : { observedArtifactBoundary: plan.observedArtifactBoundary }),
+            }),
             sourceRecords: [],
             expectedLineageHeads: [],
             ...(resumeClaim === undefined ? {} : { resumeClaim }),
@@ -13974,6 +14056,16 @@ export class AssetRefreshWorkflow {
             expectedExecution: lastPersistedExecution,
             execution,
             accepted,
+            observedMaterialAcceptances: observedMaterialAcceptanceBindings({
+              accepted,
+              snapshot: itemSnapshot,
+              workItemKey: plan.key,
+              acceptanceKind: "a-work-item",
+              relativePaths: plan.relativePaths,
+              ...(plan.observedArtifactBoundary === undefined
+                ? {}
+                : { observedArtifactBoundary: plan.observedArtifactBoundary }),
+            }),
             ...(resumeClaim === undefined ? {} : { resumeClaim }),
           });
         } else {
@@ -13996,6 +14088,16 @@ export class AssetRefreshWorkflow {
             execution,
             current: currentAccepted.accepted,
             accepted,
+            observedMaterialAcceptances: observedMaterialAcceptanceBindings({
+              accepted,
+              snapshot: itemSnapshot,
+              workItemKey: plan.key,
+              acceptanceKind: "a-work-item",
+              relativePaths: plan.relativePaths,
+              ...(plan.observedArtifactBoundary === undefined
+                ? {}
+                : { observedArtifactBoundary: plan.observedArtifactBoundary }),
+            }),
             sourceRecords: records,
             expectedLineageHeads,
             ...(resumeClaim === undefined ? {} : { resumeClaim }),
@@ -16668,10 +16770,32 @@ export class AssetRefreshWorkflow {
             acceptedAssetId: accepted.entity.id,
           };
           validateAcceptedRecognition(accepted);
+          const resumeSnapshot =
+            requiredFilesystemSnapshot(checkpointExecution);
+          const resumeWorkItem = (checkpointExecution.workItems ?? []).find(
+            (candidate) => candidate.proposalId === proposal.id,
+          );
           await this.ports.recognitionAcceptance.acceptRecognition({
             expectedExecution: lastPersistedExecution,
             execution: finished,
             accepted,
+            observedMaterialAcceptances: observedMaterialAcceptanceBindings({
+              accepted,
+              snapshot: resumeSnapshot,
+              workItemKey: resumeWorkItem?.key ?? "",
+              acceptanceKind: "a-work-item",
+              relativePaths:
+                resumeWorkItem?.relativePaths ??
+                (proposal.observedArtifactAssociations ?? []).map(
+                  (reference) => reference.observedArtifactReference,
+                ),
+              ...(resumeWorkItem?.observedArtifactBoundary === undefined
+                ? {}
+                : {
+                    observedArtifactBoundary:
+                      resumeWorkItem.observedArtifactBoundary,
+                  }),
+            }),
             resumeClaim: mutationClaim(),
           });
           return await this.inspectResumedPublic(finished.id);
@@ -19040,6 +19164,111 @@ function canonicalObservedMaterialObjectIdentity(
           : undefined,
     })),
     aliasClasses,
+  });
+}
+
+/**
+ * Application 在一次接受内构造的精确材料映射，交给同一原子接受事务写入私有
+ * observed_material_acceptances 投影；不是公开交付合同，也不新增领域事实。
+ * `c-association` 与 `a-preview` 由 SQLite 从其版本化 checkpoint／preview 载体派生。
+ */
+export type ObservedMaterialAcceptanceBinding = {
+  readonly workItemKey: string;
+  readonly acceptanceKind:
+    | "a-work-item"
+    | "b-local"
+    | "c-association"
+    | "a-preview";
+  readonly proposalId: string;
+  readonly assetId: string;
+  readonly artifactId: string;
+  readonly locationId: string;
+  readonly associationId: string;
+  readonly snapshotId: string;
+  readonly observedReference: string;
+  readonly materialKind: "file" | "directory";
+};
+
+/**
+ * 按该工作项自己的原始完整 snapshot，把明确创建或复用的材料映射到本次接受结果中的
+ * 精确 Artifact、Location 与 delivered 关联；不把无关的既有位置写成本次事件。
+ */
+function observedMaterialAcceptanceBindings(input: {
+  readonly accepted: AcceptedRecognition;
+  readonly snapshot: FilesystemPackageSnapshot;
+  readonly workItemKey: string;
+  readonly acceptanceKind: "a-work-item" | "b-local";
+  readonly relativePaths: readonly string[];
+  readonly observedArtifactBoundary?: "filesystem-package";
+}): ObservedMaterialAcceptanceBinding[] {
+  const assetId = input.accepted.entity.id;
+  const delivered = input.accepted.artifactAssociations.filter(
+    (association) =>
+      association.target.kind === "entity" &&
+      association.target.entityId === assetId &&
+      association.role === "asset.material-delivered",
+  );
+  const deliveredArtifactIds = new Set(
+    delivered.map((association) => association.artifactId),
+  );
+  // 没有工作项限定范围时（例如周期意图的受信接受），本次接受确认的材料就是 accepted
+  // 自己交付的观察位置；不能把这条公开路径的边界与正向支持留空。
+  const references =
+    input.observedArtifactBoundary === "filesystem-package"
+      ? ["."]
+      : input.relativePaths.length > 0
+        ? input.relativePaths
+        : input.accepted.locations.flatMap((location) =>
+            location.kind !== "observed" ||
+            !deliveredArtifactIds.has(location.artifactId) ||
+            !location.address.startsWith(`${input.snapshot.root}/`)
+              ? []
+              : input.snapshot.files
+                  .filter(
+                    (file) =>
+                      `${input.snapshot.root}/${file.relativePath}` ===
+                      location.address,
+                  )
+                  .map((file) => file.relativePath),
+          );
+  return references.map((observedReference) => {
+    if (
+      observedReference !== "." &&
+      !input.snapshot.files.some(
+        (file) => file.relativePath === observedReference,
+      )
+    )
+      throw new Error(
+        `Accepted material ${observedReference} is missing from its snapshot`,
+      );
+    const address =
+      observedReference === "."
+        ? input.snapshot.root
+        : `${input.snapshot.root}/${observedReference}`;
+    const location = input.accepted.locations.find(
+      (candidate) =>
+        candidate.kind === "observed" && candidate.address === address,
+    );
+    if (location === undefined)
+      throw new Error(`Accepted material location is missing for ${address}`);
+    const association = delivered.find(
+      (candidate) => candidate.artifactId === location.artifactId,
+    );
+    if (association === undefined)
+      throw new Error(`Delivered association is missing for ${address}`);
+    return {
+      workItemKey: input.workItemKey,
+      acceptanceKind: input.acceptanceKind,
+      proposalId: input.accepted.proposal.id,
+      assetId,
+      artifactId: location.artifactId,
+      locationId: location.id,
+      associationId: association.id,
+      snapshotId: input.snapshot.id,
+      observedReference,
+      materialKind:
+        observedReference === "." ? ("directory" as const) : ("file" as const),
+    };
   });
 }
 

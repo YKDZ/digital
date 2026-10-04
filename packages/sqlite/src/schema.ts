@@ -616,6 +616,108 @@ export const currentFileObservationSupports = sqliteTable(
   ],
 );
 
+/**
+ * 正向当前材料支持：每个观察根版本在一次成功完整观察中把该 Location 确认为文件或目录。
+ * 它是当前资料库成员资格的成立依据；覆盖 support 只证明协调过该位置。
+ */
+export const currentObservedMaterialSupports = sqliteTable(
+  "current_observed_material_supports",
+  {
+    locationId: text("location_id").notNull(),
+    observedRootId: text("observed_root_id").notNull(),
+    observedRootVersion: integer("observed_root_version").notNull(),
+    materialKind: text("material_kind").notNull(),
+    snapshotId: text("snapshot_id").notNull(),
+    observedAt: text("observed_at").notNull(),
+    observedRootPath: text("observed_root_path").notNull(),
+    authorizedTargetsJson: text("authorized_targets_json")
+      .notNull()
+      .default("[]"),
+  },
+  (table) => [
+    primaryKey({
+      name: "current_observed_material_supports_pk",
+      columns: [
+        table.locationId,
+        table.observedRootId,
+        table.observedRootVersion,
+      ],
+    }),
+    index("current_observed_material_supports_root").on(
+      table.observedRootId,
+      table.observedRootVersion,
+    ),
+  ],
+);
+
+/**
+ * 观察 Location 的永久材料形态边界；正向支持删除后仍保留。
+ * 查询以本表为形态权威，正向行不兼任永久形态。
+ */
+export const observedMaterialBoundaries = sqliteTable(
+  "observed_material_boundaries",
+  {
+    locationId: text("location_id").notNull(),
+    artifactId: text("artifact_id").notNull(),
+    materialKind: text("material_kind").notNull(),
+    derivationKind: text("derivation_kind").notNull(),
+  },
+  (table) => [
+    primaryKey({
+      name: "observed_material_boundaries_pk",
+      columns: [table.locationId],
+    }),
+    check(
+      "observed_material_boundaries_material_kind",
+      sql.raw("material_kind IN ('file', 'directory')"),
+    ),
+    check(
+      "observed_material_boundaries_derivation_kind",
+      sql.raw(
+        "derivation_kind IN ('accepted-exact', 'legacy-exact', 'legacy-kind-equivalent')",
+      ),
+    ),
+  ],
+);
+
+/**
+ * 一次接受到 asset、Artifact、Location、delivered 关联、proposal、snapshot 与
+ * 材料形态的精确映射；只由对应接受事务在同一原子写入中建立。
+ */
+export const observedMaterialAcceptances = sqliteTable(
+  "observed_material_acceptances",
+  {
+    executionId: text("execution_id").notNull(),
+    proposalId: text("proposal_id").notNull(),
+    workItemKey: text("work_item_key").notNull(),
+    acceptanceKind: text("acceptance_kind").notNull(),
+    assetId: text("asset_id").notNull(),
+    artifactId: text("artifact_id").notNull(),
+    locationId: text("location_id").notNull(),
+    associationId: text("association_id").notNull(),
+    snapshotId: text("snapshot_id").notNull(),
+    observedReference: text("observed_reference").notNull(),
+  },
+  (table) => [
+    primaryKey({
+      name: "observed_material_acceptances_pk",
+      columns: [
+        table.executionId,
+        table.workItemKey,
+        table.locationId,
+        table.associationId,
+      ],
+    }),
+    check(
+      "observed_material_acceptances_acceptance_kind",
+      sql.raw(
+        "acceptance_kind IN ('a-work-item', 'b-local', 'c-association', 'a-preview')",
+      ),
+    ),
+    index("observed_material_acceptances_location").on(table.locationId),
+  ],
+);
+
 /** Blob 级持久分帧证明坐标；sidecar 字节本身位于 product-data proof store。 */
 export const artifactContentProofs = sqliteTable(
   "artifact_content_proofs",
@@ -1528,6 +1630,9 @@ export const catalogueSchema = {
   observedRevisionConfirmations,
   currentFileObservations,
   currentFileObservationSupports,
+  currentObservedMaterialSupports,
+  observedMaterialBoundaries,
+  observedMaterialAcceptances,
   artifactContentProofs,
   artifactAssociations,
   artifactAssociationRecognitionSupports,
