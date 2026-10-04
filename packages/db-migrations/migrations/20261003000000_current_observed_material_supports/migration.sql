@@ -404,6 +404,46 @@ WHERE `executions`.`operation_kind` = 'scan-filesystem'
 		WHERE json_extract(`file`.`value`, '$.relativePath') = `reference`.`value`
 	)
 	AND (`snapshot`.`snapshot_root` = `root`.`root_path`
+		OR substr(`snapshot`.`snapshot_root`, 1, length(`root`.`root_path`) + 1) = `root`.`root_path` || '/')
+UNION ALL
+-- A 顶层：真正 C 之前已可达的受信扫描，执行自己持有顶层 proposal 与 acceptedAsset 却没有
+-- 任何工作项（work_items_json 为空）。carrier 坐标就是 execution.proposal_id 与
+-- execution.accepted_asset_id，由 recognition_proposals.execution_id 锁回同一执行；文件 reference
+-- 取自该 proposal 的 observedArtifactAssociations（role=asset.material-delivered），再与同执行
+-- 完整 snapshot 成员文件、同 asset delivered 关联和精确 Location 相交。不读 basis.materialReferences，
+-- 也不合成 observedArtifactBoundary／producer：producer 的来源识别不等于 package 材料边界。
+SELECT DISTINCT `executions`.`rowid`, `executions`.`id`, `executions`.`proposal_id`, '',
+	'a-work-item', `executions`.`accepted_asset_id`, `delivered`.`location_id`,
+	`delivered`.`association_id`, `delivered`.`artifact_id`, `snapshot`.`snapshot_id`,
+	json_extract(`reference`.`value`, '$.observedArtifactReference'), `snapshot`.`observed_at`,
+	`root`.`root_id`, `root`.`root_version`,
+	`root`.`root_path`, `root`.`authorized_targets_json`
+FROM `workflow_executions` AS `executions`
+INNER JOIN `recognition_proposals` AS `proposal`
+	ON `proposal`.`id` = `executions`.`proposal_id`
+	AND `proposal`.`execution_id` = `executions`.`id`
+CROSS JOIN json_each(
+	COALESCE(json_extract(`proposal`.`observed_material_interpretation_json`, '$.observedArtifactAssociations'), '[]')
+) AS `reference`
+INNER JOIN `digital_c01_snapshot` AS `snapshot` ON `snapshot`.`execution_id` = `executions`.`id`
+INNER JOIN `digital_c01_root` AS `root` ON `root`.`execution_id` = `executions`.`id`
+INNER JOIN `digital_c01_delivered` AS `delivered`
+	ON `delivered`.`asset_id` = `executions`.`accepted_asset_id`
+	AND `delivered`.`address` = `snapshot`.`snapshot_root` || '/' || json_extract(`reference`.`value`, '$.observedArtifactReference')
+WHERE `executions`.`operation_kind` = 'scan-filesystem'
+	AND `executions`.`status` = 'completed'
+	AND `executions`.`outcome` = 'accepted'
+	AND COALESCE(`executions`.`material_association_json`, '') = ''
+	AND COALESCE(json_array_length(`executions`.`work_items_json`), 0) = 0
+	AND COALESCE(json_extract(`reference`.`value`, '$.role'), '') = 'asset.material-delivered'
+	AND COALESCE(`executions`.`proposal_id`, '') <> ''
+	AND COALESCE(`executions`.`accepted_asset_id`, '') <> ''
+	AND json_extract(`proposal`.`basis_json`, '$.kind') IS NOT 'manual-boundary'
+	AND EXISTS (
+		SELECT 1 FROM json_each(`snapshot`.`snapshot_json`, '$.files') AS `file`
+		WHERE json_extract(`file`.`value`, '$.relativePath') = json_extract(`reference`.`value`, '$.observedArtifactReference')
+	)
+	AND (`snapshot`.`snapshot_root` = `root`.`root_path`
 		OR substr(`snapshot`.`snapshot_root`, 1, length(`root`.`root_path`) + 1) = `root`.`root_path` || '/');
 --> statement-breakpoint
 -- 只让同形态的精确载体优先排除 file witness：该 Location 一旦同时有 directory 证据，

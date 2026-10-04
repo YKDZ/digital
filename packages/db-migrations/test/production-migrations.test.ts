@@ -1909,6 +1909,136 @@ describe("production catalogue preparation", () => {
     }
   }, 60_000);
 
+  it("keeps a healthy legacy top-level A accepted asset current after upgrade", async () => {
+    // fixture 由固定点 911a0c3 的真实受信扫描生成：一次 scan-filesystem completed accepted
+    // 执行自身持有顶层 proposal 与 acceptedAsset，却没有任何工作项（work_items_json 为空），
+    // proposal.observedArtifactAssociations 交付一个 file 材料。真正 C 之前它正常公开 current，
+    // 升级后必须仍 current，且不得伪造任何执行→Location 之外的接受出处。
+    // 组合计划共 21 条，base911 账本为 17 条，故本次 prepare 实际新增 4 条（而非源 18 计划里的 1）。
+    const { productDataDirectory, manifest } = await oldContractFixture(
+      "legacy-top-level-a-before-current-supports",
+    );
+    try {
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).resolves.toEqual({ applied: 4 });
+      await expect(
+        inspectProductionCatalogueReadiness({ productDataDirectory }),
+      ).resolves.toMatchObject({ state: "ready" });
+
+      const catalogue = SqliteCatalogue.forProductData(productDataDirectory);
+      const current = await catalogue.listCurrentCatalogue();
+      catalogue.close();
+      expect(current.map(({ entity }) => entity.id)).toEqual([
+        manifest.assets.topLevelA,
+      ]);
+
+      const database = new DatabaseSync(
+        path.join(productDataDirectory, "catalogue.sqlite"),
+        { readOnly: true },
+      );
+      let locationId = "";
+      try {
+        const acceptances = database
+          .prepare(
+            `SELECT a.acceptance_kind AS kind, a.work_item_key AS key,
+               a.execution_id AS executionId, a.proposal_id AS proposalId,
+               a.observed_reference AS reference, b.derivation_kind AS derivation,
+               b.material_kind AS materialKind
+             FROM observed_material_acceptances AS a
+             INNER JOIN observed_material_boundaries AS b ON b.location_id = a.location_id`,
+          )
+          .all() as unknown as readonly {
+          kind: string;
+          key: string;
+          executionId: string;
+          proposalId: string;
+          reference: string;
+          derivation: string;
+          materialKind: string;
+        }[];
+        // 顶层 A 的唯一 file 载体：空 work_item_key、a-work-item 归属、精确 legacy-exact 派生，
+        // carrier 坐标就是执行自身的 proposal 与 acceptedAsset，出处来自 observedArtifactAssociations。
+        expect(acceptances).toHaveLength(1);
+        expect(acceptances[0]).toMatchObject({
+          kind: "a-work-item",
+          key: "",
+          materialKind: "file",
+          derivation: "legacy-exact",
+          reference: "notes.txt",
+        });
+        expect(acceptances[0]?.executionId).not.toBe("");
+        expect(acceptances[0]?.proposalId).not.toBe("");
+
+        const supports = database
+          .prepare(
+            `SELECT location_id AS locationId, material_kind AS kind,
+               observed_root_id AS rootId
+             FROM current_observed_material_supports`,
+          )
+          .all() as unknown as readonly {
+          locationId: string;
+          kind: string;
+          rootId: string;
+        }[];
+        expect(supports).toHaveLength(1);
+        expect(supports[0]).toMatchObject({ kind: "file" });
+        expect(supports[0]?.rootId).toBe(manifest.observedRootId);
+        locationId = supports[0]?.locationId ?? "";
+        expect(supportRows(database, locationId)).toEqual([
+          { rootId: manifest.observedRootId, kind: "file" },
+        ]);
+        expect(supportsOutsideTheirOwnFrozenEvent(database)).toEqual([]);
+      } finally {
+        database.close();
+      }
+
+      // 重开正确且历史不丢：迁移幂等 applied 0，资产仍 current，账本保留全部历史行。
+      await expect(
+        prepareProductionCatalogue({ productDataDirectory }),
+      ).resolves.toEqual({ applied: 0 });
+      const reopened = SqliteCatalogue.forProductData(productDataDirectory);
+      expect(
+        (await reopened.listCurrentCatalogue()).map(({ entity }) => entity.id),
+      ).toEqual(current.map(({ entity }) => entity.id));
+      reopened.close();
+
+      const reopenedDatabase = new DatabaseSync(
+        path.join(productDataDirectory, "catalogue.sqlite"),
+        { readOnly: true },
+      );
+      try {
+        const ledger = reopenedDatabase
+          .prepare("SELECT id, checksum FROM __digital_catalogue_migrations")
+          .all() as unknown as readonly { id: string; checksum: string }[];
+        expect(ledger).toHaveLength(productionMigrationArtifacts.length);
+        const head = ledger.find(
+          ({ id }) =>
+            id === "20261003000000_current_observed_material_supports",
+        );
+        expect(head?.checksum).toBe(
+          productionMigrationArtifacts.find(
+            ({ id }) =>
+              id === "20261003000000_current_observed_material_supports",
+          )?.checksum,
+        );
+        // 升级不改写既有 Location/association/artifact 身份，也不伪造新的执行。
+        expect(
+          reopenedDatabase
+            .prepare("SELECT COUNT(*) AS count FROM workflow_executions")
+            .get(),
+        ).toEqual({ count: 1 });
+        expect(supportRows(reopenedDatabase, locationId)).toEqual([
+          { rootId: manifest.observedRootId, kind: "file" },
+        ]);
+      } finally {
+        reopenedDatabase.close();
+      }
+    } finally {
+      await rm(productDataDirectory, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   it("keeps each overlapping root's own latest complete observation decisive", async () => {
     // fixture 由固定点 911a0c3 的公开产品操作生成：父根人工准入两份材料，子根覆盖同一
     // 目录；随后同一 inode 的 rename 使子根最近完整扫描缺失 book.txt，父根再次完整扫描

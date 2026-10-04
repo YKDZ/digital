@@ -1,0 +1,12 @@
+{
+  "schema": "digital-old-contract-fixture/1",
+  "generatedFrom": "911a0c30cf4d094ffca18f64c4f3a164f730f6bc",
+  "note": "baseline911 真实受信扫描生成的 legacy 顶层 A empty-workItems accepted 库（base17，三新表不存在）。执行自身持有顶层 proposal 与 acceptedAsset，但 work_items_json 为空。",
+  "stripRoot": "/tmp/digital-disposable-rework08-toplevel-a",
+  "observedRootId": "observed_root_937ae9f3-93d1-430f-8a0f-d5dec5de31b1",
+  "assets": {
+    "topLevelA": "entity_c5d26287-98d0-44d1-9744-d60db02e1575"
+  },
+  "baselineLedgerCount": 17,
+  "baselineCurrentIds": ["entity_c5d26287-98d0-44d1-9744-d60db02e1575"]
+}

@@ -116,7 +116,7 @@ export const productionCatalogueMigrationPlan = [
   {
     id: "20261003000000_current_observed_material_supports",
     checksum:
-      "b658bbee7ae5146e5f6d7ccddbfedd76774115fc1879cbb27e3374f2c289125a",
+      "79c8c8cf63e2a9425dedae6060facc3d31a3634443db1d0553bc542137be85ef",
   },
   {
     id: "20261003000000_unbind_local_user",
