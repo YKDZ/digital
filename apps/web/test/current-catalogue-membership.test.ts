@@ -116,6 +116,102 @@ it("removes a location's material from the Web current catalogue when the locati
   }
 }, 60_000);
 
+it("停用唯一观察根后关系 HTTP 与详情、当前目录一起退出已收录内容，人工关系历史在重开后仍可反查", async () => {
+  const temporary = await mkdtemp(
+    path.join(tmpdir(), "digital-disposable-current-relationship-http-"),
+  );
+  const data = path.join(temporary, "data");
+  const media = path.join(temporary, "media");
+  await mkdir(media, { recursive: true });
+  await writeFile(path.join(media, "local.txt"), "已确认的本地内容");
+  await prepareWebProductData(data);
+  let product: WebProduct | undefined = productFor(data);
+  let seriesId = "";
+  const relationshipRead = async (
+    current: WebProduct,
+  ): Promise<{
+    accepted: { readonly entity: { readonly id: string } }[];
+    relationships: { readonly type: string }[];
+  }> =>
+    await (
+      await current.result.api.request(`/relationships/entities/${seriesId}`)
+    ).json();
+  try {
+    const root = await createRoot(product, media);
+    const assetId = await admitManualContent(product, root.id, "local.txt");
+    seriesId = (
+      await (
+        await post(product.result.api, "/relationships/entities", {
+          commitmentId: "membership-exit/series",
+          label: "退出验证系列",
+          actorId: "reader",
+        })
+      ).json()
+    ).id as string;
+    const preview = await (
+      await post(product.result.api, "/relationships/preview", {
+        changes: [
+          {
+            kind: "create",
+            definitionId: "epub.series-membership",
+            relationship: {
+              type: "asset.membership",
+              participants: [
+                { entityId: assetId, role: "asset" },
+                { entityId: seriesId, role: "series" },
+              ],
+              qualifiers: [{ key: "position", value: "1" }],
+            },
+          },
+        ],
+      })
+    ).json();
+    expect(
+      (
+        await post(product.result.api, "/relationships/apply", {
+          actorId: "reader",
+          preview,
+        })
+      ).status,
+    ).toBe(200);
+
+    // 停用前：详情、当前目录与关系 HTTP 对同一成员资格给出一致答案。
+    await expect(currentCatalogue(product)).resolves.toMatchObject({
+      assets: [expect.objectContaining({ id: assetId })],
+    });
+    expect(
+      (await relationshipRead(product)).accepted.map(({ entity }) => entity.id),
+    ).toEqual([assetId]);
+
+    await deactivateRoot(product, root.id);
+
+    // 停用后三面同时退出；关系历史没有被删除来换取一致性。
+    await expect(
+      product.result.api.request(`/catalogue/${assetId}`),
+    ).resolves.toMatchObject({ status: 404 });
+    await expect(currentCatalogue(product)).resolves.toMatchObject({
+      assets: [],
+    });
+    const exited = await relationshipRead(product);
+    expect(exited.accepted).toEqual([]);
+    expect(exited.relationships).toContainEqual(
+      expect.objectContaining({ type: "asset.membership" }),
+    );
+
+    // 重开后判定不变。
+    await product.close();
+    product = productFor(data);
+    const reopened = await relationshipRead(product);
+    expect(reopened.accepted).toEqual([]);
+    expect(reopened.relationships).toContainEqual(
+      expect.objectContaining({ type: "asset.membership" }),
+    );
+  } finally {
+    await product?.close();
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 it("keeps an asset in the Web current catalogue when another observed material remains current", async () => {
   const temporary = await mkdtemp(
     path.join(tmpdir(), "digital-disposable-current-catalogue-membership-"),

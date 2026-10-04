@@ -9383,6 +9383,12 @@ export class AssetRefreshWorkflow {
     ]);
     if (current === undefined || current.subjectId !== subjectId)
       return undefined;
+    // 精确主体检查与分页共用同一当前成员资格：材料退出后不再作为当前已收录内容投影。
+    const page = await this.listCurrentCataloguePage({
+      subjectIds: [subjectId],
+    });
+    if (!page.items.some((item) => item.entity.id === subjectId))
+      return undefined;
     return publicAccepted(
       current.accepted,
       [],

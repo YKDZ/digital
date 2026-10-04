@@ -5870,6 +5870,31 @@ export class SqliteCatalogue
     return found;
   }
 
+  /**
+   * 从历史已接受事实里筛出仍具当前材料成员资格的主体。判定复用分页、索引与关系
+   * 入口所依据的同一个观察材料谓词，不另立当前性定义；历史读取本身不受影响。
+   */
+  private currentCatalogueSubjectIdsWithDrizzle(
+    query: DrizzleReadQuery,
+    subjectIds: readonly string[],
+  ): Set<string> {
+    if (subjectIds.length === 0) return new Set();
+    return new Set(
+      query
+        .select({ subjectId: recognitionHeads.subjectId })
+        .from(recognitionHeads)
+        .where(
+          and(
+            inArray(recognitionHeads.subjectId, sqliteTextSet(subjectIds)),
+            isNotNull(recognitionHeads.recognitionDecisionId),
+            currentObservedMaterialPredicate(),
+          ),
+        )
+        .all()
+        .map(({ subjectId }) => subjectId),
+    );
+  }
+
   async findCurrentRelationshipParticipant(
     entityId: string,
   ): Promise<CatalogueEntityRelationshipFacts | undefined> {
@@ -6206,7 +6231,13 @@ export class SqliteCatalogue
           : [sourceSubjectId];
       }),
     ]);
-    const accepted = await this.findAcceptedForSubjects(candidates);
+    const currentCandidateIds = this.currentCatalogueSubjectIdsWithDrizzle(
+      query,
+      candidates,
+    );
+    const accepted = await this.findAcceptedForSubjects(
+      candidates.filter((subjectId) => currentCandidateIds.has(subjectId)),
+    );
     // 资料断言的 subject 是原属相关实体，不是数字资产；从当前资产投影反查，不能借用关系邻接。
     const metadataSubjectIds = query
       .select({ subjectId: recognitionHeads.subjectId })

@@ -6174,6 +6174,175 @@ describe("SqliteCatalogue lifecycle", () => {
     expect(all.items.map((item) => item.entity.id)).not.toContain(ordinary.id);
     catalogue.close();
   });
+
+  it("停用唯一观察根后精确主体与关系已收录内容随分页一起退出，另一份有效材料仍当前且关系历史可查", async () => {
+    const productDataDirectory = await preparedCatalogueRoot();
+    cleanup.push(productDataDirectory);
+    const temporary = await mkdtemp(
+      path.join(tmpdir(), "digital-current-detail-exit-"),
+    );
+    cleanup.push(temporary);
+    const primaryMedia = path.join(temporary, "primary");
+    const supportingMedia = path.join(temporary, "supporting");
+    await mkdir(primaryMedia, { recursive: true });
+    await mkdir(supportingMedia, { recursive: true });
+    await writeFile(path.join(primaryMedia, "solo.txt"), "唯一观察材料的正文");
+    await writeFile(path.join(primaryMedia, "dual.txt"), "第一项观察材料");
+    await writeFile(path.join(supportingMedia, "dual.txt"), "第二项观察材料");
+    const network = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("离线"));
+    let workflow = composeAssetRefresh(productDataDirectory, {});
+    const pageIds = async () =>
+      (
+        await workflow.listCurrentCataloguePage({
+          limit: 100,
+        })
+      ).items
+        .map(({ entity }) => entity.id)
+        .toSorted();
+    try {
+      const primaryRoot = await workflow.observedRootRegistrations.create({
+        displayName: "退出验证主根",
+        containerPath: primaryMedia,
+        readOnly: true,
+        symlinkMode: "do-not-follow",
+        allowedTargetRootIds: [],
+      });
+      const scan = await workflow.scanObservedScope({
+        registrationId: primaryRoot.id,
+        relativeScope: ".",
+        acceptTrusted: false,
+      });
+      const review = await workflow.prepareLocalContent({
+        executionId: scan.execution.id,
+        relativePaths: ["solo.txt", "dual.txt"],
+      });
+      const solo = await workflow.confirmLocalContent({
+        executionId: (
+          await workflow.prepareLocalContent({
+            executionId: review.executionId,
+            relativePaths: ["solo.txt"],
+            name: "停用退出的作品",
+            classification: "book",
+          })
+        ).executionId,
+      });
+      const dual = await workflow.confirmLocalContent({
+        executionId: (
+          await workflow.prepareLocalContent({
+            executionId: review.executionId,
+            relativePaths: ["dual.txt"],
+            name: "两份材料的作品",
+            classification: "book",
+          })
+        ).executionId,
+      });
+      const soloId = solo.content.entity.id;
+      const dualId = dual.content.entity.id;
+      const supportingRoot = await workflow.observedRootRegistrations.create({
+        displayName: "退出验证补充根",
+        containerPath: supportingMedia,
+        readOnly: true,
+        symlinkMode: "do-not-follow",
+        allowedTargetRootIds: [],
+      });
+      const association = await workflow.prepareObservedMaterialAssociation({
+        targetAssetId: dualId,
+        registrationId: supportingRoot.id,
+        relativeScope: ".",
+        relativePaths: ["dual.txt"],
+        initiatedBy: "current-detail-exit",
+      });
+      await workflow.confirmObservedMaterialAssociation({
+        executionId: association.executionId,
+        confirmedBy: "current-detail-exit",
+      });
+      const series = await workflow.createLocalRelatedEntity({
+        commitmentId: "current-exit/series",
+        label: "退出验证系列",
+        actorId: "user:甲",
+      });
+      const membership = (assetId: string, position: string) => ({
+        kind: "create" as const,
+        definitionId: "epub.series-membership",
+        relationship: {
+          type: "asset.membership",
+          participants: [
+            { entityId: assetId, role: "asset" },
+            { entityId: series.id, role: "series" },
+          ],
+          qualifiers: [{ key: "position", value: position }],
+        },
+      });
+      expect(
+        await workflow.applyRelationshipChange({
+          actorId: "user:甲",
+          preview: await workflow.previewRelationshipChange({
+            changes: [membership(soloId, "1"), membership(dualId, "2")],
+          }),
+        }),
+      ).toBe("applied");
+
+      const detailId = async (subjectId: string) =>
+        (await workflow.inspectCurrentCatalogueSubject(subjectId))?.entity.id;
+      const relatedIds = async () =>
+        (await workflow.inspectCurrentCatalogueEntity(series.id))!.accepted
+          .map(({ entity }) => entity.id)
+          .toSorted();
+
+      // 停用前：分页、精确主体与关系反查对同一成员资格给出一致答案。
+      expect(await pageIds()).toEqual([soloId, dualId].toSorted());
+      expect(await detailId(soloId)).toBe(soloId);
+      expect(await detailId(dualId)).toBe(dualId);
+      expect(await relatedIds()).toEqual([soloId, dualId].toSorted());
+
+      // 停用唯一观察根：材料全部退出的作品从三面同时退出，仍有补充材料的作品保持当前。
+      await workflow.observedRootRegistrations.deactivate({
+        id: primaryRoot.id,
+        expectedVersion: primaryRoot.configVersion,
+      });
+      expect(await pageIds()).toEqual([dualId]);
+      expect(await detailId(soloId)).toBeUndefined();
+      expect(await detailId(dualId)).toBe(dualId);
+      expect(await relatedIds()).toEqual([dualId]);
+
+      // 重开后判定不变，退出不是只在内存里成立的投影。
+      await workflow.close();
+      workflow = composeAssetRefresh(productDataDirectory, {});
+      expect(await pageIds()).toEqual([dualId]);
+      expect(await detailId(soloId)).toBeUndefined();
+      expect(await relatedIds()).toEqual([dualId]);
+
+      // 已退出作品的关系与普通身份事实仍可查：两项成员资格都留在同一系列关系上。
+      const seriesFacts = (await workflow.inspectCurrentCatalogueEntity(
+        series.id,
+      ))!;
+      expect(seriesFacts.entity).toMatchObject({
+        id: series.id,
+        label: "退出验证系列",
+      });
+      expect(
+        seriesFacts.relationships
+          .filter(({ type }) => type === "asset.membership")
+          .flatMap(({ participants }) =>
+            participants
+              .filter(({ role }) => role === "asset")
+              .map(({ entityId }) => entityId),
+          )
+          .toSorted(),
+      ).toEqual([soloId, dualId].toSorted());
+      await expect(workflow.findRelatedEntities("退出验证")).resolves.toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: series.id })]),
+      );
+
+      expect(network).not.toHaveBeenCalled();
+    } finally {
+      await workflow.close();
+      network.mockRestore();
+    }
+  });
+
   it("pages recent Workflow History without rebuilding older audit records", async () => {
     const { root, catalogue } = await createCatalogueWithRoot();
     for (let index = 0; index < 125; index += 1) {
@@ -11565,6 +11734,8 @@ function reevaluationWorkflow(
       : {}),
     changeImpactQueries: catalogue,
     changeImpactCommands: catalogue,
+    // 与已部署组合一致：精确主体检查与分页共用同一当前目录成员资格。
+    currentCatalogueQueries: catalogue,
     relationshipTraversalQueries: catalogue,
     metadataPolicyConfiguration: state.metadataPolicyConfiguration,
     relatedEntityIdentity: catalogue,
