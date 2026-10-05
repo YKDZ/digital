@@ -18,7 +18,7 @@ type WorkspacePackage = {
 const root = resolve(import.meta.dirname, "..");
 const roots = new Set<string>(["@digital/web", "@digital/db-migrations"]);
 const manifests = new Map<string, WorkspacePackage>();
-for (const group of ["apps", "packages"]) {
+for (const group of ["apps", "packages", "sources"]) {
   for (const entry of await readdir(resolve(root, group))) {
     const directory = resolve(root, group, entry);
     try {

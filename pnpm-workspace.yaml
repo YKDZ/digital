@@ -1,6 +1,7 @@
 packages:
   - apps/*
   - packages/*
+  - sources/*
 
 nodeLinker: isolated
 preferSymlinkedExecutables: true
