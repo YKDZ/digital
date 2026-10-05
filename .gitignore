@@ -7,7 +7,7 @@ coverage/
 .template/
 playwright-report/
 test-results/
-/.scratch/
+.scratch/
 
 tsconfig.tsbuildinfo
 *.tsbuildinfo
@@ -19,8 +19,8 @@ credentials/
 secrets/
 logs/
 
-/CONTEXT-MAP.md
-CONTEXT*.md
+/GLOSSARY-MAP.md
+GLOSSARY*.md
 /AGENTS.md
 /docs
 /.agents

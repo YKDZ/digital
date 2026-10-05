@@ -15,7 +15,7 @@ describe("正式单机 Compose 部署合同", () => {
       ".scratch/",
       ".agents/",
       "AGENTS.md",
-      "CONTEXT*.md",
+      "GLOSSARY*.md",
       "docs/",
       ".env*",
       "MISSION.md",

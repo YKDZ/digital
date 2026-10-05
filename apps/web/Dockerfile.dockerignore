@@ -15,7 +15,7 @@ apps/web/node_modules/.tmp
 .scratch/
 .agents/
 AGENTS.md
-CONTEXT*.md
+GLOSSARY*.md
 docs/
 .env*
 MISSION.md
