@@ -3,6 +3,7 @@ import path from "node:path";
 import {
   AssetRefreshAutomation,
   AssetRefreshWorkflow,
+  AssetLibraries,
   ApplicationArtifactByteAccess,
   AutomationHost,
   ExecutionHost,
@@ -32,6 +33,9 @@ import {
   DlsiteCollector,
   DlsiteExactDirectoryInterpreter,
   DlsiteExactRecognizer,
+  DlsiteLocalDirectoryRecognizer,
+  DlsiteLocalSourceCandidateInterpreter,
+  DlsiteSourceAssociationInterpreter,
   DlsiteSourceAddressing,
   DlsiteSourceInterpreter,
   dlsiteInformationFulfillmentCapabilities,
@@ -40,6 +44,9 @@ import {
   EpubEmbeddedCoverAcquirer,
   EpubLocalPublicationRecognizer,
   EpubPublicationInspector,
+  BookDirectoryInterpreter,
+  BookLocalPublicationRecognizer,
+  BookImageInspector,
 } from "@digital/epub";
 import {
   FanboxArtifactAcquirer,
@@ -61,6 +68,7 @@ import { createKadokawaJapanSource } from "@digital/kadokawa-jp";
 import {
   NbinetCollector,
   NbinetExactIsbnRecognizer,
+  NbinetLocalIsbnCandidateInterpreter,
   NbinetSourceAddressing,
   NbinetSourceAssociationInterpreter,
   NbinetSourceInterpreter,
@@ -302,6 +310,7 @@ function composeAssetRefreshWithGeneration(
       new DlsiteExactDirectoryInterpreter(),
       new BangumiEpisodicDirectoryInterpreter(),
       new TmdbStrictFilmDirectoryInterpreter(),
+      new BookDirectoryInterpreter(),
       ...fanbox.directoryInterpreters,
     ];
     const filesystemPackageInterpreters = [
@@ -309,6 +318,7 @@ function composeAssetRefreshWithGeneration(
     ];
     const formatInspectors = [
       new EpubPublicationInspector(),
+      new BookImageInspector(),
       ...pdf.formatInspectors,
     ];
     const collectors = [
@@ -339,9 +349,12 @@ function composeAssetRefreshWithGeneration(
       kadokawaJapan.sourceAddressing,
     ];
     const sourceAssociationCandidateInterpreters = [
+      new DlsiteLocalSourceCandidateInterpreter(),
+      new NbinetLocalIsbnCandidateInterpreter(),
       omdb.sourceAssociationCandidateInterpreter,
     ];
     const sourceAssociationInterpreters = [
+      new DlsiteSourceAssociationInterpreter(),
       omdb.sourceAssociationInterpreter,
       new NbinetSourceAssociationInterpreter(),
       taiwanKadokawa.associationInterpreter,
@@ -349,8 +362,10 @@ function composeAssetRefreshWithGeneration(
     ];
     const recognizers = [
       new DlsiteExactRecognizer(),
+      new DlsiteLocalDirectoryRecognizer(),
       new BangumiEpisodicRecognizer(),
       new EpubLocalPublicationRecognizer(),
+      new BookLocalPublicationRecognizer(),
       ...pdf.recognizers,
       new NbinetExactIsbnRecognizer(),
       new TmdbStrictFilmRecognizer(),
@@ -400,6 +415,169 @@ function composeAssetRefreshWithGeneration(
       cleanupFailureFallback: observedRootCleanupEmergencyJournal,
       operationSupervisor: invocationSupervisor,
     });
+    const assetLibraries = new AssetLibraries({
+      persistence,
+      roots: observedRootRegistrations,
+      recognitionProfiles: [
+        {
+          id: "dlsite-voice",
+          displayName: "DLsite 音声",
+          directoryInterpreterIds: ["dlsite.exact-directory"],
+          recognizerIds: [
+            "dlsite.local-directory-recognizer",
+            "dlsite.exact-recognizer",
+          ],
+        },
+        {
+          id: "fanbox",
+          displayName: "FANBOX",
+          directoryInterpreterIds: ["fanbox.creator-date-directory"],
+          recognizerIds: ["fanbox.creator-date-recognizer"],
+        },
+        {
+          id: "books",
+          displayName: "电子书",
+          directoryInterpreterIds: ["book.same-name-directory"],
+          recognizerIds: [
+            "book.local-directory-recognizer",
+            "epub.local-publication-recognizer",
+            "pdf.local-publication-recognizer",
+            "nbinet.exact-isbn-recognizer",
+          ],
+        },
+        {
+          id: "anime",
+          displayName: "番剧",
+          directoryInterpreterIds: ["bangumi.episodic-directory"],
+          recognizerIds: ["bangumi.episodic-recognizer"],
+        },
+        {
+          id: "movies",
+          displayName: "电影",
+          directoryInterpreterIds: ["tmdb.strict-film-directory"],
+          recognizerIds: ["tmdb.strict-film-recognizer"],
+        },
+      ],
+      sources: [
+        {
+          id: "dlsite",
+          displayName: "DLsite",
+          collectorIds: ["dlsite.official-collection"],
+          sourceCandidateInterpreterIds: ["dlsite.local-source-candidate"],
+          sourceInterpreterIds: ["dlsite.product-interpretation"],
+          sourceAssociationInterpreterIds: ["dlsite.exact-source-association"],
+          acquirerIds: ["dlsite.source-artifact-acquirer"],
+          informationFulfillmentIds:
+            dlsiteInformationFulfillmentCapabilities.map(
+              ({ declaration }) => declaration.identity,
+            ),
+        },
+        {
+          id: "fanbox",
+          displayName: "FANBOX",
+          collectorIds: ["fanbox.official-collection"],
+          sourceCandidateInterpreterIds: [],
+          sourceInterpreterIds: ["fanbox.post-interpretation"],
+          sourceAssociationInterpreterIds: [],
+          acquirerIds: ["fanbox.source-artifact-acquirer"],
+          informationFulfillmentIds: [],
+        },
+        {
+          id: "bangumi",
+          displayName: "Bangumi",
+          collectorIds: ["bangumi.official-collection"],
+          sourceCandidateInterpreterIds: [],
+          sourceInterpreterIds: ["bangumi.episodic-interpretation"],
+          sourceAssociationInterpreterIds: [],
+          acquirerIds: ["bangumi.source-artifact-acquirer"],
+          informationFulfillmentIds: [],
+        },
+        {
+          id: "tmdb",
+          displayName: "TMDB",
+          collectorIds: ["tmdb.official-film-collection"],
+          sourceCandidateInterpreterIds: [],
+          sourceInterpreterIds: ["tmdb.film-interpretation"],
+          sourceAssociationInterpreterIds: [],
+          acquirerIds: ["tmdb.source-artifact-acquirer"],
+          informationFulfillmentIds: [],
+        },
+        {
+          id: "omdb",
+          displayName: "OMDb",
+          collectorIds: ["omdb.film-enrichment-collection"],
+          sourceCandidateInterpreterIds: [
+            "omdb.source-association-candidate-interpretation",
+          ],
+          sourceInterpreterIds: ["omdb.film-enrichment-interpretation"],
+          sourceAssociationInterpreterIds: [
+            "omdb.source-association-interpretation",
+          ],
+          acquirerIds: ["omdb.source-artifact-acquirer"],
+          informationFulfillmentIds: [],
+        },
+        {
+          id: "nbinet",
+          displayName: "NBINet",
+          collectorIds: ["nbinet.exact-isbn-collection"],
+          sourceCandidateInterpreterIds: [
+            "nbinet.local-publication-isbn-candidate",
+          ],
+          sourceInterpreterIds: [
+            "nbinet.exact-isbn-bibliographic-interpretation",
+          ],
+          sourceAssociationInterpreterIds: [
+            "nbinet.exact-isbn-association-interpretation",
+          ],
+          acquirerIds: [],
+          informationFulfillmentIds: [],
+        },
+        {
+          id: "kadokawa-jp",
+          displayName: "日本角川",
+          collectorIds: ["kadokawa-jp.official-collection"],
+          sourceCandidateInterpreterIds: [],
+          sourceInterpreterIds: ["kadokawa-jp.product-interpretation"],
+          sourceAssociationInterpreterIds: [
+            "kadokawa-jp.isbn-association-interpretation",
+          ],
+          acquirerIds: ["kadokawa-jp.source-artifact-acquirer"],
+          informationFulfillmentIds: [],
+        },
+        {
+          id: "taiwan-kadokawa",
+          displayName: "台湾角川",
+          collectorIds: ["taiwan-kadokawa.official-product-collection"],
+          sourceCandidateInterpreterIds: [],
+          sourceInterpreterIds: ["taiwan-kadokawa.product-interpretation"],
+          sourceAssociationInterpreterIds: [
+            "taiwan-kadokawa.isbn-association-interpretation",
+          ],
+          acquirerIds: ["taiwan-kadokawa.source-artifact-acquirer"],
+          informationFulfillmentIds: [],
+        },
+      ],
+      capabilities: {
+        directoryInterpreters: directoryInterpreters.map(
+          ({ capability }) => capability,
+        ),
+        recognizers: recognizers.map(({ capability }) => capability),
+        collectors: collectors.map(({ capability }) => capability),
+        sourceCandidateInterpreters: sourceAssociationCandidateInterpreters.map(
+          ({ capability }) => capability,
+        ),
+        sourceInterpreters: sourceInterpreters.map(
+          ({ capability }) => capability,
+        ),
+        sourceAssociationInterpreters: sourceAssociationInterpreters.map(
+          ({ capability }) => capability,
+        ),
+        acquirers: acquirers.map(({ capability }) => capability),
+        informationFulfillments: dlsiteInformationFulfillmentCapabilities.map(
+          ({ declaration }) => declaration,
+        ),
+      },
+    });
     validateCapabilityDeclarations([
       ...applicationOwnedCapabilityDeclarations,
       observedRootRegistrations.capability,
@@ -419,6 +597,7 @@ function composeAssetRefreshWithGeneration(
       ...sourceConnections.capabilityDeclarations,
     ]);
     const workflow = new AssetRefreshWorkflow({
+      assetLibraries,
       observedRootRegistrations,
       directoryInterpreters,
       filesystemPackageInterpreters,
@@ -438,6 +617,14 @@ function composeAssetRefreshWithGeneration(
       managedStore: new ContentAddressedManagedArtifactStore(managedDirectory),
       executionCommands: persistence,
       executionQueries: persistence,
+      ...(options.automationInformationRequirementForAcceptedSubject ===
+      undefined
+        ? {}
+        : {
+            informationPlanner:
+              options.automationInformationRequirementForAcceptedSubject,
+          }),
+      libraryScanFulfillment: persistence,
       recoveryLease: persistence,
       reuseQueries: persistence,
       relationshipTraversalQueries: persistence,
@@ -466,22 +653,18 @@ function composeAssetRefreshWithGeneration(
     const automated = attachAssetRefreshAutomation(
       workflow,
       new AssetRefreshAutomation(workflow, {
+        assetLibraries,
         executionQueries: persistence,
         automationQueries: persistence,
         automationCommands: persistence,
+        libraryScanFulfillment: persistence,
         observedRootRegistrations,
         recognitionPolicyVersion: recognitionPolicy.version,
-        ...(options.automationInformationRequirementForAcceptedSubject ===
-        undefined
-          ? {}
-          : {
-              informationRequirementForAcceptedSubject:
-                options.automationInformationRequirementForAcceptedSubject,
-            }),
       }),
     );
     return composeOwnedAssetRefresh(
       Object.assign(automated, {
+        assetLibraries,
         observedRootRegistrations,
         observedRootCleanupEmergencyJournal,
         sourceConnections,
@@ -637,11 +820,7 @@ function fanboxCapabilitiesFromProductConnections(
   readonly acquirers: readonly FanboxArtifactAcquirer[];
 } {
   return {
-    directoryInterpreters: [
-      new FanboxDateDirectoryInterpreter(() =>
-        sourceConnections.fanbox.creatorIds(),
-      ),
-    ],
+    directoryInterpreters: [new FanboxDateDirectoryInterpreter()],
     collectors: [sourceConnections.fanboxCollector()],
     sourceInterpreters: [new FanboxSourceInterpreter()],
     recognizers: [new FanboxExactRecognizer()],

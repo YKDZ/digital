@@ -60,6 +60,8 @@ type ResolvedSource = {
   readonly observedAuthority?: {
     readonly registrationId: string;
     readonly registrationVersion: number;
+    readonly assetLibraryId?: string;
+    readonly directoryAuthorityVersion?: number;
   };
 };
 
@@ -101,6 +103,7 @@ export class ApplicationArtifactByteAccess implements ArtifactByteAccess {
 
   async describe(selection: {
     readonly artifactRevisionId: string;
+    readonly assetLibraryId?: string;
   }): Promise<ArtifactByteDescriptor> {
     const operation = this.operation();
     const finalBinding: RetainedObservedBinding = {};
@@ -133,7 +136,10 @@ export class ApplicationArtifactByteAccess implements ArtifactByteAccess {
   }
 
   private async describeWithOperation(
-    selection: { readonly artifactRevisionId: string },
+    selection: {
+      readonly artifactRevisionId: string;
+      readonly assetLibraryId?: string;
+    },
     operation: OperationLease,
     retainedBinding?: RetainedObservedBinding,
   ): Promise<ArtifactByteDescriptor> {
@@ -144,8 +150,16 @@ export class ApplicationArtifactByteAccess implements ArtifactByteAccess {
     let primaryError: unknown;
     try {
       const facts = await this.facts(selection.artifactRevisionId);
-      await this.ensureInspectableProof(facts, operation);
-      resolved = await this.resolveAccessibleCandidate(facts, operation);
+      await this.ensureInspectableProof(
+        facts,
+        operation,
+        selection.assetLibraryId,
+      );
+      resolved = await this.resolveAccessibleCandidate(
+        facts,
+        operation,
+        selection.assetLibraryId,
+      );
       const descriptor = {
         revisionId: facts.revision.id,
         blobDigest: facts.blob.digest,
@@ -196,7 +210,10 @@ export class ApplicationArtifactByteAccess implements ArtifactByteAccess {
   }
 
   async open(input: {
-    readonly selection: { readonly artifactRevisionId: string };
+    readonly selection: {
+      readonly artifactRevisionId: string;
+      readonly assetLibraryId?: string;
+    };
     readonly expectedBlobDigest: string;
     readonly interval: ByteInterval;
   }): Promise<AuthorizedArtifactByteLease> {
@@ -206,7 +223,10 @@ export class ApplicationArtifactByteAccess implements ArtifactByteAccess {
 
   private async openWithOperation(
     input: {
-      readonly selection: { readonly artifactRevisionId: string };
+      readonly selection: {
+        readonly artifactRevisionId: string;
+        readonly assetLibraryId?: string;
+      };
       readonly expectedBlobDigest: string;
       readonly interval: ByteInterval;
     },
@@ -219,12 +239,21 @@ export class ApplicationArtifactByteAccess implements ArtifactByteAccess {
       if (facts.blob.digest !== input.expectedBlobDigest)
         throw new ArtifactByteAccessError("artifact-integrity-failed");
       validateInterval(input.interval, facts.blob.byteLength);
-      manifest = await this.openVerifiedProof(facts, operation);
+      manifest = await this.openVerifiedProof(
+        facts,
+        operation,
+        input.selection.assetLibraryId,
+      );
       let candidateFailure: ArtifactByteAccessError | undefined;
       for (const candidate of orderedArtifactByteLocations(facts.locations)) {
         let resolved: ResolvedSource | undefined;
         try {
-          resolved = await this.openCandidate(facts, candidate, operation);
+          resolved = await this.openCandidate(
+            facts,
+            candidate,
+            operation,
+            input.selection.assetLibraryId,
+          );
           if (resolved === undefined) continue;
           const lease = new ApplicationArtifactByteLease({
             revisionId: facts.revision.id,
@@ -287,7 +316,10 @@ export class ApplicationArtifactByteAccess implements ArtifactByteAccess {
   }
 
   async planPlayback(
-    selection: { readonly artifactRevisionId: string },
+    selection: {
+      readonly artifactRevisionId: string;
+      readonly assetLibraryId?: string;
+    },
     consumer: ConsumerPlaybackCapabilities,
     preferences: PlaybackPreferences,
   ): Promise<PlaybackPlanResult> {
@@ -333,7 +365,10 @@ export class ApplicationArtifactByteAccess implements ArtifactByteAccess {
   }
 
   private async inspectFormatWithReauthorization(
-    selection: { readonly artifactRevisionId: string },
+    selection: {
+      readonly artifactRevisionId: string;
+      readonly assetLibraryId?: string;
+    },
     descriptor: ArtifactByteDescriptor,
     inspector: PlaybackFormatInspector,
     operation: OperationLease,
@@ -342,7 +377,11 @@ export class ApplicationArtifactByteAccess implements ArtifactByteAccess {
     const format = await inspector.inspect({
       revisionId: descriptor.revisionId,
       blobDigest: descriptor.blobDigest,
-      bytes: this.playbackProbe(descriptor, operation),
+      bytes: this.playbackProbe(
+        descriptor,
+        operation,
+        selection.assetLibraryId,
+      ),
     });
     assertOperation(operation);
     const finalDescriptor = await this.describeWithOperation(
@@ -359,6 +398,7 @@ export class ApplicationArtifactByteAccess implements ArtifactByteAccess {
   private playbackProbe(
     descriptor: ArtifactByteDescriptor,
     operation: OperationLease,
+    assetLibraryId: string | undefined,
   ) {
     let totalLogicalBytes = 0;
     let reading = false;
@@ -374,7 +414,10 @@ export class ApplicationArtifactByteAccess implements ArtifactByteAccess {
         try {
           lease = await this.openWithOperation(
             {
-              selection: { artifactRevisionId: descriptor.revisionId },
+              selection: {
+                artifactRevisionId: descriptor.revisionId,
+                ...(assetLibraryId === undefined ? {} : { assetLibraryId }),
+              },
               expectedBlobDigest: descriptor.blobDigest,
               interval: {
                 startInclusive,
@@ -499,7 +542,10 @@ export class ApplicationArtifactByteAccess implements ArtifactByteAccess {
     return await this.persistence.submitConfirmedObservedRevision(input);
   }
 
-  async confirmObservedFileSelection(selectionId: string) {
+  async confirmObservedFileSelection(
+    selectionId: string,
+    assetLibraryId?: string,
+  ) {
     const operation = this.operation();
     let source: ArtifactByteSource | undefined;
     let observedBinding: { release(): void } | undefined;
@@ -519,6 +565,7 @@ export class ApplicationArtifactByteAccess implements ArtifactByteAccess {
         blobDigest: "",
         purpose: "confirmation",
         operation,
+        ...(assetLibraryId === undefined ? {} : { assetLibraryId }),
       });
       if (opened?.observedAuthority === undefined) {
         assertOperation(operation);
@@ -637,6 +684,7 @@ export class ApplicationArtifactByteAccess implements ArtifactByteAccess {
   private async ensureInspectableProof(
     facts: ArtifactRevisionAccessFacts,
     operation: OperationLease,
+    assetLibraryId: string | undefined,
   ): Promise<ArtifactContentProofMetadata> {
     let metadata = await this.persistence.readArtifactContentProof(
       facts.blob.digest,
@@ -650,7 +698,7 @@ export class ApplicationArtifactByteAccess implements ArtifactByteAccess {
         // 引用 proof 缺失或损坏：在任何媒体字节交付前从当前候选完整重建。
       }
     }
-    metadata = await this.rebuildProof(facts, operation);
+    metadata = await this.rebuildProof(facts, operation, assetLibraryId);
     await this.proofStore.inspect(metadata, operation.cancellation);
     return metadata;
   }
@@ -658,6 +706,7 @@ export class ApplicationArtifactByteAccess implements ArtifactByteAccess {
   private async openVerifiedProof(
     facts: ArtifactRevisionAccessFacts,
     operation: OperationLease,
+    assetLibraryId: string | undefined,
   ): Promise<VerifiedArtifactFrameManifest> {
     const metadata = await this.persistence.readArtifactContentProof(
       facts.blob.digest,
@@ -669,19 +718,25 @@ export class ApplicationArtifactByteAccess implements ArtifactByteAccess {
         if (operation.cancellation.cancelled) throw operationError(operation);
       }
     }
-    const rebuilt = await this.rebuildProof(facts, operation);
+    const rebuilt = await this.rebuildProof(facts, operation, assetLibraryId);
     return await this.proofStore.open(rebuilt, operation.cancellation);
   }
 
   private async rebuildProof(
     facts: ArtifactRevisionAccessFacts,
     operation: OperationLease,
+    assetLibraryId: string | undefined,
   ): Promise<ArtifactContentProofMetadata> {
     for (const candidate of orderedArtifactByteLocations(facts.locations)) {
       let resolved: ResolvedSource | undefined;
       let primaryError: unknown;
       try {
-        resolved = await this.openCandidate(facts, candidate, operation);
+        resolved = await this.openCandidate(
+          facts,
+          candidate,
+          operation,
+          assetLibraryId,
+        );
         if (resolved === undefined) continue;
         assertOperation(operation);
         const proof = await this.proofStore.build(
@@ -719,10 +774,16 @@ export class ApplicationArtifactByteAccess implements ArtifactByteAccess {
   private async resolveAccessibleCandidate(
     facts: ArtifactRevisionAccessFacts,
     operation: OperationLease,
+    assetLibraryId: string | undefined,
   ): Promise<ResolvedSource> {
     for (const candidate of orderedArtifactByteLocations(facts.locations)) {
       try {
-        const resolved = await this.openCandidate(facts, candidate, operation);
+        const resolved = await this.openCandidate(
+          facts,
+          candidate,
+          operation,
+          assetLibraryId,
+        );
         if (resolved !== undefined) return resolved;
       } catch (error) {
         if (operation.cancellation.cancelled) throw operationError(operation);
@@ -737,12 +798,14 @@ export class ApplicationArtifactByteAccess implements ArtifactByteAccess {
     facts: ArtifactRevisionAccessFacts,
     candidate: ArtifactRevisionAccessFacts["locations"][number],
     operation: OperationLease,
+    assetLibraryId: string | undefined,
   ): Promise<ResolvedSource | undefined> {
     const opened = await this.sources.open({
       candidate,
       blobDigest: facts.blob.digest,
       purpose: "access",
       operation,
+      ...(assetLibraryId === undefined ? {} : { assetLibraryId }),
     });
     if (opened === undefined) {
       assertOperation(operation);

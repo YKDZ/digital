@@ -306,16 +306,35 @@ export function assertBangumiAcceptedEpisodeSet(
     });
     assert.equal(
       item.key,
-      `bangumi:season-${expected.season}:episode-${expected.seasonPosition}`,
+      `bangumi:episode:${JSON.stringify([
+        ".",
+        expected.season,
+        expected.seasonPosition,
+      ])}`,
     );
-    assert.equal(item.relativePaths.length, 1);
+    // 边界可含同集多技术与字幕，但媒体文件恰好一个；技术后缀只区分材料，不另立单集。
+    const mediaPaths = item.relativePaths.filter((relativePath) =>
+      /\.(?:mkv|mp4)$/iu.test(relativePath),
+    );
+    assert.equal(
+      mediaPaths.length,
+      1,
+      "episode boundary must contain exactly one media file",
+    );
+    for (const relativePath of item.relativePaths)
+      if (!mediaPaths.includes(relativePath))
+        assert.match(
+          relativePath,
+          /\.(?:ass|srt|ssa|sup)$/iu,
+          "额外边界材料必须是已确认字幕扩展名",
+        );
     const pathMatch =
-      /^Season ([1-9]\d*)\/(.+) - S(\d{2})E(\d{2})(?: - 第 (\d+) 集)?\.(?:mkv|mp4)$/u.exec(
-        item.relativePaths[0]!,
+      /^Season ([1-9]\d*)\/(.+) - S(\d{2})E(\d{2})(?: - 第 (\d+) 集)?(?: - .+)?\.(?:mkv|mp4)$/u.exec(
+        mediaPaths[0]!,
       );
     assert.ok(
       pathMatch,
-      "episode boundary must contain exactly one media file",
+      "episode media file must follow the dash naming convention",
     );
     assert.equal(Number(pathMatch[1]), expected.season);
     assert.equal(pathMatch[2], oracle.title);
@@ -814,16 +833,24 @@ const journey: CliJourney = {
     return [
       {
         name: "register live Bloom root",
-        args: ["root-create", "终将成为你 验收语料", state.roots[0]!.directory],
+        args: [
+          "library-create",
+          "终将成为你 验收语料",
+          "--directory",
+          state.roots[0]!.directory,
+          "--json",
+        ],
         env: env("bloom"),
         haltOnFailure: true,
       },
       {
         name: "register live Frieren root",
         args: [
-          "root-create",
+          "library-create",
           "葬送的芙莉莲 验收语料",
+          "--directory",
           state.roots[1]!.directory,
+          "--json",
         ],
         env: env("frieren"),
         haltOnFailure: true,

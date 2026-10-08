@@ -17,6 +17,13 @@ import type {
   RecognitionProposalDraft,
 } from "@digital/domain";
 
+export {
+  BookDirectoryInterpreter,
+  BookImageInspector,
+  BookLocalPublicationRecognizer,
+  trustedBookLocalDirectoryRule,
+} from "./book-directory.ts";
+
 const maximumArchiveMemberBytes = 32 * 1024 * 1024;
 const maximumDeflateCompressionRatio = 100;
 
@@ -47,7 +54,7 @@ const acquirerCapability = declareCapability({
 });
 const localRecognizerCapability = declareCapability({
   identity: "epub.local-publication-recognizer",
-  implementationVersion: "2",
+  implementationVersion: "3",
   kind: "recognizer",
   contractVersion: "2",
   interpretationContractVersions: ["2"],
@@ -57,7 +64,7 @@ export const trustedEpubLocalPublicationRule = {
   capabilityId: localRecognizerCapability.capabilityId,
   capabilityVersion: localRecognizerCapability.capabilityVersion,
   ruleId: "epub.valid-single-publication-revision",
-  ruleVersion: "2",
+  ruleVersion: "3",
 } as const;
 
 export type EpubPublication = {
@@ -515,7 +522,7 @@ function epubObservedEntityGraph(
   };
 }
 
-/** 无有效 ISBN 的单 EPUB 修订版只形成观察依据提案。 */
+/** 可解析的单 EPUB 修订版建立本地边界，ISBN 只为后续来源补充提供证据。 */
 export class EpubLocalPublicationRecognizer implements Recognizer {
   readonly capability = localRecognizerCapability;
 
@@ -534,10 +541,6 @@ export class EpubLocalPublicationRecognizer implements Recognizer {
       evidence.kind === "artifact-format-inspection" &&
       sameCapabilityCoordinate(evidence.producer, directoryCapability) &&
       inspection !== undefined &&
-      inspection.identifiers.filter(
-        (identifier) =>
-          identifier.scheme === "isbn-13" && isValidIsbn13(identifier.value),
-      ).length === 0 &&
       revision.observedArtifactReference ===
         inspection.observedArtifactReference &&
       revision.blob.digest === inspection.revision.digest &&
@@ -549,15 +552,14 @@ export class EpubLocalPublicationRecognizer implements Recognizer {
 
   recognize(input: RecognitionCandidateContext): RecognitionProposalDraft {
     if (!this.canRecognize(input))
-      throw new Error("EPUB 本地识别只接受无有效 ISBN 的单一出版物修订版");
+      throw new Error("EPUB 本地识别只接受格式检查确认的单一出版物修订版");
     return {
       id: `recognition-proposal_${randomUUID()}`,
       ruleResults: [
         {
           ...trustedEpubLocalPublicationRule,
           outcome: "satisfied",
-          explanation:
-            "格式检查确认该单一 EPUB 修订版是无有效 ISBN 的独立本地出版物边界",
+          explanation: "格式检查确认该单一 EPUB 修订版是独立本地出版物边界",
           evidence: input.evidence,
         },
       ],

@@ -70,7 +70,13 @@ const journey: CliJourney = {
     return [
       {
         name: "register official work inspection root",
-        args: ["root-create", "RJ01668691 检查语料", source],
+        args: [
+          "library-create",
+          "RJ01668691 检查语料",
+          "--directory",
+          source,
+          "--json",
+        ],
         env: { DIGITAL_PRODUCT_DATA: data },
         haltOnFailure: true,
       },

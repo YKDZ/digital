@@ -17,7 +17,10 @@ export type CliJourneyResult = {
   readonly stderr: string;
 };
 
-/** 读取 CLI 正式观察根注册返回的身份。 */
+/**
+ * 读取 CLI 正式库登记返回的目录归属身份，用于既有按单一目录扫描的验收路径。
+ * `library-create` 输出的资产库携带该目录对应的观察根编号。
+ */
 export function registeredObservedRootId(
   result: CliJourneyResult | undefined,
 ): string {
@@ -26,21 +29,23 @@ export function registeredObservedRootId(
     output = JSON.parse(result?.stdout ?? "{}");
   } catch {
     throw new Error(
-      `root-create did not return JSON\nstdout: ${result?.stdout ?? ""}\nstderr: ${result?.stderr ?? ""}`,
+      `library-create did not return JSON\nstdout: ${result?.stdout ?? ""}\nstderr: ${result?.stderr ?? ""}`,
     );
   }
   if (
     typeof output !== "object" ||
     output === null ||
-    !("id" in output) ||
-    typeof output.id !== "string" ||
-    output.id.trim().length === 0
+    !("rootIds" in output) ||
+    !Array.isArray(output.rootIds) ||
+    output.rootIds.length !== 1 ||
+    typeof output.rootIds[0] !== "string" ||
+    output.rootIds[0].trim().length === 0
   ) {
     throw new Error(
-      `root-create did not expose an observed-root id\nstdout: ${result?.stdout ?? ""}\nstderr: ${result?.stderr ?? ""}`,
+      `library-create did not expose exactly one observed-root id\nstdout: ${result?.stdout ?? ""}\nstderr: ${result?.stderr ?? ""}`,
     );
   }
-  return output.id;
+  return output.rootIds[0];
 }
 
 export type CliJourneyContext = {

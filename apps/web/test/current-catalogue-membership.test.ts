@@ -230,16 +230,21 @@ it("keeps an asset in the Web current catalogue when another observed material r
     { start: (configured) => configured.workflow },
   );
   try {
-    const primaryRoot =
-      await application.result.observedRootRegistrations.create({
-        displayName: "主要材料",
-        containerPath: primaryMedia,
-        readOnly: true,
-        symlinkMode: "do-not-follow",
-        allowedTargetRootIds: [],
+    const seedRoot = async (displayName: string, directory: string) => {
+      const libraries = application.result.assetLibraries;
+      const saved = await libraries.save({
+        displayName,
+        directories: [directory],
+        recognitionProfileIds: libraries.recognitionProfiles.map(
+          (profile) => profile.id,
+        ),
+        sourceIdentities: libraries.sources.map((source) => source.id),
       });
+      return saved.rootIds[0]!;
+    };
+    const primaryRootId = await seedRoot("主要材料", primaryMedia);
     const initial = await application.result.scanObservedScope({
-      registrationId: primaryRoot.id,
+      registrationId: primaryRootId,
       relativeScope: ".",
       acceptTrusted: false,
     });
@@ -253,18 +258,11 @@ it("keeps an asset in the Web current catalogue when another observed material r
       executionId: review.executionId,
     });
     const assetId = accepted.content.entity.id;
-    const supportingRoot =
-      await application.result.observedRootRegistrations.create({
-        displayName: "补充材料",
-        containerPath: supportingMedia,
-        readOnly: true,
-        symlinkMode: "do-not-follow",
-        allowedTargetRootIds: [],
-      });
+    const supportingRootId = await seedRoot("补充材料", supportingMedia);
     const association =
       await application.result.prepareObservedMaterialAssociation({
         targetAssetId: assetId,
-        registrationId: supportingRoot.id,
+        registrationId: supportingRootId,
         relativeScope: ".",
         relativePaths: ["appendix.txt"],
         initiatedBy: "current-catalogue-test",
@@ -276,7 +274,7 @@ it("keeps an asset in the Web current catalogue when another observed material r
 
     await unlink(path.join(primaryMedia, "local.txt"));
     await application.result.scanObservedScope({
-      registrationId: primaryRoot.id,
+      registrationId: primaryRootId,
       relativeScope: ".",
       acceptTrusted: false,
     });

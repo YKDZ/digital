@@ -3,11 +3,16 @@ import path from "node:path";
 
 import type { CapabilityCoordinate } from "@digital/domain";
 
-import type { ExecutionHost } from "./execution-host.ts";
+import type { ExecutionHost, OperationLease } from "./execution-host.ts";
 import type {
   FilesystemObjectIdentityContract,
   FilesystemPackageSnapshot,
 } from "./index.ts";
+import {
+  projectLibraryDirectoryAuthority,
+  type FrozenDirectoryAuthorization,
+  type LibraryDirectoryGrant,
+} from "./library-directory-grants.ts";
 import {
   createObservedRootAuthorityIndex,
   freezeObservedRootSnapshot,
@@ -17,8 +22,12 @@ import {
 } from "./observed-root-authority.ts";
 
 type BoundScopeOwnership = {
+  readonly root: ObservedRootSnapshot;
   readonly registrations: ObservedRootRegistrations;
   readonly expectedRoot: string;
+  /** 库语境下的观察与打开必须复核该库自己的目录授权，而不是“任一库授权了这个根”。 */
+  readonly assetLibraryId?: string;
+  readonly directoryAuthorityVersion?: number;
 };
 
 /**
@@ -28,6 +37,16 @@ type BoundScopeOwnership = {
 const boundScopeOwnership = new WeakMap<
   BoundObservedScope,
   BoundScopeOwnership
+>();
+
+/**
+ * 一次库目录工作的真实 I/O 与其打开来源绑定到同一 ExecutionHost 库目录失效坐标。
+ * remove(A) 提交后 cancel 该租约：打开来源随即中止后续块，下一效果前的复核也据此刻停；
+ * 共享同一物理根的 B 使用各自租约，不受影响。范围本身不持久化，弱表随范围回收。
+ */
+const boundDirectoryOperations = new WeakMap<
+  BoundObservedScope,
+  OperationLease
 >();
 
 export type ObservedRootSymlinkMode =
@@ -44,6 +63,15 @@ export type ObservedRootRegistration = {
   readonly canonicalPath: string;
   readonly status: "active" | "revoked";
   readonly configVersion: number;
+  readonly readOnly: true;
+  readonly symlinkMode: ObservedRootSymlinkMode;
+  readonly allowedTargetRootIds: readonly string[];
+};
+
+export type ObservedRootDirectoryCandidate = {
+  readonly displayName: string;
+  readonly containerPath: string;
+  readonly canonicalPath: string;
   readonly readOnly: true;
   readonly symlinkMode: ObservedRootSymlinkMode;
   readonly allowedTargetRootIds: readonly string[];
@@ -122,6 +150,66 @@ export abstract class ObservedByteSource {
 }
 
 /**
+ * 把一次库目录工作打开的字节来源绑定到其 Host 库目录租约：租约因移除/重连被取消时，
+ * 尚未完成的后续块读取立即中止，绝不借另一库留下的活动物理根继续消费字节。
+ */
+class DirectoryGuardByteSource extends ObservedByteSource {
+  private readonly source: ObservedByteSource;
+  private aborted = false;
+  private readonly removeCancellation: () => void;
+
+  constructor(source: ObservedByteSource, operation: OperationLease) {
+    super();
+    this.source = source;
+    this.aborted = operation.cancellation.cancelled;
+    this.removeCancellation = operation.cancellation.onCancel(() => {
+      this.aborted = true;
+    });
+  }
+
+  get logicalLocation(): string {
+    return this.source.logicalLocation;
+  }
+
+  get byteLength(): number {
+    return this.source.byteLength;
+  }
+
+  get modifiedAt(): string {
+    return this.source.modifiedAt;
+  }
+
+  async readChunk(
+    offset: number,
+    maximumBytes: number,
+  ): Promise<{ readonly bytes: Uint8Array; readonly done: boolean }> {
+    this.assertLive();
+    const chunk = await this.source.readChunk(offset, maximumBytes);
+    this.assertLive();
+    return chunk;
+  }
+
+  async read(): Promise<Uint8Array> {
+    this.assertLive();
+    const bytes = await this.source.read();
+    this.assertLive();
+    return bytes;
+  }
+
+  async close(): Promise<void> {
+    this.removeCancellation();
+    await this.source.close();
+  }
+
+  private assertLive(): void {
+    if (this.aborted)
+      throw new ObservedRootUnavailable(
+        "此目录已从资产库移除或重新连接，本次读取不能继续",
+      );
+  }
+}
+
+/**
  * 清理事件是操作审计事实，而不是领域结果。它刻意单独保留原始错误，因此清理过程
  * 绝不能改写已经失败操作的公开结果。
  */
@@ -169,6 +257,14 @@ export type ObservedRootRegistrationQueries = {
     id: string,
   ): Promise<ObservedRootRegistration | undefined>;
   listObservedRootRegistrations(): Promise<readonly ObservedRootRegistration[]>;
+  /** 配置存在不等于仍有资产库授权；只供建立或复核 I/O 权威。 */
+  listAuthorizedObservedRootRegistrations(): Promise<
+    readonly ObservedRootRegistration[]
+  >;
+  /** 一个库的目录授权账本，含保留的 removed 关系；库内解析与复核只能看这份清单。 */
+  listLibraryDirectoryGrants(
+    libraryId: string,
+  ): Promise<readonly LibraryDirectoryGrant[]>;
 };
 
 export type ObservedRootRegistrationCommands = {
@@ -242,7 +338,10 @@ type ObservedRootRegistrationPorts = {
   readonly cleanupFailureReporter: ObservedRootCleanupFailureReporter;
   /** 主清理审计失败时使用的独立外层接收端。 */
   readonly cleanupFailureFallback: ObservedRootCleanupFailureFallback;
-  readonly operationSupervisor?: Pick<ExecutionHost, "invalidateObservedRoot">;
+  readonly operationSupervisor?: Pick<
+    ExecutionHost,
+    "invalidateObservedRoot" | "invalidateLibraryDirectory"
+  >;
 };
 
 export class ObservedRootRegistrations {
@@ -321,6 +420,25 @@ export class ObservedRootRegistrations {
     return await this.ports.queries.listObservedRootRegistrations();
   }
 
+  /**
+   * 只检查实际目录的可读性与配置边界，产出一个内存目录候选。是否复用现有观察根注册
+   * 由资产库保存事务决定，失败的保存因此不会留下任何可授予访问的暂存注册。
+   */
+  async libraryRootCandidate(input: {
+    readonly displayName: string;
+    readonly containerPath: string;
+  }): Promise<ObservedRootDirectoryCandidate> {
+    const inspected = await this.inspectNewPath(input.containerPath);
+    return {
+      displayName: validateDisplayName(input.displayName),
+      containerPath: inspected.absolutePath,
+      canonicalPath: inspected.canonicalPath,
+      readOnly: true,
+      symlinkMode: "do-not-follow",
+      allowedTargetRootIds: [],
+    };
+  }
+
   async update(input: {
     readonly id: string;
     readonly expectedVersion: number;
@@ -360,7 +478,12 @@ export class ObservedRootRegistrations {
     validateExpectedVersion(input.expectedVersion);
     if (current.configVersion !== input.expectedVersion)
       throw new ObservedRootConfigurationConflict();
-    if (current.status === "revoked") return current;
+    if (current.status === "revoked") {
+      this.ports.operationSupervisor?.invalidateObservedRoot({
+        registrationId: current.id,
+      });
+      return current;
+    }
     const replacement: ObservedRootRegistration = {
       ...current,
       status: "revoked",
@@ -408,20 +531,69 @@ export class ObservedRootRegistrations {
     return reconnected;
   }
 
+  /**
+   * 只读校验一个已撤销物理根能否被重连：确认目录当前可读且规范路径仍是原位置。这里刻意
+   * 不推进 registration 状态——物理根从 revoked 到 active 的翻转必须与库 grant/config 的 CAS
+   * 落在同一持久化事务里，失败时整笔回滚，绝不出现「根已 active 但 grant 仍 removed」的半恢复。
+   */
+  async validateReconnect(
+    registration: ObservedRootRegistration,
+  ): Promise<void> {
+    if (registration.status !== "revoked")
+      throw new Error("文件位置仍处于启用状态");
+    const inspected = await this.inspectNewPath(
+      registration.containerPath,
+      registration.id,
+    );
+    if (inspected.canonicalPath !== registration.canonicalPath) {
+      throw new Error("不能把原文件位置重新指向无关路径，请创建新的文件位置");
+    }
+  }
+
+  /** 物理根在库事务中原子恢复后，把 keepVersion 失效送达同一进程的 ExecutionHost。 */
+  notifyRegistrationReactivated(input: {
+    readonly registrationId: string;
+    readonly keepVersion: number;
+  }): void {
+    this.ports.operationSupervisor?.invalidateObservedRoot({
+      registrationId: input.registrationId,
+      keepVersion: input.keepVersion,
+    });
+  }
+
   async resolveActiveScope(input: {
     readonly registrationId: string;
     readonly relativeScope: string;
+    readonly assetLibraryId?: string;
   }): Promise<{
     /** 本次调用的绑定权威；刻意不作耐久化。 */
     readonly scope: BoundObservedScope;
     readonly relativeScope: string;
     readonly root: ObservedRootSnapshot;
+    /** 本次工作由此取得并应冻结的目录授权代次；无库语境时省略。 */
+    readonly directoryAuthorityVersion?: number;
   }> {
     const registration = await this.required(input.registrationId);
     if (registration.status !== "active")
       throw new ObservedRootUnavailable("文件位置已停用");
     const relativeScope = normalizeObservedRelativeScope(input.relativeScope);
-    const authority = await this.resolveActiveAuthority(registration);
+    const grants =
+      input.assetLibraryId === undefined
+        ? undefined
+        : await this.ports.queries.listLibraryDirectoryGrants(
+            input.assetLibraryId,
+          );
+    const grant =
+      grants === undefined
+        ? undefined
+        : grants.find(
+            (candidate) =>
+              candidate.observedRootId === registration.id &&
+              candidate.status === "active",
+          );
+    if (grants !== undefined && grant === undefined)
+      throw new ObservedRootUnavailable("此目录已不属于该资产库");
+    const authority = await this.resolveActiveAuthority(registration, grants);
     await this.currentReadableLocation(authority.root);
     await Promise.all(
       authority.authorizedTargetRoots.map(
@@ -438,26 +610,45 @@ export class ObservedRootRegistrations {
     } catch {
       throw new ObservedRootUnavailable("文件位置当前缺失、不可读或范围越界");
     }
-    this.rememberBoundScope(scope, root, relativeScope);
+    this.rememberBoundScope(scope, root, relativeScope, {
+      ...(input.assetLibraryId === undefined
+        ? {}
+        : { assetLibraryId: input.assetLibraryId }),
+      ...(grant === undefined
+        ? {}
+        : { directoryAuthorityVersion: grant.authorityVersion }),
+    });
     return {
       scope,
       relativeScope,
       root,
+      ...(grant === undefined
+        ? {}
+        : { directoryAuthorityVersion: grant.authorityVersion }),
     };
   }
 
   /**
    * 只有在证明当前根权威后才打开一个字节来源。这是未来下载或播放呈现共用的交付
-   * 接缝；它绝不返回调用方可在授权后重新打开的路径名。
+   * 接缝；它绝不返回调用方可在授权后重新打开的路径名。携带 `assetLibraryId` 时，本方法
+   * 沿该库的活动目录授权解析权威（撤销的库即便物理根被别的库保留也不能打开），并回传本次
+   * 使用的授权代次，供调用方把租约绑到同一库目录失效坐标。
    */
   async openActiveByteSource(input: {
     readonly registrationId: string;
     readonly relativePath: string;
-  }): Promise<ObservedByteSource> {
+    readonly assetLibraryId?: string;
+  }): Promise<{
+    readonly source: ObservedByteSource;
+    readonly directoryAuthorityVersion?: number;
+  }> {
     const relativePath = validateRelativeFilePath(input.relativePath);
     const resolved = await this.resolveActiveScope({
       registrationId: input.registrationId,
       relativeScope: ".",
+      ...(input.assetLibraryId === undefined
+        ? {}
+        : { assetLibraryId: input.assetLibraryId }),
     });
     let source: ObservedByteSource | undefined;
     let openingError: unknown;
@@ -510,7 +701,12 @@ export class ObservedRootRegistrations {
     if (sourceCloseError !== undefined) throw sourceCloseError;
     if (source === undefined)
       throw new Error("已打开的文件位置字节来源意外缺失");
-    return source;
+    return {
+      source,
+      ...(resolved.directoryAuthorityVersion === undefined
+        ? {}
+        : { directoryAuthorityVersion: resolved.directoryAuthorityVersion }),
+    };
   }
 
   /**
@@ -521,6 +717,10 @@ export class ObservedRootRegistrations {
     scope: BoundObservedScope,
   ): Promise<FilesystemPackageSnapshot> {
     const ownership = this.requireOwnedBoundScope(scope);
+    await this.assertFrozenRootsCurrent(
+      [ownership.root],
+      this.ownershipContext(ownership),
+    );
     let snapshot: FilesystemPackageSnapshot;
     try {
       snapshot = await this.ports.filesystem.observe(scope);
@@ -543,12 +743,40 @@ export class ObservedRootRegistrations {
     readonly scope: BoundObservedScope;
     readonly relativePath: string;
   }): Promise<ObservedByteSource> {
-    this.requireOwnedBoundScope(input.scope);
+    const ownership = this.requireOwnedBoundScope(input.scope);
+    await this.assertFrozenRootsCurrent(
+      [ownership.root],
+      this.ownershipContext(ownership),
+    );
     try {
-      return await this.ports.filesystem.openByteSource(input);
+      const source = await this.ports.filesystem.openByteSource(input);
+      const operation = boundDirectoryOperations.get(input.scope);
+      return operation === undefined
+        ? source
+        : new DirectoryGuardByteSource(source, operation);
     } catch {
       throw new ObservedRootUnavailable("文件位置当前缺失、不可读或范围越界");
     }
+  }
+
+  /**
+   * 把一次库目录工作的真实 I/O 绑定到调用方持有的 Host 库目录租约；此后打开的字节来源
+   * 与该范围的下一效果复核共用同一失效坐标。
+   */
+  bindDirectoryOperation(scope: BoundObservedScope, operation: OperationLease) {
+    this.requireOwnedBoundScope(scope);
+    boundDirectoryOperations.set(scope, operation);
+  }
+
+  /**
+   * 在每块读取、collector/acquirer 边界及其返回后继续效果前的复核：若本范围绑定的库目录
+   * 租约已被撤销或重连取消，此刻停止后续子工作，绝不进入下一效果。无绑定的中立范围放行。
+   */
+  assertDirectoryOperationLive(scope: BoundObservedScope): void {
+    if (boundDirectoryOperations.get(scope)?.cancellation.cancelled === true)
+      throw new ObservedRootUnavailable(
+        "此目录已从资产库移除或重新连接，本次工作不能继续",
+      );
   }
 
   /** 严格通过绑定器释放一个由适配器持有的描述符范围。 */
@@ -557,6 +785,7 @@ export class ObservedRootRegistrations {
     try {
       await this.ports.filesystem.closeScope(scope);
     } finally {
+      boundDirectoryOperations.delete(scope);
       boundScopeOwnership.delete(scope);
     }
   }
@@ -567,21 +796,67 @@ export class ObservedRootRegistrations {
   async rebindFrozenScope(input: {
     readonly root: ObservedRootSnapshot;
     readonly relativeScope: string;
+    readonly assetLibraryId?: string;
+    readonly directoryAuthorityVersion?: number;
   }): Promise<BoundObservedScope> {
     const relativeScope = normalizeObservedRelativeScope(input.relativeScope);
-    await this.assertFrozenRootsCurrent([input.root]);
+    const context =
+      input.assetLibraryId === undefined
+        ? undefined
+        : {
+            assetLibraryId: input.assetLibraryId,
+            ...(input.directoryAuthorityVersion === undefined
+              ? {}
+              : {
+                  directoryAuthorizations: [
+                    {
+                      observedRootId: input.root.id,
+                      authorityVersion: input.directoryAuthorityVersion,
+                    },
+                  ],
+                }),
+          };
+    await this.assertFrozenRootsCurrent([input.root], context);
     try {
       const scope = await this.ports.filesystem.bindScope({
         root: input.root,
         relativeScope,
       });
-      this.rememberBoundScope(scope, input.root, relativeScope);
+      this.rememberBoundScope(scope, input.root, relativeScope, {
+        ...(input.assetLibraryId === undefined
+          ? {}
+          : { assetLibraryId: input.assetLibraryId }),
+        ...(input.directoryAuthorityVersion === undefined
+          ? {}
+          : { directoryAuthorityVersion: input.directoryAuthorityVersion }),
+      });
       return scope;
     } catch {
       throw new ObservedRootUnavailable(
         "刷新记录的冻结文件位置当前不可用或版本已变更",
       );
     }
+  }
+
+  private ownershipContext(ownership: BoundScopeOwnership):
+    | {
+        readonly assetLibraryId: string;
+        readonly directoryAuthorizations?: readonly FrozenDirectoryAuthorization[];
+      }
+    | undefined {
+    if (ownership.assetLibraryId === undefined) return undefined;
+    if (ownership.directoryAuthorityVersion === undefined)
+      return { assetLibraryId: ownership.assetLibraryId };
+    return {
+      assetLibraryId: ownership.assetLibraryId,
+      directoryAuthorizations: [
+        {
+          observedRootId: ownership.root.id,
+          // 绑定时的授权代次就是这条范围自己的权威。
+          authorityVersion: ownership.directoryAuthorityVersion,
+        },
+      ],
+    };
   }
 
   private async currentReadableLocation(
@@ -613,10 +888,12 @@ export class ObservedRootRegistrations {
 
   /**
    * 在 Application 求值器中只解析一次图语义，同时保留外层适配器的责任：证明每个
-   * 注册路径拼写在本进程中仍然可读。
+   * 注册路径拼写在本进程中仍然可读。给定库授权账本时按该库解析：链接策略与目标来自本库
+   * 授权，另一库共享同一物理根不会让本库自动取得目标资格。
    */
   private async resolveActiveAuthority(
     registration: ObservedRootRegistration,
+    grants?: readonly LibraryDirectoryGrant[],
   ): Promise<
     Extract<
       ReturnType<typeof resolveObservedRootAuthority>,
@@ -624,7 +901,7 @@ export class ObservedRootRegistrations {
     >
   > {
     const index = createObservedRootAuthorityIndex(
-      await this.ports.queries.listObservedRootRegistrations(),
+      await this.authorityRegistrations(grants),
     );
     const authority = resolveObservedRootAuthority(index, registration.id);
     if (authority.status === "available") return authority;
@@ -635,30 +912,113 @@ export class ObservedRootRegistrations {
   }
 
   /**
+   * 无库语境时沿用全局已授权根清单（历史直接资料路径）；有库语境时只投影该库的活动授权。
+   */
+  private async authorityRegistrations(
+    grants: readonly LibraryDirectoryGrant[] | undefined,
+  ): Promise<readonly ObservedRootRegistration[]> {
+    if (grants !== undefined)
+      return projectLibraryDirectoryAuthority({
+        grants,
+        registrations: await this.ports.queries.listObservedRootRegistrations(),
+      });
+    return await this.ports.queries.listAuthorizedObservedRootRegistrations();
+  }
+
+  /**
    * 恢复和兼容性检查与实时绑定共用完全相同的冻结闭包规则。文件系统可达性仍由重新
-   * 绑定检查。
+   * 绑定检查。带库语境时同时逐根核对该库授权版本：撤销或重连后的新权威不能替旧快照续权。
    */
   async assertFrozenRootsCurrent(
     roots: readonly ObservedRootSnapshot[],
+    context?: {
+      readonly assetLibraryId: string;
+      readonly directoryAuthorizations?: readonly FrozenDirectoryAuthorization[];
+    },
   ): Promise<void> {
+    const grants =
+      context === undefined
+        ? undefined
+        : await this.ports.queries.listLibraryDirectoryGrants(
+            context.assetLibraryId,
+          );
     const index = createObservedRootAuthorityIndex(
-      await this.ports.queries.listObservedRootRegistrations(),
+      grants === undefined
+        ? await this.ports.queries.listAuthorizedObservedRootRegistrations()
+        : projectLibraryDirectoryAuthority({
+            grants,
+            registrations:
+              await this.ports.queries.listObservedRootRegistrations(),
+          }),
     );
-    if (roots.every((root) => hasCurrentObservedRootAuthority(root, index)))
-      return;
-    throw new ObservedRootUnavailable(
-      "刷新记录的冻结文件位置当前不可用或版本已变更",
+    if (!roots.every((root) => hasCurrentObservedRootAuthority(root, index)))
+      throw new ObservedRootUnavailable(
+        "刷新记录的冻结文件位置当前不可用或版本已变更",
+      );
+    if (grants === undefined || context === undefined) return;
+    const expected = new Map(
+      (context.directoryAuthorizations ?? []).map((authorization) => [
+        authorization.observedRootId,
+        authorization.authorityVersion,
+      ]),
     );
+    const activeByRoot = new Map(
+      grants
+        .filter((grant) => grant.status === "active")
+        .map((grant) => [grant.observedRootId, grant]),
+    );
+    const revoked = roots.some((root) => {
+      const grant = activeByRoot.get(root.id);
+      // 该目录必须仍是本库活动授权。
+      if (grant === undefined) return true;
+      const version = expected.get(root.id);
+      // 本票之后冻结的工作逐根核对自己那一份代次，撤销或重连后的新权威不能替旧快照续权；
+      // 本票之前的旧载体从未冻结任何版本，无法证明其授权代次，绝不以「今日 root 仍 active」
+      // 补齐，诚实判定为撤销，让恢复给出 interrupted/failed 终态并保留已提交历史。
+      if (version === undefined) return true;
+      return grant.authorityVersion !== version;
+    });
+    if (revoked)
+      throw new ObservedRootUnavailable(
+        "此目录已从资产库移除或重新连接，本次工作不能继续",
+      );
+  }
+
+  async libraryDirectoryGrants(
+    libraryId: string,
+  ): Promise<readonly LibraryDirectoryGrant[]> {
+    return await this.ports.queries.listLibraryDirectoryGrants(libraryId);
+  }
+
+  /** 配置事务提交后，把精确库目录坐标送达同一进程的 ExecutionHost。 */
+  notifyLibraryDirectoryInvalidation(input: {
+    readonly assetLibraryId: string;
+    readonly observedRootId: string;
+    readonly keepVersion?: number;
+  }): void {
+    this.ports.operationSupervisor?.invalidateLibraryDirectory({
+      assetLibraryId: input.assetLibraryId,
+      registrationId: input.observedRootId,
+      ...(input.keepVersion === undefined
+        ? {}
+        : { keepVersion: input.keepVersion }),
+    });
   }
 
   private rememberBoundScope(
     scope: BoundObservedScope,
     root: ObservedRootSnapshot,
     relativeScope: string,
+    libraryContext: {
+      readonly assetLibraryId?: string;
+      readonly directoryAuthorityVersion?: number;
+    } = {},
   ): void {
     boundScopeOwnership.set(scope, {
+      root,
       registrations: this,
       expectedRoot: path.resolve(root.containerPath, relativeScope),
+      ...libraryContext,
     });
   }
 

@@ -11,6 +11,7 @@ import {
   artifactDeliveryErrorResponse,
   confirmedObservedArtifactDownloadResponse,
   managedArtifactResponse,
+  observedArtworkResponse,
   playbackMediaResponse,
   playbackPlanResponse,
   revokeBangumiAuthorization,
@@ -18,7 +19,8 @@ import {
   updateAutomation,
   updatePreview,
   settingsSnapshot,
-  updateSettingsRoot,
+  listLibraryViews,
+  updateSettingsLibrary,
   updateSettingsConnection,
   intakeSnapshot,
   updateIntake,
@@ -26,16 +28,25 @@ import {
   sourceInputRequirements,
   startSourceEnrichment,
   inspectSourceEnrichment,
+  retrySourceEnrichment,
   startSourceAssociationDecision,
   inspectSourceAssociationDecision,
   inspectCorrectionSubject,
+  inspectSubjectConflictEvidence,
+  inspectExecution,
   selectSourceAssociationDecisionCandidate,
   retrySourceAssociationDecision,
   cancelExecution,
   startRecognitionRetraction,
+  startRecognitionScopeAmendment,
+  coverChoice,
+  startCoverDecision,
   startObservedMaterialAssociation,
   inspectObservedMaterialAssociation,
   confirmObservedMaterialAssociation,
+  inspectAssetLibraryScan,
+  cancelAssetLibraryScan,
+  unrecognizedLibraryScanObservations,
   saveCurrentPlaybackInteraction,
 } from "./web-delivery.ts";
 
@@ -75,6 +86,9 @@ type ApiCommands = {
   readonly retrySourceAssociationDecision: typeof retrySourceAssociationDecision;
   readonly cancelExecution: typeof cancelExecution;
   readonly startRecognitionRetraction: typeof startRecognitionRetraction;
+  readonly startRecognitionScopeAmendment: typeof startRecognitionScopeAmendment;
+  readonly coverChoice: typeof coverChoice;
+  readonly startCoverDecision: typeof startCoverDecision;
   readonly updatePreview: typeof updatePreview;
 };
 
@@ -90,6 +104,9 @@ const defaultCommands: ApiCommands = {
   retrySourceAssociationDecision,
   cancelExecution,
   startRecognitionRetraction,
+  startRecognitionScopeAmendment,
+  coverChoice,
+  startCoverDecision,
   updatePreview,
 };
 
@@ -128,6 +145,44 @@ export function createApi(
         return c.json({ error: errorMessage(error) }, 400);
       }
     })
+    .get("/scans/library/:id", async (c) => {
+      try {
+        return c.json(await inspectAssetLibraryScan(c.req.param("id")));
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
+    .post("/scans/library/:id/cancel", async (c) => {
+      try {
+        return c.json(
+          await cancelAssetLibraryScan(c.req.param("id"), await c.req.json()),
+        );
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
+    .get("/observations/unrecognized", async (c) => {
+      try {
+        return c.json(
+          await unrecognizedLibraryScanObservations({
+            ...(c.req.query("scanId") === undefined
+              ? {}
+              : { scanId: c.req.query("scanId")! }),
+            ...(c.req.query("assetLibraryId") === undefined
+              ? {}
+              : { assetLibraryId: c.req.query("assetLibraryId")! }),
+            ...(c.req.query("directoryId") === undefined
+              ? {}
+              : { directoryId: c.req.query("directoryId")! }),
+            ...(c.req.query("limit") === undefined
+              ? {}
+              : { limit: c.req.query("limit")! }),
+          }),
+        );
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
     .post("/settings/connections", async (c) => {
       try {
         return c.json(await updateSettingsConnection(await c.req.json()));
@@ -138,6 +193,13 @@ export function createApi(
         );
       }
     })
+    .get("/libraries", async (c) => {
+      try {
+        return c.json(await listLibraryViews());
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
     .get("/settings", async (c) => {
       try {
         return c.json(await settingsSnapshot());
@@ -145,9 +207,9 @@ export function createApi(
         return c.json({ error: errorMessage(error) }, 400);
       }
     })
-    .post("/settings/roots", async (c) => {
+    .post("/settings/libraries", async (c) => {
       try {
-        return c.json(await updateSettingsRoot(await c.req.json()));
+        return c.json(await updateSettingsLibrary(await c.req.json()));
       } catch (error) {
         return c.json({ error: errorMessage(error) }, 400);
       }
@@ -179,6 +241,7 @@ export function createApi(
                 c.req.query("q"),
                 c.req.query("category"),
                 c.req.query("sort"),
+                c.req.query("library"),
               ),
         );
       } catch (error) {
@@ -187,7 +250,10 @@ export function createApi(
     })
     .get("/catalogue/:subjectId", async (c) => {
       try {
-        const subject = await catalogueSubject(c.req.param("subjectId"));
+        const subject = await catalogueSubject(
+          c.req.param("subjectId"),
+          c.req.query("library"),
+        );
         return subject === undefined
           ? c.json({ error: "未找到内容" }, 404)
           : c.json(subject);
@@ -217,6 +283,19 @@ export function createApi(
         return await confirmedObservedArtifactDownloadResponse(
           c.req.param("selectionId"),
           c.req.raw,
+          c.req.query("library"),
+        );
+      } catch (error) {
+        return artifactDeliveryErrorResponse(error);
+      }
+    })
+    .get("/observed-artwork/:subjectId/:locationId", async (c) => {
+      try {
+        return await observedArtworkResponse(
+          c.req.param("subjectId"),
+          c.req.param("locationId"),
+          c.req.raw,
+          c.req.query("library"),
         );
       } catch (error) {
         return artifactDeliveryErrorResponse(error);
@@ -227,6 +306,7 @@ export function createApi(
         return await artifactDownloadResponse(
           c.req.param("revisionId"),
           c.req.raw,
+          c.req.query("library"),
         );
       } catch (error) {
         return artifactDeliveryErrorResponse(error);
@@ -238,6 +318,7 @@ export function createApi(
           await playbackPlanResponse(
             c.req.param("revisionId"),
             await c.req.json(),
+            c.req.query("library"),
           ),
         );
       } catch (error) {
@@ -263,6 +344,7 @@ export function createApi(
           c.req.param("revisionId"),
           c.req.param("blobDigest"),
           c.req.raw,
+          c.req.query("library"),
         );
       } catch (error) {
         return artifactDeliveryErrorResponse(error);
@@ -293,6 +375,13 @@ export function createApi(
         return c.json({ error: errorMessage(error) }, 400);
       }
     })
+    .post("/source-enrichments/retry", async (c) => {
+      try {
+        return c.json(await retrySourceEnrichment(await c.req.json()), 201);
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
     .post("/source-association-decisions", async (c) => {
       try {
         return c.json(
@@ -315,6 +404,16 @@ export function createApi(
         return c.json({ error: errorMessage(error) }, 400);
       }
     })
+    .get("/conflict-evidence/:id", async (c) => {
+      try {
+        const result = await inspectSubjectConflictEvidence(c.req.param("id"));
+        return result === undefined
+          ? c.json({ error: "未找到可核对的资料依据" }, 404)
+          : c.json(result);
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
     .get("/source-association-decisions/:id", async (c) => {
       try {
         const result = await commands.inspectSourceAssociationDecision(
@@ -322,6 +421,16 @@ export function createApi(
         );
         return result === undefined
           ? c.json({ error: "未找到来源关联决定" }, 404)
+          : c.json(result);
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
+    .get("/executions/:id", async (c) => {
+      try {
+        const result = await inspectExecution(c.req.param("id"));
+        return result === undefined
+          ? c.json({ error: "未找到该刷新记录" }, 404)
           : c.json(result);
       } catch (error) {
         return c.json({ error: errorMessage(error) }, 400);
@@ -362,6 +471,33 @@ export function createApi(
       try {
         return c.json(
           await commands.startRecognitionRetraction(await c.req.json()),
+          202,
+        );
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
+    .post("/recognition-scope-amendments", async (c) => {
+      try {
+        return c.json(
+          await commands.startRecognitionScopeAmendment(await c.req.json()),
+          202,
+        );
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
+    .get("/cover-choice/:subjectId", async (c) => {
+      try {
+        return c.json(await commands.coverChoice(c.req.param("subjectId")));
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    })
+    .post("/cover-decisions", async (c) => {
+      try {
+        return c.json(
+          await commands.startCoverDecision(await c.req.json()),
           202,
         );
       } catch (error) {
@@ -493,11 +629,15 @@ function catalogueSurfaceRequest(
   text: string | undefined,
   category: string | undefined,
   sort: string | undefined,
+  assetLibraryId: string | undefined,
 ) {
   if (surface === "automation") return catalogueSurface({ surface });
   if (
     surface === "current-catalogue" &&
-    (text !== undefined || category !== undefined || sort !== undefined)
+    (text !== undefined ||
+      category !== undefined ||
+      sort !== undefined ||
+      assetLibraryId !== undefined)
   ) {
     if (sort !== undefined && sort !== "recent" && sort !== "name")
       throw new Error("排序方式无效");
@@ -505,6 +645,7 @@ function catalogueSurfaceRequest(
       surface,
       page: cataloguePageRequest(cursor, limit),
       query: {
+        ...(assetLibraryId === undefined ? {} : { assetLibraryId }),
         ...(text === undefined ? {} : { text }),
         ...(category === undefined ? {} : { category }),
         sort: sort ?? "recent",

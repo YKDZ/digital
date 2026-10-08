@@ -8,6 +8,8 @@ import type {
 } from "./observed-root-registrations.ts";
 
 export type ObservedRootAutomationScope = {
+  /** 周期计划属于一个库内的目录，绝不指向可自由选择的全局观察根。 */
+  readonly assetLibraryId: string;
   readonly observedRootId: string;
   readonly relativeScope: string;
 };
@@ -260,11 +262,12 @@ export function isObservedRootAutomationScope(
 ): value is ObservedRootAutomationScope {
   if (!isRecord(value)) return false;
   if (
-    Object.keys(value).length !== 2 ||
+    Object.keys(value).length !== 3 ||
     !Object.keys(value).every((key) =>
-      ["observedRootId", "relativeScope"].includes(key),
+      ["observedRootId", "relativeScope", "assetLibraryId"].includes(key),
     ) ||
     !isNonBlankString(value.observedRootId) ||
+    !isNonBlankString(value.assetLibraryId) ||
     typeof value.relativeScope !== "string"
   ) {
     return false;

@@ -1,7 +1,12 @@
 import {
+  type AssetLibraryDirectoryState,
+  type AutomationDisabledReason,
+  type AutomatedInformationPlanner,
   type CurrentAttentionPageRequest,
   type CurrentCataloguePageRequest,
   ExecutionHost,
+  type LibraryScanInspectionDetail,
+  type RecoveryClassification,
   type SourceConnectionInspection,
   type WorkflowHistoryPageRequest,
 } from "@digital/application";
@@ -32,36 +37,61 @@ import type { Hono } from "hono";
 
 import { createApi } from "./api.ts";
 import type {
+  CoverChoiceView,
   LibraryQuery,
   IntakeSnapshot,
   IntakeContent,
 } from "./catalogue.ts";
 import type { CatalogueSubjectResponse } from "./catalogue.ts";
+import type { CatalogueSubjectLibraryChoice } from "./catalogue.ts";
+import type { CatalogueSubjectSourceRetry } from "./catalogue.ts";
 import type {
   AttentionViewModel,
+  AutomationRecoveryViewModel,
   AutomationViewModel,
   CatalogueSurfaceResponse,
   CatalogueSnapshot,
   ExecutionViewModel,
   ObservedRootViewModel,
 } from "./catalogue.ts";
-import type { SettingsSnapshot } from "./catalogue.ts";
+import type {
+  SettingsDirectoryView,
+  SettingsLibrary,
+  SettingsSnapshot,
+} from "./catalogue.ts";
 import { createIdentityMergeApi } from "./identity-merge-api.ts";
 import { libraryItems, selectLibraryPage } from "./library-query.ts";
 import { createRelationshipApi } from "./relationship-api.ts";
+
+/** 接入区可选目录：该资产库配置里的活动目录，跨库共享的同一目录只列一次。 */
+async function intakeDirectoryOptions(
+  subject: ProductWorkflowOperations,
+): Promise<readonly { readonly id: string; readonly displayName: string }[]> {
+  const seen = new Set<string>();
+  const options: { id: string; displayName: string }[] = [];
+  for (const libraryId of (await subject.assetLibraries.list()).map(
+    (library) => library.id,
+  ))
+    for (const directory of await subject.assetLibraries.directories(libraryId))
+      if (!seen.has(directory.id)) {
+        seen.add(directory.id);
+        options.push(directory);
+      }
+  return options;
+}
 
 export async function intakeSnapshot(input: {
   readonly rootId?: string;
   readonly executionId?: string;
 }): Promise<IntakeSnapshot> {
-  const roots = (await application().observedRootRegistrations.list())
-    .filter((root) => root.status === "active")
-    .map(({ id, displayName }) => ({ id, displayName }));
-  const rootId = input.rootId ?? roots[0]?.id;
+  const subject = application();
+  const roots = await intakeDirectoryOptions(subject);
+  const rootId = input.rootId;
+  // 没有明确目录时不替用户挑“第一个活动根”，只给出该库配置的目录清单。
   if (rootId === undefined) return { roots, files: [], contents: [] };
   if (!roots.some((root) => root.id === rootId))
-    throw new Error("文件位置已停用，请重新选择");
-  const intake = await application().inspectLocalIntake({
+    throw new Error("文件位置不属于当前资产库，请重新选择");
+  const intake = await subject.inspectLocalIntake({
     registrationId: rootId,
     ...(input.executionId === undefined
       ? {}
@@ -73,7 +103,7 @@ export async function intakeSnapshot(input: {
     rootId,
     files: intake.files,
     contents: intake.contents.map((content) =>
-      deliveryAssetView(projectAssetView(assetViewFactsForAccepted(content))),
+      deliveryAssetView(projectAssetView(content)),
     ),
     ...(execution === undefined ? {} : { execution }),
   };
@@ -86,9 +116,7 @@ function intakeContent(
     executionId: review.executionId,
     status: review.status,
     relativePaths: review.relativePaths,
-    asset: deliveryAssetView(
-      projectAssetView(assetViewFactsForAccepted(review.content)),
-    ),
+    asset: deliveryAssetView(projectAssetView(review.content.facts)),
   };
 }
 
@@ -133,93 +161,126 @@ export async function updateIntake(value: unknown): Promise<IntakeContent> {
   );
 }
 
-export async function settingsSnapshot(): Promise<SettingsSnapshot> {
-  const product = configuredProductApplication();
-  const registrations = product.workflow.observedRootRegistrations;
-  const roots = await Promise.all(
-    (await registrations.list()).map(async (root) => {
-      if (root.status !== "active") return { ...root, reachable: false };
-      try {
-        const bound = await registrations.resolveActiveScope({
-          registrationId: root.id,
-          relativeScope: ".",
-        });
-        await registrations.closeBoundScope(bound.scope);
-        return { ...root, reachable: true };
-      } catch (error) {
-        return {
-          ...root,
-          reachable: false,
-          problem: error instanceof Error ? error.message : "文件位置无法访问",
-        };
-      }
-    }),
-  );
+/**
+ * 一条库目录的交付视图：只投影友好名、用户自己整理的目录路径、本库授权状态与本次可达性。
+ * 授权 ID、权威版本、链接策略与允许目标留在应用层，绝不进入这份 DTO，UI 因此无从显示内部机制。
+ */
+function toSettingsDirectoryView(
+  state: AssetLibraryDirectoryState,
+): SettingsDirectoryView {
   return {
-    configured: product.configured,
-    ...(product.productDataDirectory === undefined
-      ? {}
-      : { productDataDirectory: product.productDataDirectory }),
-    roots,
-    sources: product.workflow.sourceConnections.inspect(),
-    automation: (await product.workflow.listAutomationIntents()).map(
-      toAutomationView,
-    ),
+    directoryId: state.directoryId,
+    observedRootId: state.observedRootId,
+    displayName: state.displayName,
+    containerPath: state.containerPath,
+    status: state.status,
+    reachable: state.reachable,
+    ...(state.problem === undefined ? {} : { problem: state.problem }),
   };
 }
 
-export async function updateSettingsRoot(value: unknown) {
-  const input = settingsObject(value);
-  const registrations = application().observedRootRegistrations;
-  const action = settingsText(input, "action");
-  if (action === "deactivate")
-    return await registrations.deactivate({
-      id: settingsText(input, "id"),
-      expectedVersion: settingsVersion(input),
-    });
-  if (action === "reconnect")
-    return await registrations.reconnect({
-      id: settingsText(input, "id"),
-      expectedVersion: settingsVersion(input),
-      containerPath: settingsText(input, "containerPath"),
-      readOnly: true,
-    });
-  const symlinkMode = settingsText(input, "symlinkMode");
-  if (
-    ![
-      "do-not-follow",
-      "follow-file-links",
-      "follow-file-and-directory-links",
-    ].includes(symlinkMode)
-  )
-    throw new Error("请选择链接策略");
-  const targets = input.allowedTargetRootIds;
-  if (
-    !Array.isArray(targets) ||
-    !targets.every((id): id is string => typeof id === "string")
-  )
-    throw new Error("请选择允许的链接目标");
-  const fields = {
-    displayName: settingsText(input, "displayName"),
-    readOnly: true as const,
-    symlinkMode: symlinkMode as
-      | "do-not-follow"
-      | "follow-file-links"
-      | "follow-file-and-directory-links",
-    allowedTargetRootIds: targets,
+/** 交付层的可选目录只来自资产库配置：按库读取该库的目录，设置页不再持有全局根清单。 */
+async function settingsLibraries(
+  subject: ProductWorkflowOperations,
+): Promise<readonly SettingsLibrary[]> {
+  return await Promise.all(
+    (await subject.assetLibraries.list()).map(async (library) => {
+      const directoryViews = (
+        await subject.assetLibraries.directoryViews(library.id)
+      ).map(toSettingsDirectoryView);
+      return {
+        id: library.id,
+        displayName: library.displayName,
+        configVersion: library.configVersion,
+        recognitionProfileIds: library.recognitionProfileIds,
+        sourceIdentities: library.sourceIdentities,
+        // 可编辑目录只列本库当前授权的目录；已移除目录等待显式重连，不自动回到清单。
+        directories: directoryViews
+          .filter((view) => view.status === "active")
+          .map((view) => view.containerPath),
+        directoryViews,
+      };
+    }),
+  );
+}
+
+export async function settingsSnapshot(): Promise<SettingsSnapshot> {
+  const product = configuredProductApplication();
+  return {
+    configured: product.configured,
+    libraries: await settingsLibraries(product.workflow),
+    recognitionProfiles: product.workflow.assetLibraries.recognitionProfiles,
+    librarySources: product.workflow.assetLibraries.sources,
+    ...(product.productDataDirectory === undefined
+      ? {}
+      : { productDataDirectory: product.productDataDirectory }),
+    sources: product.workflow.sourceConnections.inspect(),
+    automation: await toAutomationViews(
+      product.workflow,
+      await product.workflow.listAutomationIntents(),
+    ),
+    recovery: product.configured
+      ? product.automation.startupRecovery().map(toAutomationRecoveryView)
+      : [],
   };
-  if (action === "create")
-    return await registrations.create({
-      ...fields,
-      containerPath: settingsText(input, "containerPath"),
-    });
-  if (action === "update")
-    return await registrations.update({
-      ...fields,
+}
+
+export async function listLibraryViews() {
+  if (productApplication?.configured !== true) return [];
+  return (await application().assetLibraries.list()).map(
+    ({ id, displayName }) => ({ id, displayName }),
+  );
+}
+
+export async function updateSettingsLibrary(value: unknown) {
+  const input = settingsObject(value);
+  const libraries = application().assetLibraries;
+  const action = settingsText(input, "action");
+  if (action === "remove")
+    return await libraries.remove({
       id: settingsText(input, "id"),
       expectedVersion: settingsVersion(input),
     });
-  throw new Error("未知文件位置操作");
+  // 显式重连只点名库与目录，权威版本与配置版本都在服务端就地读取，版本号因此不出前端。
+  if (action === "reconnect") {
+    const libraryId = settingsText(input, "id");
+    const directoryId = settingsText(input, "directoryId");
+    const library = await libraries.get(libraryId);
+    if (library === undefined) throw new Error("资产库不存在或已移除");
+    const grant = (await libraries.directoryViews(libraryId)).find(
+      (view) => view.directoryId === directoryId,
+    );
+    if (grant === undefined)
+      throw new Error("该目录不属于此资产库，请选择要重新连接的目录");
+    return await libraries.reconnect({
+      id: libraryId,
+      expectedVersion: library.configVersion,
+      directoryId,
+      expectedAuthorityVersion: grant.authorityVersion,
+    });
+  }
+  if (action !== "save") throw new Error("未知资产库操作");
+  const list = (key: string): readonly string[] => {
+    const values = input[key];
+    if (
+      !Array.isArray(values) ||
+      !values.every((item): item is string => typeof item === "string")
+    )
+      throw new Error("资产库设置无效");
+    return values;
+  };
+  return await libraries.save({
+    displayName: settingsText(input, "displayName"),
+    directories: list("directories"),
+    recognitionProfileIds: list("recognitionProfileIds"),
+    sourceIdentities: list("sourceIdentities"),
+    ...(input.id === undefined
+      ? {}
+      : {
+          id: settingsText(input, "id"),
+          expectedVersion: settingsVersion(input),
+        }),
+  });
 }
 
 function settingsObject(value: unknown): Record<string, unknown> {
@@ -569,7 +630,7 @@ export async function managedArtifactResponse(
 
 const artifactDownloadChunkBytes = 64 * 1024;
 
-function artifactRevisionSelection(value: string) {
+function artifactRevisionSelection(value: string, assetLibraryId?: string) {
   if (
     value.length === 0 ||
     value.length > 256 ||
@@ -579,13 +640,18 @@ function artifactRevisionSelection(value: string) {
     value === ".."
   )
     throw new Error("产物修订版身份无效");
-  return { artifactRevisionId: value };
+  return {
+    artifactRevisionId: value,
+    ...(assetLibraryId === undefined || assetLibraryId.length === 0
+      ? {}
+      : { assetLibraryId }),
+  };
 }
 
-function playbackRevisionSelection(value: string) {
+function playbackRevisionSelection(value: string, assetLibraryId?: string) {
   if (!/^artifact-revision_[A-Za-z0-9][A-Za-z0-9._~-]{0,220}$/u.test(value))
     throw new Error("产物修订版身份无效");
-  return artifactRevisionSelection(value);
+  return artifactRevisionSelection(value, assetLibraryId);
 }
 
 function attachmentDisposition(filename: string): string {
@@ -618,15 +684,55 @@ function requestCancellation(signal: AbortSignal): ByteReadCancellation {
 export async function artifactDownloadResponse(
   revisionId: string,
   request: Request,
+  assetLibraryId?: string,
 ): Promise<Response> {
-  const selection = artifactRevisionSelection(revisionId);
+  const selection = artifactRevisionSelection(revisionId, assetLibraryId);
   const descriptor =
     await configuredProductApplication().prepareArtifactDownload(selection);
   return await artifactByteResponse(selection, descriptor, request, true);
 }
 
+/** 只交付当前生效图片角色选中的本地材料，字节授权沿既有观察文件确认链。 */
+export async function observedArtworkResponse(
+  subjectId: string,
+  locationId: string,
+  request: Request,
+  assetLibraryId?: string,
+): Promise<Response> {
+  const facts = await application().inspectCurrentCatalogueSubject(
+    subjectId,
+    undefined,
+    assetLibraryId,
+  );
+  const selected = facts?.descriptions.some((description) =>
+    description.artifactRoles.some(
+      (role) =>
+        role.locationId === locationId &&
+        ["asset.primary-cover", "asset.material-image"].includes(role.role),
+    ),
+  );
+  if (!selected)
+    return Response.json({ error: "此图片当前不可用" }, { status: 404 });
+  const download =
+    await configuredProductApplication().observedFileDownloadForLocation(
+      locationId,
+    );
+  if (download === undefined)
+    return Response.json({ error: "此图片当前不可用" }, { status: 404 });
+  const response = await confirmedObservedArtifactDownloadResponse(
+    download.selectionId,
+    request,
+    assetLibraryId,
+  );
+  response.headers.set("content-disposition", "inline");
+  return response;
+}
+
 async function artifactByteResponse(
-  selection: { readonly artifactRevisionId: string },
+  selection: {
+    readonly artifactRevisionId: string;
+    readonly assetLibraryId?: string;
+  },
   descriptor: Awaited<
     ReturnType<ProductApplication["prepareArtifactDownload"]>
   >,
@@ -742,6 +848,7 @@ async function artifactByteResponse(
 export async function playbackPlanResponse(
   revisionId: string,
   value: unknown,
+  assetLibraryId?: string,
 ): Promise<
   | { readonly status: "incompatible"; readonly reason: string }
   | {
@@ -757,7 +864,7 @@ export async function playbackPlanResponse(
       readonly mediaUrl: string;
     }
 > {
-  const selection = playbackRevisionSelection(revisionId);
+  const selection = playbackRevisionSelection(revisionId, assetLibraryId);
   const input = playbackPlanInput(value);
   const result = await configuredProductApplication().planPlayback(
     selection,
@@ -765,9 +872,13 @@ export async function playbackPlanResponse(
     input.preferences,
   );
   if (result.status === "incompatible") return result;
+  const library =
+    assetLibraryId === undefined || assetLibraryId.length === 0
+      ? ""
+      : `?library=${encodeURIComponent(assetLibraryId)}`;
   return {
     ...result,
-    mediaUrl: `/api/playback-media/${encodeURIComponent(result.revisionId)}/${result.blobDigest}`,
+    mediaUrl: `/api/playback-media/${encodeURIComponent(result.revisionId)}/${result.blobDigest}${library}`,
   };
 }
 
@@ -775,10 +886,11 @@ export async function playbackMediaResponse(
   revisionId: string,
   blobDigest: string,
   request: Request,
+  assetLibraryId?: string,
 ): Promise<Response> {
   if (!/^[a-f0-9]{64}$/u.test(blobDigest))
     throw new ArtifactByteAccessError("artifact-integrity-failed");
-  const selection = playbackRevisionSelection(revisionId);
+  const selection = playbackRevisionSelection(revisionId, assetLibraryId);
   const descriptor =
     await configuredProductApplication().prepareArtifactDownload(selection);
   if (descriptor.blobDigest !== blobDigest)
@@ -882,6 +994,7 @@ function strictObject(
 export async function confirmedObservedArtifactDownloadResponse(
   observedFileSelectionId: string,
   request: Request,
+  assetLibraryId?: string,
 ): Promise<Response> {
   if (
     !/^observed-file-selection_1_[a-f0-9]{64}$/u.test(observedFileSelectionId)
@@ -890,8 +1003,15 @@ export async function confirmedObservedArtifactDownloadResponse(
   const confirmed =
     await configuredProductApplication().confirmObservedFileRevision({
       observedFileSelectionId,
+      ...(assetLibraryId === undefined || assetLibraryId.length === 0
+        ? {}
+        : { assetLibraryId }),
     });
-  return await artifactDownloadResponse(confirmed.artifactRevisionId, request);
+  return await artifactDownloadResponse(
+    confirmed.artifactRevisionId,
+    request,
+    assetLibraryId,
+  );
 }
 
 export function artifactDeliveryErrorResponse(error: unknown): Response {
@@ -1072,36 +1192,45 @@ function jsonRequestError(message: string, status: 400): Response {
   return Response.json({ error: message }, { status });
 }
 
-type AcceptedPresentationSubject = NonNullable<
-  NonNullable<Awaited<ReturnType<ProductAssetRefresh["inspect"]>>>["accepted"]
->;
+// 普通读取直接进入 Presentation；此处只添加交付地址。
 
-/** 从已接受的 Application 投影到 Presentation facts 的 delivery 中立桥接。 */
-function assetViewFactsForAccepted(
-  accepted: AcceptedPresentationSubject,
+function deliveryFactAddresses(
+  facts: AssetViewFacts,
+  assetLibraryId?: string,
 ): AssetViewFacts {
+  const library =
+    assetLibraryId === undefined || assetLibraryId.length === 0
+      ? ""
+      : `?library=${encodeURIComponent(assetLibraryId)}`;
   return {
-    id: accepted.entity.id,
-    primaryCoverArtifactId: accepted.primaryCoverArtifactId,
-    sourceAssociation: accepted.recognitionSourceAssociation,
-    sourceAssociations: accepted.sourceAssociations,
-    metadata: accepted.effectiveMetadata,
-    sourceArtifactCandidates: accepted.sourceArtifactCandidates,
-    currentRelatedEntities: accepted.currentRelatedEntities,
-    relationships: accepted.relationships,
-    artifactAssociations: accepted.artifactAssociations,
-    artifactRevisions: accepted.artifactRevisions,
-    ...(accepted.currentLocationRevisions === undefined
-      ? {}
-      : { currentLocationRevisions: accepted.currentLocationRevisions }),
-    blobs: accepted.blobs,
-    locations: accepted.locations,
+    ...facts,
+    descriptions: facts.descriptions.map((description) => ({
+      ...description,
+      artifactRoles: description.artifactRoles.map((role) => {
+        // 只为读取层已判定可用的图片补充交付地址；不可用内容不凭空造 URL。
+        if (role.address === undefined) return role;
+        const location = facts.locations.find(
+          (location) => location.id === role.locationId,
+        );
+        return location?.kind === "observed"
+          ? {
+              ...role,
+              address: `/api/observed-artwork/${encodeURIComponent(facts.id)}/${encodeURIComponent(location.id)}${library}`,
+            }
+          : role;
+      }),
+    })),
   };
 }
 
 async function withCurrentFileDownloads(
   facts: AssetViewFacts,
+  assetLibraryId?: string,
 ): Promise<AssetViewFacts> {
+  const library =
+    assetLibraryId === undefined || assetLibraryId.length === 0
+      ? ""
+      : `?library=${encodeURIComponent(assetLibraryId)}`;
   const locations = await Promise.all(
     facts.locations.map(async (location) => {
       if (location.kind !== "observed" || location.id === undefined)
@@ -1114,17 +1243,16 @@ async function withCurrentFileDownloads(
         return {
           ...location,
           byteLength: observedDownload.byteLength,
-          downloadUrl: `/api/observed-file-downloads/${encodeURIComponent(observedDownload.selectionId)}`,
+          downloadUrl: `/api/observed-file-downloads/${encodeURIComponent(observedDownload.selectionId)}${library}`,
         };
-      const revisions = (facts.artifactRevisions ?? []).filter(
-        (revision) => revision.artifactId === location.artifactId,
-      );
-      const revision = revisions.length === 1 ? revisions[0] : undefined;
-      return revision === undefined
+      return location.content.status !== "confirmed"
         ? location
         : {
             ...location,
-            downloadUrl: `/api/artifact-downloads/${encodeURIComponent(revision.id)}`,
+            downloadUrl:
+              "/api/artifact-downloads/" +
+              encodeURIComponent(location.content.target.revisionId) +
+              library,
           };
     }),
   );
@@ -1132,16 +1260,16 @@ async function withCurrentFileDownloads(
 }
 
 /**
- * Automation 仅在 subject 被接受后运行这个由 delivery 持有的 dispatch。返回
- * Application 的值是中立 contract；任何 View 或来源专属输出模型都不能越过边界。
+ * Automation 仅在 subject 被接受后使用这份由 delivery 持有的规划规则。返回 Application 的值
+ * 是中立 contract；任何 View 或来源专属输出模型都不能越过边界。coordinate 是这份规则的稳定身份：
+ * 自动化库扫描父在创建时冻结它，之后只有坐标精确相等的部署才允许继续补完那份计划，所以改变
+ * 规则本体必须同时改这里，未改变的旧父才会如实中断而不是被今日规则顶替。
  */
-export function informationRequirementForAutomatedAcceptedSubject(
-  accepted: AcceptedPresentationSubject,
-): InformationRequirement {
-  return informationRequirementForAssetView(
-    assetViewFactsForAccepted(accepted),
-  );
-}
+export const informationRequirementForAutomatedAcceptedSubject = {
+  coordinate: "information-planner:asset-view/1",
+  requirementForAcceptedSubject: (accepted: AssetViewFacts) =>
+    informationRequirementForAssetView(accepted),
+} satisfies AutomatedInformationPlanner;
 
 /**
  * Presentation 根据当前中立 facts 选择 requirement。Delivery 不会按来源身份分支，
@@ -1150,13 +1278,18 @@ export function informationRequirementForAutomatedAcceptedSubject(
 async function informationRequirementForSubject(
   subject: Pick<ProductAssetRefresh, "inspectCurrentCatalogueSubject">,
   subjectId: string,
-  fallbackSourceAssociation?: AssetViewFacts["sourceAssociation"],
+  fallbackSourceAssociation?: AssetViewFacts["recognitionSourceAssociation"],
 ) {
-  const accepted = await subject.inspectCurrentCatalogueSubject(subjectId);
-  const facts =
-    accepted === undefined ? undefined : assetViewFactsForAccepted(accepted);
+  const facts = await subject.inspectCurrentCatalogueSubject(subjectId);
   return informationRequirementForAssetView(
-    facts ?? { sourceAssociation: fallbackSourceAssociation, metadata: [] },
+    facts ?? {
+      id: subjectId,
+      sourceAssociations:
+        fallbackSourceAssociation === undefined
+          ? []
+          : [fallbackSourceAssociation],
+      descriptions: [],
+    },
   );
 }
 
@@ -1186,20 +1319,71 @@ function withDeliveryArtwork<T extends { readonly artwork?: string }>(
 
 export function projectCatalogueAssets(
   facts: readonly AssetViewFacts[],
+  assetLibraryId?: string,
 ): CatalogueSnapshot["assets"] {
-  return projectCatalogue(facts).map((view) =>
+  return projectCatalogue(
+    facts.map((fact) => deliveryFactAddresses(fact, assetLibraryId)),
+  ).map((view) =>
     "works" in view ? deliveryBangumiView(view) : deliveryAssetView(view),
   );
 }
 
-/** 详情按稳定主体读取，不依赖首页恰好加载了哪一页。 */
+/** 详情按稳定主体读取，不依赖首页恰好加载了哪一页。库语境缺失时只接受唯一归属。 */
 export async function catalogueSubject(
   id: string,
+  assetLibraryId?: string,
 ): Promise<CatalogueSubjectResponse | undefined> {
   if (productApplication?.configured !== true) return undefined;
+  const library =
+    assetLibraryId === undefined || assetLibraryId.length === 0
+      ? undefined
+      : assetLibraryId;
+  const direct = await application().inspectCurrentCatalogueSubject(
+    id,
+    undefined,
+    library,
+  );
+  if (direct !== undefined) {
+    const requirement = informationRequirementForAssetView(direct);
+    const contextual =
+      requirement.metadataUsageContext === "asset.ordinary"
+        ? direct
+        : ((await application().inspectCurrentCatalogueSubject(
+            id,
+            requirement,
+            library,
+          )) ?? direct);
+    const readiness = await application().fulfillInformation({
+      selection: { subjectIds: [id] },
+      requirement,
+      ...(library === undefined ? {} : { assetLibraryId: library }),
+    });
+    const informationReadiness = readiness.subjects.find(
+      (subject) => subject.subjectId === id,
+    );
+    const facts = await withCurrentFileDownloads(contextual, library);
+    return {
+      asset: deliveryAssetView(
+        projectAssetView(
+          deliveryFactAddresses(
+            {
+              ...facts,
+              ...(informationReadiness === undefined
+                ? {}
+                : { informationReadiness }),
+            },
+            library,
+          ),
+        ),
+      ),
+      ...(await subjectSourceRetries(id)),
+      ...(await subjectLibraryChoices(id)),
+    };
+  }
   const items = libraryItems(
     await application().listCurrentCatalogueIndex(
       libraryIndexMetadataProperties,
+      library,
     ),
   );
   const item = items.find(
@@ -1208,18 +1392,54 @@ export async function catalogueSubject(
   if (item === undefined) return undefined;
   const assets = await catalogueViewsForSubjects(item.subjectIds, {
     withFileDownloads: true,
+    assetLibraryId: library,
   });
   const asset = assets.find((view) => view.id === item.view.id);
   if (asset === undefined) return undefined;
   return {
     asset,
     ...("works" in asset && asset.id !== id ? { selectedEpisodeId: id } : {}),
+    ...(await subjectSourceRetries(id)),
+    ...(await subjectLibraryChoices(id)),
   };
+}
+
+/** 无采集地投影该主体已终止的失败来源补充，供页面重开/刷新展示友好"再次获取"；不外显地址或内部坐标。 */
+async function subjectSourceRetries(subjectId: string): Promise<{
+  readonly sourceRetries?: readonly CatalogueSubjectSourceRetry[];
+}> {
+  const retries = (
+    await application().inspectRetryableSourceEnrichments(subjectId)
+  ).map((item) => ({
+    executionId: item.executionId,
+    sourceIdentity: item.sourceIdentity,
+    canRetry: item.canRetry,
+  }));
+  return retries.length === 0 ? {} : { sourceRetries: retries };
+}
+
+/**
+ * 无采集地把多库共享主体的归属库投影成友好的名称选项，供定向页显式选择；唯一或零归属
+ * 不返回选项，交由既有能力沿用明确库语境或耐久唯一归属自动解析，绝不任选其一或外显内部坐标。
+ */
+async function subjectLibraryChoices(subjectId: string): Promise<{
+  readonly libraryChoices?: readonly CatalogueSubjectLibraryChoice[];
+}> {
+  const ownerIds = await application().assetLibraryIdsOwningSubject(subjectId);
+  if (ownerIds.length < 2) return {};
+  const libraries = await application().assetLibraries.list();
+  const choices = libraries
+    .filter((library) => ownerIds.includes(library.id))
+    .map(({ id, displayName }) => ({ id, displayName }));
+  return choices.length >= 2 ? { libraryChoices: choices } : {};
 }
 
 async function catalogueViewsForSubjects(
   subjectIds: readonly string[],
-  options: { readonly withFileDownloads?: boolean } = {},
+  options: {
+    readonly withFileDownloads?: boolean;
+    readonly assetLibraryId?: string | undefined;
+  } = {},
 ) {
   const facts: AssetViewFacts[] = [];
   for (let offset = 0; offset < subjectIds.length; offset += 100) {
@@ -1227,29 +1447,101 @@ async function catalogueViewsForSubjects(
     const page = await application().listCurrentCataloguePage({
       limit: batch.length,
       subjectIds: batch,
+      ...(options.assetLibraryId === undefined
+        ? {}
+        : { assetLibraryId: options.assetLibraryId }),
     });
     for (const accepted of page.items) {
-      const viewFacts = assetViewFactsForAccepted(accepted);
+      const viewFacts = accepted;
       facts.push(
         options.withFileDownloads === true
-          ? await withCurrentFileDownloads(viewFacts)
+          ? await withCurrentFileDownloads(viewFacts, options.assetLibraryId)
           : viewFacts,
       );
     }
   }
-  return await projectCatalogueAssetsForCurrentUser(facts);
+  return await projectCatalogueAssetsForCurrentUser(
+    facts,
+    options.assetLibraryId,
+  );
 }
 
 async function projectCatalogueAssetsForCurrentUser(
   facts: readonly AssetViewFacts[],
+  assetLibraryId?: string,
 ): Promise<CatalogueSnapshot["assets"]> {
-  const revisionIds = facts.flatMap((fact) =>
-    (fact.artifactRevisions ?? []).map((revision) => revision.id),
+  const contexts = new Map<
+    string,
+    { requirement: InformationRequirement; facts: AssetViewFacts[] }
+  >();
+  for (const fact of facts) {
+    const requirement = informationRequirementForAssetView(fact);
+    const context = contexts.get(requirement.metadataUsageContext) ?? {
+      requirement,
+      facts: [],
+    };
+    if (
+      fact.descriptions.some(
+        (description) =>
+          description.metadataUsageContext !== requirement.metadataUsageContext,
+      )
+    )
+      context.facts.push(fact);
+    contexts.set(requirement.metadataUsageContext, context);
+  }
+  const contextual = new Map(facts.map((fact) => [fact.id, fact]));
+  for (const { requirement, facts: selected } of contexts.values()) {
+    for (let offset = 0; offset < selected.length; offset += 100) {
+      const batch = selected.slice(offset, offset + 100);
+      const page = await application().listCurrentCataloguePage({
+        subjectIds: batch.map((fact) => fact.id),
+        limit: batch.length,
+        informationRequirement: requirement,
+        ...(assetLibraryId === undefined ? {} : { assetLibraryId }),
+      });
+      for (const fact of page.items) {
+        const original = contextual.get(fact.id)!;
+        contextual.set(fact.id, {
+          ...fact,
+          locations: fact.locations.map((location) => {
+            const downloadUrl = original.locations.find(
+              (candidate) => candidate.id === location.id,
+            )?.downloadUrl;
+            return downloadUrl === undefined
+              ? location
+              : { ...location, downloadUrl };
+          }),
+        });
+      }
+    }
+  }
+  const ready = await Promise.all(
+    [...contextual.values()].map(async (fact) => {
+      const readiness = await application().fulfillInformation({
+        selection: { subjectIds: [fact.id] },
+        requirement: informationRequirementForAssetView(fact),
+        ...(assetLibraryId === undefined ? {} : { assetLibraryId }),
+      });
+      const informationReadiness = readiness.subjects.find(
+        (subject) => subject.subjectId === fact.id,
+      );
+      return informationReadiness === undefined
+        ? fact
+        : { ...fact, informationReadiness };
+    }),
+  );
+  const revisionIds = ready.flatMap((fact) =>
+    fact.locations.flatMap((location) =>
+      location.content.status === "confirmed"
+        ? [location.content.target.revisionId]
+        : [],
+    ),
   );
   const interactionStates =
     await configuredProductApplication().interactions.read(revisionIds);
   return projectCatalogueAssets(
-    facts.map((fact) => ({ ...fact, interactionStates })),
+    ready.map((fact) => ({ ...fact, interactionStates })),
+    assetLibraryId,
   );
 }
 
@@ -1265,33 +1557,147 @@ function folderName(directory: string): string {
   return directory.split(/[\\/]/u).filter(Boolean).at(-1) || "已选择的文件夹";
 }
 
-function toAutomationView(intent: {
+/** 系统代为停用时给使用者的中文原因；用户自己停用没有这条说明。 */
+function automationDisabledReasonText(
+  reason: AutomationDisabledReason | undefined,
+): string | undefined {
+  switch (reason) {
+    case "observed-root-revoked":
+      return "这个目录已从资产库移除，自动刷新已停用";
+    case "observed-root-unavailable":
+      return "暂时打不开这个目录，恢复访问后可以重新启用";
+    case "prerequisite-unavailable":
+      return "需要的信息暂时取不到，可以稍后重新启用";
+    case "invalid-configuration":
+      return "计划记录的目录配置已失效，请重新设置自动刷新";
+    case undefined:
+      return undefined;
+  }
+}
+
+type AutomationIntentView = {
   readonly id: string;
   readonly scope: {
+    readonly assetLibraryId?: string;
     readonly observedRootId: string;
     readonly relativeScope: string;
   };
   readonly enabled: boolean;
+  readonly disabledReason?: AutomationDisabledReason;
   readonly intervalMilliseconds: number;
   readonly acceptTrusted: boolean;
-}): AutomationViewModel {
+};
+
+/**
+ * 计划标题只由资产库名与目录名拼成。同一份清单里每个库最多查一次，编号与容器路径
+ * 因此没有机会流到界面上。
+ */
+function createAutomationNameLookup(subject: ProductWorkflowOperations) {
+  const libraries = new Map<string, string>();
+  const directories = new Map<string, string>();
+  return async (
+    intent: AutomationIntentView,
+  ): Promise<{ readonly library: string; readonly directory: string }> => {
+    // 名称必须在读完本库目录之后才取，否则第一条计划会把仍在清单里的目录误报成已移除。
+    const assetLibraryId = intent.scope.assetLibraryId;
+    if (assetLibraryId !== undefined && !libraries.has(assetLibraryId)) {
+      const library = await subject.assetLibraries.get(assetLibraryId);
+      libraries.set(assetLibraryId, library?.displayName ?? "已移除的资产库");
+      for (const view of await subject.assetLibraries.directoryViews(
+        assetLibraryId,
+      ))
+        directories.set(view.observedRootId, view.displayName);
+    }
+    return {
+      library:
+        assetLibraryId === undefined
+          ? "已移除的资产库"
+          : (libraries.get(assetLibraryId) ?? "已移除的资产库"),
+      directory: directories.get(intent.scope.observedRootId) ?? "已移除的目录",
+    };
+  };
+}
+
+async function toAutomationViews(
+  subject: ProductWorkflowOperations,
+  intents: readonly AutomationIntentView[],
+): Promise<readonly AutomationViewModel[]> {
+  const names = createAutomationNameLookup(subject);
+  const views: AutomationViewModel[] = [];
+  for (const intent of intents)
+    views.push(await toAutomationView(intent, names));
+  return views;
+}
+
+async function toAutomationView(
+  intent: AutomationIntentView,
+  names: (
+    intent: AutomationIntentView,
+  ) => Promise<{ readonly library: string; readonly directory: string }>,
+): Promise<AutomationViewModel> {
+  const { library, directory } = await names(intent);
+  const disabledReason = automationDisabledReasonText(
+    intent.enabled ? undefined : intent.disabledReason,
+  );
   return {
     id: intent.id,
-    folder: `${intent.scope.observedRootId}:${intent.scope.relativeScope}`,
+    ...(intent.scope.assetLibraryId === undefined
+      ? {}
+      : { assetLibraryId: intent.scope.assetLibraryId }),
+    folder: `${library} · ${directory}`,
     observedRootId: intent.scope.observedRootId,
     relativeScope: intent.scope.relativeScope,
     enabled: intent.enabled,
     intervalMilliseconds: intent.intervalMilliseconds,
     acceptTrusted: intent.acceptTrusted,
+    ...(disabledReason === undefined ? {} : { disabledReason }),
+  };
+}
+
+// 中断原因里带着旧版坐标、能力版本与载荷字段名，那些只留在耐久执行记录里供诊断；
+// 界面这里换成说清「为什么没法继续」的普通解释，下一步动作仍走既有通道。
+function automationRecoveryReasonText(reason: string): string {
+  if (reason.includes("旧版未登记文件位置范围"))
+    return "这次刷新用的文件夹范围是旧版记录，没有登记到具体文件位置，无法安全继续";
+  if (reason.includes("实现或契约不兼容"))
+    return "这次刷新所用的功能版本已经更新，旧记录对不上，无法安全继续";
+  if (reason.includes("版本化输入"))
+    return "这次刷新的记录缺少继续所需的信息，无法安全继续";
+  return reason;
+}
+
+function toAutomationRecoveryView(
+  item: RecoveryClassification,
+): AutomationRecoveryViewModel {
+  return {
+    status:
+      item.category === "waiting"
+        ? "等待你的确认"
+        : item.category === "continuable"
+          ? "正在继续"
+          : item.category === "wrap-up"
+            ? "正在补齐登记"
+            : "已中断",
+    subject: item.subject,
+    ...(item.reason === undefined
+      ? {}
+      : { reason: automationRecoveryReasonText(item.reason) }),
+    ...(item.nextAction === undefined ? {} : { nextAction: item.nextAction }),
   };
 }
 
 async function activeObservedRootViews(
   subject: ProductWorkflowOperations,
 ): Promise<readonly ObservedRootViewModel[]> {
-  return (await subject.observedRootRegistrations.list())
-    .filter((registration) => registration.status === "active")
-    .map(({ id, displayName }) => ({ id, displayName }));
+  return await intakeDirectoryOptions(subject);
+}
+
+/**
+ * 普通执行交付沿用同一份友好解释：同一条中断在设置页、工作流历史和单条记录里说法一致，
+ * 内部坐标只留在耐久记录本身。
+ */
+function deliveryReasonText(reason: string | undefined): string | undefined {
+  return reason === undefined ? reason : automationRecoveryReasonText(reason);
 }
 
 export function deliveryExecution(
@@ -1307,27 +1713,30 @@ export function deliveryExecution(
     intent: inspection.execution.selection.intent ?? "scan-now",
     status: inspection.execution.status,
     outcome: inspection.execution.outcome,
-    reason: inspection.execution.reason,
+    reason: deliveryReasonText(inspection.execution.reason),
     acceptedAssetId: inspection.execution.acceptedAssetId,
     dispositions: inspection.execution.dispositions.map((item) => ({
       key: item.key,
       status: item.status,
-      reason: item.reason,
+      reason: deliveryReasonText(item.reason),
     })),
     ...(inspection.execution.targetDispositions === undefined
       ? {}
       : {
-          targets: inspection.execution.targetDispositions.map((item) => ({
-            key: item.key,
-            label:
-              item.target.kind === "subject"
-                ? `内容 ${item.target.subjectId}`
-                : `文件范围 ${folderName(item.target.root)}`,
-            status: item.status,
-            reason: item.reason,
-            sourceRecordIds: item.sourceRecordIds,
-            outputReferences: item.outputReferences,
-          })),
+          targets: inspection.execution.targetDispositions.map(
+            (item, index) => ({
+              key: item.key,
+              // 主体内部 ID 只留在传输键里，可见标签用序号区分同一执行的多个主体。
+              label:
+                item.target.kind === "subject"
+                  ? `内容 ${index + 1}`
+                  : `文件范围 ${folderName(item.target.root)}`,
+              status: item.status,
+              reason: deliveryReasonText(item.reason),
+              sourceRecordIds: item.sourceRecordIds,
+              outputReferences: item.outputReferences,
+            }),
+          ),
         }),
     ...(inspection.itemResults === undefined
       ? {}
@@ -1336,7 +1745,7 @@ export function deliveryExecution(
             key: item.key,
             relativePaths: item.relativePaths,
             outcome: item.outcome,
-            reason: item.reason,
+            reason: deliveryReasonText(item.reason),
             recognition: item.recognition,
             acceptedAssetId: item.accepted?.entity.id,
             acceptedSource:
@@ -1344,7 +1753,7 @@ export function deliveryExecution(
           })),
         }),
     recognition: inspection.recognition,
-    ...(inspection.changeImpactPreview === undefined
+    ...(inspection.changeImpactPreview?.facts === undefined
       ? {}
       : {
           preview: {
@@ -1353,18 +1762,18 @@ export function deliveryExecution(
             blockingConditions:
               inspection.changeImpactPreview.blockingConditions,
             current: deliveryAssetView(
-              projectAssetView({
-                id: inspection.changeImpactPreview.assetId,
-                ...inspection.changeImpactPreview.current,
-                locations: [],
-              }),
+              projectAssetView(
+                deliveryFactAddresses(
+                  inspection.changeImpactPreview.facts.current,
+                ),
+              ),
             ),
             proposed: deliveryAssetView(
-              projectAssetView({
-                id: inspection.changeImpactPreview.assetId,
-                ...inspection.changeImpactPreview.projected,
-                locations: [],
-              }),
+              projectAssetView(
+                deliveryFactAddresses(
+                  inspection.changeImpactPreview.facts.projected,
+                ),
+              ),
             ),
           },
         }),
@@ -1451,11 +1860,16 @@ export async function catalogueSurface(
   if (input.surface === "current-catalogue") {
     if (input.query !== undefined) {
       const selected = selectLibraryPage(
-        await subject.listCurrentCatalogueIndex(libraryIndexMetadataProperties),
+        await subject.listCurrentCatalogueIndex(
+          libraryIndexMetadataProperties,
+          input.query.assetLibraryId,
+        ),
         input.query,
         input.page,
       );
-      const views = await catalogueViewsForSubjects(selected.subjectIds);
+      const views = await catalogueViewsForSubjects(selected.subjectIds, {
+        assetLibraryId: input.query.assetLibraryId,
+      });
       const items = new Map(views.map((item) => [item.id, item]));
       return {
         surface: input.surface,
@@ -1470,15 +1884,7 @@ export async function catalogueSurface(
       };
     }
     const page = await subject.listCurrentCataloguePage(input.page);
-    const facts = page.items.map(assetViewFactsForAccepted);
-    await Promise.all(
-      facts.map((fact) =>
-        subject.fulfillInformation({
-          selection: { subjectIds: [fact.id] },
-          requirement: informationRequirementForAssetView(fact),
-        }),
-      ),
-    );
+    const facts = page.items;
     return {
       surface: input.surface,
       configured,
@@ -1512,7 +1918,10 @@ export async function catalogueSurface(
   return {
     surface: input.surface,
     configured,
-    automation: (await subject.listAutomationIntents()).map(toAutomationView),
+    automation: await toAutomationViews(
+      subject,
+      await subject.listAutomationIntents(),
+    ),
   };
 }
 
@@ -1531,15 +1940,7 @@ export async function catalogueSnapshot(
       subject.listAutomationIntents(),
       activeObservedRootViews(subject),
     ]);
-  const facts = currentCatalogue.items.map(assetViewFactsForAccepted);
-  await Promise.all(
-    facts.map((fact) =>
-      subject.fulfillInformation({
-        selection: { subjectIds: [fact.id] },
-        requirement: informationRequirementForAssetView(fact),
-      }),
-    ),
-  );
+  const facts = currentCatalogue.items;
   return {
     configured: true,
     assets: await projectCatalogueAssetsForCurrentUser(facts),
@@ -1547,7 +1948,7 @@ export async function catalogueSnapshot(
       .map(deliveryExecution)
       .filter((item): item is NonNullable<typeof item> => item !== undefined),
     attention: attention.items.map(deliveryAttention),
-    automation: automation.map(toAutomationView),
+    automation: await toAutomationViews(subject, automation),
     observedRoots,
     pagination: {
       currentCatalogue:
@@ -1567,6 +1968,7 @@ export async function catalogueSnapshot(
 }
 
 export async function startRefresh(input: {
+  readonly assetLibraryId?: string;
   readonly observedRootId?: string;
   readonly relativeScope?: string;
   readonly assetId?: string;
@@ -1603,6 +2005,10 @@ export async function startSourceEnrichment(value: unknown) {
       sourceIdentity,
       sourceInput: input.sourceInput as Readonly<Record<string, string>>,
       informationRequirement: generalAssetViewInformationRequirement,
+      ...(typeof input.assetLibraryId === "string" &&
+      input.assetLibraryId.length > 0
+        ? { assetLibraryId: input.assetLibraryId }
+        : {}),
       onExecutionStarted(execution) {
         control.executionStarted(execution.id);
       },
@@ -1629,6 +2035,27 @@ export async function inspectSourceEnrichment(executionId: string) {
     sourceEnrichments: inspection.sourceEnrichments,
     sourceAssociations: inspection.accepted?.sourceAssociations ?? [],
   };
+}
+
+/** 明确"再次获取"一个已终止失败的来源补充项：新执行、新 ID，关联前次失败项。 */
+export async function retrySourceEnrichment(value: unknown) {
+  const input = settingsObject(value);
+  const executionId = settingsText(input, "executionId");
+  const subjectId = settingsText(input, "subjectId");
+  const sourceIdentity = settingsText(input, "sourceIdentity");
+  return await executions().invoke(async (control) => {
+    await application().retrySourceEnrichment({
+      executionId,
+      subjectId,
+      sourceIdentity,
+      onExecutionStarted(execution) {
+        control.executionStarted(execution.id);
+      },
+      onHostCheckpoint() {
+        control.safeCheckpoint();
+      },
+    });
+  });
 }
 
 export async function startSourceAssociationDecision(value: unknown) {
@@ -1698,6 +2125,19 @@ export async function inspectCorrectionSubject(assetId: string) {
   return await application().inspectCorrectionSubject(assetId);
 }
 
+/** 只读核对所选内容真正导致资料冲突的候选值；主体不存在返回 undefined。 */
+export async function inspectSubjectConflictEvidence(assetId: string) {
+  return await application().inspectSubjectConflictEvidence(assetId);
+}
+
+/** 按稳定执行 ID 读取单条刷新记录；目标不存在返回 undefined，绝不退回其它执行。 */
+export async function inspectExecution(
+  executionId: string,
+): Promise<ExecutionViewModel | undefined> {
+  if (productApplication?.configured !== true) return undefined;
+  return deliveryExecution(await application().inspect(executionId));
+}
+
 export async function selectSourceAssociationDecisionCandidate(
   executionId: string,
   value: unknown,
@@ -1754,6 +2194,106 @@ export async function startRecognitionRetraction(value: unknown) {
       },
     });
   });
+}
+
+export async function startRecognitionScopeAmendment(value: unknown) {
+  const input = settingsObject(value);
+  const allowed = new Set([
+    "sourceExecutionId",
+    "workItemKey",
+    "decisionId",
+    "proposedBy",
+    "reason",
+  ]);
+  if (Object.keys(input).some((key) => !allowed.has(key)))
+    throw new Error("范围决定请求包含不支持的字段");
+  return await executions().invoke(async (control) => {
+    await application().prepareRecognitionScopeAmendment({
+      sourceExecutionId: settingsText(input, "sourceExecutionId"),
+      workItemKey: settingsText(input, "workItemKey"),
+      proposedBy: settingsText(input, "proposedBy"),
+      reason: settingsText(input, "reason"),
+      ...(input.decisionId === undefined
+        ? {}
+        : { decisionId: settingsText(input, "decisionId") }),
+      onExecutionStarted(execution) {
+        control.executionStarted(execution.id);
+      },
+    });
+  });
+}
+
+// 封面图复用既有授权地址；观察文件走观察图片路由，库内图片收窄为摘要地址。
+function coverImageUrl(
+  entityId: string,
+  candidate: {
+    kind: "observed" | "managed";
+    locationId: string;
+    address: string;
+  },
+): string | undefined {
+  return candidate.kind === "observed"
+    ? `/api/observed-artwork/${encodeURIComponent(entityId)}/${encodeURIComponent(candidate.locationId)}`
+    : deliveryCover(candidate.address);
+}
+
+function coverImageTitle(address: string): string {
+  const name = (address.split(/[\\/]/).at(-1) ?? "").trim();
+  return /^[0-9a-f]{32,}(?:\.(?:jpe?g|png|webp|avif|gif))?$/iu.test(name) ||
+    name === ""
+    ? "封面候选"
+    : name;
+}
+
+export async function coverChoice(subjectId: string): Promise<CoverChoiceView> {
+  const inspection = await application().inspectArtifactRoleCovers({
+    entityId: subjectId,
+  });
+  const candidates = inspection.candidates.map((candidate) => {
+    const imageUrl = coverImageUrl(subjectId, candidate);
+    return {
+      reference: candidate.reference,
+      title: coverImageTitle(candidate.address),
+      ...(imageUrl === undefined ? {} : { imageUrl }),
+    };
+  });
+  const current = candidates.find(
+    (candidate) => candidate.reference === inspection.effectiveReference,
+  );
+  const manualIntent = inspection.decision?.kind === "select";
+  const manualReference = inspection.decision?.reference;
+  return {
+    candidates,
+    ...(current?.imageUrl === undefined
+      ? {}
+      : { currentImageUrl: current.imageUrl }),
+    ...(manualIntent && manualReference !== undefined
+      ? { manualReference }
+      : {}),
+    // 失效的人工意图仍然只是用户的决定，撤回必须可达，不能只留一句提示。
+    ...(manualIntent && manualReference === undefined
+      ? { manualStale: true }
+      : {}),
+    problems: inspection.problems,
+  };
+}
+
+export async function startCoverDecision(value: unknown): Promise<{
+  readonly previewId: string;
+  readonly status: string;
+}> {
+  const input = settingsObject(value);
+  const allowed = new Set(["entityId", "initiatedBy", "candidateReference"]);
+  if (Object.keys(input).some((key) => !allowed.has(key)))
+    throw new Error("封面选择请求包含不支持的字段");
+  const preview = await application().prepareArtifactRoleDecision({
+    entityId: settingsText(input, "entityId"),
+    initiatedBy: settingsText(input, "initiatedBy"),
+    ...(input.candidateReference === undefined
+      ? {}
+      : { candidateReference: settingsText(input, "candidateReference") }),
+  });
+  return { previewId: preview.id, status: preview.status };
 }
 
 export async function startObservedMaterialAssociation(value: unknown) {
@@ -1825,18 +2365,98 @@ export async function confirmObservedMaterialAssociation(value: unknown) {
   });
 }
 
-export async function createObservedRoot(input: {
-  readonly displayName: string;
-  readonly containerPath: string;
-  readonly symlinkMode:
-    | "do-not-follow"
-    | "follow-file-links"
-    | "follow-file-and-directory-links";
-}) {
-  return await application().observedRootRegistrations.create({
-    ...input,
-    readOnly: true,
-    allowedTargetRootIds: [],
+/**
+ * 一次库扫描对用户的呈现：每个配置目录都有友好名称、状态、结果与计数，被覆盖的目录
+ * 只看到属于自己范围的工作项。
+ */
+function libraryScanView(inspection: LibraryScanInspectionDetail): {
+  readonly id: string;
+  readonly status: LibraryScanInspectionDetail["status"];
+  readonly outcome?: LibraryScanInspectionDetail["outcome"];
+  readonly cancellationRequested: boolean;
+  readonly directories: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly stage: LibraryScanInspectionDetail["directories"][number]["stage"];
+    readonly outcome?: LibraryScanInspectionDetail["directories"][number]["outcome"];
+    readonly reason?: string;
+    readonly workItemCount: number;
+    readonly unresolvedCount: number;
+    readonly failedCount: number;
+    readonly files: readonly {
+      readonly relativePaths: readonly string[];
+      readonly outcome?: string;
+    }[];
+  }[];
+} {
+  return {
+    id: inspection.parentExecutionId,
+    status: inspection.status,
+    ...(inspection.outcome === undefined
+      ? {}
+      : { outcome: inspection.outcome }),
+    cancellationRequested: inspection.cancellationRequested !== undefined,
+    directories: inspection.directories.map((directory) => ({
+      id: directory.directoryKey,
+      name: directory.displayName,
+      stage: directory.stage,
+      ...(directory.outcome === undefined
+        ? {}
+        : { outcome: directory.outcome }),
+      ...(directory.reason === undefined ? {} : { reason: directory.reason }),
+      workItemCount: directory.workItemCount,
+      unresolvedCount: directory.unresolvedCount,
+      failedCount: directory.failedCount,
+      files: directory.workItems.map((item) => ({
+        relativePaths: item.relativePaths,
+        ...(item.outcome === undefined ? {} : { outcome: item.outcome }),
+      })),
+    })),
+  };
+}
+
+export async function inspectAssetLibraryScan(parentExecutionId: string) {
+  const inspection =
+    await application().inspectAssetLibraryScan(parentExecutionId);
+  if (inspection === undefined) throw new Error("未找到刷新记录");
+  return libraryScanView(inspection);
+}
+
+export async function cancelAssetLibraryScan(
+  parentExecutionId: string,
+  value: unknown,
+) {
+  const input = settingsObject(value);
+  if (
+    Object.keys(input).some((key) => key !== "requestedBy" && key !== "reason")
+  )
+    throw new Error("取消库扫描请求包含不支持的字段");
+  return libraryScanView(
+    await application().cancelAssetLibraryScan({
+      parentExecutionId,
+      requestedBy: settingsText(input, "requestedBy"),
+      requestedAt: new Date().toISOString(),
+      ...(input.reason === undefined
+        ? {}
+        : { reason: settingsText(input, "reason") }),
+    }),
+  );
+}
+
+/** 未形成决定的观察材料：给出可核对的归属，用户由此进入既有人工整理入口。 */
+export async function unrecognizedLibraryScanObservations(
+  query: Record<string, string | undefined>,
+) {
+  const limit = query.limit === undefined ? undefined : Number(query.limit);
+  return await application().unrecognizedLibraryScanObservations({
+    ...(query.scanId === undefined ? {} : { parentExecutionId: query.scanId }),
+    ...(query.assetLibraryId === undefined
+      ? {}
+      : { assetLibraryId: query.assetLibraryId }),
+    ...(query.directoryId === undefined
+      ? {}
+      : { directoryKey: query.directoryId }),
+    ...(limit === undefined ? {} : { limit }),
   });
 }
 
@@ -1845,6 +2465,33 @@ export async function startRefreshWith(
   input: Parameters<typeof startRefresh>[0],
   host: Pick<ExecutionHost, "invoke">,
 ): Promise<{ readonly id: string }> {
+  if (input.assetLibraryId !== undefined) {
+    if (
+      typeof input.assetLibraryId !== "string" ||
+      input.assetLibraryId.length === 0 ||
+      input.observedRootId !== undefined ||
+      input.assetId !== undefined ||
+      input.target !== undefined ||
+      input.operation !== undefined ||
+      input.directedSourceInput !== undefined
+    )
+      throw new Error("资产库扫描范围无效");
+    return await host.invoke(async (control) => {
+      // 父执行先耐久落下并是本次调用唯一公布的刷新记录；全部目录与子执行的完整结果
+      // 由父检查展开，交付层不再只看到第一个目录。
+      await subject.scanAssetLibrary({
+        libraryId: input.assetLibraryId!,
+        acceptTrusted: input.acceptTrusted ?? true,
+        informationRequirement: generalAssetViewInformationRequirement,
+        onExecutionStarted(execution) {
+          control.executionStarted(execution.id);
+        },
+        onHostCheckpoint() {
+          control.safeCheckpoint();
+        },
+      });
+    });
+  }
   const subjectId = input.target?.subjectId ?? input.assetId;
   if (
     input.target !== undefined &&
@@ -1979,11 +2626,14 @@ export async function startAssetRescrape(
   host: Pick<ExecutionHost, "invoke">,
   informationRequirement: InformationRequirement = informationRequirementForAssetView(
     {
-      sourceAssociation: {
-        sourceIdentity: input.sourceIdentity,
-        nativeAddress: input.sourceAddress,
-      },
-      metadata: [],
+      id: input.assetId,
+      sourceAssociations: [
+        {
+          sourceIdentity: input.sourceIdentity,
+          nativeAddress: input.sourceAddress,
+        },
+      ],
+      descriptions: [],
     },
   ),
 ): Promise<{ readonly id: string }> {
@@ -2033,6 +2683,7 @@ export async function startAssetMetadataRefresh(
 }
 
 export async function updateAutomation(input: {
+  readonly assetLibraryId?: string;
   readonly action: "enable" | "disable" | "scan-now";
   readonly intentId?: string;
   readonly observedRootId?: string;
@@ -2054,8 +2705,10 @@ export async function updateAutomation(input: {
 > {
   const subject = application();
   if (input.action === "enable") {
+    if (!input.assetLibraryId) throw new Error("请先选择要自动刷新的资产库");
     if (!input.observedRootId || !input.intervalMilliseconds)
       throw new Error("请填写刷新范围和间隔");
+    const assetLibraryId = input.assetLibraryId;
     const observedRootId = input.observedRootId;
     const intervalMilliseconds = input.intervalMilliseconds;
     let announceIntent!: (
@@ -2068,6 +2721,7 @@ export async function updateAutomation(input: {
     });
     const initialExecution = executions().invoke(async (control) => {
       await subject.enableAutomation({
+        assetLibraryId,
         observedRootId,
         relativeScope: input.relativeScope ?? ".",
         intervalMilliseconds,
@@ -2086,7 +2740,10 @@ export async function updateAutomation(input: {
       initialExecution,
     ]);
     return {
-      intent: toAutomationView(intent),
+      intent: await toAutomationView(
+        intent,
+        createAutomationNameLookup(subject),
+      ),
       initialStatus: "started",
       initialExecution: execution,
     };

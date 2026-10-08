@@ -457,12 +457,45 @@ onBeforeUnmount(() => {
               @select="select" /></ScrollArea></CardContent
       ></Card>
       <div class="grid content-start gap-4">
+        <Card v-if="asset.dlsite.genres.length">
+          <CardHeader class="px-4 py-3"
+            ><CardTitle class="text-base">标签</CardTitle></CardHeader
+          >
+          <CardContent class="flex flex-wrap gap-1.5 px-4 pb-4">
+            <Badge
+              v-for="genre in asset.dlsite.genres"
+              :key="`${genre.vocabulary}:${genre.termId}:${genre.label}`"
+              variant="secondary"
+              >{{ genre.label }}</Badge
+            >
+          </CardContent>
+        </Card>
         <Card v-if="asset.dlsite.introduction"
           ><CardHeader class="px-4 py-3"
             ><CardTitle class="text-base">作品简介</CardTitle></CardHeader
           ><CardContent
             class="line-clamp-[14] px-4 pb-4 text-sm leading-6 whitespace-pre-wrap"
             >{{ asset.dlsite.introduction }}</CardContent
+          ></Card
+        >
+        <Card v-if="asset.dlsite.series.length"
+          ><CardHeader class="px-4 py-3"
+            ><CardTitle class="text-base">系列</CardTitle></CardHeader
+          ><CardContent class="px-4 pb-4"
+            ><ul class="grid gap-2 text-sm">
+              <li
+                v-for="entry in asset.dlsite.series"
+                :key="entry.relationshipId"
+                class="flex items-baseline justify-between gap-3"
+              >
+                <span>{{ entry.name }}</span>
+                <span
+                  v-if="entry.position"
+                  class="shrink-0 text-muted-foreground"
+                  >{{ entry.position }}</span
+                >
+              </li>
+            </ul></CardContent
           ></Card
         >
         <Card v-if="asset.dlsite.credits.length"

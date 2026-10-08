@@ -59,7 +59,13 @@ const journey: CliJourney = {
     return [
       {
         name: "register unknown directory root",
-        args: ["root-create", "未识别测试目录", source],
+        args: [
+          "library-create",
+          "未识别测试目录",
+          "--directory",
+          source,
+          "--json",
+        ],
         env: { DIGITAL_PRODUCT_DATA: data },
         haltOnFailure: true,
       },

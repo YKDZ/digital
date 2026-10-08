@@ -1,13 +1,17 @@
 <script setup lang="ts">
 import { usePageContext } from "vike-vue/usePageContext";
+import { computed } from "vue";
 
 import AssetDetail from "#/components/formal/AssetDetail.vue";
 import { Button } from "#/components/ui/button";
 import { useCatalogueSubject } from "#/composables/use-catalogue-subject";
+import { libraryContext } from "#/lib/library";
 
 const pageContext = usePageContext();
+const library = computed(() => libraryContext(pageContext.urlParsed.search));
 const { selected, loading, error, reload } = useCatalogueSubject(
   () => pageContext.routeParams.id ?? "",
+  () => library.value,
 );
 </script>
 
@@ -22,6 +26,7 @@ const { selected, loading, error, reload } = useCatalogueSubject(
     <AssetDetail
       :asset="selected.asset"
       :selected-episode-id="selected.selectedEpisodeId"
+      :library="library"
       @refreshed="reload"
     />
   </section>

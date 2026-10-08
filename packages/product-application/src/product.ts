@@ -1,6 +1,7 @@
 import type {
   AssetRefreshAutomationWorkflow,
   AssetRefreshWorkflow,
+  AssetLibraries,
   AutomationClock,
   AutomationHost,
   AutomationInformationRequirementResolver,
@@ -34,6 +35,7 @@ import type { ProductSourceConnections } from "./source-connections.ts";
 /** 交付层可以使用的产品工作流；其中不包含任何持久化或来源 Adapter。 */
 export type ProductAssetRefresh = AssetRefreshWorkflow &
   AssetRefreshAutomationWorkflow & {
+    readonly assetLibraries: AssetLibraries;
     readonly observedRootRegistrations: ObservedRootRegistrations;
     readonly sourceConnections: ProductSourceConnections;
     close(): Promise<void>;
@@ -72,7 +74,79 @@ export type ProductManagedArtifactReference = {
 };
 
 /** 交付层只接收已由组合根创建的操作，不取得其资源释放权。 */
-export type ProductWorkflowOperations = Omit<ProductAssetRefresh, "close">;
+export type ProductWorkflowOperations = Pick<
+  AssetRefreshWorkflow,
+  | "fulfillInformation"
+  | "listCurrentCataloguePage"
+  | "listCurrentCatalogueIndex"
+  | "inspectCurrentCatalogueSubject"
+  | "inspectCurrentCatalogueEntity"
+  | "inspectSubjectConflictEvidence"
+  | "inspectRetryableSourceEnrichments"
+  | "assetLibraryIdsOwningSubject"
+  | "listCurrentAttentionPage"
+  | "listWorkflowHistoryPage"
+  | "inspect"
+  | "inspectLocalIntake"
+  | "inspectLocalContent"
+  | "prepareLocalContent"
+  | "confirmLocalContent"
+  | "prepareObservedMaterialAssociation"
+  | "inspectObservedMaterialAssociation"
+  | "confirmObservedMaterialAssociation"
+  | "scanAssetLibrary"
+  | "inspectAssetLibraryScan"
+  | "cancelAssetLibraryScan"
+  | "unrecognizedLibraryScanObservations"
+  | "scanObservedScope"
+  | "rescrapeObservedScope"
+  | "rescrapeCurrentObservedScope"
+  | "directedRecognitionSourceInputObservedScope"
+  | "inspectRefreshTarget"
+  | "relationshipTypeDefinitions"
+  | "createLocalRelatedEntity"
+  | "findRelatedEntities"
+  | "previewEntityIdentityMerge"
+  | "applyEntityIdentityMerge"
+  | "undoEntityIdentityMerge"
+  | "previewRelationshipChange"
+  | "applyRelationshipChange"
+  | "resolveEntityMentionManually"
+  | "inspectEntityMentionResolution"
+  | "retractEntityMentionResolution"
+  | "inspectCorrectionSubject"
+  | "sourceInputRequirements"
+  | "prepareConflictedEstablishment"
+  | "prepareReplacement"
+  | "prepareRetraction"
+  | "prepareRecognitionRetraction"
+  | "prepareRecognitionScopeAmendment"
+  | "inspectArtifactRoleCovers"
+  | "prepareArtifactRoleDecision"
+  | "inspectSourceAssociationDecision"
+  | "selectSourceAssociationCandidate"
+  | "retrySourceAssociationDecision"
+  | "enrichSource"
+  | "retrySourceEnrichment"
+  | "refreshMetadata"
+  | "cancel"
+  | "inspectRawSourceRecord"
+  | "reviewSourceRefreshChangeSet"
+  | "cancelSourceRefreshRun"
+  | "inspectSourceRefreshRun"
+  | "inspectChangeImpactPreview"
+  | "applyChangeImpactPreview"
+  | "rejectChangeImpactPreview"
+  | "resume"
+> &
+  Pick<
+    AssetRefreshAutomationWorkflow,
+    | "enableAutomation"
+    | "disableAutomation"
+    | "listAutomationIntents"
+    | "triggerAutomation"
+  > &
+  Pick<ProductAssetRefresh, "sourceConnections" | "assetLibraries">;
 
 export type ProductAutomationOperations = Omit<ProductAutomationHost, "close">;
 
@@ -130,6 +204,7 @@ export type ProductApplication = {
   >;
   confirmObservedFileRevision(input: {
     readonly observedFileSelectionId: ObservedFileSelectionId;
+    readonly assetLibraryId?: string;
   }): Promise<{ readonly artifactRevisionId: string }>;
 };
 
@@ -138,6 +213,7 @@ export function artifactDownloadOperations(
   confirmation: ObservedFileConfirmationQueries & {
     confirmObservedFileSelection(
       selectionId: ObservedFileSelectionId,
+      assetLibraryId?: string,
     ): Promise<{
       readonly artifactRevisionId: string;
     }>;
@@ -176,6 +252,7 @@ export function artifactDownloadOperations(
     async confirmObservedFileRevision(input) {
       return await confirmation.confirmObservedFileSelection(
         input.observedFileSelectionId,
+        input.assetLibraryId,
       );
     },
   };

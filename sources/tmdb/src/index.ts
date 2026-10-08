@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   declareCapability,
   prerequisiteUnavailableFailure,
+  type AssetRefreshWorkPlan,
   type DirectoryInterpreter,
   type FilesystemPackageSnapshot,
   type Recognizer,
@@ -34,7 +35,7 @@ const maximumSearchPages = 500;
 
 const directoryCapability = declareCapability({
   identity: "tmdb.strict-film-directory",
-  implementationVersion: "1",
+  implementationVersion: "2",
   kind: "directory-interpreter",
   contractVersion: "1",
   interpretationContractVersions: ["1"],
@@ -67,7 +68,7 @@ const interpreterCapability = declareCapability({
 });
 const recognizerCapability = declareCapability({
   identity: "tmdb.strict-film-recognizer",
-  implementationVersion: "1",
+  implementationVersion: "2",
   kind: "recognizer",
   contractVersion: "1",
   interpretationContractVersions: ["1"],
@@ -91,7 +92,7 @@ export const trustedTmdbStrictFilmRule = {
   capabilityId: recognizerCapability.capabilityId,
   capabilityVersion: recognizerCapability.capabilityVersion,
   ruleId: "unique-exact-title-year-official-record",
-  ruleVersion: "1",
+  ruleVersion: "2",
 } as const;
 export const trustedTmdbDirectedFilmRule = {
   capabilityId: recognizerCapability.capabilityId,
@@ -220,27 +221,59 @@ export class TmdbStrictFilmDirectoryInterpreter implements DirectoryInterpreter 
 
   interpret(
     snapshot: FilesystemPackageSnapshot,
-  ): readonly RecognitionEvidence[] {
-    const basename = snapshot.root.split(/[\\/]/u).at(-1) ?? "";
-    const match = /^(\S(?:.*\S)?) \((\d{4})\)$/u.exec(basename);
-    if (match === null) return [];
-    if (
-      snapshot.directories?.some((directory) =>
-        /^Season [1-9]\d*$/u.test(directory.relativePath),
-      ) === true
-    )
-      return [];
-    const title = match[1]!;
-    const year = match[2]!;
-    return [
-      {
-        kind: "directory-convention",
-        sourceIdentity: "tmdb",
-        sourceAddress: searchAddress(title, year),
-        explanation: "TMDB 严格电影目录规则匹配",
-        producer: this.capability,
-      },
-    ];
+  ): AssetRefreshWorkPlan | readonly RecognitionEvidence[] {
+    const directories = new Set([
+      ".",
+      ...(snapshot.directories ?? []).map(
+        (directory) => directory.relativePath,
+      ),
+    ]);
+    for (const file of snapshot.files) {
+      const components = file.relativePath.split("/").slice(0, -1);
+      for (let depth = 1; depth <= components.length; depth++)
+        directories.add(components.slice(0, depth).join("/"));
+    }
+    const rootName = snapshot.root.split(/[\\/]/u).filter(Boolean).at(-1) ?? "";
+    const workItems = [...directories].toSorted().flatMap((relativeRoot) => {
+      const basename =
+        relativeRoot === "." ? rootName : relativeRoot.split("/").at(-1)!;
+      const match = /^(\S(?:.*\S)?) \((\d{4})\)$/u.exec(basename);
+      if (match === null) return [];
+      const prefix = relativeRoot === "." ? "" : `${relativeRoot}/`;
+      if (
+        [...directories].some(
+          (directory) =>
+            directory.startsWith(prefix) &&
+            /^Season [1-9]\d*$/u.test(directory.slice(prefix.length)),
+        )
+      )
+        return [];
+      const relativePaths = snapshot.files
+        .filter((file) => file.relativePath.startsWith(prefix))
+        .map((file) => file.relativePath)
+        .toSorted();
+      if (relativePaths.length === 0) return [];
+      return [
+        {
+          key: `tmdb:film-directory:${relativeRoot}`,
+          relativePaths,
+          materialBoundary: {
+            kind: "directory" as const,
+            relativePath: relativeRoot,
+          },
+          evidence: [
+            {
+              kind: "directory-convention",
+              sourceIdentity: "tmdb",
+              sourceAddress: searchAddress(match[1]!, match[2]!),
+              explanation: "TMDB 严格电影目录规则匹配",
+              producer: this.capability,
+            },
+          ],
+        },
+      ];
+    });
+    return workItems.length === 0 ? [] : { workItems };
   }
 }
 

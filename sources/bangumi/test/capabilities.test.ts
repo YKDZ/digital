@@ -73,7 +73,7 @@ describe("Bangumi OAuth authorization-code protocol", () => {
 });
 
 describe("Bangumi episodic directory convention", () => {
-  it("plans one ordinary observed episode per boundary and rejects Season 0", () => {
+  it("plans one discrete boundary per episode and rejects Season 0 and wrong Chinese numbers", () => {
     const interpreter = new BangumiEpisodicDirectoryInterpreter();
     const plan = interpreter.interpret(
       snapshot([
@@ -84,15 +84,27 @@ describe("Bangumi episodic directory convention", () => {
         "Season 1/葬送的芙莉莲 - S01E03 - 第 2 集.mkv",
       ]),
     );
+    // S01E03 标第 2 集是错误中文集号，被拒绝而不退化成技术标签；`- NCOP` 是有效横线技术标签。
     expect(plan.workItems.map((item) => item.key)).toEqual([
-      "bangumi:season-1:episode-1",
-      "bangumi:season-2:episode-1",
+      'bangumi:episode:[".",1,1]',
+      'bangumi:episode:[".",2,1]',
+      'bangumi:episode:[".",1,2]',
     ]);
-    expect(plan.workItems.flatMap((item) => item.relativePaths)).toEqual([
-      "Season 1/葬送的芙莉莲 - S01E01.mkv",
-      "Season 2/葬送的芙莉莲 - S02E01 - 第 1 集.mkv",
+    expect(plan.workItems.map((item) => item.materialBoundary)).toEqual([
+      {
+        kind: "discrete",
+        relativePaths: ["Season 1/葬送的芙莉莲 - S01E01.mkv"],
+      },
+      {
+        kind: "discrete",
+        relativePaths: ["Season 2/葬送的芙莉莲 - S02E01 - 第 1 集.mkv"],
+      },
+      {
+        kind: "discrete",
+        relativePaths: ["Season 1/葬送的芙莉莲 - S01E02 - NCOP.mkv"],
+      },
     ]);
-    expect(plan.workItems[0]?.evidence[0]?.explanation).toContain("v1");
+    expect(plan.workItems[0]?.evidence[0]?.explanation).toContain("v2");
   });
 
   it("keeps media-manager sidecars outside the episode boundary and identity evidence", () => {
@@ -116,7 +128,7 @@ describe("Bangumi episodic directory convention", () => {
     expect(withSidecars.workItems[0]?.evidence).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          kind: "bangumi.episodic-directory/v1",
+          kind: "bangumi.episodic-directory/v2",
           sourceIdentity: "bangumi",
           sourceAddress:
             "bangumi:directory/%E8%91%AC%E9%80%81%E7%9A%84%E8%8A%99%E8%8E%89%E8%8E%B2/2023/1/1",

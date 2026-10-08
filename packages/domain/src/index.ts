@@ -3,11 +3,18 @@ import type {
   MetadataAssertion,
   MetadataAssertionCandidate,
 } from "./metadata-assertion.ts";
+import {
+  sameRecognitionMaterialBoundaries,
+  validateRecognitionMaterialBoundaries,
+} from "./recognition-material-boundary.ts";
 
 export * from "./effective-metadata.ts";
 export * from "./effective-artifact-association.ts";
+export * from "./artifact-role-decision.ts";
 export * from "./metadata-assertion.ts";
 export * from "./source-refresh-run.ts";
+export * from "./recognition-material-boundary.ts";
+export * from "./library-scan-plan.ts";
 
 /** 开放词汇。角色属于关联，绝不属于产物。 */
 export type ArtifactRole = string;
@@ -302,6 +309,14 @@ export type RecognitionProposalDraft = {
 
 export type RecognitionBasis =
   | {
+      /** 既有决定授权范围内的材料刷新，不重新判断资产身份。 */
+      readonly kind: "accepted-boundary";
+      readonly recognitionDecisionId: string;
+      readonly observationSnapshotId: string;
+      readonly materialReferences: readonly string[];
+      readonly evidence: readonly RecognitionEvidence[];
+    }
+  | {
       readonly kind: "manual-boundary";
       readonly proposedBy: string;
       readonly observationSnapshotId: string;
@@ -329,6 +344,7 @@ export type RecognitionBasis =
 
 export type RecognitionProposal = {
   readonly id: string;
+  readonly boundaries: readonly import("./recognition-material-boundary.ts").RecognitionMaterialBoundary[];
   readonly basis: RecognitionBasis;
   readonly ruleResults: readonly RecognitionRuleResult[];
   /** 本地物化计划与外部来源解释分离。 */
@@ -346,6 +362,8 @@ export type RecognitionProposal = {
 export type ObservedArtifactAssociationCandidate = {
   readonly observedArtifactReference: string;
   readonly role: ArtifactRole;
+  /** 对完整本地材料角色作出明确声明的能力；人工材料关联可省略。 */
+  readonly producer?: CapabilityCoordinate;
 };
 
 export type Entity = {
@@ -710,6 +728,7 @@ export type RecognitionDecision = {
   readonly id: string;
   readonly proposalId: string;
   readonly assetId: string;
+  readonly boundaries: readonly import("./recognition-material-boundary.ts").RecognitionMaterialBoundary[];
   readonly acceptedRuleResults: readonly RecognitionRuleResult[];
 };
 
@@ -868,11 +887,14 @@ export function validateObservedMaterialAssociationSubmission(
     );
   }
   const decision = submission.recognitionDecision;
+  validateRecognitionMaterialBoundaries(decision.boundaries);
   if (
     !decision.id ||
     decision.proposalId !== proposal.id ||
     !decision.assetId ||
-    decision.acceptedRuleResults.length !== 0
+    decision.acceptedRuleResults.length !== 0 ||
+    decision.boundaries.length === 0 ||
+    !sameRecognitionMaterialBoundaries(decision.boundaries, proposal.boundaries)
   )
     throw new Error(
       "Observed material decision must accept the target proposal",
@@ -1122,7 +1144,22 @@ export function validateObservedEntityGraphCandidates(
 export function validateRecognitionProposal(
   proposal: RecognitionProposal,
 ): RecognitionProposal {
+  validateRecognitionMaterialBoundaries(proposal.boundaries);
   validateObservedEntityGraphCandidates(proposal.observedEntityGraphs ?? []);
+  if (proposal.basis.kind === "accepted-boundary") {
+    const basis = proposal.basis;
+    if (
+      !basis.recognitionDecisionId ||
+      !basis.observationSnapshotId ||
+      !basis.materialReferences.length ||
+      basis.materialReferences.some((reference) => !reference) ||
+      new Set(basis.materialReferences).size !==
+        basis.materialReferences.length ||
+      proposal.ruleResults.length !== 0
+    )
+      throw new Error("已确认范围刷新必须引用原决定和明确观察材料");
+    return proposal;
+  }
   if (proposal.basis.kind === "manual-boundary") {
     const basis = proposal.basis;
     if (
@@ -1197,7 +1234,11 @@ export function validateRecognitionProposal(
     ["kind", "producer", "evidence", "artifactRevisions"],
     "Recognition observed basis",
   );
-  validateObservedRecognitionBasis(proposal.basis, proposal.ruleResults);
+  validateObservedRecognitionBasis(
+    proposal.basis,
+    proposal.ruleResults,
+    proposal.boundaries,
+  );
   return proposal;
 }
 
@@ -1223,24 +1264,36 @@ export function recognitionObservedEvidence(
 function validateObservedRecognitionBasis(
   basis: Extract<RecognitionBasis, { readonly kind: "observed-evidence" }>,
   ruleResults: readonly RecognitionRuleResult[],
+  boundaries: readonly import("./recognition-material-boundary.ts").RecognitionMaterialBoundary[],
 ): void {
   if (
     basis.producer.capabilityId.length === 0 ||
     basis.producer.capabilityVersion.length === 0 ||
     basis.producer.contractVersion.length === 0 ||
     basis.evidence.length === 0 ||
-    basis.artifactRevisions.length === 0
+    (basis.artifactRevisions.length === 0 && boundaries.length === 0)
   ) {
     throw new Error(
       "Observed recognition basis requires selected evidence and revisions",
     );
   }
   const producer = canonicalJson(basis.producer);
+  const hasBoundaryDeclaration =
+    boundaries.length > 0 &&
+    basis.evidence.some(
+      (evidence) =>
+        evidence.inspection === undefined &&
+        canonicalJson(evidence.producer) === producer,
+    );
   const revisions = new Map<string, ObservedArtifactRevisionCandidate>();
   for (const revision of basis.artifactRevisions) {
     if (
       revision.observedArtifactReference.length === 0 ||
-      canonicalJson(revision.producer) !== producer ||
+      !revision.producer.capabilityId ||
+      !revision.producer.capabilityVersion ||
+      !revision.producer.contractVersion ||
+      (!hasBoundaryDeclaration &&
+        canonicalJson(revision.producer) !== producer) ||
       revision.blob.digest.length === 0 ||
       revision.blob.mediaType.length === 0 ||
       !Number.isSafeInteger(revision.blob.byteLength) ||
@@ -1261,12 +1314,23 @@ function validateObservedRecognitionBasis(
         ? undefined
         : revisions.get(inspection.observedArtifactReference);
     const key = canonicalJson(evidence);
+    if (selected.has(key))
+      throw new Error("Observed recognition evidence is duplicated");
+    if (inspection === undefined) {
+      if (
+        boundaries.length === 0 ||
+        canonicalJson(evidence.producer) !== producer
+      )
+        throw new Error(
+          "Observed boundary declaration requires its producer and explicit material boundary",
+        );
+      selected.add(key);
+      continue;
+    }
     if (
-      canonicalJson(evidence.producer) !== producer ||
-      inspection === undefined ||
       revision === undefined ||
-      canonicalJson(inspection.revision) !== canonicalJson(revision.blob) ||
-      selected.has(key)
+      canonicalJson(evidence.producer) !== canonicalJson(revision.producer) ||
+      canonicalJson(inspection.revision) !== canonicalJson(revision.blob)
     ) {
       throw new Error(
         "Observed recognition evidence is invalid or cross-input",
@@ -1288,6 +1352,27 @@ function validateObservedRecognitionBasis(
     }
     selected.add(key);
   }
+  if (
+    !basis.evidence.some(
+      (evidence) => canonicalJson(evidence.producer) === producer,
+    )
+  )
+    throw new Error(
+      "Observed recognition basis lacks evidence from its declaring producer",
+    );
+  if (
+    basis.artifactRevisions.some(
+      (revision) =>
+        !basis.evidence.some(
+          (evidence) =>
+            evidence.inspection?.observedArtifactReference ===
+            revision.observedArtifactReference,
+        ),
+    )
+  )
+    throw new Error(
+      "Observed recognition revision lacks selected inspection evidence",
+    );
   const referenced = new Set<string>();
   for (const result of ruleResults) {
     if (result.evidence.length === 0)
@@ -1566,6 +1651,8 @@ export function deriveSourceSlotLifecycleChanges(input: {
 export function validateAcceptedRecognition(
   accepted: AcceptedRecognition,
 ): AcceptedRecognition {
+  if (accepted.recognitionDecision.boundaries.length === 0)
+    throw new Error("新资产准入必须明确其材料范围");
   validateRecognitionFactShape(accepted);
   validateRecognitionIdentityBaseline(accepted);
   return accepted;
@@ -1575,6 +1662,15 @@ function validateRecognitionIdentityBaseline(
   accepted: AcceptedRecognition,
 ): void {
   validateRecognitionProposal(accepted.proposal);
+  if (accepted.proposal.basis.kind === "accepted-boundary")
+    throw new Error("范围材料刷新不能建立新的资产身份");
+  if (
+    !sameRecognitionMaterialBoundaries(
+      accepted.recognitionDecision.boundaries,
+      accepted.proposal.boundaries,
+    )
+  )
+    throw new Error("识别决定必须完整接受提案的材料范围");
   if (accepted.entity.kind !== "digital-asset") {
     throw new Error("Accepted recognition requires a Digital Asset entity");
   }
@@ -1639,9 +1735,30 @@ function validateRecognitionIdentityBaseline(
  */
 export function validateReevaluatedRecognition(input: {
   readonly current: AcceptedRecognition;
+  /**
+   * 建立当前来源身份的不可变决定／提案（沿 supersession 前驱读取）。范围修订把主头推进
+   * 为 manual successor 后，`current` 携带的是新范围头而非来源身份起点；此时身份基线校验
+   * 作用于这份耐久的 identityBaseline，而不是 manual 形状的 `current`。省略时沿用 `current`
+   * （未经历范围修订的正常刷新）。绝不据 observed/manual 提案凭空制造来源关联。
+   */
+  readonly identityBaseline?: AcceptedRecognition | undefined;
   readonly accepted: AcceptedRecognition;
 }): AcceptedRecognition {
-  validateRecognitionIdentityBaseline(input.current);
+  const identityBaseline = input.identityBaseline ?? input.current;
+  if (identityBaseline !== input.current) {
+    if (identityBaseline.entity.id !== input.current.entity.id)
+      throw new Error(
+        "Identity baseline must describe the same Digital Asset as the current range head",
+      );
+    if (
+      canonicalOptionalJson(identityBaseline.recognitionSourceAssociation) !==
+      canonicalOptionalJson(input.current.recognitionSourceAssociation)
+    )
+      throw new Error(
+        "Identity baseline must carry the current retained Source Association",
+      );
+  }
+  validateRecognitionIdentityBaseline(identityBaseline);
   validateRecognitionFactShape(input.accepted);
   if (input.current.entity.id !== input.accepted.entity.id) {
     throw new Error(
@@ -1669,6 +1786,14 @@ export function validateReevaluatedRecognition(input: {
   );
   const currentRecognitionAssociation =
     input.current.recognitionSourceAssociation;
+  if (input.accepted.proposal.basis.kind === "accepted-boundary") {
+    if (
+      input.accepted.proposal.basis.recognitionDecisionId !==
+      input.current.recognitionDecision.id
+    )
+      throw new Error("材料刷新必须引用当前已确认决定");
+    return input.accepted;
+  }
   if (
     (nextInterpretation === undefined) !==
       (currentRecognitionAssociation === undefined) ||
@@ -1688,6 +1813,16 @@ export function validateReevaluatedRecognition(input: {
 
 function validateRecognitionFactShape(accepted: AcceptedRecognition): void {
   validateRecognitionProposal(accepted.proposal);
+  validateRecognitionMaterialBoundaries(
+    accepted.recognitionDecision.boundaries,
+  );
+  if (
+    !sameRecognitionMaterialBoundaries(
+      accepted.recognitionDecision.boundaries,
+      accepted.proposal.boundaries,
+    )
+  )
+    throw new Error("材料刷新不能修改已确认范围");
   const interpretation = recognitionSourceInterpretation(accepted.proposal);
   const interpretationSources = new Set(interpretation?.sourceRecordIds ?? []);
   const hasKnownProvenance = (sourceRecordIds: readonly string[]): boolean =>

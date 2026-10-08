@@ -29,6 +29,7 @@ export class ComposedArtifactLocationByteSources implements ArtifactLocationByte
     readonly blobDigest: string;
     readonly purpose: "confirmation" | "access";
     readonly operation: OperationLease;
+    readonly assetLibraryId?: string;
   }) {
     if (input.candidate.kind === "managed") {
       const reference = this.managedStore.reference(input.candidate.address);
@@ -44,16 +45,35 @@ export class ComposedArtifactLocationByteSources implements ArtifactLocationByte
       };
     }
 
-    const root = await this.observedRootFor(input.candidate.address);
+    // 观察位置读取一律沿该库自己的活动目录授权选根。省略库语境时不得回退到全局活动根，
+    // 也不能在共享同一物理根的另一库仍 active 时借其续读或从数组取首项——被移除的库因此
+    // 不能借保留物理根的库重新确认或读取历史位置。managed 分支已在上面沿自身权威返回。
+    if (input.assetLibraryId === undefined) return undefined;
+    const activeGrants = (
+      await this.observedRoots.libraryDirectoryGrants(input.assetLibraryId)
+    )
+      .filter(
+        (grant) => grant.status === "active" && !grant.awaitingObservation,
+      )
+      .map((grant) => [grant.observedRootId, grant.authorityVersion] as const);
+    const grantedRootVersions = new Map(activeGrants);
+    const root = await this.observedRootFor(
+      input.candidate.address,
+      new Set(activeGrants.map(([rootId]) => rootId)),
+    );
     if (root === undefined) return undefined;
+    // 本库对该根的活动授权代次即租约与最终提交共用的失效坐标；来自本库活动 grant，必然存在。
+    const directoryAuthorityVersion = grantedRootVersions.get(root.id)!;
     const relativePath = path.relative(
       root.containerPath,
       input.candidate.address,
     );
-    const source = await this.observedRoots.openActiveByteSource({
+    const opened = await this.observedRoots.openActiveByteSource({
       registrationId: root.id,
       relativePath,
+      assetLibraryId: input.assetLibraryId,
     });
+    const source = opened.source;
     try {
       if (
         input.purpose === "confirmation" &&
@@ -65,6 +85,8 @@ export class ComposedArtifactLocationByteSources implements ArtifactLocationByte
       const observedBinding = input.operation.bindObservedRoot({
         registrationId: root.id,
         registrationVersion: root.configVersion,
+        assetLibraryId: input.assetLibraryId,
+        directoryAuthorityVersion,
       });
       return {
         source,
@@ -73,6 +95,8 @@ export class ComposedArtifactLocationByteSources implements ArtifactLocationByte
         observedAuthority: {
           registrationId: root.id,
           registrationVersion: root.configVersion,
+          assetLibraryId: input.assetLibraryId,
+          directoryAuthorityVersion,
         },
       };
     } catch (error) {
@@ -83,9 +107,11 @@ export class ComposedArtifactLocationByteSources implements ArtifactLocationByte
 
   private async observedRootFor(
     address: string,
+    grantedRootIds: ReadonlySet<string>,
   ): Promise<ObservedRootRegistration | undefined> {
     const matches = (await this.observedRoots.list())
       .filter((root) => root.status === "active")
+      .filter((root) => grantedRootIds.has(root.id))
       .filter((root) => {
         const relative = path.relative(root.containerPath, address);
         return (

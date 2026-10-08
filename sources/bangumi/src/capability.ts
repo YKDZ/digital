@@ -30,7 +30,7 @@ const apiOrigin = "https://api.bgm.tv/v0";
 
 const directoryCapability = declareCapability({
   identity: "bangumi.episodic-directory",
-  implementationVersion: "1",
+  implementationVersion: "2",
   kind: "directory-interpreter",
   contractVersion: "1",
   interpretationContractVersions: ["1"],
@@ -59,7 +59,7 @@ const interpreterCapability = declareCapability({
 });
 const recognizerCapability = declareCapability({
   identity: "bangumi.episodic-recognizer",
-  implementationVersion: "1",
+  implementationVersion: "2",
   kind: "recognizer",
   contractVersion: "1",
   interpretationContractVersions: ["1"],
@@ -77,11 +77,11 @@ export const trustedBangumiEpisodicRule = {
   capabilityId: recognizerCapability.capabilityId,
   capabilityVersion: recognizerCapability.capabilityVersion,
   ruleId: "title-year-season-ordinary-episode",
-  ruleVersion: "1",
+  ruleVersion: "2",
 } as const;
 
 type EpisodeEvidence = RecognitionEvidence & {
-  readonly kind: "bangumi.episodic-directory/v1";
+  readonly kind: "bangumi.episodic-directory/v2";
   readonly sourceIdentity: "bangumi";
   readonly sourceAddress: string;
 };
@@ -95,25 +95,37 @@ export class BangumiEpisodicDirectoryInterpreter implements DirectoryInterpreter
   interpret(
     snapshot: FilesystemPackageSnapshot,
   ): AssetRefreshWorkPlan | readonly RecognitionEvidence[] {
-    const root = /^(.+?) \((\d{4})\)$/u.exec(baseName(snapshot.root));
-    // 空证据列表表示该约定并不适用。显式空计划在应用边界属于格式错误，
-    // 因为它声称已经选择资产边界，却没有选中任何资产。
-    if (root === null) return [];
-
-    const title = root[1]!;
-    const year = root[2]!;
-    const workItems = snapshot.files.flatMap((file) => {
+    const groups = new Map<
+      string,
+      {
+        readonly evidence: EpisodeEvidence;
+        readonly videoStems: Set<string>;
+        readonly relativePaths: string[];
+      }
+    >();
+    for (const file of snapshot.files) {
+      const components = file.relativePath.split("/");
+      const filename = components.at(-1)!;
+      const directories = components.slice(0, -1);
+      const seasonDirectory = /^Season ([1-9]\d*)$/u.exec(
+        directories.at(-1) ?? "",
+      );
+      if (seasonDirectory === null) continue;
+      const relativeRoot = directories.slice(0, -1).join("/") || ".";
+      const root = /^(.+?) \((\d{4})\)$/u.exec(
+        directories.at(-2) ?? baseName(snapshot.root),
+      );
+      if (root === null) continue;
+      const title = root[1]!;
+      const year = root[2]!;
       const entry =
-        /^Season ([1-9]\d*)\/(.+?) - S(\d{2})E(\d{2})(?: - 第 (\d+) 集)?(\.(?:mkv|mp4))$/iu.exec(
-          file.relativePath,
-        );
-      if (entry === null) return [];
-      const seasonText = entry[1]!;
-      const observedTitle = entry[2]!;
-      const markerSeason = entry[3]!;
-      const episodeText = entry[4]!;
-      const displayedEpisode = entry[5];
-      const season = Number(seasonText);
+        /^(.+?) - S(\d{2})E(\d{2})(?: - (.+))?\.(?:mkv|mp4)$/iu.exec(filename);
+      if (entry === null) continue;
+      const observedTitle = entry[1]!;
+      const markerSeason = entry[2]!;
+      const episodeText = entry[3]!;
+      const suffix = entry[4];
+      const season = Number(seasonDirectory[1]);
       const marker = Number(markerSeason);
       const episode = Number(episodeText);
 
@@ -121,30 +133,83 @@ export class BangumiEpisodicDirectoryInterpreter implements DirectoryInterpreter
         season < 1 ||
         marker !== season ||
         episode < 1 ||
-        (displayedEpisode !== undefined &&
-          Number(displayedEpisode) !== episode) ||
+        !validEpisodeFilenameSuffix(suffix, episode) ||
         normalize(observedTitle) !== normalize(title)
       )
-        return [];
+        continue;
 
       const evidence: EpisodeEvidence = {
-        kind: "bangumi.episodic-directory/v1",
+        kind: "bangumi.episodic-directory/v2",
         sourceIdentity: "bangumi",
         sourceAddress: directoryAddress(title, year, season, episode),
-        explanation: `Bangumi 普通正片目录约定 v1：${title} (${year}) Season ${season} S${markerSeason}E${episodeText}`,
+        explanation: `Bangumi 普通正片目录约定 v2：${title} (${year}) Season ${season} S${markerSeason}E${episodeText}`,
         producer: this.capability,
       };
 
-      return [
-        {
-          key: `bangumi:season-${season}:episode-${episode}`,
-          relativePaths: [file.relativePath],
-          evidence: [evidence],
-        },
-      ];
+      const key = `bangumi:episode:${JSON.stringify([relativeRoot, season, episode])}`;
+      const group = groups.get(key) ?? {
+        evidence,
+        videoStems: new Set<string>(),
+        relativePaths: [],
+      };
+      group.videoStems.add(file.relativePath.replace(/\.[^.]+$/u, ""));
+      group.relativePaths.push(file.relativePath);
+      groups.set(key, group);
+    }
+    const subtitles = snapshot.files
+      .filter((file) => /\.(?:ass|srt|ssa|sup)$/iu.test(file.relativePath))
+      .map((file) => ({
+        relativePath: file.relativePath,
+        stem: file.relativePath.replace(/\.[^.]+$/u, ""),
+      }));
+    const workItems = [...groups].map(([key, group]) => {
+      const relativePaths = [
+        ...group.relativePaths,
+        ...subtitles
+          .filter((subtitle) =>
+            [...group.videoStems].some((videoStem) =>
+              matchesExternalSubtitleStem(videoStem, subtitle.stem),
+            ),
+          )
+          .map((subtitle) => subtitle.relativePath),
+      ].toSorted();
+      return {
+        key,
+        relativePaths,
+        materialBoundary: { kind: "discrete" as const, relativePaths },
+        evidence: [group.evidence],
+      };
     });
     return workItems.length === 0 ? [] : { workItems };
   }
+}
+
+function validEpisodeFilenameSuffix(
+  suffix: string | undefined,
+  episode: number,
+): boolean {
+  if (suffix === undefined) return true;
+  if (suffix.trim().length === 0) return false;
+  if (!suffix.startsWith("第")) return true;
+  const displayed = /^第 (\d+) 集(?: - (\S(?:.*\S)?))?$/u.exec(suffix);
+  return displayed !== null && Number(displayed[1]) === episode;
+}
+
+/** 名称只证明材料可归组，不证明某份字幕与视频的播放时序兼容。 */
+function matchesExternalSubtitleStem(
+  videoStem: string,
+  subtitleStem: string,
+): boolean {
+  if (subtitleStem === videoStem) return true;
+  if (!subtitleStem.startsWith(`${videoStem}.`)) return false;
+  return subtitleStem
+    .slice(videoStem.length + 1)
+    .split(".")
+    .every((token) =>
+      /^(?:\d+|zh|chi|zho|zh-cn|zh-tw|ja|jpn|en|eng|default|forced|foreign|sdh)$/iu.test(
+        token,
+      ),
+    );
 }
 
 export type BangumiOAuthTransport = (
@@ -410,7 +475,7 @@ export class BangumiCollector implements SourceCollector {
     return (
       evidence.sourceIdentity === "bangumi" &&
       evidence.sourceAddress !== undefined &&
-      (evidence.kind === "bangumi.episodic-directory/v1" ||
+      (evidence.kind === "bangumi.episodic-directory/v2" ||
         (evidence.kind === "source-association" &&
           parseEpisodeAddress(evidence.sourceAddress) !== undefined) ||
         evidence.kind === "directed-source-address")
@@ -1037,8 +1102,8 @@ export class BangumiEpisodicRecognizer implements Recognizer {
           ...trustedBangumiEpisodicRule,
           outcome: convention ? "satisfied" : "contradicted",
           explanation: convention
-            ? "Bangumi v1 标题年份、唯一关系路径及普通正片位置均一致"
-            : "Bangumi v1 目录约定不完整",
+            ? "Bangumi v2 标题年份、唯一关系路径及普通正片位置均一致"
+            : "Bangumi v2 目录约定不完整",
           evidence: input.evidence,
         },
       ],
@@ -1118,13 +1183,13 @@ function isEpisodeEvidence(
   value: RecognitionEvidence,
 ): value is EpisodeEvidence {
   return (
-    value.kind === "bangumi.episodic-directory/v1" &&
+    value.kind === "bangumi.episodic-directory/v2" &&
     value.sourceIdentity === "bangumi" &&
     parseDirectoryAddress(value.sourceAddress) !== undefined
   );
 }
 function baseName(value: string): string {
-  return value.split(/[\\/]/u).at(-1) ?? "";
+  return value.split(/[\\/]/u).filter(Boolean).at(-1) ?? "";
 }
 function normalize(value: string): string {
   return value.normalize("NFKC").trim().replaceAll(/\s+/gu, " ");

@@ -13,6 +13,7 @@ import {
 import { Separator } from "#/components/ui/separator";
 
 import AssetActions from "./AssetActions.vue";
+import AssetCoverChoice from "./AssetCoverChoice.vue";
 
 const emit = defineEmits<{ refreshed: [] }>();
 withDefaults(
@@ -149,6 +150,11 @@ function fileSize(byteLength: number | undefined): string | undefined {
             </dl>
           </CardContent>
         </Card>
+        <AssetCoverChoice
+          v-if="showActions"
+          :subject-id="asset.refreshTarget.subjectId"
+          @refreshed="emit('refreshed')"
+        />
         <Card v-if="asset.book.files.length" class="shadow-none">
           <CardHeader>
             <CardTitle class="text-base">文件</CardTitle>

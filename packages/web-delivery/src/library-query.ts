@@ -17,20 +17,9 @@ const collator = new Intl.Collator("zh-CN", { numeric: true });
 /** 先形成完整展示分组，再分页；同一剧集不会因底层主体分页而重复出现。 */
 export function libraryItems(entries: readonly CurrentCatalogueIndexEntry[]) {
   const orders = new Map(
-    entries.map((entry) => [entry.entity.id, entry.additionOrder]),
+    entries.map((entry) => [entry.id, entry.additionOrder]),
   );
-  return projectCatalogue(
-    entries.map((entry) => ({
-      id: entry.entity.id,
-      sourceAssociation: entry.recognitionSourceAssociation,
-      sourceAssociations: entry.sourceAssociations,
-      metadata: entry.effectiveMetadata,
-      currentRelatedEntities: entry.currentRelatedEntities,
-      relationships: entry.relationships,
-      artifactAssociations: [],
-      locations: [],
-    })),
-  ).map((view) => {
+  return projectCatalogue(entries).map((view) => {
     const subjectIds =
       "works" in view
         ? [...new Set(view.episodes.map((episode) => episode.assetId))]
@@ -56,6 +45,7 @@ export function selectLibraryPage(
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
     throw new Error("分页数量无效");
   const query = {
+    assetLibraryId: input.assetLibraryId ?? "",
     text: input.text?.trim().toLocaleLowerCase() ?? "",
     category: input.category ?? "all",
     sort: input.sort ?? "recent",

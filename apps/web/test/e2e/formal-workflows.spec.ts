@@ -30,6 +30,7 @@ function frierenCatalogue(): CatalogueFixture {
     available: true,
     officialPage: `https://bgm.tv/ep/${continuousPosition}`,
     actionTarget: { subjectId: `frieren-${continuousPosition}` },
+    materials: [],
   });
   const firstEpisodes = Array.from({ length: 28 }, (_, index) =>
     episode("frieren-work-1", index + 1, index + 1),

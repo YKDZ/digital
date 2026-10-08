@@ -42,6 +42,9 @@ import { useLibrary } from "#/composables/use-library";
 import type { LibraryAsset } from "#/lib/library";
 
 const {
+  assetLibraryId,
+  libraryName,
+  libraryMissing,
   assets,
   query,
   category,
@@ -120,7 +123,12 @@ async function toggleView() {
   });
 }
 function open(asset: LibraryAsset) {
-  void navigate(asset.href);
+  // 库内浏览保留库语境，详情据此用该库自己的冻结配置补充资料。
+  void navigate(
+    assetLibraryId.value === undefined
+      ? asset.href
+      : `${asset.href}?library=${encodeURIComponent(assetLibraryId.value)}`,
+  );
 }
 function select(asset: LibraryAsset, event?: MouseEvent) {
   if (
@@ -139,7 +147,7 @@ function select(asset: LibraryAsset, event?: MouseEvent) {
   <section ref="content">
     <div class="mb-8 flex items-center gap-3">
       <h1 class="text-[28px] font-semibold tracking-tight sm:text-[32px]">
-        全部内容
+        {{ libraryName }}
       </h1>
       <span
         v-if="total !== undefined && !loading && !error"
@@ -148,7 +156,10 @@ function select(asset: LibraryAsset, event?: MouseEvent) {
       >
     </div>
     <div
-      v-if="loading || error || assets.length || query || category !== 'all'"
+      v-if="
+        !libraryMissing &&
+        (loading || error || assets.length || query || category !== 'all')
+      "
       class="sticky top-0 z-20 mb-8 flex flex-wrap items-center gap-3 bg-background/95 py-3 backdrop-blur"
     >
       <div class="relative w-full sm:max-w-xs sm:flex-1">
@@ -214,7 +225,26 @@ function select(asset: LibraryAsset, event?: MouseEvent) {
       >
     </div>
     <div
-      v-if="error"
+      v-if="libraryMissing"
+      class="flex min-h-[45vh] flex-col items-center justify-center gap-5 text-center"
+      role="alert"
+    >
+      <div class="rounded-2xl bg-stone-100 p-5">
+        <CircleAlert class="size-8 text-stone-400" :stroke-width="1.3" />
+      </div>
+      <h2 class="text-lg font-medium">这个资产库已不可用</h2>
+      <p class="max-w-md text-sm text-muted-foreground">
+        它可能已被移除，或链接已经过期。
+      </p>
+      <div class="flex flex-wrap items-center justify-center gap-3">
+        <Button as="a" href="/">查看全部内容</Button>
+        <Button variant="outline" as="a" href="/settings/automation"
+          >管理资产库</Button
+        >
+      </div>
+    </div>
+    <div
+      v-else-if="error"
       class="flex min-h-[45vh] flex-col items-center justify-center gap-5 text-center"
       role="alert"
     >
@@ -222,6 +252,7 @@ function select(asset: LibraryAsset, event?: MouseEvent) {
         <CircleAlert class="size-8 text-stone-400" :stroke-width="1.3" />
       </div>
       <h2 class="text-lg font-medium">暂时无法加载内容</h2>
+      <p class="max-w-md text-sm text-muted-foreground">{{ error }}</p>
       <Button variant="outline" @click="reload">重试</Button>
     </div>
     <div
@@ -243,6 +274,22 @@ function select(asset: LibraryAsset, event?: MouseEvent) {
       <Search class="size-8 text-stone-300" :stroke-width="1.3" />
       <h2 class="text-lg font-medium">没有找到内容</h2>
       <Button variant="outline" @click="clearFilters">清除筛选</Button>
+    </div>
+    <div
+      v-else-if="!assets.length && assetLibraryId !== undefined"
+      class="flex min-h-[45vh] flex-col items-center justify-center gap-5 text-center"
+    >
+      <div class="rounded-2xl bg-stone-100 p-5">
+        <Library class="size-8 text-stone-400" :stroke-width="1.3" />
+      </div>
+      <h2 class="text-lg font-medium">这个资产库还没有内容</h2>
+      <p class="max-w-md text-sm text-muted-foreground">
+        目录已连接，但尚未发现可显示的内容。可以扫描该目录，或调整资产库设置。
+      </p>
+      <div class="flex flex-wrap items-center justify-center gap-3">
+        <Button as="a" href="/settings/automation">扫描或调整资产库</Button>
+        <Button variant="outline" as="a" href="/">查看全部内容</Button>
+      </div>
     </div>
     <div
       v-else-if="!assets.length"
@@ -275,7 +322,7 @@ function select(asset: LibraryAsset, event?: MouseEvent) {
       >
         <template v-if="pageError"
           ><p class="text-sm text-muted-foreground" role="alert">
-            下一页未能加载
+            下一页未能加载：{{ pageError }}
           </p>
           <Button variant="outline" @click="loadMore">重试</Button></template
         >

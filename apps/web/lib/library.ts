@@ -17,3 +17,21 @@ export function libraryAsset(asset: CatalogueAssetViewModel) {
   };
 }
 export type LibraryAsset = ReturnType<typeof libraryAsset>;
+
+/** 详情只有在 URL 明确带有库筛选时才携带库语境。 */
+export function libraryContext(
+  search: Record<string, unknown>,
+): string | undefined {
+  return typeof search.library === "string" && search.library !== ""
+    ? search.library
+    : undefined;
+}
+
+/** 详情页内部导航必须把当前库语境带到下一跳，否则共享资产会重新退回多库阻塞。 */
+export function withLibraryContext(
+  href: string,
+  library: string | undefined,
+): string {
+  if (library === undefined) return href;
+  return `${href}${href.includes("?") ? "&" : "?"}library=${encodeURIComponent(library)}`;
+}

@@ -40,7 +40,7 @@ const inspectorCapability = declareCapability({
 });
 const recognizerCapability = declareCapability({
   identity: "pdf.local-publication-recognizer",
-  implementationVersion: "2",
+  implementationVersion: "3",
   kind: "recognizer",
   contractVersion: "2",
   interpretationContractVersions: ["2"],
@@ -57,7 +57,7 @@ export const trustedPdfLocalPublicationRule = {
   capabilityId: recognizerCapability.capabilityId,
   capabilityVersion: recognizerCapability.capabilityVersion,
   ruleId: "pdf.valid-single-publication-revision",
-  ruleVersion: "2",
+  ruleVersion: "3",
 } as const;
 
 export type PdfRecognitionCapabilities = Readonly<{
@@ -214,23 +214,13 @@ class PdfLocalPublicationRecognizer implements Recognizer {
   recognize(input: RecognitionCandidateContext): RecognitionProposalDraft {
     if (!this.canRecognize(input))
       throw new Error("PDF 本地识别只接受格式检查确认的单一出版物修订版");
-    const identifiers = input.evidence[0]!.inspection!.identifiers.filter(
-      (identifier) =>
-        identifier.scheme === "isbn-13" && isValidIsbn13(identifier.value),
-    );
-    const outcome = identifiers.length === 0 ? "satisfied" : "contradicted";
     return {
       id: `recognition-proposal_${randomUUID()}`,
       ruleResults: [
         {
           ...trustedPdfLocalPublicationRule,
-          outcome,
-          explanation:
-            identifiers.length === 0
-              ? "格式检查确认该单一 PDF 修订版是无有效 ISBN 的独立本地出版物边界"
-              : identifiers.length === 1
-                ? "格式检查发现唯一有效 ISBN，本地无 ISBN 识别规则被反证"
-                : `格式检查发现 ${identifiers.length} 个有效 ISBN，本地无 ISBN 识别规则被反证`,
+          outcome: "satisfied",
+          explanation: "格式检查确认该单一 PDF 修订版是独立本地出版物边界",
           evidence: input.evidence,
         },
       ],

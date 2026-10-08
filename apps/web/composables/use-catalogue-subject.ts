@@ -11,7 +11,10 @@ import {
   type MaybeRefOrGetter,
 } from "vue";
 
-export function useCatalogueSubject(id: MaybeRefOrGetter<string>) {
+export function useCatalogueSubject(
+  id: MaybeRefOrGetter<string>,
+  assetLibraryId?: MaybeRefOrGetter<string | undefined>,
+) {
   const selected = ref<CatalogueSubjectResponse>();
   const loading = ref(true);
   const error = ref<string>();
@@ -27,6 +30,7 @@ export function useCatalogueSubject(id: MaybeRefOrGetter<string>) {
       const result = await requestCatalogueSubject(
         toValue(id),
         controller.signal,
+        toValue(assetLibraryId),
       );
       if (requestVersion === version) selected.value = result;
     } catch {
@@ -37,7 +41,7 @@ export function useCatalogueSubject(id: MaybeRefOrGetter<string>) {
   }
   onMounted(() => void reload());
   watch(
-    () => toValue(id),
+    () => [toValue(id), toValue(assetLibraryId)],
     () => {
       selected.value = undefined;
       void reload();

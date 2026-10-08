@@ -1736,9 +1736,11 @@ export function fanboxJourneyCommands(
     ...roots.map((root, index) => ({
       name: expected[index + 1]!.name,
       args: [
-        "root-create",
+        "library-create",
         `FANBOX ${posts[index]!.sourceNativeAddress}`,
+        "--directory",
         root.directory,
+        "--json",
       ],
       env: productEnv,
       haltOnFailure: true,

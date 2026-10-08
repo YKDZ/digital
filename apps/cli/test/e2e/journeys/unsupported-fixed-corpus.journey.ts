@@ -147,7 +147,13 @@ const journey: CliJourney = {
     return [
       {
         name: "register fixed corpus root",
-        args: ["root-create", "固定语料", corpusAssetsDirectory],
+        args: [
+          "library-create",
+          "固定语料",
+          "--directory",
+          corpusAssetsDirectory,
+          "--json",
+        ],
         env: { DIGITAL_PRODUCT_DATA: data },
         haltOnFailure: true,
       },

@@ -16,50 +16,62 @@ const trustedRecognitionRules = [
   },
   {
     capabilityId: "fanbox.creator-date-recognizer",
-    capabilityVersion: "1",
+    capabilityVersion: "2",
     ruleId: "unique-creator-publication-date",
-    ruleVersion: "1",
+    ruleVersion: "2",
   },
   {
     capabilityId: "bangumi.episodic-recognizer",
-    capabilityVersion: "1",
-    ruleId: "title-year-season-ordinary-episode",
-    ruleVersion: "1",
-  },
-  {
-    capabilityId: "nbinet.exact-isbn-recognizer",
     capabilityVersion: "2",
-    ruleId: "embedded-isbn-in-exact-official-record",
+    ruleId: "title-year-season-ordinary-episode",
     ruleVersion: "2",
   },
   {
     capabilityId: "nbinet.exact-isbn-recognizer",
-    capabilityVersion: "2",
+    capabilityVersion: "3",
+    ruleId: "embedded-isbn-in-exact-official-record",
+    ruleVersion: "3",
+  },
+  {
+    capabilityId: "nbinet.exact-isbn-recognizer",
+    capabilityVersion: "3",
     ruleId: "directed-isbn-in-exact-official-record",
     ruleVersion: "1",
   },
   {
     capabilityId: "epub.local-publication-recognizer",
-    capabilityVersion: "2",
+    capabilityVersion: "3",
     ruleId: "epub.valid-single-publication-revision",
-    ruleVersion: "2",
+    ruleVersion: "3",
   },
   {
     capabilityId: "pdf.local-publication-recognizer",
-    capabilityVersion: "2",
+    capabilityVersion: "3",
     ruleId: "pdf.valid-single-publication-revision",
+    ruleVersion: "3",
+  },
+  {
+    capabilityId: "tmdb.strict-film-recognizer",
+    capabilityVersion: "2",
+    ruleId: "unique-exact-title-year-official-record",
     ruleVersion: "2",
   },
   {
     capabilityId: "tmdb.strict-film-recognizer",
-    capabilityVersion: "1",
-    ruleId: "unique-exact-title-year-official-record",
+    capabilityVersion: "2",
+    ruleId: "exact-directed-official-address",
     ruleVersion: "1",
   },
   {
-    capabilityId: "tmdb.strict-film-recognizer",
+    capabilityId: "dlsite.local-directory-recognizer",
     capabilityVersion: "1",
-    ruleId: "exact-directed-official-address",
+    ruleId: "dlsite.exact-local-product-directory",
+    ruleVersion: "1",
+  },
+  {
+    capabilityId: "book.local-directory-recognizer",
+    capabilityVersion: "1",
+    ruleId: "book.same-name-directory-with-valid-publication",
     ruleVersion: "1",
   },
 ] as const;
@@ -70,7 +82,7 @@ export function curatedInitialRecognitionPolicy(): RecognitionPolicy & {
   readonly trustedRuleCoordinates: readonly string[];
 } {
   return {
-    version: "curated-initial-sources/7",
+    version: "curated-initial-sources/8",
     trustedRuleCoordinates: trustedRecognitionRules.map(
       (rule) =>
         `${rule.capabilityId}@${rule.capabilityVersion}/${rule.ruleId}@${rule.ruleVersion}`,
@@ -93,7 +105,7 @@ const ordinaryNbinetMetadataPolicyId = "ordinary-nbinet-metadata";
 
 /** 当前产品在普通浏览语境采用的来源优先级。 */
 export class CuratedMetadataPolicyConfiguration implements MetadataPolicyConfiguration {
-  readonly version = "curated-metadata/4";
+  readonly version = "curated-metadata/5";
   readonly policies = [
     {
       id: ordinaryFilmMetadataPolicyId,
@@ -153,6 +165,11 @@ export class CuratedMetadataPolicyConfiguration implements MetadataPolicyConfigu
           preferredSourceIdentities: ["dlsite", "local-observed"],
           cardinality: "many" as const,
         },
+        {
+          property: "dlsite.product.genre",
+          preferredSourceIdentities: ["dlsite"],
+          cardinality: "many" as const,
+        },
       ],
     },
     {
@@ -202,6 +219,7 @@ export class CuratedMetadataPolicyConfiguration implements MetadataPolicyConfigu
       usageContext: "asset.ordinary",
       role: "asset.primary-cover",
       preferredSourceIdentities: ["dlsite"],
+      preferredCapabilityIds: ["book.same-name-directory"],
     },
   ];
 

@@ -418,7 +418,13 @@ const journey: CliJourney = {
     const initialCommands: readonly CliJourneyCommand[] = [
       {
         name: "register PDF publication root",
-        args: ["root-create", "PDF publication", state.root.directory],
+        args: [
+          "library-create",
+          "PDF publication",
+          "--directory",
+          state.root.directory,
+          "--json",
+        ],
         env: environment,
         haltOnFailure: true,
       },

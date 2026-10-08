@@ -14,6 +14,9 @@ import {
   type SourceCollectionFailure,
   type SourceCollector,
   type SourceInterpreter,
+  type SourceAssociationCandidateInterpreter,
+  type SourceAssociationInterpreter,
+  type SourceEnrichmentInput,
   type StagedSourceArtifact,
 } from "@digital/application";
 import type {
@@ -26,6 +29,7 @@ import type {
   SourceRecord,
   EntityMention,
   EntityResolutionDecision,
+  MetadataAssertionCandidate,
 } from "@digital/domain";
 
 const exactProductId = /^(?:RJ\d{8}|VJ\d{6})$/u;
@@ -33,7 +37,7 @@ const maximumResponseBytes = 2 * 1024 * 1024;
 
 const directoryCapability = declareCapability({
   identity: "dlsite.exact-directory",
-  implementationVersion: "2",
+  implementationVersion: "3",
   kind: "directory-interpreter",
   contractVersion: "1",
   interpretationContractVersions: ["1"],
@@ -54,7 +58,7 @@ const addressingCapability = declareCapability({
 });
 const interpreterCapability = declareCapability({
   identity: "dlsite.product-interpretation",
-  implementationVersion: "1",
+  implementationVersion: "2",
   kind: "source-interpreter",
   contractVersion: "1",
   interpretationContractVersions: ["1"],
@@ -63,6 +67,27 @@ const recognizerCapability = declareCapability({
   identity: "dlsite.exact-recognizer",
   implementationVersion: "1",
   kind: "recognizer",
+  contractVersion: "1",
+  interpretationContractVersions: ["1"],
+});
+const localRecognizerCapability = declareCapability({
+  identity: "dlsite.local-directory-recognizer",
+  implementationVersion: "1",
+  kind: "recognizer",
+  contractVersion: "1",
+  interpretationContractVersions: ["1"],
+});
+const localSourceCandidateCapability = declareCapability({
+  identity: "dlsite.local-source-candidate",
+  implementationVersion: "1",
+  kind: "source-association-candidate-interpreter",
+  contractVersion: "1",
+  interpretationContractVersions: ["1"],
+});
+const associationInterpreterCapability = declareCapability({
+  identity: "dlsite.exact-source-association",
+  implementationVersion: "1",
+  kind: "source-association-interpreter",
   contractVersion: "1",
   interpretationContractVersions: ["1"],
 });
@@ -89,6 +114,7 @@ export const dlsiteInformationFulfillmentCapabilities = [
       "asset.content-classification",
       "asset.declared-language",
       "dlsite.product.price-jpy",
+      "dlsite.product.genre",
       "asset.introduction",
     ],
     relationshipTypes: ["asset.contribution", "asset.membership"],
@@ -109,6 +135,13 @@ export const trustedDlsiteExactRule = {
   capabilityId: recognizerCapability.capabilityId,
   capabilityVersion: recognizerCapability.capabilityVersion,
   ruleId: "exact-official-product-address",
+  ruleVersion: "1",
+} as const;
+
+export const trustedDlsiteLocalDirectoryRule = {
+  capabilityId: localRecognizerCapability.capabilityId,
+  capabilityVersion: localRecognizerCapability.capabilityVersion,
+  ruleId: "dlsite.exact-local-product-directory",
   ruleVersion: "1",
 } as const;
 
@@ -173,17 +206,7 @@ export class DlsiteExactDirectoryInterpreter implements DirectoryInterpreter {
   interpret(
     snapshot: FilesystemPackageSnapshot,
   ): AssetRefreshWorkPlan | readonly RecognitionEvidence[] {
-    const basename = snapshot.root.split(/[\\/]/u).at(-1) ?? "";
-    if (exactProductId.test(basename) && snapshot.files.length > 0)
-      return [
-        {
-          kind: "source-address",
-          sourceIdentity: "dlsite",
-          sourceAddress: canonicalProductAddress(basename),
-          explanation: "DLsite 精确目录规则匹配；普通下级文件服务同一作品",
-          producer: this.capability,
-        },
-      ];
+    const basename = snapshot.root.split(/[\\/]/u).filter(Boolean).at(-1) ?? "";
     const groups = new Map<
       string,
       { productId: string; relativePaths: string[] }
@@ -208,7 +231,15 @@ export class DlsiteExactDirectoryInterpreter implements DirectoryInterpreter {
     return {
       workItems: [...groups].map(([boundary, group]) => ({
         key: `dlsite-directory:${boundary}`,
-        relativePaths: group.relativePaths,
+        relativePaths: group.relativePaths.toSorted(),
+        materialBoundary: {
+          kind: "directory" as const,
+          relativePath: boundary,
+        },
+        /**
+         * 这个目录本身就是一个产品号对应的内容范围：由本能力声明，绝不交由范围覆盖推断。
+         */
+        independentIdentityDeclaredBy: this.capability,
         evidence: [
           {
             kind: "source-address",
@@ -532,7 +563,7 @@ export class DlsiteSourceInterpreter implements SourceInterpreter {
       );
     const productRecordId = jsonProduct === undefined ? html.id : json.id;
     const title = requiredString(product.work_name, "DLsite work name");
-    const metadata = [
+    const metadata: MetadataAssertionCandidate[] = [
       {
         property: "asset.title",
         sourceSlot: "dlsite.product.title",
@@ -579,6 +610,18 @@ export class DlsiteSourceInterpreter implements SourceInterpreter {
         sourceSlot: "dlsite.product.price",
         value: price,
         sourceRecordIds: [productRecordId],
+      });
+    }
+    for (const genre of genresFromHtml(html.body)) {
+      metadata.push({
+        property: "dlsite.product.genre",
+        sourceSlot: `dlsite.product.genre:${genre.id}`,
+        value: genre.label,
+        qualifiers: [
+          { key: "classification.vocabulary", value: "dlsite.genre" },
+          { key: "classification.term-id", value: genre.id },
+        ],
+        sourceRecordIds: [html.id],
       });
     }
     const introduction = officialIntroduction(html.body);
@@ -772,6 +815,131 @@ export class DlsiteSourceInterpreter implements SourceInterpreter {
         relationships,
       },
     ];
+  }
+}
+
+export class DlsiteLocalSourceCandidateInterpreter implements SourceAssociationCandidateInterpreter {
+  readonly capability = localSourceCandidateCapability;
+
+  interpret(
+    input: SourceEnrichmentInput & {
+      readonly observedEvidence?: readonly RecognitionEvidence[];
+    },
+  ): RecognitionEvidence | undefined {
+    const addresses = [
+      ...new Set(
+        (input.observedEvidence ?? []).flatMap((evidence) =>
+          evidence.kind === "source-address" &&
+          evidence.sourceIdentity === "dlsite" &&
+          evidence.sourceAddress !== undefined &&
+          evidence.producer.capabilityId === directoryCapability.capabilityId &&
+          evidence.producer.capabilityVersion ===
+            directoryCapability.capabilityVersion &&
+          evidence.producer.contractVersion ===
+            directoryCapability.contractVersion
+            ? [evidence.sourceAddress]
+            : [],
+        ),
+      ),
+    ];
+    if (addresses.length !== 1) return undefined;
+    return {
+      kind: "source-association",
+      sourceIdentity: "dlsite",
+      sourceAddress: addresses[0]!,
+      explanation: "已接受本地目录提供了唯一精确 DLsite 地址",
+      producer: this.capability,
+    };
+  }
+}
+
+export class DlsiteSourceAssociationInterpreter implements SourceAssociationInterpreter {
+  readonly capability = associationInterpreterCapability;
+
+  canInterpret(input: {
+    readonly evidence: RecognitionEvidence;
+    readonly interpretation: SourceInterpretationBatch;
+  }): boolean {
+    return (
+      input.evidence.sourceIdentity === "dlsite" &&
+      input.interpretation.sourceIdentity === "dlsite" &&
+      input.interpretation.producer.capabilityId ===
+        interpreterCapability.capabilityId
+    );
+  }
+
+  interpret(input: {
+    readonly subject: SourceEnrichmentInput;
+    readonly evidence: RecognitionEvidence;
+    readonly interpretation: SourceInterpretationBatch;
+  }) {
+    if (
+      !this.canInterpret(input) ||
+      input.evidence.sourceAddress !== input.interpretation.sourceAddress
+    )
+      return undefined;
+    const conflicting = input.subject.sourceAssociations.some(
+      (association) =>
+        association.sourceIdentity === "dlsite" &&
+        association.nativeAddress !== input.interpretation.sourceAddress,
+    );
+    return conflicting
+      ? {
+          status: "contradicted" as const,
+          explanation: "已有 DLsite 地址不同，需要普通来源关联修正",
+        }
+      : {
+          status: "accepted" as const,
+          explanation: "本地明确地址与官方 DLsite 记录一致",
+        };
+  }
+}
+
+/** 精确目录先建立本地内容，官方资料仍由独立来源流程补充。 */
+export class DlsiteLocalDirectoryRecognizer implements Recognizer {
+  readonly capability = localRecognizerCapability;
+
+  canRecognize(input: RecognitionCandidateContext): boolean {
+    if (
+      input.basis.kind !== "observed-evidence" ||
+      input.basis.materialBoundary?.kind !== "directory" ||
+      input.basis.producer.capabilityId !== directoryCapability.capabilityId ||
+      input.basis.producer.capabilityVersion !==
+        directoryCapability.capabilityVersion ||
+      input.basis.producer.contractVersion !==
+        directoryCapability.contractVersion
+    )
+      return false;
+    const matches = input.evidence.filter(
+      (evidence) =>
+        evidence.kind === "source-address" &&
+        evidence.sourceIdentity === "dlsite" &&
+        evidence.producer.capabilityId === directoryCapability.capabilityId &&
+        evidence.producer.capabilityVersion ===
+          directoryCapability.capabilityVersion &&
+        evidence.producer.contractVersion ===
+          directoryCapability.contractVersion &&
+        evidence.sourceAddress !== undefined &&
+        exactProductId.test(productIdFromAddress(evidence.sourceAddress)),
+    );
+    return matches.length === 1;
+  }
+
+  recognize(input: RecognitionCandidateContext): RecognitionProposalDraft {
+    if (!this.canRecognize(input))
+      throw new Error("DLsite 本地识别需要一个明确的精确编号目录边界");
+    return {
+      id: `recognition-proposal_${randomUUID()}`,
+      ruleResults: [
+        {
+          ...trustedDlsiteLocalDirectoryRule,
+          outcome: "satisfied",
+          explanation:
+            "精确 RJ／VJ 目录声明了本地内容范围，官方身份和资料待补充",
+          evidence: input.evidence,
+        },
+      ],
+    };
   }
 }
 
@@ -1100,6 +1268,34 @@ function creditedNamesFromHtml(html: string, label: string): readonly string[] {
   return [...row.matchAll(/>([^<>]+)<\/a>/gu)]
     .map((match) => decodeHtml(match[1] ?? ""))
     .filter((name) => name.length > 0 && name.toUpperCase() !== "N/A");
+}
+
+/** 分类身份来自官方词表编号；显示名及同名词条都不能替代这个编号。 */
+function genresFromHtml(
+  html: string,
+): readonly { id: string; label: string }[] {
+  const row = /<th>\s*ジャンル\s*<\/th>\s*<td[^>]*>([\s\S]*?)<\/td>/u.exec(
+    html,
+  )?.[1];
+  if (row === undefined) return [];
+  const terms = new Map<string, { id: string; label: string }>();
+  for (const match of row.matchAll(
+    /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gu,
+  )) {
+    let url: URL;
+    try {
+      url = new URL(decodeHtml(match[1] ?? ""), "https://www.dlsite.com");
+    } catch {
+      continue;
+    }
+    if (url.protocol !== "https:" || url.hostname !== "www.dlsite.com")
+      continue;
+    const id = /\/genre\/(\d+)(?:\/|$)/u.exec(url.pathname)?.[1];
+    const label = decodeHtml((match[2] ?? "").replace(/<[^>]*>/gu, "")).trim();
+    if (id !== undefined && label.length > 0)
+      terms.set(`${id}\u0000${label}`, { id, label });
+  }
+  return [...terms.values()];
 }
 
 function explicitMainImage(value: unknown): string | undefined {

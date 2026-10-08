@@ -21,7 +21,13 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "#/components/ui/sidebar";
+import { useLibraryNavigation } from "#/composables/use-library-navigation";
 const pageContext = usePageContext();
+const {
+  items: libraries,
+  error: librariesError,
+  refresh: refreshLibraries,
+} = useLibraryNavigation();
 const { setOpenMobile } = useSidebar();
 const navigation = [
   { href: "/", label: "全部内容", icon: Library, id: "home" },
@@ -36,7 +42,9 @@ const navigation = [
 ];
 function isCurrent(href: string) {
   const path = pageContext.urlParsed.pathname;
-  return href === "/" ? path === href : path.startsWith(href);
+  return href === "/"
+    ? path === href && pageContext.urlParsed.search.library === undefined
+    : path.startsWith(href);
 }
 </script>
 
@@ -105,6 +113,41 @@ function isCurrent(href: string) {
             </SidebarMenuButton>
           </SidebarMenuItem></SidebarMenu
         >
+      </SidebarGroup>
+      <SidebarGroup
+        v-if="libraries.length || librariesError"
+        class="px-3 group-data-[collapsible=icon]:px-2"
+      >
+        <SidebarMenu class="gap-1.5">
+          <SidebarMenuItem v-for="library in libraries" :key="library.id">
+            <SidebarMenuButton
+              as="a"
+              :href="`/?library=${encodeURIComponent(library.id)}`"
+              :tooltip="library.displayName"
+              :aria-label="library.displayName"
+              :is-active="
+                pageContext.urlParsed.pathname === '/' &&
+                pageContext.urlParsed.search.library === library.id
+              "
+              :data-testid="`sidebar-library-${library.id}`"
+              @click="setOpenMobile(false)"
+              ><Library /><span>{{
+                library.displayName
+              }}</span></SidebarMenuButton
+            >
+          </SidebarMenuItem>
+          <SidebarMenuItem v-if="librariesError">
+            <SidebarMenuButton
+              tooltip="重新读取资产库"
+              aria-label="重新读取资产库"
+              data-testid="sidebar-library-retry"
+              class="h-10 text-red-600"
+              @click="refreshLibraries"
+            >
+              <CircleAlert /><span>资产库读取失败，点击重试</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
       </SidebarGroup>
     </SidebarContent>
     <SidebarFooter class="px-3 pb-5 group-data-[collapsible=icon]:px-2">

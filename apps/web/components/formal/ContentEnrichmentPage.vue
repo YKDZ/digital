@@ -1,5 +1,11 @@
 <script setup lang="ts">
 import {
+  requestCatalogueSubject,
+  requestConflictEvidence,
+  type CatalogueAssetViewModel,
+  type ConflictEvidence,
+} from "@digital/web-delivery/client";
+import {
   ArrowRight,
   Check,
   CircleAlert,
@@ -39,6 +45,8 @@ import { Skeleton } from "#/components/ui/skeleton";
 import { Toaster } from "#/components/ui/sonner";
 import { useCatalogue } from "#/composables/use-catalogue";
 import { useIntake } from "#/composables/use-intake";
+import { assetFactNotice, friendlyCoordinate } from "#/lib/asset-fact-notice";
+import { libraryContext } from "#/lib/library";
 
 import IntakeFileTree from "./IntakeFileTree.vue";
 
@@ -63,6 +71,10 @@ type SourceAssociation = {
 type CorrectionSubject = {
   readonly recognitionState: "recognized" | "unresolved";
   readonly current: readonly SourceAssociation[];
+  readonly historical: readonly {
+    readonly association: SourceAssociation;
+    readonly status: "superseded" | "retracted" | "legacy-retired";
+  }[];
 };
 type SourceCandidate = {
   readonly reference: string;
@@ -145,6 +157,14 @@ const categoryLabels: Record<string, string> = {
   bangumi: "剧集",
   generic: "未分类",
 };
+const HISTORY_LABELS: Record<
+  "superseded" | "retracted" | "legacy-retired",
+  string
+> = {
+  superseded: "已被新记录取代",
+  retracted: "已撤回",
+  "legacy-retired": "已停用",
+};
 
 const { catalogue, loading, error, reload } = useCatalogue();
 const {
@@ -167,9 +187,42 @@ const form = ref<Record<string, string>>({});
 const correction = ref<CorrectionSubject>();
 const correctionLoading = ref(false);
 const correctionId = ref("");
+const conflictEvidence = ref<readonly ConflictEvidence[]>([]);
 const decision = ref<SourceDecision>();
 const operationError = ref("");
 const busy = ref(false);
+// 主体已终止的失败来源补充：由普通主体读取无采集地投影，重开页面与刷新均据此展示友好入口。
+// canRetry 为真表示具备可靠当前证据、可再次获取；为假须诚实引导新的定向补充，绝不外显地址或坐标。
+const sourceRetries = ref<
+  readonly {
+    executionId: string;
+    subjectId: string;
+    sourceIdentity: string;
+    canRetry: boolean;
+  }[]
+>([]);
+const retryableFailures = computed(() =>
+  sourceRetries.value.filter((item) => item.canRetry),
+);
+const unreliableFailures = computed(() =>
+  sourceRetries.value.filter((item) => !item.canRetry),
+);
+// 多库共享主体的定向补充须显式选定归属库：只呈现友好名称，绝不任选其一或外显内部坐标；
+// 唯一或零归属时不出现选择器，沿用路由库语境或由耐久唯一归属自动解析。
+const ownedLibraries = ref<readonly { id: string; displayName: string }[]>([]);
+const selectedLibraryId = ref("");
+const activeLibraryId = computed(() => {
+  if (routeLibraryId.length > 0) return routeLibraryId;
+  if (ownedLibraries.value.length >= 2)
+    return selectedLibraryId.value || undefined;
+  return undefined;
+});
+const needsLibrarySelection = computed(
+  () =>
+    ownedLibraries.value.length >= 2 &&
+    routeLibraryId.length === 0 &&
+    selectedLibraryId.value === "",
+);
 const materialPreviewOpen = ref(false);
 const availableActions = computed(() =>
   actions.filter(
@@ -180,39 +233,109 @@ const availableActions = computed(() =>
   ),
 );
 
-const assets = computed<ContentOption[]>(() => {
-  const result: ContentOption[] = [];
-  for (const entry of catalogue.value.assets) {
-    if ("component" in entry) {
-      result.push(
-        ...entry.episodes.map((episode) => ({
-          id: episode.assetId,
-          title: episode.title,
-          category: "bangumi",
-          detail: entry.title,
-        })),
-      );
-      continue;
-    }
-    const detail =
-      entry.book?.contributors.join("、") ||
-      entry.dlsite?.circle ||
-      entry.fanbox?.creator ||
-      entry.film?.directors.join("、") ||
-      entry.releaseDate ||
-      "";
-    result.push({
+const requestedAssetId = (() => {
+  const value = pageContext.urlParsed.search.asset;
+  return typeof value === "string" ? value.trim() : "";
+})();
+// 沿用既有库路由参数：从库内进入整理页时即带来明确库语境，定向补充据此携带而不强迫再选。
+const routeLibraryId = libraryContext(pageContext.urlParsed.search) ?? "";
+const directSubject = ref<CatalogueAssetViewModel>();
+const directLoading = ref(false);
+const directMissing = ref(false);
+
+function assetOption(entry: CatalogueAssetViewModel): ContentOption[] {
+  if ("component" in entry)
+    return entry.episodes.map((episode) => ({
+      id: episode.assetId,
+      title: episode.title,
+      category: "bangumi",
+      detail: entry.title,
+    }));
+  const detail =
+    entry.book?.contributors.join("、") ||
+    entry.dlsite?.circle ||
+    entry.fanbox?.creator ||
+    entry.film?.directors.join("、") ||
+    entry.releaseDate ||
+    "";
+  return [
+    {
       id: entry.id,
       title: entry.title,
       category: entry.cardComponent,
       detail,
       fileCount: entry.files?.length ?? entry.book?.files.length,
-    });
+    },
+  ];
+}
+
+const assets = computed<ContentOption[]>(() =>
+  catalogue.value.assets.flatMap(assetOption),
+);
+const options = computed<ContentOption[]>(() => {
+  const seen = new Set<string>();
+  const merged: ContentOption[] = [];
+  for (const option of [
+    ...(directSubject.value === undefined
+      ? []
+      : assetOption(directSubject.value)),
+    ...assets.value,
+  ]) {
+    if (seen.has(option.id)) continue;
+    seen.add(option.id);
+    merged.push(option);
   }
-  return result;
+  return merged;
+});
+const selectedAssetView = computed<CatalogueAssetViewModel | undefined>(() => {
+  const id = selectedAssetId.value;
+  if (!id) return undefined;
+  if (
+    directSubject.value !== undefined &&
+    assetOption(directSubject.value).some((option) => option.id === id)
+  )
+    return directSubject.value;
+  return catalogue.value.assets.find((entry) =>
+    assetOption(entry).some((option) => option.id === id),
+  );
 });
 const asset = computed(() =>
-  assets.value.find((item) => item.id === selectedAssetId.value),
+  options.value.find((item) => item.id === selectedAssetId.value),
+);
+const basis = computed(() =>
+  selectedAssetView.value === undefined
+    ? undefined
+    : assetFactNotice(selectedAssetView.value),
+);
+const basisRecords = computed(() => {
+  const history = correction.value;
+  if (history === undefined) return [];
+  return [
+    ...history.current.map((item) => ({
+      key: `current-${item.id}`,
+      sourceIdentity: item.sourceIdentity,
+      nativeAddress: item.nativeAddress,
+      state: "当前采用",
+    })),
+    ...history.historical.map((item) => ({
+      key: `historical-${item.association.id}`,
+      sourceIdentity: item.association.sourceIdentity,
+      nativeAddress: item.association.nativeAddress,
+      state: HISTORY_LABELS[item.status],
+    })),
+  ];
+});
+// 仅展示已报告资料冲突的真实候选值及其来源；来源关联历史另行呈现，不充当冲突证据。
+const conflictEvidenceView = computed(() =>
+  conflictEvidence.value.map((conflict) => ({
+    property: conflict.property,
+    label: friendlyCoordinate(conflict.property),
+    candidates: conflict.candidates.map((candidate) => ({
+      key: `${candidate.sourceIdentity}\u0000${candidate.sourceRecordIds.join("\u0000")}\u0000${candidate.value}`,
+      value: candidate.value,
+      source: evidenceSourceLabel(candidate.sourceIdentity),
+    })),
+  })),
 );
 const selectedCorrection = computed(() =>
   correction.value?.current.find((item) => item.id === correctionId.value),
@@ -270,6 +393,12 @@ function sourceName(identity: string) {
     requirements.value.find((item) => item.sourceIdentity === identity)
       ?.displayName ?? identity
   );
+}
+// 生效读取会为本地材料保留合成来源身份；这些不是可展示的技术坐标，须映射为友好说法。
+function evidenceSourceLabel(identity: string) {
+  if (identity === "user") return "本人填写";
+  if (identity === "local-observed") return "本地文件";
+  return sourceName(identity);
 }
 function resetForm() {
   form.value = Object.fromEntries(
@@ -346,42 +475,143 @@ async function loadCorrection() {
       resetForm();
     }
   } catch {
-    correction.value = { recognitionState: "unresolved", current: [] };
+    correction.value = {
+      recognitionState: "unresolved",
+      current: [],
+      historical: [],
+    };
     correctionId.value = "";
   } finally {
     correctionLoading.value = false;
   }
 }
+// 依据按当前所选主体异步读取；用请求代次守卫，确保乱序返回、404 或异常都不会覆盖更新的选择或留下旧值。
+let conflictEvidenceGeneration = 0;
+async function loadConflictEvidence() {
+  const generation = ++conflictEvidenceGeneration;
+  const target = selectedAssetId.value;
+  conflictEvidence.value = [];
+  if (!target) return;
+  try {
+    const evidence = await requestConflictEvidence(target);
+    if (generation === conflictEvidenceGeneration)
+      conflictEvidence.value = evidence ?? [];
+  } catch {
+    if (generation === conflictEvidenceGeneration) conflictEvidence.value = [];
+  }
+}
+// 可重试失败项随当前所选主体读取；沿用请求代次守卫，确保乱序返回或异常都不覆盖新的选择。
+// 这条普通主体读取绝不触发采集，也不会自动重试；只提供友好的"再次获取"或新定向引导。
+let sourceRetriesGeneration = 0;
+async function loadSourceRetries() {
+  const generation = ++sourceRetriesGeneration;
+  const target = selectedAssetId.value;
+  sourceRetries.value = [];
+  ownedLibraries.value = [];
+  if (!target) return;
+  try {
+    const result = await requestCatalogueSubject(target);
+    if (generation !== sourceRetriesGeneration) return;
+    sourceRetries.value = (result?.sourceRetries ?? []).map((item) => ({
+      executionId: item.executionId,
+      subjectId: target,
+      sourceIdentity: item.sourceIdentity,
+      canRetry: item.canRetry,
+    }));
+    ownedLibraries.value = result?.libraryChoices ?? [];
+  } catch {
+    if (generation === sourceRetriesGeneration) {
+      sourceRetries.value = [];
+      ownedLibraries.value = [];
+    }
+  }
+}
 async function addSource() {
-  if (!asset.value || !requirement.value || !inputsComplete.value || busy.value)
+  if (
+    !asset.value ||
+    !requirement.value ||
+    !inputsComplete.value ||
+    needsLibrarySelection.value ||
+    busy.value
+  )
     return;
   busy.value = true;
   operationError.value = "";
   try {
+    const library = activeLibraryId.value;
     const started = await post<{ readonly id: string }>(
       "/api/source-enrichments",
       {
         subjectId: asset.value.id,
         sourceIdentity: requirement.value.sourceIdentity,
         sourceInput: form.value,
+        ...(library === undefined ? {} : { assetLibraryId: library }),
       },
     );
-    const result = await poll<{
-      readonly status: string;
-      readonly outcome?: string;
-      readonly reason?: string;
-    }>(
-      `/api/source-enrichments/${encodeURIComponent(started.id)}`,
-      (value) => value.status !== "running",
-    );
-    if (result.outcome !== "accepted" && result.outcome !== "no-change")
-      throw new Error(result.reason ?? "没有找到可采用的元数据");
-    toast.success(
-      result.outcome === "no-change" ? "这项来源已经存在" : "元数据来源已添加",
-    );
-    await Promise.all([reload(), loadCorrection()]);
+    await settleEnrichment(started.id);
   } catch (cause) {
     operationError.value = message(cause, "元数据来源暂时无法添加");
+  } finally {
+    busy.value = false;
+  }
+}
+// 补充执行落定：成功/无变化提示并刷新；已终止失败则重新无采集读取主体，令友好的"再次获取"从耐久
+// 事实出现（重开页面与刷新同样如此），而非只依赖本次操作的瞬态。
+async function settleEnrichment(executionId: string) {
+  const result = await poll<{
+    readonly status: string;
+    readonly outcome?: string;
+    readonly reason?: string;
+  }>(
+    `/api/source-enrichments/${encodeURIComponent(executionId)}`,
+    (value) => value.status !== "running",
+  );
+  if (result.outcome === "accepted") {
+    toast.success("元数据来源已添加");
+    await Promise.all([
+      reload(),
+      loadCorrection(),
+      loadConflictEvidence(),
+      loadSourceRetries(),
+    ]);
+    return;
+  }
+  // no-change 分两类：无原因是这项来源确已存在的幂等结果；带原因是候选消失或不再兼容，
+  // 须如实给出新的定向引导，绝不谎称来源已存在，并据无采集投影压住旧的"再次获取"。
+  if (result.outcome === "no-change") {
+    if (result.reason === undefined) {
+      toast.success("这项来源已经存在");
+      await Promise.all([
+        reload(),
+        loadCorrection(),
+        loadConflictEvidence(),
+        loadSourceRetries(),
+      ]);
+      return;
+    }
+    await Promise.all([loadCorrection(), loadSourceRetries()]);
+    toast.info(result.reason);
+    return;
+  }
+  await loadSourceRetries();
+  throw new Error(result.reason ?? "没有找到可采用的元数据");
+}
+async function retryEnrichment(target: {
+  executionId: string;
+  subjectId: string;
+  sourceIdentity: string;
+}) {
+  if (busy.value) return;
+  busy.value = true;
+  operationError.value = "";
+  try {
+    const started = await post<{ readonly id: string }>(
+      "/api/source-enrichments/retry",
+      target,
+    );
+    await settleEnrichment(started.id);
+  } catch (cause) {
+    operationError.value = message(cause, "暂时无法再次获取");
   } finally {
     busy.value = false;
   }
@@ -494,7 +724,8 @@ async function decideCorrection(action: "apply" | "reject") {
     if (result.status === "stale") throw new Error("结果已经变化，请重新查询");
     toast.success(action === "apply" ? "来源已更正" : "已取消更正");
     decision.value = undefined;
-    if (action === "apply") await Promise.all([reload(), loadCorrection()]);
+    if (action === "apply")
+      await Promise.all([reload(), loadCorrection(), loadConflictEvidence()]);
   } catch (cause) {
     operationError.value = message(cause, "暂时无法处理这次更正");
   } finally {
@@ -565,17 +796,42 @@ function message(cause: unknown, fallback: string) {
   return cause instanceof Error ? cause.message : fallback;
 }
 
+async function loadDirectTarget() {
+  if (requestedAssetId.length === 0) return;
+  directLoading.value = true;
+  directMissing.value = false;
+  try {
+    const result = await requestCatalogueSubject(requestedAssetId);
+    if (result === undefined) {
+      directMissing.value = true;
+      return;
+    }
+    directSubject.value = result.asset;
+    const candidates = assetOption(result.asset);
+    const wanted = result.selectedEpisodeId ?? requestedAssetId;
+    selectedAssetId.value =
+      candidates.find((option) => option.id === wanted)?.id ??
+      candidates.find((option) => option.id === requestedAssetId)?.id ??
+      candidates[0]?.id ??
+      requestedAssetId;
+  } catch {
+    directMissing.value = true;
+  } finally {
+    directLoading.value = false;
+  }
+}
+
 watch(
   assets,
   (items) => {
+    // 带明确 URL 目标时只按稳定 ID 装载，绝不因列表未包含而回退首项。
+    if (requestedAssetId.length > 0) return;
     if (
       !items.length ||
       items.some((item) => item.id === selectedAssetId.value)
     )
       return;
-    const requested = pageContext.urlParsed.search.asset;
-    selectedAssetId.value =
-      items.find((item) => item.id === requested)?.id ?? items[0]!.id;
+    selectedAssetId.value = items[0]!.id;
   },
   { immediate: true },
 );
@@ -583,10 +839,16 @@ watch(selectedAssetId, () => {
   decision.value = undefined;
   operationError.value = "";
   selectedFiles.value = [];
+  selectedLibraryId.value = "";
   void loadCorrection();
+  void loadConflictEvidence();
+  void loadSourceRetries();
 });
 watch(requirement, resetForm);
-onMounted(() => void loadRequirements());
+onMounted(() => {
+  void loadRequirements();
+  void loadDirectTarget();
+});
 </script>
 
 <template>
@@ -594,7 +856,24 @@ onMounted(() => void loadRequirements());
     <header class="mb-6">
       <h1 class="text-2xl font-semibold tracking-tight">整理内容</h1>
       <div
-        v-if="loading"
+        v-if="directLoading || (loading && requestedAssetId.length > 0)"
+        class="mt-4 flex items-center gap-3 rounded-xl border p-3"
+      >
+        <Skeleton class="h-9 flex-1" /><Skeleton class="h-6 w-14" />
+      </div>
+      <div
+        v-else-if="directMissing"
+        class="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/40 bg-destructive/[0.04] p-3"
+      >
+        <span class="text-sm text-destructive"
+          >没有找到要整理的内容，它可能已被移除。</span
+        >
+        <Button as="a" href="/intake" size="sm" variant="outline"
+          >返回内容库</Button
+        >
+      </div>
+      <div
+        v-else-if="loading"
         class="mt-4 flex items-center gap-3 rounded-xl border p-3"
       >
         <Skeleton class="h-9 flex-1" /><Skeleton class="h-6 w-14" />
@@ -607,7 +886,7 @@ onMounted(() => void loadRequirements());
         <Button size="sm" variant="outline" @click="reload">重试</Button>
       </div>
       <div
-        v-else-if="assets.length"
+        v-else-if="options.length"
         class="mt-4 flex flex-wrap items-center gap-3 rounded-xl border bg-muted/20 p-3"
       >
         <span class="text-sm font-medium">正在整理</span>
@@ -618,7 +897,7 @@ onMounted(() => void loadRequirements());
             ><SelectValue
           /></SelectTrigger>
           <SelectContent>
-            <SelectItem v-for="item in assets" :key="item.id" :value="item.id">
+            <SelectItem v-for="item in options" :key="item.id" :value="item.id">
               {{ item.title }}
             </SelectItem>
           </SelectContent>
@@ -630,7 +909,13 @@ onMounted(() => void loadRequirements());
     </header>
 
     <div
-      v-if="!loading && !error && !assets.length"
+      v-if="
+        !directLoading &&
+        !directMissing &&
+        !loading &&
+        !error &&
+        !options.length
+      "
       class="grid min-h-72 place-content-center justify-items-center gap-4 rounded-xl border border-dashed"
     >
       <p class="text-muted-foreground">还没有可以整理的内容</p>
@@ -660,6 +945,37 @@ onMounted(() => void loadRequirements());
           </span>
         </button>
       </div>
+
+      <Alert v-if="sourceRetries.length" class="mt-4">
+        <CircleAlert />
+        <AlertTitle>有元数据上次没有取到</AlertTitle>
+        <AlertDescription>
+          <template v-if="retryableFailures.length">
+            <span>以下来源可以再获取一次；这不会改动本地已经确认的内容。</span>
+            <div class="mt-2 flex flex-wrap gap-2">
+              <Button
+                v-for="item in retryableFailures"
+                :key="`${item.executionId}-${item.sourceIdentity}`"
+                size="sm"
+                variant="outline"
+                :disabled="busy"
+                @click="retryEnrichment(item)"
+                ><RefreshCw />再次获取{{
+                  sourceName(item.sourceIdentity)
+                }}</Button
+              >
+            </div>
+          </template>
+          <p v-if="unreliableFailures.length" class="mt-2">
+            {{
+              unreliableFailures
+                .map((item) => sourceName(item.sourceIdentity))
+                .join("、")
+            }}
+            的旧记录已缺少可靠依据，无法自动再次获取；请重新填写来源发起定向补充。
+          </p>
+        </AlertDescription>
+      </Alert>
 
       <div class="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_17rem]">
         <Card class="shadow-none">
@@ -799,6 +1115,35 @@ onMounted(() => void loadRequirements());
               </div>
 
               <div
+                v-if="
+                  intent === 'add' &&
+                  ownedLibraries.length >= 2 &&
+                  routeLibraryId.length === 0
+                "
+                class="grid gap-2 text-sm font-medium"
+              >
+                <span>这项内容存在于多个资产库，请选择要依据的资产库</span>
+                <Select
+                  :model-value="selectedLibraryId"
+                  @update:model-value="
+                    (value) => (selectedLibraryId = String(value))
+                  "
+                >
+                  <SelectTrigger class="w-full"
+                    ><SelectValue placeholder="选择资产库"
+                  /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem
+                      v-for="item in ownedLibraries"
+                      :key="item.id"
+                      :value="item.id"
+                      >{{ item.displayName }}</SelectItem
+                    >
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div
                 class="grid gap-3"
                 :class="intent === 'add' && 'sm:grid-cols-[12rem_1fr]'"
               >
@@ -904,7 +1249,7 @@ onMounted(() => void loadRequirements());
               <Button
                 v-if="decision?.state !== 'awaiting-selection'"
                 class="w-full"
-                :disabled="!inputsComplete || busy"
+                :disabled="!inputsComplete || needsLibrarySelection || busy"
                 @click="intent === 'add' ? addSource() : correctSource()"
               >
                 <LoaderCircle v-if="busy" class="animate-spin" />
@@ -923,6 +1268,91 @@ onMounted(() => void loadRequirements());
             <p v-if="asset.detail" class="mt-2 text-sm text-muted-foreground">
               {{ asset.detail }}
             </p>
+          </div>
+          <div
+            v-if="
+              conflictEvidenceView.length ||
+              basis?.conflictReasons.length ||
+              basis?.problemReasons.length
+            "
+            class="space-y-2 rounded-lg border bg-background p-3"
+          >
+            <p class="text-sm font-medium">资料依据</p>
+            <ul
+              v-if="basis?.conflictFields.length"
+              class="flex flex-wrap gap-1.5"
+            >
+              <li
+                v-for="field in basis.conflictFields"
+                :key="field"
+                class="rounded bg-secondary px-2 py-0.5 text-xs"
+              >
+                {{ field }}
+              </li>
+            </ul>
+            <div
+              v-for="conflict in conflictEvidenceView"
+              :key="conflict.property"
+              class="space-y-1"
+            >
+              <p class="text-xs font-medium">{{ conflict.label }}的实际候选</p>
+              <ul class="grid gap-1 text-xs">
+                <li
+                  v-for="candidate in conflict.candidates"
+                  :key="candidate.key"
+                  class="flex flex-wrap items-baseline gap-x-1.5"
+                >
+                  <span class="break-all font-medium">{{
+                    candidate.value
+                  }}</span>
+                  <span class="text-muted-foreground"
+                    >（来自 {{ candidate.source }}）</span
+                  >
+                </li>
+              </ul>
+            </div>
+            <ul v-if="basis?.conflictReasons.length" class="grid gap-1 text-xs">
+              <li
+                v-for="reason in basis.conflictReasons"
+                :key="reason"
+                class="text-muted-foreground"
+              >
+                {{ reason }}
+              </li>
+            </ul>
+            <ul v-if="basis?.problemReasons.length" class="grid gap-1 text-xs">
+              <li
+                v-for="reason in basis.problemReasons"
+                :key="reason"
+                class="text-muted-foreground"
+              >
+                {{ reason }}
+              </li>
+            </ul>
+          </div>
+          <div
+            v-if="basisRecords.length"
+            class="space-y-2 rounded-lg border bg-background p-3"
+          >
+            <p class="text-sm font-medium">来源关联</p>
+            <p class="text-xs text-muted-foreground">
+              这些记录只用于查看来源关联，并不代表资料冲突的依据。
+            </p>
+            <ul class="grid gap-2 text-xs">
+              <li
+                v-for="record in basisRecords"
+                :key="record.key"
+                class="grid gap-0.5"
+              >
+                <span class="font-medium">{{
+                  sourceName(record.sourceIdentity)
+                }}</span>
+                <span class="text-muted-foreground">{{ record.state }}</span>
+                <span class="break-all text-muted-foreground">{{
+                  record.nativeAddress
+                }}</span>
+              </li>
+            </ul>
           </div>
           <div>
             <p class="text-sm text-muted-foreground">元数据来源</p>

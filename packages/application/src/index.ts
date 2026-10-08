@@ -5,25 +5,28 @@ import {
   type Artifact,
   type ArtifactAssociation,
   type ArtifactRevision,
+  type ArtifactRoleDecision,
   type Blob,
   type CapabilityCoordinate,
   type CreateSourceRefreshRunInput,
+  type DescriptionTarget,
   type DigitalAsset,
-  deriveEffectiveArtifactAssociation,
   deriveEffectiveMetadata,
   type EffectiveMetadata,
   type EvidenceComparison,
   type Location,
   type MetadataAssertion,
   type MetadataPolicy,
-  type MetadataPolicyConflict,
-  type MetadataValueConflict,
   type ObservedMaterialAssociationSubmission,
   type ObservedMaterialAssociationAudit,
   type ObservedMaterialAssociationProjection,
   type RecognitionEvidence,
   type RecognitionDecision,
+  type RecognitionMaterialBoundary,
+  sameRecognitionMaterialBoundaries,
+  projectArtifactRoleDecisionHead,
   type RecognitionBasis,
+  type ObservedArtifactAssociationCandidate,
   type RecognitionProposal,
   type RecognitionProposalDraft,
   type RecognitionRuleResult,
@@ -42,8 +45,15 @@ import {
   type ObservedEntityGraphCandidate,
   type SourceInterpretationBatch,
   type SourceRecord,
+  decodeLibraryScanDirectoryCoverage,
+  decodeLibraryScanPlan,
+  type LibraryScanDirectoryCoverage,
+  type LibraryScanDirectoryPlan,
+  type LibraryScanDirectoryUnavailable,
+  type LibraryScanPlan,
   recognitionSourceInterpretation,
   validateAcceptedRecognition,
+  validateArtifactRoleDecision,
   validateMetadataPolicy,
   validateObservedEntityGraphCandidates,
   validateRecognitionProposal,
@@ -54,28 +64,80 @@ import {
 } from "@digital/domain";
 
 import {
+  assetLibraryCapabilityToken,
+  assetLibrarySnapshotFingerprint,
+  assetLibrarySnapshotSourceScope,
+  decodeAssetLibrarySnapshot,
+  type AssetLibraries,
+  type AssetLibraryCapability,
+  type AssetLibrarySnapshot,
+  type AssetLibrarySnapshotSource,
+} from "./asset-libraries.ts";
+import {
   assetRefreshSelectionVersion,
   assertAssetRefreshSelection,
   freezeAssetRefreshSelection,
   type AssetRefreshSelection,
   type ResolvedAssetRefreshSelection,
 } from "./asset-refresh-selection.ts";
+import {
+  artifactRoleCandidates,
+  descriptionTargetKey,
+  readEffectiveSubject,
+  subjectConflictEvidence,
+  type ArtifactRoleCandidate,
+  type CurrentLocationRead,
+  type EffectiveArtifactRoleRead,
+  type EffectiveSubjectRead,
+  type RelationshipReadBasis,
+  type SubjectConflictEvidence,
+  type SubjectFactBasis,
+} from "./effective-fact-reads.ts";
 import type {
   ExecutionHost,
   ExecutionInvocationControl,
+  OperationLease,
 } from "./execution-host.ts";
 import {
-  blockedInformationReadiness,
   InformationFulfillment,
   type InformationFulfillmentCapability,
   type InformationFulfillmentInitiation,
   type InformationFulfillmentPendingReconciliation,
   type InformationFulfillmentPlan,
+  type InformationFulfillmentPlanEnvelope,
+  type InformationFulfillmentPreparation,
   type InformationFulfillmentStart,
   type InformationReadiness,
   type InformationSubjectFacts,
+  type InformationSubjectReadiness,
   type InformationSubjectSelection,
+  terminalInformationReadiness,
 } from "./information-fulfillment.ts";
+import {
+  decodeFrozenDirectoryAuthorizations,
+  type FrozenDirectoryAuthorization,
+} from "./library-directory-grants.ts";
+import {
+  coveredWorkItems,
+  libraryScanDirectoryFromPlan,
+  libraryScanDirectoryResult,
+  libraryScanEntryOutcome,
+  libraryScanLedgerWrite,
+  planLibraryScanDirectories,
+  sanitizeScanReason,
+  summarizeLibraryScan,
+  type LibraryScanChildCoordinates,
+  type LibraryScanDirectoryInspection,
+  type LibraryScanDirectoryRecord,
+  type LibraryScanDirectoryResult,
+  type LibraryScanDirectoryStage,
+  type LibraryScanDirectoryWorkItem,
+  type LibraryScanEntryOutcome,
+  type LibraryScanInspection,
+  type LibraryScanInspectionDetail,
+  type LibraryScanRun,
+  type UnrecognizedLibraryScanObservation,
+} from "./library-scan-plan.ts";
 import type { MetadataPolicyConfiguration } from "./metadata-policy-configuration.ts";
 import {
   decodeObservedRootSnapshot,
@@ -91,6 +153,19 @@ import {
   type ObservedRootSnapshot,
   ObservedRootUnavailable,
 } from "./observed-root-registrations.ts";
+import {
+  bindRecognitionMaterialBoundaries,
+  groupMaterialScopeDeclarations,
+  isWithinObservedDirectory,
+  observedAddress,
+  materialScopeDeclarationBaseline,
+  materialScopeDeclarationsIntersect,
+  reconcileRecognitionMaterialPlans,
+  RecognitionBoundaryBaselineStale,
+  type EffectiveRecognitionMaterialBoundary,
+  type MaterialScopeDeclaration,
+  type PlannedMaterialBoundary,
+} from "./recognition-material-boundaries.ts";
 import {
   type RelationshipTypeDefinition,
   validateDeclaredRelationships,
@@ -112,10 +187,14 @@ export * from "./information-fulfillment.ts";
 export * from "./execution-host.ts";
 export * from "./workflow-invocation-lifecycle.ts";
 export * from "./observed-root-registrations.ts";
+export * from "./asset-libraries.ts";
 export * from "./observed-root-authority.ts";
 export * from "./observed-root-execution.ts";
 export * from "./source-connection-private-state.ts";
 export * from "./source-connection.ts";
+export * from "./recognition-material-boundaries.ts";
+export * from "./library-scan-plan.ts";
+export * from "./library-directory-grants.ts";
 
 export * from "./asset-refresh-selection.ts";
 export * from "./artifact-byte-access.ts";
@@ -136,6 +215,7 @@ export {
   type RelationshipDraft,
 } from "@digital/domain";
 export * from "./metadata-policy-configuration.ts";
+export * from "./effective-fact-reads.ts";
 
 export type FileObservation = {
   readonly relativePath: string;
@@ -319,6 +399,11 @@ export type ExplicitSourceEnrichmentInput = {
   readonly subjectId: string;
   readonly sourceIdentity: string;
   readonly sourceInput: Readonly<Record<string, string>>;
+  /**
+   * 明确资产库语境：定向补充须在效果前原子冻结该库当前完整 09 来源／能力快照。缺此依据且调用方
+   * 未范围化到某一库时，绝不借今日全局能力伪称补充，只引导从明确资产库重新发起。
+   */
+  readonly assetLibraryId?: string;
   readonly informationRequirement?: InformationRequirement;
   readonly initiatedBy?: string;
   readonly onExecutionStarted?: (execution: WorkflowExecution) => void;
@@ -332,7 +417,10 @@ export type ExplicitSourceEnrichmentInput = {
 export type SourceAssociationCandidateInterpreter = {
   readonly capability: CapabilityCoordinate;
   interpret(
-    input: SourceEnrichmentInput,
+    input: SourceEnrichmentInput & {
+      /** 本次调用读取的已接受观察依据；耐久关联检查点仍绑定原识别决定。 */
+      readonly observedEvidence?: readonly RecognitionEvidence[];
+    },
   ): import("@digital/domain").RecognitionEvidence | undefined;
 };
 
@@ -363,6 +451,12 @@ export type CurrentLocationRevisionSelection = {
 };
 
 export type AcceptedAssetState = AcceptedRecognition & {
+  readonly relationshipReadBasis?: RelationshipReadBasis;
+  /**
+   * 主头为空时点名的生效决定只提供读取依据，绝不构成当前身份；null 明确表达
+   * 「头存在但没有决定」，缺省表示读取的就是主头决定。
+   */
+  readonly recognitionHeadDecisionId?: string | null;
   /** 当前读取的相关实体种类只能来自生效投影。 */
   readonly currentRelatedEntities?: readonly import("@digital/domain").CurrentRelatedEntity[];
   readonly artifactAssociationRecognitionSupports?: readonly {
@@ -376,6 +470,8 @@ export type AcceptedAssetState = AcceptedRecognition & {
     readonly nativeAddress?: string;
   }[];
   readonly currentLocationRevisions?: readonly CurrentLocationRevisionSelection[];
+  /** 当前生效的人工产物角色决定头，与观察支持一样只来自这份耐久读取。 */
+  readonly artifactRoleDecisions?: readonly ArtifactRoleDecision[];
 };
 
 /**
@@ -398,6 +494,16 @@ export type ObservedArtifactReuseMatch =
     };
 
 export type AssetStateProjection = {
+  /** 原始依据随预演冻结；普通视图只接收 preview.facts。 */
+  readonly readBasis?: Pick<
+    SubjectFactBasis,
+    | "sourceAssociations"
+    | "metadataSourceRecords"
+    | "relationshipReadBasis"
+    | "currentRelatedEntities"
+    | "currentLocationRevisions"
+    | "artifactRoleDecisions"
+  >;
   readonly recognitionState?: "recognized" | "unresolved";
   readonly recognitionDecisionId?: string;
   readonly sourceAssociations: readonly Pick<
@@ -419,7 +525,6 @@ export type AssetStateProjection = {
   readonly artifactRevisions: readonly import("@digital/domain").ArtifactRevision[];
   readonly currentLocationRevisions?: readonly CurrentLocationRevisionSelection[];
   readonly artifactAssociations: readonly ArtifactAssociation[];
-  readonly primaryCoverArtifactId?: string;
 };
 
 export type PublicAssetStateProjection = Omit<
@@ -432,6 +537,7 @@ export type PublicAssetStateProjection = Omit<
   | "locations"
   | "artifactRevisions"
   | "artifactAssociations"
+  | "readBasis"
 > & {
   readonly metadata: readonly Omit<
     import("@digital/domain").MetadataAssertion,
@@ -512,6 +618,29 @@ export type ChangeImpactPreview = {
     | {
         readonly kind: "recognition-retraction";
         readonly intent: import("@digital/domain").RecognitionDecisionRetractionIntent;
+      }
+    | {
+        /**
+         * 明确的范围追加／修订：提案携带完整声明的全部边界，主头只在点名的就是主头时
+         * 前进；追加不会把新材料并成第二个身份，也不会改写主身份。
+         */
+        readonly kind: "recognition-scope-amendment";
+        readonly proposal: RecognitionProposal;
+        readonly successorDecisionId: string;
+        /** 点名的前驱决定：确认即结束它，主头只在点名的就是主头时前进。 */
+        readonly predecessorDecisionId: string;
+        /** 冻结这份基线时所用的完整范围地址，事务内按同一范围重查比较。 */
+        readonly scopeAddress: string;
+      }
+    | {
+        /**
+         * 人工封面决定：确认时按点名的期望头 CAS 追加这一条后继并原子推进头。
+         * 它不引入新策略层，也不改变其他角色。
+         */
+        readonly kind: "artifact-role-decision";
+        readonly decision: ArtifactRoleDecision;
+        /** 冻结时的当前头决定标识；无头时刻意为 null，事务内按同一坐标重查。 */
+        readonly expectedHeadDecisionId: string | null;
       };
   readonly evidenceComparison: import("@digital/domain").EvidenceComparison;
   /** 应用确认时仍必须成立的每个值。 */
@@ -523,6 +652,16 @@ export type ChangeImpactPreview = {
   readonly current: AssetStateProjection;
   /** 变更后由同一应用投影推导的完整状态。 */
   readonly projected: AssetStateProjection;
+  readonly facts?: {
+    readonly current: EffectiveSubjectRead;
+    readonly projected: EffectiveSubjectRead;
+  };
+  /**
+   * 形成预演时冻结的消费需求与使用语境；current 与 projected 都据此走同一
+   * `readEffectiveSubject`，从而与确认后同需求普通详情含义一致。普通语境留空，
+   * 与详情读取的普通分支一样不额外施加选择器。旧预演不携带该字段，保持可明确检查。
+   */
+  readonly requestContext?: InformationRequirement | undefined;
   /**
    * 仅供 durable supersession apply 重建下一份已接受观察图；交付 DTO 刻意不公开它。
    * 当前性仍由 successor RecognitionDecision 唯一决定。
@@ -543,6 +682,47 @@ export type RecognitionSupersessionPlan = {
   readonly recognitionSourceAssociation?: SourceAssociation;
 };
 
+/**
+ * 范围追加或修订的落库计划：新决定携带完整声明边界，主头只在点名的前驱就是主头时
+ * 前进。纯追加不前移主头，也不新建第二个身份。
+ */
+export type RecognitionScopeAmendmentPlan = {
+  readonly successorDecision: RecognitionDecision;
+  /** 被点名的决定由这份后继取代；主头是否前进由数据库里的当前主头决定。 */
+  readonly supersession: {
+    readonly id: string;
+    readonly predecessorDecisionId: string;
+    readonly successorDecisionId: string;
+  };
+  /** 冻结范围基线时使用的完整范围地址；事务内按同一范围重查比较。 */
+  readonly scopeAddress: string;
+};
+
+/**
+ * 人工封面候选的稳定不透明引用：只由当前有精确图片依据的封面关联三元组导出，
+ * 交付层因此不能伪造路径、任意材料图或旧修订。
+ */
+export type ArtifactRoleCandidateInspection = {
+  readonly reference: string;
+  readonly kind: "observed" | "managed";
+  readonly locationId: string;
+  readonly address: string;
+};
+
+/** 封面卡一次读取所需的全部当前事实：候选、生效选择、人工意图与可理解的问题。 */
+export type ArtifactRoleCoverInspection = {
+  readonly entityId: string;
+  readonly candidates: readonly ArtifactRoleCandidateInspection[];
+  /** 当前生效封面所在候选的引用；同级冲突或人工选择失效时为空。 */
+  readonly effectiveReference?: string;
+  /** 当前人工意图；clear 表示曾撤回，缺省表示从未选择。 */
+  readonly decision?: {
+    readonly kind: "select" | "clear";
+    readonly reference?: string;
+  };
+  readonly problems: readonly string[];
+};
+
 /** 安全的交付 DTO；原始提议和条件基线保留在内部。 */
 export type ChangeImpactPreviewInspection = {
   readonly id: string;
@@ -554,6 +734,10 @@ export type ChangeImpactPreviewInspection = {
   readonly recognitionSourceAssociation?: ChangeImpactPreview["projected"]["recognitionSourceAssociation"];
   readonly current: PublicAssetStateProjection;
   readonly projected: PublicAssetStateProjection;
+  readonly facts?: {
+    readonly current: EffectiveSubjectRead;
+    readonly projected: EffectiveSubjectRead;
+  };
   readonly metadataCount: number;
   readonly entityCount: number;
   readonly mentionCount: number;
@@ -627,22 +811,78 @@ export type AssetRefreshWorkflowInput = {
   readonly acceptTrusted: boolean;
   readonly configurationReferences: readonly string[];
   readonly observedRoots?: readonly ObservedRootSnapshot[];
+  readonly assetLibrary?: AssetLibrarySnapshot;
+  /**
+   * 本次目录工作冻结的本库目录授权账目（授权 ID 对应的物理根与权威版本）。它是 I/O 撤销
+   * 判据，与配置版本刻意分离：普通改名或能力、来源配置编辑不影响它，目录或库移除、链接
+   * 授权改变、显式重连才推进版本，从而让旧工作的下一次效果、提交或恢复被持久拒绝。
+   */
+  readonly directoryAuthorizations?: readonly FrozenDirectoryAuthorization[];
+  /**
+   * 一次耐久资产库扫描父执行冻结的目录计划。父级协调只读它，绝不从今日库配置重选
+   * 代表或补字段。
+   */
+  readonly libraryScan?: LibraryScanPlan;
+  /**
+   * 派生工作（信息履行及其获取子执行）与 08 目录子共享的父执行身份载体；监督关系
+   * 因此不依赖 initiatedBy 文案前缀。`directoryCoverage` 是本次物理观察对同父其他
+   * 目录的只读覆盖映射。
+   */
+  readonly parentExecutionId?: string;
+  readonly parentDirectoryKey?: string;
+  readonly directoryCoverage?: readonly LibraryScanDirectoryCoverage[];
   readonly operation?: {
-    readonly version: "information-fulfillment-operation/1";
+    /**
+     * `/1` 是历史 child 的原样记录，刻意没有操作身份；新 child 一律使用 `/2` 并携带账本里的
+     * 稳定 operation ID，因此恢复能逐项核对 parent、subject 与具体计划。
+     */
+    readonly version:
+      | "information-fulfillment-operation/1"
+      | "information-fulfillment-operation/2";
     readonly kind: InformationFulfillmentPlan["operation"];
     readonly subjectId: string;
     readonly sourceIdentity: string;
     readonly sourceAssociationId?: string;
+    readonly operationId?: string;
+  };
+  /**
+   * 显式"再次获取"终态失败来源补充项时，新执行在创建时耐久持有的具体操作意图：前次执行、
+   * 所选主体/来源、精确规范地址与（显式项）必要非秘密规范化输入。首来源检查点之前中断后，
+   * 正式 resume 据此只续同新 ID、同精确操作，绝不改走普通自动补充、不重开旧失败项、不用当前
+   * 候选替换显式输入。刻意只记录重放该单项所需的最小可逆非秘密字段，不扩为通用工作流定义。
+   */
+  readonly sourceEnrichmentRetry?: {
+    readonly version: "source-enrichment-retry/1";
+    readonly priorExecutionId: string;
+    readonly subjectId: string;
+    readonly sourceIdentity: string;
+    readonly sourceAddress: string;
+    readonly explicitInput?: Readonly<Record<string, string>>;
+    /**
+     * 显式 retry 创建时耐久绑定的精确寻址能力坐标（实现／合同版本）。恢复据此严校当前能力，
+     * 缺失／不唯一／改址／版本漂移一律零效果；绝不借今日全局新版本，也不以同地址替代版本兼容。
+     */
+    readonly addressingCapability?: {
+      readonly capabilityId: string;
+      readonly capabilityVersion: string;
+      readonly contractVersion: string;
+    };
   };
 };
 
 export type ObservedMaterialAssociationWorkflowInput = {
+  readonly assetLibrary?: undefined;
+  readonly parentExecutionId?: undefined;
   readonly version: "observed-material-association-input/1";
   readonly trigger: "interactive";
   readonly initiatedBy: string;
   readonly acceptTrusted: false;
   readonly configurationReferences: readonly string[];
   readonly observedRoots?: undefined;
+  readonly libraryScan?: undefined;
+  readonly directoryAuthorizations?: undefined;
+  readonly parentDirectoryKey?: undefined;
+  readonly directoryCoverage?: undefined;
   readonly operation?: undefined;
   readonly targetAssetId: string;
   readonly registrationId: string;
@@ -651,6 +891,8 @@ export type ObservedMaterialAssociationWorkflowInput = {
 };
 
 export type SourceAssociationDecisionWorkflowInput = {
+  readonly assetLibrary?: undefined;
+  readonly parentExecutionId?: undefined;
   readonly version: "source-association-decision-input/1";
   readonly trigger: "interactive";
   readonly initiatedBy: string;
@@ -664,6 +906,10 @@ export type SourceAssociationDecisionWorkflowInput = {
   readonly reason?: string;
   readonly priorExecutionId?: string;
   readonly observedRoots?: undefined;
+  readonly libraryScan?: undefined;
+  readonly directoryAuthorizations?: undefined;
+  readonly parentDirectoryKey?: undefined;
+  readonly directoryCoverage?: undefined;
   readonly operation?: undefined;
 };
 
@@ -843,6 +1089,13 @@ export function decodeAssetRefreshWorkflowInput(
     "configurationReferences",
     "observedRoots",
     "operation",
+    "assetLibrary",
+    "directoryAuthorizations",
+    "libraryScan",
+    "parentExecutionId",
+    "parentDirectoryKey",
+    "directoryCoverage",
+    "sourceEnrichmentRetry",
   ]);
   if (Object.keys(input).some((key) => !allowed.has(key)))
     return { valid: false, reason: "刷新版本化输入包含不支持的字段" };
@@ -868,6 +1121,33 @@ export function decodeAssetRefreshWorkflowInput(
   )
     return { valid: false, reason: "刷新版本化输入配置引用无效" };
   let operation: AssetRefreshWorkflowInput["operation"];
+  const assetLibrary =
+    input.assetLibrary === undefined
+      ? undefined
+      : decodeAssetLibrarySnapshot(input.assetLibrary);
+  if (input.assetLibrary !== undefined && assetLibrary === undefined)
+    return { valid: false, reason: "刷新输入的资产库配置无效" };
+  // 冻结的库目录授权是 I/O 权威，而非库配置代次：缺失表示本票之前的旧执行，持久复核
+  // 按种子代次处理；出现但为空只可能是无授权库，两者都绝不以今日配置补齐。
+  let directoryAuthorizations:
+    | readonly FrozenDirectoryAuthorization[]
+    | undefined;
+  if (input.directoryAuthorizations !== undefined) {
+    directoryAuthorizations = decodeFrozenDirectoryAuthorizations(
+      input.directoryAuthorizations,
+    );
+    if (directoryAuthorizations === undefined)
+      return { valid: false, reason: "刷新输入的库目录授权无效" };
+  }
+  if (
+    input.parentExecutionId !== undefined &&
+    (typeof input.parentExecutionId !== "string" ||
+      input.parentExecutionId.length === 0)
+  )
+    return { valid: false, reason: "刷新版本化输入的父执行身份无效" };
+  // 派生获取必须自带完整库归属；缺少快照的旧输入不再借用当前配置补齐。
+  if (input.trigger === "information-fulfillment" && assetLibrary === undefined)
+    return { valid: false, reason: "信息履行输入缺少资产库归属" };
   let observedRoots: readonly ObservedRootSnapshot[] | undefined;
   if (input.observedRoots !== undefined) {
     if (!Array.isArray(input.observedRoots)) {
@@ -901,10 +1181,12 @@ export function decodeAssetRefreshWorkflowInput(
       "subjectId",
       "sourceIdentity",
       "sourceAssociationId",
+      "operationId",
     ]);
     if (
       Object.keys(candidate).some((key) => !operationAllowed.has(key)) ||
-      candidate.version !== "information-fulfillment-operation/1" ||
+      (candidate.version !== "information-fulfillment-operation/1" &&
+        candidate.version !== "information-fulfillment-operation/2") ||
       (candidate.kind !== "source-refresh" &&
         candidate.kind !== "source-artifact-acquisition") ||
       typeof candidate.subjectId !== "string" ||
@@ -913,7 +1195,12 @@ export function decodeAssetRefreshWorkflowInput(
       candidate.sourceIdentity.length === 0 ||
       (candidate.sourceAssociationId !== undefined &&
         (typeof candidate.sourceAssociationId !== "string" ||
-          candidate.sourceAssociationId.length === 0))
+          candidate.sourceAssociationId.length === 0)) ||
+      // 历史 `/1` 不能猜造操作身份；新 `/2` 必须携带账本里的稳定身份。
+      (candidate.version === "information-fulfillment-operation/1"
+        ? candidate.operationId !== undefined
+        : typeof candidate.operationId !== "string" ||
+          candidate.operationId.length === 0)
     )
       return { valid: false, reason: "信息履行操作输入无效" };
     operation = candidate as AssetRefreshWorkflowInput["operation"];
@@ -923,6 +1210,156 @@ export function decodeAssetRefreshWorkflowInput(
     (operation !== undefined)
   )
     return { valid: false, reason: "信息履行触发与操作输入不一致" };
+  let libraryScan: LibraryScanPlan | undefined;
+  if (input.libraryScan !== undefined) {
+    const decoded = decodeLibraryScanPlan(input.libraryScan);
+    if (!decoded.valid) return { valid: false, reason: decoded.reason };
+    libraryScan = decoded.plan;
+    if (input.parentExecutionId !== undefined)
+      return { valid: false, reason: "库扫描父执行不能声明自己的父执行" };
+    if (
+      assetLibrary !== undefined &&
+      (assetLibrary.id !== libraryScan.assetLibraryId ||
+        assetLibrary.configVersion !== libraryScan.configVersion)
+    )
+      return { valid: false, reason: "库扫描计划与冻结的资产库配置不一致" };
+  }
+  const parentExecutionId = input.parentExecutionId;
+  // 08 目录子的父归属坐标：目录键出现时必须同时具备非空父执行身份与非空目录键。此守卫
+  // 同时为下面的返回提供 parentDirectoryKey 的 string 收窄，不新增字段或版本。
+  if (
+    input.parentDirectoryKey !== undefined &&
+    (parentExecutionId === undefined ||
+      typeof input.parentDirectoryKey !== "string" ||
+      input.parentDirectoryKey.length === 0)
+  )
+    return { valid: false, reason: "库扫描目录子的父归属坐标不完整" };
+  // 覆盖映射只随 08 目录子出现：目录键缺失时必须拒绝而不是回落到 09 单父 ID 形状，
+  // 绝不把已校验的有效 coverage 静默丢弃。
+  if (
+    input.directoryCoverage !== undefined &&
+    input.parentDirectoryKey === undefined
+  )
+    return { valid: false, reason: "库扫描目录子的父归属坐标不完整" };
+  // 09 单父 ID 只可伴随真实 information-fulfillment 操作，或 13 的耐久来源重试意图：该意图
+  // 自带主体／来源／精确地址的严格解码（下方进行），是已批准的首检查点前续跑耐久依据，因此
+  // 正式 retry 创建的输入必须能按同一形状读回。这里只区分父载体形状，绝不放行畸形意图，也
+  // 绝不据今日配置或能力补全旧意图；无目录字段、无操作又无重试意图的普通混形继续按非法拒绝。
+  if (
+    parentExecutionId !== undefined &&
+    operation === undefined &&
+    input.parentDirectoryKey === undefined &&
+    input.directoryCoverage === undefined &&
+    input.sourceEnrichmentRetry === undefined
+  )
+    return { valid: false, reason: "刷新版本化输入的父执行身份无效" };
+  // 两种父载体互斥：09 的 information-fulfillment 操作绝不携带 08 目录坐标。任一目录字段
+  // 出现即属目录子形状，须走完整 08 坐标而非操作派生归属，不得让派生输入作用于目录覆盖。
+  if (
+    operation !== undefined &&
+    (input.parentDirectoryKey !== undefined ||
+      input.directoryCoverage !== undefined)
+  )
+    return { valid: false, reason: "刷新版本化输入的父执行身份无效" };
+  let directoryCoverage: readonly LibraryScanDirectoryCoverage[] | undefined;
+  if (input.directoryCoverage !== undefined) {
+    if (!Array.isArray(input.directoryCoverage))
+      return { valid: false, reason: "库扫描覆盖映射无效" };
+    const decoded = input.directoryCoverage.map(
+      decodeLibraryScanDirectoryCoverage,
+    );
+    if (
+      decoded.some(
+        (coverage) =>
+          coverage === undefined ||
+          libraryScanPlanCoverageConflict(coverage, input.observedRoots),
+      ) ||
+      new Set(decoded.map((coverage) => coverage?.scopeReference ?? ""))
+        .size !== decoded.length
+    )
+      return { valid: false, reason: "库扫描覆盖映射无效" };
+    directoryCoverage = decoded as readonly LibraryScanDirectoryCoverage[];
+  }
+  let sourceEnrichmentRetry: AssetRefreshWorkflowInput["sourceEnrichmentRetry"];
+  if (input.sourceEnrichmentRetry !== undefined) {
+    const retry = input.sourceEnrichmentRetry;
+    if (typeof retry !== "object" || retry === null || Array.isArray(retry))
+      return { valid: false, reason: "来源补充重试意图必须是对象" };
+    const intent = retry as Record<string, unknown>;
+    const retryAllowed = new Set([
+      "version",
+      "priorExecutionId",
+      "subjectId",
+      "sourceIdentity",
+      "sourceAddress",
+      "explicitInput",
+      "addressingCapability",
+    ]);
+    const nonEmptyString = (value: unknown): value is string =>
+      typeof value === "string" && value.length > 0;
+    const explicitInputValid =
+      intent.explicitInput === undefined ||
+      (typeof intent.explicitInput === "object" &&
+        intent.explicitInput !== null &&
+        !Array.isArray(intent.explicitInput) &&
+        Object.values(intent.explicitInput as Record<string, unknown>).every(
+          (value) => typeof value === "string",
+        ));
+    // 显式 retry 的耐久寻址坐标须是完整三段坐标；缺段或畸形一律判为无效意图，不借今日能力补全。
+    const addressingRaw = intent.addressingCapability;
+    let addressingCapability:
+      | {
+          readonly capabilityId: string;
+          readonly capabilityVersion: string;
+          readonly contractVersion: string;
+        }
+      | undefined;
+    if (addressingRaw !== undefined) {
+      if (
+        typeof addressingRaw !== "object" ||
+        addressingRaw === null ||
+        Array.isArray(addressingRaw)
+      )
+        return { valid: false, reason: "来源补充重试意图无效" };
+      const coordinate = addressingRaw as Record<string, unknown>;
+      if (
+        !nonEmptyString(coordinate.capabilityId) ||
+        !nonEmptyString(coordinate.capabilityVersion) ||
+        !nonEmptyString(coordinate.contractVersion)
+      )
+        return { valid: false, reason: "来源补充重试意图无效" };
+      addressingCapability = {
+        capabilityId: coordinate.capabilityId,
+        capabilityVersion: coordinate.capabilityVersion,
+        contractVersion: coordinate.contractVersion,
+      };
+    }
+    if (
+      Object.keys(intent).some((key) => !retryAllowed.has(key)) ||
+      intent.version !== "source-enrichment-retry/1" ||
+      !nonEmptyString(intent.priorExecutionId) ||
+      !nonEmptyString(intent.subjectId) ||
+      !nonEmptyString(intent.sourceIdentity) ||
+      !nonEmptyString(intent.sourceAddress) ||
+      !explicitInputValid
+    )
+      return { valid: false, reason: "来源补充重试意图无效" };
+    sourceEnrichmentRetry = {
+      version: "source-enrichment-retry/1",
+      priorExecutionId: intent.priorExecutionId,
+      subjectId: intent.subjectId,
+      sourceIdentity: intent.sourceIdentity,
+      sourceAddress: intent.sourceAddress,
+      ...(intent.explicitInput === undefined
+        ? {}
+        : {
+            explicitInput: intent.explicitInput as Readonly<
+              Record<string, string>
+            >,
+          }),
+      ...(addressingCapability === undefined ? {} : { addressingCapability }),
+    };
+  }
   return {
     valid: true,
     input: {
@@ -932,9 +1369,42 @@ export function decodeAssetRefreshWorkflowInput(
       acceptTrusted: input.acceptTrusted,
       configurationReferences: input.configurationReferences,
       ...(observedRoots === undefined ? {} : { observedRoots }),
+      ...(assetLibrary === undefined ? {} : { assetLibrary }),
+      ...(directoryAuthorizations === undefined
+        ? {}
+        : { directoryAuthorizations }),
+      ...(libraryScan === undefined ? {} : { libraryScan }),
+      ...(parentExecutionId === undefined
+        ? {}
+        : input.parentDirectoryKey === undefined
+          ? // 09 派生获取：只带父执行身份，不带目录坐标。
+            { parentExecutionId }
+          : {
+              parentExecutionId,
+              parentDirectoryKey: input.parentDirectoryKey,
+              ...(directoryCoverage === undefined ||
+              directoryCoverage.length === 0
+                ? {}
+                : { directoryCoverage }),
+            }),
       ...(operation === undefined ? {} : { operation }),
+      ...(sourceEnrichmentRetry === undefined ? {} : { sourceEnrichmentRetry }),
     },
   };
+}
+
+/** 覆盖坐标必须能与本次冻结根一起自证：既引用别的根，又不能引用自己。 */
+function libraryScanPlanCoverageConflict(
+  coverage: LibraryScanDirectoryCoverage,
+  observedRoots: unknown,
+): boolean {
+  if (!Array.isArray(observedRoots)) return false;
+  return observedRoots.some(
+    (root) =>
+      typeof root === "object" &&
+      root !== null &&
+      (root as { id?: unknown }).id === coverage.scopeReference,
+  );
 }
 
 export type AutomationTriggerResult =
@@ -1057,6 +1527,19 @@ export type MetadataRefreshInput = {
   readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
 };
 
+/** 一个主体在本次履行请求内的资产库语境；终态语境不启动任何获取。 */
+type InformationLibraryContext =
+  | {
+      readonly subjectId: string;
+      readonly status: "library";
+      readonly snapshot: AssetLibrarySnapshot;
+    }
+  | {
+      readonly subjectId: string;
+      readonly status: "blocked" | "unavailable";
+      readonly reason: string;
+    };
+
 /**
  * 仅供内部使用的子元数据执行发起上下文。持久化工作流输入仍是恢复权威；该上下文只在
  * 创建子执行时使用。
@@ -1065,13 +1548,35 @@ type MetadataRefreshInitiation = {
   readonly version: "metadata-refresh-initiation/1";
   readonly trigger: "information-fulfillment";
   readonly initiatedBy: string;
+  /** 耐久写入子执行输入的父身份；监督关系不靠 initiatedBy 文案。 */
+  readonly parentExecutionId?: string;
   readonly operation: NonNullable<AssetRefreshWorkflowInput["operation"]>;
+  /** 父执行冻结的来源目录授权，派生子执行继续沿用同一份 I/O 权威。 */
+  readonly directoryAuthorizations?:
+    | readonly FrozenDirectoryAuthorization[]
+    | undefined;
+  /**
+   * 存在时，child 的插入必须与父账本里的这个具体 operation 同一条事务绑定；缺失即普通创建，
+   * 因此交互轮询永远不会借用账本接缝。
+   */
+  readonly durableOperation?: {
+    readonly parentExecutionId: string;
+    readonly operationId: string;
+  };
 };
 
 function metadataRefreshInitiationForInformationFulfillment(
   plan: InformationFulfillmentPlan,
   initiation: InformationFulfillmentInitiation | undefined,
 ): MetadataRefreshInitiation {
+  const durable =
+    initiation?.fromDurableLedger === true &&
+    initiation.parentExecutionId !== undefined
+      ? {
+          parentExecutionId: initiation.parentExecutionId,
+          operationId: plan.operationId,
+        }
+      : undefined;
   return {
     version: "metadata-refresh-initiation/1",
     trigger: "information-fulfillment",
@@ -1079,11 +1584,19 @@ function metadataRefreshInitiationForInformationFulfillment(
       initiation === undefined
         ? "information-fulfillment"
         : `information-fulfillment:${initiation.parentExecutionId}:${plan.subjectId}`,
+    ...(initiation === undefined
+      ? {}
+      : { parentExecutionId: initiation.parentExecutionId }),
+    ...(initiation?.directoryAuthorizations === undefined
+      ? {}
+      : { directoryAuthorizations: initiation.directoryAuthorizations }),
+    ...(durable === undefined ? {} : { durableOperation: durable }),
     operation: {
-      version: "information-fulfillment-operation/1",
+      version: "information-fulfillment-operation/2",
       kind: plan.operation,
       subjectId: plan.subjectId,
       sourceIdentity: plan.sourceIdentity,
+      operationId: plan.operationId,
       ...(plan.sourceAssociationId === undefined
         ? {}
         : { sourceAssociationId: plan.sourceAssociationId }),
@@ -1095,10 +1608,25 @@ function metadataRefreshInitiationForInformationFulfillment(
 export type AssetRefreshWorkItem = {
   readonly key: string;
   readonly relativePaths: readonly string[];
+  readonly boundaries?: readonly RecognitionMaterialBoundary[];
+  /** 冻结的相交有效范围基线；刷新提交前在事务内按同一形状重算比较。 */
+  readonly boundaryBaseline?: readonly string[];
+  readonly retainedAssetId?: string;
+  /**
+   * 与本次候选相交的那个已结束决定；只在身份已撤回／被取代而范围支持仍保留时存在。
+   * 明确决定只需点名它，绝不据此推断新的当前授权。
+   */
+  readonly retainedDecisionId?: string;
+  readonly reuseAcceptedBoundary?: boolean;
+  readonly boundaryConflict?: string;
+  readonly materialBoundary?: PlannedMaterialBoundary;
+  readonly observedArtifactAssociations?: readonly ObservedArtifactAssociationCandidate[];
   /** 即使明确的包包含多个文件，它仍是一个产物。 */
   readonly observedArtifactBoundary?: "filesystem-package";
   /** 作出技术边界决策的能力；不是领域事实。 */
   readonly observedArtifactBoundaryProducer?: CapabilityCoordinate;
+  /** 声明该候选自身内容身份的能力坐标；只有能力自己才能设置。 */
+  readonly independentIdentityDeclaredBy?: CapabilityCoordinate;
   readonly planningEvidence?: readonly import("@digital/domain").RecognitionEvidence[];
   readonly reuseFingerprint?: string;
   /** 该边界的实际能力坐标，绝不是完整配置。 */
@@ -1407,6 +1935,7 @@ export type WorkflowExecution = {
   readonly snapshot?: FilesystemPackageSnapshot;
   readonly operationKind?:
     | "scan-filesystem"
+    | "scan-asset-library"
     | "refresh-metadata"
     | "rescrape"
     | "associate-observed-material";
@@ -2371,6 +2900,21 @@ export function decodeRecognitionBasis(
   | { readonly valid: false; readonly reason: string } {
   if (!isStringRecord(value))
     return { valid: false, reason: "Recognition basis 必须是对象" };
+  if (value.kind === "accepted-boundary")
+    return hasExactKeys(value, [
+      "kind",
+      "recognitionDecisionId",
+      "observationSnapshotId",
+      "materialReferences",
+      "evidence",
+    ]) &&
+      isNonEmptyString(value.recognitionDecisionId) &&
+      isNonEmptyString(value.observationSnapshotId) &&
+      isStrictStringArray(value.materialReferences) &&
+      Array.isArray(value.evidence) &&
+      value.evidence.every(isStrictRecognitionEvidence)
+      ? { valid: true, value: value as unknown as RecognitionBasis }
+      : { valid: false, reason: "已确认范围 basis 无效" };
   if (value.kind === "source-interpretation")
     return hasExactKeys(value, ["interpretation", "kind"]) &&
       isStrictSourceInterpretationBatch(value.interpretation)
@@ -3247,6 +3791,7 @@ function hasStrictObservedMaterialSubmissionShape(value: unknown): boolean {
     !isStringRecord(value.proposal) ||
     !hasExactKeys(value.proposal, [
       "id",
+      "boundaries",
       "basis",
       "ruleResults",
       "observedArtifactAssociations",
@@ -3265,6 +3810,7 @@ function hasStrictObservedMaterialSubmissionShape(value: unknown): boolean {
     !isStringRecord(value.recognitionDecision) ||
     !hasExactKeys(value.recognitionDecision, [
       "id",
+      "boundaries",
       "proposalId",
       "assetId",
       "acceptedRuleResults",
@@ -3302,9 +3848,15 @@ function hasStrictObservedMaterialSubmissionShape(value: unknown): boolean {
     !proposal.observedArtifactAssociations.every(
       (item) =>
         isStringRecord(item) &&
-        hasExactKeys(item, ["observedArtifactReference", "role"]) &&
+        hasExactKeys(
+          item,
+          ["observedArtifactReference", "role"],
+          ["producer"],
+        ) &&
         isNonEmptyString(item.observedArtifactReference) &&
-        isNonEmptyString(item.role),
+        isNonEmptyString(item.role) &&
+        (item.producer === undefined ||
+          isStrictCapabilityCoordinate(item.producer)),
     ) ||
     !proposal.observedArtifactRevisions.every(
       (item) =>
@@ -3811,6 +4363,7 @@ export type AssetRefreshInspection = {
     | "recognitionSourceAssociation"
     | "entities"
   > & {
+    readonly facts: EffectiveSubjectRead;
     readonly sourceAssociations: readonly {
       readonly sourceIdentity: string;
       readonly nativeAddress: string;
@@ -3821,15 +4374,7 @@ export type AssetRefreshInspection = {
     };
     readonly sourceArtifactCandidates?: readonly PublicSourceArtifactCandidate[];
     readonly currentLocationRevisions?: readonly CurrentLocationRevisionSelection[];
-    readonly effectiveMetadata: readonly (EffectiveMetadata & {
-      /** 非根实体的展示值保留其明确描述目标。 */
-      readonly subjectId?: string;
-    })[];
     readonly primaryCoverArtifactId?: string;
-    readonly metadataPolicyConflicts: readonly (
-      | MetadataPolicyConflict
-      | MetadataValueConflict
-    )[];
     /** 当前相关实体的种类由种类断言、来源支持与决定共同投影。 */
     readonly currentRelatedEntities?: readonly import("@digital/domain").CurrentRelatedEntity[];
     readonly recognitionExplanation: string;
@@ -3898,10 +4443,23 @@ export type AssetRefreshWorkItemPlan = {
   /** 插件持有的稳定键；Application 绝不解释其语法。 */
   readonly key: string;
   readonly relativePaths: readonly string[];
+  readonly materialBoundary?: PlannedMaterialBoundary;
+  readonly boundaries?: readonly RecognitionMaterialBoundary[];
+  readonly boundaryBaseline?: readonly string[];
+  readonly retainedAssetId?: string;
+  readonly retainedDecisionId?: string;
+  readonly reuseAcceptedBoundary?: boolean;
+  readonly boundaryConflict?: string;
+  readonly observedArtifactAssociations?: readonly ObservedArtifactAssociationCandidate[];
   /** 通用打包指令；作出决策的外层能力持有其语法。 */
   readonly observedArtifactBoundary?: "filesystem-package";
   /** Application 附加的已部署技术解释器来源信息。 */
   readonly observedArtifactBoundaryProducer?: CapabilityCoordinate;
+  /**
+   * 声明该候选自身内容身份的能力坐标；只有能力自己才能设置。范围覆盖不足以吸收它，
+   * Application 绝不解释其来源语法，也只凭这一坐标停止吞并。
+   */
+  readonly independentIdentityDeclaredBy?: CapabilityCoordinate;
   readonly evidence: readonly import("@digital/domain").RecognitionEvidence[];
 };
 
@@ -4028,6 +4586,7 @@ export type RecognitionCandidateContext =
       readonly basis: {
         readonly kind: "observed-evidence";
         readonly producer: CapabilityCoordinate;
+        readonly materialBoundary?: PlannedMaterialBoundary;
         readonly artifactRevisions: readonly import("@digital/domain").ObservedArtifactRevisionCandidate[];
       };
       readonly evidence: readonly RecognitionEvidence[];
@@ -4131,6 +4690,20 @@ function bindRecognitionEvidenceOutputToProducer(
     ...output,
     workItems: output.workItems.map((item) => ({
       ...item,
+      ...(item.observedArtifactAssociations === undefined
+        ? {}
+        : {
+            observedArtifactAssociations: item.observedArtifactAssociations.map(
+              (candidate) => ({
+                ...candidate,
+                producer: actualProducer(
+                  candidate.producer,
+                  producer,
+                  "Observed artifact role declaration",
+                ),
+              }),
+            ),
+          }),
       ...(item.observedArtifactBoundaryProducer === undefined
         ? {}
         : {
@@ -4488,6 +5061,7 @@ function bindRecognitionProposalToRecognizer(
   recognizer: Pick<Recognizer, "capability">,
   draft: RecognitionProposalDraft,
   input: RecognitionCandidateContext,
+  boundaries: readonly RecognitionMaterialBoundary[] = [],
 ): RecognitionProposal {
   const allowed = new Set(["id", "ruleResults"]);
   if (Object.keys(draft).some((key) => !allowed.has(key)))
@@ -4541,6 +5115,7 @@ function bindRecognitionProposalToRecognizer(
         };
   return {
     id: draft.id,
+    boundaries,
     basis,
     ruleResults,
   };
@@ -4549,6 +5124,7 @@ function bindRecognitionProposalToRecognizer(
 function recognitionCandidateContexts(input: {
   readonly evidence: readonly RecognitionEvidence[];
   readonly interpretations: readonly SourceInterpretationBatch[];
+  readonly materialBoundary?: PlannedMaterialBoundary;
 }): readonly RecognitionCandidateContext[] {
   const sourced: RecognitionCandidateContext[] = input.interpretations.map(
     (interpretation) => ({
@@ -4556,16 +5132,51 @@ function recognitionCandidateContexts(input: {
       evidence: input.evidence,
     }),
   );
-  // 明确目录已经提出整项内容的身份。下级格式检查仍保留，但不再把台本等材料
-  // 作为另一项内容发起识别；格式中独立提供的编号不属于这种目录边界声明。
+  // 定向来源由明确操作持有，本地规则不能改写这次操作的目的。
   if (
     input.evidence.some(
-      (evidence) =>
-        evidence.kind === "source-address" ||
-        evidence.kind === "directed-source-address",
+      (evidence) => evidence.kind === "directed-source-address",
     )
   )
     return sourced;
+  const directoryProducers = new Map(
+    input.evidence
+      .filter((evidence) => evidence.producer.kind === "directory-interpreter")
+      .map((evidence) => [
+        JSON.stringify(evidence.producer),
+        evidence.producer,
+      ]),
+  );
+  if (directoryProducers.size > 0) {
+    const inspected = input.evidence.filter(
+      (evidence) => evidence.inspection !== undefined,
+    );
+    return [
+      ...sourced,
+      ...[...directoryProducers].map(
+        ([coordinate, producer]): RecognitionCandidateContext => ({
+          basis: {
+            kind: "observed-evidence",
+            producer,
+            ...(input.materialBoundary === undefined
+              ? {}
+              : { materialBoundary: input.materialBoundary }),
+            artifactRevisions: inspected.map((evidence) => ({
+              observedArtifactReference:
+                evidence.inspection!.observedArtifactReference,
+              blob: evidence.inspection!.revision,
+              producer: evidence.producer,
+            })),
+          },
+          evidence: input.evidence.filter(
+            (evidence) =>
+              evidence.inspection !== undefined ||
+              JSON.stringify(evidence.producer) === coordinate,
+          ),
+        }),
+      ),
+    ];
+  }
   const observed = new Map<
     string,
     {
@@ -4780,6 +5391,10 @@ type CataloguePersistenceOperations = {
     sourceRecordId: string,
   ): Promise<SourceRecord | undefined>;
   /** 解析已接受范围，而不解析其目录或来源键。 */
+  listEffectiveMaterialBoundaries(input: {
+    readonly scope: ObservedRootSnapshot;
+    readonly relativeScope: string;
+  }): Promise<readonly EffectiveRecognitionMaterialBoundary[]>;
   findAcceptedForDirectory(directory: string): Promise<
     | {
         readonly accepted: AcceptedAssetState;
@@ -4861,6 +5476,14 @@ type CataloguePersistenceOperations = {
       | undefined;
     readonly sourceRecords: readonly SourceRecord[];
     readonly expectedLineageHeads: MetadataRefreshSubmission["expectedLineageHeads"];
+    /**
+     * 冻结时该资产全部相交有效材料范围的基线，以及冻结它时使用的相交范围地址
+     * （本次观察快照根，即 `resolve(root.containerPath, relativeScope)`）；提交前在
+     * 同一事务内按同一规则重算比较，不一致则本次刷新不产生任何写入。
+     */
+    readonly expectedBoundary?:
+      | { readonly keys: readonly string[]; readonly scopeAddress: string }
+      | undefined;
     readonly resumeClaim?: { readonly token: string; readonly now: string };
   }): Promise<void>;
   /** 只原子推进已知关联范围内的来源事实。 */
@@ -4886,6 +5509,8 @@ type CataloguePersistenceOperations = {
     readonly assetId: string;
     readonly recognitionSourceAssociationId?: string;
     readonly recognitionDecisionId: string;
+    /** 给出时把指纹收窄到这些决定相交的精确支持，用于范围局部预演。 */
+    readonly scopeDecisionIds?: readonly string[];
   }): Promise<string>;
   applyChangeImpactPreview(input: {
     readonly preview: ChangeImpactPreview;
@@ -4900,6 +5525,31 @@ type CataloguePersistenceOperations = {
     readonly preview: ChangeImpactPreview;
     readonly confirmedBy: string;
   }): Promise<"applied" | "stale">;
+  /** 以冻结的相交范围基线为条件，原子写入范围修订的新决定与支持。 */
+  applyRecognitionScopeAmendmentPreview(input: {
+    readonly preview: ChangeImpactPreview;
+    readonly plan: RecognitionScopeAmendmentPlan;
+  }): Promise<"applied" | "stale">;
+  /**
+   * 人工封面决定不属于任何工作流执行，也没有租约或新状态机；预演本身就是它的耐久
+   * 因果记录，因此只落这一行。
+   */
+  saveArtifactRoleDecisionPreview(preview: ChangeImpactPreview): Promise<void>;
+  /** 比较冻结候选、政策版本与当前头后，原子追加决定、推进头并把预演置为 applied。 */
+  applyArtifactRoleDecisionPreview(input: {
+    readonly preview: ChangeImpactPreview;
+    readonly confirmedBy: string;
+    /** 确认时按同一规则重算的候选指纹；主体当前事实已不可读时为 null。 */
+    readonly currentCandidateBaseline: string | null;
+    readonly policyVersion: string;
+  }): Promise<"applied" | "stale">;
+  /** 保存一次明确范围决定的预演，并把那次观察的提议随执行一起落库。 */
+  finishExecutionWithRecognitionScopeAmendmentPreview(input: {
+    readonly expectedExecution: WorkflowExecution;
+    readonly execution: WorkflowExecution;
+    readonly proposal: RecognitionProposal;
+    readonly preview: ChangeImpactPreview;
+  }): Promise<void>;
   rejectChangeImpactPreview(input: {
     readonly previewId: string;
     readonly rejectedBy: string;
@@ -4927,7 +5577,110 @@ type CataloguePersistenceOperations = {
     enabled: boolean,
     disabledReason?: AutomationDisabledReason,
   ): Promise<void>;
+  /**
+   * 一次耐久库扫描父执行与其全部目录条目在同一条事务内落下：父先存在，目录子才有
+   * 可以登记的归属。携带意图时同一事务核对启用、到期与运行时独占，未接纳就不落任何行。
+   */
+  createLibraryScan(input: {
+    readonly execution: WorkflowExecution;
+    readonly directories: readonly LibraryScanDirectoryRecord[];
+    readonly requestedAt?: string;
+    /** 提供时同事务建立该父的 awaiting-results 批次壳；自动化父必须给，交互父不给。 */
+    readonly fulfillmentPlannerCoordinate?: string;
+  }): Promise<ExecutionStartDisposition>;
+  /**
+   * 原子比较父仍运行且未被明确取消，插入目录子并把其 ID 登记到父的 execute 条目及其
+   * covered 条目。取消竞态下最多只有一次登记成功，崩溃不会留下无归属的子执行。
+   */
+  registerLibraryScanChild(input: {
+    readonly parentExecutionId: string;
+    readonly directoryKey: string;
+    readonly execution: WorkflowExecution;
+    readonly requestedAt?: string;
+  }): Promise<"registered" | "cancelled" | "already-registered">;
+  /** 写下某目录条目的终态结果；covered 只按其前缀投影后的计数进入。 */
+  recordLibraryScanDirectoryResult(input: {
+    readonly parentExecutionId: string;
+    readonly directoryKey: string;
+    readonly stage: LibraryScanDirectoryStage;
+    readonly outcome?: AssetRefreshOutcome;
+    readonly reason?: string;
+    readonly workItemCount: number;
+    readonly unresolvedCount: number;
+    readonly failedCount: number;
+  }): Promise<void>;
+  inspectLibraryScan(
+    parentExecutionId: string,
+  ): Promise<LibraryScanInspection | undefined>;
+  /** 先CAS写下取消意图：此后任何新目录子都不能登记。 */
+  requestLibraryScanCancellation(input: {
+    readonly parentExecutionId: string;
+    readonly requestedBy: string;
+    readonly requestedAt: string;
+    readonly reason?: string;
+  }): Promise<
+    | {
+        readonly status: "recorded" | "already-requested";
+        readonly childExecutionIds: readonly string[];
+      }
+    | { readonly status: "absent" | "terminal" }
+  >;
+  /** 未识别观察的有界查询：只按父、库或目录范围展开，并给出可核对的子执行归属。 */
+  listUnrecognizedLibraryScanObservations(input: {
+    readonly parentExecutionId?: string;
+    readonly assetLibraryId?: string;
+    readonly directoryKey?: string;
+    readonly limit: number;
+  }): Promise<readonly UnrecognizedLibraryScanObservation[]>;
+  /**
+   * 父终态与其全部耐久处置在同一条 immediate/CAS 事务内落下：CAS 失败或 claim 过期就不写
+   * 批次、主体、计划，也不写终态。这是现代父唯一能写下规划结果的位置。
+   */
+  finishLibraryScanWithFulfillmentPlan(input: {
+    readonly expectedParent: WorkflowExecution;
+    readonly finishedParent: WorkflowExecution;
+    readonly batch: LibraryScanFulfillmentBatchWrite;
+    readonly resumeClaim?: { readonly token: string; readonly now: string };
+  }): Promise<void>;
+  /** 终态收敛只读这份耐久计划，绝不按今日规则重算。 */
+  inspectLibraryScanFulfillment(
+    parentExecutionId: string,
+  ): Promise<LibraryScanFulfillmentInspection | undefined>;
+  /** 只列出确实欠信息履行处置的终态自动化库扫描父，按耐久载体判定而非执行摘要。 */
+  listTerminalLibraryScanFulfillmentDebt(): Promise<readonly string[]>;
+  /**
+   * 按稳定 operation 身份原子绑定唯一 child：已绑定返回原执行 ID 且不启动第二份效果，
+   * 缺原计划或冻结依据时写下耐久中断而不是失败重放。
+   */
+  registerInformationFulfillmentChild(input: {
+    readonly parentExecutionId: string;
+    readonly operationId: string;
+    readonly execution: WorkflowExecution;
+  }): Promise<InformationFulfillmentChildRegistration>;
+  /** 迁移前就没有批次的终态父只收口为可读的历史中断，绝不回填 no-work 或伪造计划。 */
+  closeLegacyLibraryScanFulfillment(
+    input: LegacyLibraryScanFulfillmentClosure,
+  ): Promise<void>;
 };
+
+/**
+ * 信息履行账本自己的窄命令端口。普通执行命令不因此获得写批次、绑定的能力；只有父终态规划
+ * 与终态收敛这条机制使用它。
+ */
+export type LibraryScanFulfillmentCommands = Pick<
+  CataloguePersistenceOperations,
+  | "finishLibraryScanWithFulfillmentPlan"
+  | "registerInformationFulfillmentChild"
+  | "closeLegacyLibraryScanFulfillment"
+>;
+
+/**
+ * 信息履行账本的只读端口：交付投影与终态收敛从这里读原计划与原原因，绝不据此重算今日事实。
+ */
+export type LibraryScanFulfillmentQueries = Pick<
+  CataloguePersistenceOperations,
+  "inspectLibraryScanFulfillment" | "listTerminalLibraryScanFulfillmentDebt"
+>;
 
 export type WorkflowExecutionCommands = Pick<
   CataloguePersistenceOperations,
@@ -4938,6 +5691,10 @@ export type WorkflowExecutionCommands = Pick<
   | "finishExecution"
   | "cancelExecution"
   | "finishExecutionWithProposal"
+  | "createLibraryScan"
+  | "registerLibraryScanChild"
+  | "recordLibraryScanDirectoryResult"
+  | "requestLibraryScanCancellation"
 >;
 
 export type CommitSourceRefreshCollectionFailureInput = {
@@ -4958,6 +5715,8 @@ export type WorkflowExecutionQueries = Pick<
   | "listExecutions"
   | "listRunningExecutions"
   | "inspectRawSourceRecord"
+  | "inspectLibraryScan"
+  | "listUnrecognizedLibraryScanObservations"
 >;
 
 export type WorkflowRecoveryLease = Pick<
@@ -4971,13 +5730,38 @@ export type AssetRefreshReuseQueries = Pick<
   CataloguePersistenceOperations,
   | "findReusableOrdinaryScan"
   | "findAcceptedForDirectory"
+  | "listEffectiveMaterialBoundaries"
   | "findAcceptedForSubjects"
   | "findCurrentSourceAssociationByCoordinate"
   | "inspectSourceAssociationHistory"
   | "findCurrentAcceptedForObservedArtifacts"
   | "findReusableWorkItem"
   | "findAcceptedForWorkItem"
->;
+> & {
+  /**
+   * 与本次范围相交的完整声明：逐决定的全部边界、主头标识，以及已经取代／撤回结束的历史
+   * 决定。只提供规划与明确决定的入口，绝不授予任何观察或 I/O 权限。
+   */
+  listMaterialScopeDeclarations?(input: {
+    readonly scopeAddress: string;
+  }): Promise<readonly MaterialScopeDeclaration[]>;
+  /** 该内容当前生效的全部范围决定，供点名撤回与修订核对；不授予观察权限。 */
+  listEffectiveMaterialBoundariesForSubject?(input: {
+    readonly assetId: string;
+  }): Promise<readonly EffectiveRecognitionMaterialBoundary[]>;
+  /**
+   * 被点名决定自己的提案、形成它的观察执行与快照，以及该主体当前仍有效的已接受投影。
+   * 逐决定复用只与该决定自己的观察比较，绝不拿资产主头的执行充当追加范围基线。
+   */
+  findAcceptedForDecision?(input: { readonly decisionId: string }): Promise<
+    | {
+        readonly accepted: AcceptedAssetState;
+        readonly proposal: RecognitionProposal;
+        readonly execution: WorkflowExecution;
+      }
+    | undefined
+  >;
+};
 
 /** 普通实体遍历所需的产品安全节点身份。 */
 export type PublicRelationshipParticipantEntity = Pick<
@@ -5257,6 +6041,12 @@ export type CurrentCataloguePageRequest = {
   readonly limit?: number;
   readonly cursor?: string;
   readonly subjectIds?: readonly string[];
+  readonly informationRequirement?: InformationRequirement;
+  /**
+   * 库语境 current 读取：带上本库的活动目录授权与 `awaitingObservation = 0` 资格，与库索引
+   * 共用同一谓词。省略时沿用全局 current 判定。
+   */
+  readonly assetLibraryId?: string;
 };
 
 /**
@@ -5270,7 +6060,7 @@ export type CurrentCataloguePersistencePage = {
 
 /** 对交付层安全的当前 Catalogue 页面。 */
 export type CurrentCataloguePage = {
-  readonly items: readonly NonNullable<AssetRefreshInspection["accepted"]>[];
+  readonly items: readonly EffectiveSubjectRead[];
   readonly nextCursor?: string;
 };
 
@@ -5287,6 +6077,8 @@ export type CurrentCatalogueQueries = {
   /** 仅载入检索所需事实，不读取文件、产物内容或工作流历史。 */
   listCurrentCatalogueIndex(
     metadataProperties: readonly string[],
+    observedRootIds?: readonly string[],
+    assetLibraryId?: string,
   ): Promise<readonly CurrentCatalogueIndexFacts[]>;
 };
 
@@ -5299,17 +6091,12 @@ export type CurrentCatalogueIndexFacts = Pick<
   | "recognitionSourceAssociation"
   | "currentRelatedEntities"
   | "relationships"
+  | "relationshipReadBasis"
 > & { readonly additionOrder: number };
 
-export type CurrentCatalogueIndexEntry = Pick<
-  NonNullable<AssetRefreshInspection["accepted"]>,
-  | "entity"
-  | "sourceAssociations"
-  | "recognitionSourceAssociation"
-  | "effectiveMetadata"
-  | "currentRelatedEntities"
-  | "relationships"
-> & { readonly additionOrder: number };
+export type CurrentCatalogueIndexEntry = EffectiveSubjectRead & {
+  readonly additionOrder: number;
+};
 
 /** 永久工作流历史的游标输入。 */
 export type WorkflowHistoryPageRequest = {
@@ -5427,6 +6214,7 @@ export type RecognitionChangeImpactPersistence = Pick<
   | "finishExecutionWithChangeImpactPreview"
   | "finishExecutionWithSourceAssociationPreview"
   | "finishExecutionWithRecognitionRetractionPreview"
+  | "finishExecutionWithRecognitionScopeAmendmentPreview"
 >;
 
 export type MetadataRefreshPersistence = Pick<
@@ -5438,47 +6226,348 @@ export type MetadataRefreshPersistence = Pick<
  * 可以满足一个选定主体信息需求的精确当前事实。这里刻意排除已装载的相关实体图：调用方
  * 不会收到关联主体不同于选定主体的事实，产物可用性也只从托管位置开始。
  */
+/**
+ * 履行就绪所需的供应：完整事实依据（由应用层共同求值）与真实来源当前性。
+ * SQLite 只供应所需事实及位置／来源头部，不在持久层裁决生效结果。
+ */
 export type CurrentInformationSubjectFacts = {
   readonly subjectId: string;
-  readonly sourceAssociations: readonly {
-    readonly id: string;
-    readonly sourceIdentity: string;
-  }[];
-  readonly metadata: readonly {
-    readonly subjectId: string;
-    readonly property: string;
-  }[];
-  readonly relationships: readonly {
-    readonly subjectId: string;
-    readonly type: string;
-  }[];
-  readonly artifactAssociations: readonly {
-    readonly id: string;
-    readonly subjectId: string;
-    readonly artifactId: string;
-    readonly role: string;
-    /** 仅对绑定到一个关联的托管来源产物存在。 */
-    readonly sourceAssociationId?: string;
-    /** 该托管来源产物不再匹配当前头时为 false。 */
-    readonly currentSourceArtifact?: boolean;
-    /** 该可用性输入刻意不包含观察位置。 */
-    readonly managedLocations: readonly { readonly address: string }[];
+  /** 供共同读取求值生效描述、关系与图片角色的完整依据。 */
+  readonly basis: SubjectFactBasis;
+  /**
+   * 绑定到某个来源关联的托管来源产物是否仍是该来源关联的当前头部。
+   * 只包含来源绑定关联；本地托管与观察产物不在此列。
+   */
+  readonly sourceArtifactCurrency: readonly {
+    readonly associationId: string;
+    readonly current: boolean;
   }[];
 };
 
 /**
- * 一个已接受主体可用后，外层组合重建完整的中立信息需求。Application 调用该边界时，
- * 不了解选择它的视图、提供方、路由或组件。
+ * 交付层提供的信息履行规划规则，连同它自己的稳定坐标。规则会随交付代码演进而改变计划，因此
+ * 自动化父在创建时冻结该坐标；只有坐标精确相等的部署才能继续补完这份计划，绝不把今日规则
+ * 当作原计划。
  */
-export type AutomationInformationRequirementResolver = (
-  accepted: NonNullable<AssetRefreshInspection["accepted"]>,
-) => InformationRequirement;
+export type AutomatedInformationPlanner = {
+  readonly coordinate: string;
+  readonly requirementForAcceptedSubject: (
+    accepted: EffectiveSubjectRead,
+  ) => InformationRequirement;
+};
+
+/**
+ * 交付层交给组合的那份规划规则。名称沿用既有产品边界，内容已经是规划器：Application 只调用
+ * 其中的中立需求，绝不接收视图、提供方、路由或组件。
+ */
+export type AutomationInformationRequirementResolver =
+  AutomatedInformationPlanner;
+
+/** 没有配置解析规则时冻结的坐标：主体需求完全来自父自己耐久写下的信息需求。 */
+export const automatedInformationPlannerNoneCoordinate =
+  "information-planner:none";
+
+/** 父创建时冻结的解析规则身份。 */
+export function automatedInformationPlannerCoordinate(
+  planner: AutomatedInformationPlanner | undefined,
+): string {
+  return planner?.coordinate ?? automatedInformationPlannerNoneCoordinate;
+}
+
+/**
+ * 一次扫描里已接受主体的中立规划输入：只有主体身份与 delivery 中立 facts 能进到规划接缝，
+ * 视图、组件、路由与提供方输出模型都不越过这条边界。
+ */
+export type AcceptedInformationSubject = {
+  readonly subjectId: string;
+  readonly facts: EffectiveSubjectRead;
+};
+
+/**
+ * 一次自动化库扫描父的父后信息履行账本批次版本。它是现代父与历史无规划父的耐久分界，
+ * 迁移绝不给旧父补造。
+ */
+export const libraryScanFulfillmentVersion = "library-scan-fulfillment/1";
+
+export type LibraryScanFulfillmentBatchStage =
+  | "awaiting-results"
+  | "planned"
+  | "closed"
+  | "interrupted";
+
+export type LibraryScanFulfillmentSubjectDisposition =
+  | "no-work"
+  | "planned"
+  | "interrupted";
+
+export type LibraryScanFulfillmentOperationDisposition =
+  | "planned"
+  | "registered"
+  | "interrupted";
+
+/** 与父终态同事务写入的一个接受主体处置。 */
+export type LibraryScanFulfillmentSubjectWrite = {
+  readonly subjectId: string;
+  readonly disposition: LibraryScanFulfillmentSubjectDisposition;
+  /** 该主体请求的完整版本化中立需求；无法安全解析时缺失。 */
+  readonly requirement?: InformationRequirement;
+  readonly reason?: string;
+};
+
+/** 与父终态同事务写入的一个具体计划；child 之后按该稳定身份原子绑定。 */
+export type LibraryScanFulfillmentOperationWrite = {
+  readonly operationId: string;
+  readonly subjectId: string;
+  readonly plan: InformationFulfillmentPlan;
+};
+
+export type LibraryScanFulfillmentBatchWrite = {
+  readonly parentExecutionId: string;
+  readonly plannerCoordinate: string;
+  readonly subjects: readonly LibraryScanFulfillmentSubjectWrite[];
+  readonly operations: readonly LibraryScanFulfillmentOperationWrite[];
+};
+
+export type LibraryScanFulfillmentOperationRecord = {
+  readonly operationId: string;
+  readonly subjectId: string;
+  readonly disposition: LibraryScanFulfillmentOperationDisposition;
+  /** 只有导入的历史 `/1` child 引用才缺原计划。 */
+  readonly plan?: InformationFulfillmentPlan;
+  readonly childExecutionId?: string;
+  /** child 的运行结果以执行行为权威，这里只做组合投影，不复制第二份终态。 */
+  readonly childStatus?: WorkflowExecution["status"];
+  readonly reason?: string;
+};
+
+export type LibraryScanFulfillmentSubjectRecord = {
+  readonly subjectId: string;
+  readonly disposition: LibraryScanFulfillmentSubjectDisposition;
+  readonly requirement?: InformationRequirement;
+  readonly reason?: string;
+  readonly operations: readonly LibraryScanFulfillmentOperationRecord[];
+};
+
+export type LibraryScanFulfillmentInspection = {
+  readonly parentExecutionId: string;
+  readonly stage: LibraryScanFulfillmentBatchStage;
+  readonly plannerCoordinate: string;
+  readonly reason?: string;
+  readonly plannedAt?: string;
+  readonly subjects: readonly LibraryScanFulfillmentSubjectRecord[];
+};
+
+/**
+ * 一个耐久 operation 与唯一 child 的绑定结果。`existing` 让调用方沿用原执行而不启动第二份
+ * 效果；`interrupted` 是耐久处置，因此不会在每次启动重放同一远程工作。
+ */
+export type InformationFulfillmentChildRegistration =
+  | { readonly status: "registered"; readonly executionId: string }
+  | { readonly status: "existing"; readonly executionId: string }
+  | { readonly status: "interrupted"; readonly reason: string };
+
+/**
+ * 迁移前没有批次的终态自动化库扫描父的收口输入。这里只提供从耐久载体定位到的接受主体，或载体读不到
+ * 时的批次级原因；调用方不能伪造处置，适配器也绝不据此回填 no-work 或伪造计划。
+ */
+export type LegacyLibraryScanFulfillmentClosure = {
+  readonly parentExecutionId: string;
+  readonly acceptedSubjectIds: readonly string[];
+  /** 提供时只写批次级中断，绝不伪造主体处置。 */
+  readonly unreadableReason?: string;
+};
+
+const informationRequirementVersion = "information-requirement/1";
+
+function isNonEmptyStringArray(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.every(isNonEmptyString) &&
+    new Set(value).size === value.length
+  );
+}
+
+function isStrictNecessity(value: unknown): boolean {
+  return value === "required" || value === "optional";
+}
+
+/** 严格校验一份中立信息需求；绝不接受未预期的键或空坐标。 */
+export function validateInformationRequirement(
+  value: unknown,
+): value is InformationRequirement {
+  if (!isStringRecord(value) || !isNonEmptyString(value.metadataUsageContext))
+    return false;
+  if (
+    !hasExactKeys(value, [
+      "artifactRoles",
+      "metadata",
+      "metadataUsageContext",
+      "relationshipTypes",
+    ])
+  )
+    return false;
+  if (!Array.isArray(value.metadata) || !Array.isArray(value.relationshipTypes))
+    return false;
+  if (
+    !value.metadata.every(
+      (item) =>
+        isStringRecord(item) &&
+        hasExactKeys(item, ["necessity", "property"]) &&
+        isNonEmptyString(item.property) &&
+        isStrictNecessity(item.necessity),
+    )
+  )
+    return false;
+  if (
+    !value.relationshipTypes.every(
+      (item) =>
+        isStringRecord(item) &&
+        hasExactKeys(item, ["necessity", "type"]) &&
+        isNonEmptyString(item.type) &&
+        isStrictNecessity(item.necessity),
+    )
+  )
+    return false;
+  return (
+    Array.isArray(value.artifactRoles) &&
+    value.artifactRoles.every(
+      (item) =>
+        isStringRecord(item) &&
+        hasExactKeys(item, ["necessity", "role"], ["maximum"]) &&
+        isNonEmptyString(item.role) &&
+        isStrictNecessity(item.necessity) &&
+        (item.maximum === undefined ||
+          (typeof item.maximum === "number" &&
+            Number.isInteger(item.maximum) &&
+            item.maximum > 0)),
+    )
+  );
+}
+
+function isStrictDeclaredCapability(value: unknown): boolean {
+  if (!isStringRecord(value) || !isStrictCapabilityCoordinate(value))
+    return false;
+  const declared = value as Record<string, unknown>;
+  return (
+    [declared.identity, declared.implementationVersion, declared.kind].every(
+      isNonEmptyString,
+    ) && isNonEmptyStringArray(declared.interpretationContractVersions)
+  );
+}
+
+function isStrictFulfillmentOperation(value: unknown): boolean {
+  return (
+    value === "source-refresh" ||
+    value === "source-enrichment" ||
+    value === "source-artifact-acquisition"
+  );
+}
+
+/** 严格校验一份耐久计划；缺任何版本或身份字段都不能启动 child。 */
+export function validateInformationFulfillmentPlan(
+  value: unknown,
+): value is InformationFulfillmentPlan {
+  if (!isStringRecord(value)) return false;
+  if (
+    !hasExactKeys(
+      value,
+      ["capability", "operation", "requirement", "sourceIdentity", "subjectId"],
+      ["sourceAssociationId", "operationId"],
+    )
+  )
+    return false;
+  if (
+    !isNonEmptyString(value.subjectId) ||
+    !isNonEmptyString(value.sourceIdentity)
+  )
+    return false;
+  if (
+    value.sourceAssociationId !== undefined &&
+    !isNonEmptyString(value.sourceAssociationId)
+  )
+    return false;
+  if (!isStrictFulfillmentOperation(value.operation)) return false;
+  if (!isNonEmptyString(value.operationId)) return false;
+  if (!isStrictDeclaredCapability(value.capability)) return false;
+  return validateInformationRequirement(value.requirement);
+}
+
+function requirementJson(requirement: InformationRequirement): string {
+  if (!validateInformationRequirement(requirement))
+    throw new Error("信息需求不是可耐久的严格形状");
+  return JSON.stringify({
+    version: informationRequirementVersion,
+    requirement,
+  });
+}
+
+/** 把一份中立信息需求编码为账本使用的版本化 JSON。 */
+export function encodeLibraryScanFulfillmentRequirement(
+  requirement: InformationRequirement,
+): string {
+  return requirementJson(requirement);
+}
+
+/** 解码账本中的需求；任何未版本化或损坏载荷都明确失败，绝不按今日事实补齐。 */
+export function decodeLibraryScanFulfillmentRequirement(
+  json: string,
+): InformationRequirement {
+  const decoded: unknown = JSON.parse(json);
+  if (
+    !isStringRecord(decoded) ||
+    !hasExactKeys(decoded, ["requirement", "version"]) ||
+    decoded.version !== informationRequirementVersion ||
+    !validateInformationRequirement(decoded.requirement)
+  )
+    throw new Error("信息需求账本记录无法解码");
+  return decoded.requirement;
+}
+
+/** 把一份具体计划编码为账本使用的版本化封装。 */
+export function encodeInformationFulfillmentPlan(
+  plan: InformationFulfillmentPlan,
+): string {
+  if (!validateInformationFulfillmentPlan(plan))
+    throw new Error("信息履行计划不是可耐久的严格形状");
+  const envelope: InformationFulfillmentPlanEnvelope = {
+    version: "information-fulfillment-plan/1",
+    plan,
+  };
+  return JSON.stringify(envelope);
+}
+
+/** 解码账本中的计划；解码失败绝不能变成按今日能力重建。 */
+export function decodeInformationFulfillmentPlan(
+  json: string,
+): InformationFulfillmentPlan {
+  const decoded: unknown = JSON.parse(json);
+  if (
+    !isStringRecord(decoded) ||
+    !hasExactKeys(decoded, ["plan", "version"]) ||
+    decoded.version !== "information-fulfillment-plan/1" ||
+    !validateInformationFulfillmentPlan(decoded.plan)
+  )
+    throw new Error("信息履行计划账本记录无法解码");
+  return decoded.plan;
+}
 
 /** 只用于重建当前履行就绪状态的窄查询端口。 */
 export type InformationSubjectFactsQueries = {
   readCurrentInformationSubjectFacts(input: {
     readonly subjectIds: readonly string[];
   }): Promise<readonly CurrentInformationSubjectFacts[]>;
+  /**
+   * 主体当前观察材料所引用的活动观察根，用来把普通浏览解析到唯一资产库。只有支持库范围
+   * 解析的持久化提供它。
+   */
+  readCurrentObservedMaterialRootIds?(input: {
+    readonly subjectIds: readonly string[];
+  }): Promise<
+    readonly {
+      readonly subjectId: string;
+      readonly observedRootIds: readonly string[];
+    }[]
+  >;
 };
 
 /**
@@ -5635,6 +6724,9 @@ export type ChangeImpactCommands = Pick<
   | "applyChangeImpactPreview"
   | "applySourceAssociationChangePreview"
   | "applyRecognitionRetractionPreview"
+  | "applyRecognitionScopeAmendmentPreview"
+  | "saveArtifactRoleDecisionPreview"
+  | "applyArtifactRoleDecisionPreview"
   | "rejectChangeImpactPreview"
 >;
 
@@ -5651,6 +6743,8 @@ export type AutomationCommands = Pick<
 >;
 
 export type AssetRefreshWorkflowPorts = {
+  readonly assetLibraries?: AssetLibraries;
+  readonly assetLibrarySnapshot?: AssetLibrarySnapshot;
   /** 每次文件系统执行都通过该注册权威绑定。 */
   readonly observedRootRegistrations: Pick<
     ObservedRootRegistrations,
@@ -5662,6 +6756,8 @@ export type AssetRefreshWorkflowPorts = {
     | "observeBoundScope"
     | "openBoundByteSource"
     | "closeBoundScope"
+    | "bindDirectoryOperation"
+    | "assertDirectoryOperationLive"
     | "reportCleanupFailure"
     | "get"
   >;
@@ -5693,6 +6789,17 @@ export type AssetRefreshWorkflowPorts = {
   readonly managedStore: ManagedArtifactStore;
   readonly executionCommands: WorkflowExecutionCommands;
   readonly executionQueries: WorkflowExecutionQueries;
+  /**
+   * 交付层注入的解析规则连同它自己的稳定坐标。自动化父创建时冻结该坐标，补完规划时只有坐标
+   * 精确相等才使用；没有版本注册表，也没有按今日规则重建旧计划的路径。
+   */
+  readonly informationPlanner?: AutomatedInformationPlanner;
+  /**
+   * 父后信息履行的耐久账本。现代自动化父的处置只经这条窄端口写下；没有它的部署保持既有收尾，
+   * 也不会被伪造出一份处置。
+   */
+  readonly libraryScanFulfillment?: LibraryScanFulfillmentCommands &
+    LibraryScanFulfillmentQueries;
   readonly recoveryLease: WorkflowRecoveryLease;
   readonly reuseQueries: AssetRefreshReuseQueries;
   /** 关系读取与资产复用各有窄用途，避免把实体查询伪装成资产加载。 */
@@ -5733,6 +6840,8 @@ export type AssetRefreshWorkflowPorts = {
     invoke(
       invocation: (control: ExecutionInvocationControl) => void | Promise<void>,
     ): Promise<{ readonly id: string }>;
+    /** 库目录工作据此复用同一 Host 租约与失效生命周期。 */
+    lease(): OperationLease;
   };
   readonly resumeClock?: AutomationClock;
 };
@@ -5751,14 +6860,34 @@ export type RecoveryLifecycle = {
   readonly onWaitingExecution?: (executionId: string) => void;
 };
 
+/**
+ * 启动恢复逐条的耐久分类。`subject`、`reason` 与 `nextAction` 都是给使用者看的简体中文，
+ * 坐标与标识符只留在本地持久证据里。
+ */
+export type RecoveryClassification = {
+  readonly executionId: string;
+  readonly category: "waiting" | "continuable" | "wrap-up" | "interrupted";
+  readonly subject: string;
+  readonly reason?: string | undefined;
+  readonly nextAction?: string | undefined;
+};
+
 export type DueAutomationRunner = {
-  recoverRunningExecutions(
+  classifyRunningExecutions(
+    exclude?: ReadonlySet<string>,
+    within?: ReadonlySet<string>,
+  ): Promise<readonly RecoveryClassification[]>;
+  continueRunningExecution(
+    executionId: string,
     lifecycle?: RecoveryLifecycle,
-  ): Promise<readonly AssetRefreshInspection[]>;
+  ): Promise<AssetRefreshInspection | undefined>;
   triggerDueAutomation(
     now?: Date,
     lifecycle?: { readonly onCheckpoint: () => void },
   ): Promise<readonly AutomationTriggerResult[]>;
+  reconcileTerminalFulfillment(lifecycle?: {
+    readonly onCheckpoint: () => void;
+  }): Promise<readonly AutomationFulfillmentReconciliation[]>;
 };
 
 const systemAutomationClock: AutomationClock = {
@@ -5785,7 +6914,22 @@ export class AutomationHost {
   private poll: Promise<void> = Promise.resolve();
   private polling = false;
   private started = false;
-  private pendingRecoveryExecutionIds: ReadonlySet<string> | undefined;
+  private classified = false;
+  private readonly recoveryItems = new Map<string, RecoveryClassification>();
+  private readonly recoveryNotes = new Map<string, RecoveryClassification>();
+  private readonly recoveryInFlight = new Map<string, Promise<void>>();
+  /**
+   * 本次启动的恢复集合。未定义只发生在启动第一遍（枚举崩溃遗留的全部非终态执行）；之后每一轮
+   * 只重访其中仍在等待的执行。本进程正常调用新开始的工作永远不进入这个集合。
+   */
+  private recoveryScope: ReadonlySet<string> | undefined;
+  /**
+   * 本次启动里已经分类接纳、但这一轮还领不到权利的执行为（另一进程仍持有未过期声明，或它
+   * 正等人工审阅）。它们必须留在后续轮询的重访集合里，直到持有者终态或声明到期后被接手，
+   * 而不是因为一次「正在被继续」就永久退出恢复。
+   */
+  private readonly recoveryDeferred = new Set<string>();
+  private fulfillment: Promise<void> | undefined;
 
   constructor(
     runner: DueAutomationRunner,
@@ -5814,21 +6958,33 @@ export class AutomationHost {
   }
 
   /**
-   * 所有保留执行完成分类后开放启动准入。等待中的声明仍受监督并抑制重复恢复，但不会
-   * 让整个 Catalogue 处于未就绪状态。
+   * 每个保留执行完成分类并被宿主接纳后开放启动准入。被接纳的长工作仍在自己的监督下继续，
+   * 等待用户确认的执行只抑制自己那条计划的后续触发，两者都不让整个目录处于未就绪状态。
    */
   get recoveryReady(): boolean {
-    return this.started;
+    return this.started && this.classified;
+  }
+
+  /** 本次启动逐条的中文分类结果：状态、原因与下一步动作，不含任何技术坐标。 */
+  startupRecovery(): readonly RecoveryClassification[] {
+    return [...this.recoveryItems.values(), ...this.recoveryNotes.values()];
   }
 
   async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
+    this.recoveryNotes.clear();
+    this.recoveryDeferred.clear();
+    this.recoveryScope = undefined;
     try {
-      await this.runPoll(true);
+      // 就绪只等待分类与被接纳执行的监督登记；崩溃前欠下的父后续内容整理同样在后台接续。
+      await this.recover();
+      this.classified = true;
+      this.reconcileFulfillment();
     } catch (error) {
       // 启动分类失败时尚未准入定时器。保持宿主可重试，而不是永久污染 `started` 锁存。
       this.started = false;
+      this.classified = false;
       throw error;
     }
     if (!this.started) return;
@@ -5840,15 +6996,145 @@ export class AutomationHost {
   stop(): void {
     if (!this.started) return;
     this.started = false;
+    this.classified = false;
     if (this.timer !== undefined) {
       this.clock.clearInterval(this.timer);
       this.timer = undefined;
     }
   }
 
-  /** 等待已经开始的轮询；绝不启动新轮询。 */
+  /** 等待已经开始的轮询与全部在途恢复；绝不启动新工作。 */
   async settled(): Promise<void> {
-    await this.poll;
+    for (;;) {
+      await this.poll;
+      const inFlight = [
+        ...this.recoveryInFlight.values(),
+        ...(this.fulfillment === undefined ? [] : [this.fulfillment]),
+      ];
+      if (inFlight.length === 0) return;
+      await Promise.all(inFlight);
+    }
+  }
+
+  /**
+   * 逐条分类并接纳：每个执行都有自己的一次宿主监督，一个执行的停止或失败绝不牵连同批
+   * 其他执行。已经在途的执行不再重复分类，本进程启动后新创建的工作不由恢复接管。
+   */
+  private async recover(): Promise<void> {
+    // 重访集合在每一遍开始时现取：上一遍轮询之后才被标为「领不到权利」的执行同样要接回去。
+    const within =
+      this.recoveryScope === undefined
+        ? undefined
+        : new Set([...this.recoveryScope, ...this.recoveryDeferred]);
+    const classifications = await this.runner.classifyRunningExecutions(
+      new Set(this.recoveryInFlight.keys()),
+      within,
+    );
+    const present = new Set(classifications.map((item) => item.executionId));
+    for (const executionId of this.recoveryItems.keys())
+      if (!present.has(executionId) && !this.recoveryInFlight.has(executionId))
+        this.recoveryItems.delete(executionId);
+    // 已经耐久终结的占用执行不再需要重访；仍在途的那条由本轮的接纳任务继续负责。
+    for (const executionId of this.recoveryDeferred)
+      if (!present.has(executionId) && !this.recoveryInFlight.has(executionId))
+        this.recoveryDeferred.delete(executionId);
+    for (const item of classifications) {
+      this.recoveryItems.set(item.executionId, item);
+      if (item.category !== "waiting") this.admit(item);
+    }
+    // 等待用户的那几条由这份集合带着；领不到权利的那几条由 `recoveryDeferred` 自己带着，
+    // 下一遍轮询在开头合并。本进程新开始的工作始终不在两者之中。
+    this.recoveryScope = new Set(
+      classifications
+        .filter((item) => item.category === "waiting")
+        .map((item) => item.executionId),
+    );
+  }
+
+  private admit(item: RecoveryClassification): void {
+    if (this.recoveryInFlight.has(item.executionId)) return;
+    const executionId = item.executionId;
+    let deferred = false;
+    const lifecycle: RecoveryLifecycle = {
+      // 「另一进程仍在继续」和「等人工审阅」都不算这条已被协调完：留在本次启动的重访集合里，
+      // 等持有者终态或声明到期后由同一个宿主沿原 ID 接手。
+      onWaitingExecution: (waitingExecutionId) => {
+        deferred = true;
+        this.recoveryDeferred.add(waitingExecutionId);
+      },
+    };
+    const continuing = async (): Promise<
+      AssetRefreshInspection | undefined
+    > => {
+      if (this.executionHost === undefined)
+        return await this.runner.continueRunningExecution(
+          executionId,
+          lifecycle,
+        );
+      return await this.executionHost.runWithControl((control) =>
+        this.runner.continueRunningExecution(executionId, {
+          ...lifecycle,
+          onCheckpoint: control.safeCheckpoint,
+        }),
+      );
+    };
+    const task = continuing()
+      .then((inspection) => {
+        // 这一轮领不到权利：这条分类继续留在本次启动里可见并等待重访，不算协调完成。
+        if (deferred) return;
+        this.recoveryDeferred.delete(executionId);
+        this.recoveryItems.delete(executionId);
+        // 明确中断的执行已耐久终结，不再出现在后续分类里；这份结果留在本次启动，用户因此
+        // 仍能看到它为什么停下与下一步该做什么。
+        if (inspection?.execution.outcome !== "interrupted") return;
+        this.recoveryNotes.set(executionId, {
+          executionId,
+          category: "interrupted",
+          subject: item.subject,
+          reason: inspection.execution.reason ?? item.reason,
+          nextAction: "请重新发起一次刷新",
+        });
+      })
+      .catch((error: unknown) => {
+        this.onError(error);
+      })
+      .finally(() => {
+        this.recoveryInFlight.delete(executionId);
+      });
+    this.recoveryInFlight.set(executionId, task);
+  }
+
+  /** 父扫描之后欠下的内容整理沿耐久父 ID 后台接续，不占用启动准入。 */
+  private reconcileFulfillment(): void {
+    if (this.fulfillment !== undefined) return;
+    const run = async (): Promise<void> => {
+      const results =
+        this.executionHost === undefined
+          ? await this.runner.reconcileTerminalFulfillment()
+          : await this.executionHost.runWithControl((control) =>
+              this.runner.reconcileTerminalFulfillment({
+                onCheckpoint: control.safeCheckpoint,
+              }),
+            );
+      // 终态父不会进入启动恢复集合，账本级中断又没有 child，因此这份逐条结果必须留在本次
+      // 启动的分类里，用户在既有 Settings 入口才能看到每份内容整理为何没建起来与下一步该做什么。
+      for (const result of results)
+        if (result.status === "interrupted")
+          this.recoveryNotes.set(`fulfillment:${result.intentId}`, {
+            executionId: `fulfillment:${result.intentId}`,
+            category: "interrupted",
+            subject: "自动扫描后的内容整理",
+            reason: result.reason ?? "该父扫描的内容整理未能补齐",
+            nextAction: "请重新发起一次扫描",
+          });
+    };
+    const task = run().catch((error: unknown) => {
+      this.onError(error);
+    });
+    this.fulfillment = task;
+    void task.finally(() => {
+      if (this.fulfillment === task) this.fulfillment = undefined;
+    });
   }
 
   private async runPoll(propagateError: boolean): Promise<void> {
@@ -5857,18 +7143,7 @@ export class AutomationHost {
     this.poll = (async () => {
       try {
         const poll = async (lifecycle?: RecoveryLifecycle) => {
-          if (this.pendingRecoveryExecutionIds?.size !== 0) {
-            const waiting = new Set<string>();
-            await this.runner.recoverRunningExecutions({
-              ...lifecycle,
-              ...(this.pendingRecoveryExecutionIds === undefined
-                ? {}
-                : { executionIds: this.pendingRecoveryExecutionIds }),
-              onWaitingExecution: (executionId) => waiting.add(executionId),
-            });
-            this.pendingRecoveryExecutionIds = waiting;
-            if (waiting.size > 0) return;
-          }
+          await this.recover();
           const checkpoint = lifecycle?.onCheckpoint;
           await this.runner.triggerDueAutomation(
             this.clock.now(),
@@ -5950,7 +7225,6 @@ function planRecognitionWorkItems(
   }
   const keys = new Set<string>();
   const observed = new Set(snapshot.files.map((file) => file.relativePath));
-  const claimedBoundaries = new Map<string, string>();
   for (const item of planned) {
     if (item.key.length === 0 || keys.has(item.key))
       throw new Error(
@@ -5982,17 +7256,23 @@ function planRecognitionWorkItems(
         );
       }
       itemPaths.add(path);
-      const prior = claimedBoundaries.get(path);
-      if (prior !== undefined) {
-        throw new Error(
-          "Recognition work-item boundaries must not overlap across interpreters or plans",
-        );
-      }
-      claimedBoundaries.set(path, item.key);
     }
     keys.add(item.key);
   }
-  return planned;
+  return planned.map((item) =>
+    planned.some(
+      (other) =>
+        other !== item &&
+        other.relativePaths.some((reference) =>
+          item.relativePaths.includes(reference),
+        ),
+    )
+      ? {
+          ...item,
+          boundaryConflict: "多个候选资产范围包含相同材料，需要明确决定",
+        }
+      : item,
+  );
 }
 
 function isAssetRefreshWorkPlan(
@@ -6138,6 +7418,21 @@ function terminalFromWorkItems(
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * 历史父的收口只有在其冻结输入可读回时才可信：缺失版本化输入或已被读取器标为不可执行的旧行都无法
+ * 证明接受主体的空／非空，必须走批次级耐久中断而不是伪造空 closed。这里只核对耐久载体本身是否存在
+ * 可复验的冻结输入，绝不据今日配置重新解码或补齐。
+ */
+function historicalCarrierReadable(execution: {
+  readonly workflowInput?: unknown;
+  readonly workflowInputInvalid?: unknown;
+}): boolean {
+  return (
+    execution.workflowInputInvalid === undefined &&
+    execution.workflowInput !== undefined
+  );
 }
 
 function completeManagedStoreDisposition(
@@ -6295,9 +7590,51 @@ class AutomationExecutionNotStarted extends Error {
   }
 }
 
+/**
+ * 耐久账本已把该 operation 绑定到一份原执行。内部哨兵只在监督器建立可跟踪执行之前抛出，
+ * 调用方据此沿用原身份，而不是把这次请求当成失败重放。
+ */
+class DurableInformationFulfillmentBound extends Error {
+  readonly executionId: string;
+
+  constructor(executionId: string) {
+    super(`信息履行计划已绑定执行 ${executionId}`);
+    this.executionId = executionId;
+  }
+}
+
+/** 耐久账本已写下该计划的终局中断处置；同一份远程工作不再按今日事实重算或重放。 */
+class DurableInformationFulfillmentInterrupted extends Error {
+  readonly reason: string;
+
+  constructor(reason: string) {
+    super(reason);
+    this.reason = reason;
+  }
+}
+
 class ResumeExecutionBusyError extends Error {
   constructor() {
     super("刷新记录正在由另一个进程继续");
+  }
+}
+
+/**
+ * 一条执行在一次续跑里的耐久持有者声明时长。逐条恢复与库扫描父续跑共用这一份，因此竞争
+ * 的一方要么接到「正在被继续」，要么在对方终态或声明到期后接手。
+ */
+const resumeLeaseMilliseconds = 30_000;
+
+/**
+ * 取消意图在目录子登记的原子窗口内落地：本次不创建子执行，也不虚构工作项。它是协调
+ * 循环的正常终止信号，不是失败。
+ */
+export class LibraryScanCancelledBeforeChildError extends Error {
+  readonly parentExecutionId: string;
+
+  constructor(parentExecutionId: string) {
+    super("库扫描已取消，此目录不再开始观察");
+    this.parentExecutionId = parentExecutionId;
   }
 }
 
@@ -6373,6 +7710,22 @@ function sameCapabilityCoordinate(
   return capabilityCoordinate(left) === capabilityCoordinate(right);
 }
 
+/**
+ * 一个终态失败来源补充项是否具备可靠的重试依据：形状完整（当前来源与精确规范地址均在）
+ * 且其 producer 属于该执行创建时冻结的兼容坐标。缺依据的旧／畸形项既不公开为可重试，也不
+ * 借全局今日能力伪称 retry——这是 R3 边界严校与 R4 无采集诚实投影共用的同一判据。
+ */
+function sourceEnrichmentFailureIsRetryable(
+  evidence: RecognitionEvidence,
+  capabilityCoordinates: readonly string[],
+): boolean {
+  return (
+    evidence.sourceIdentity !== undefined &&
+    evidence.sourceAddress !== undefined &&
+    capabilityCoordinates.includes(capabilityCoordinate(evidence.producer))
+  );
+}
+
 function observedFilesystemCapabilities(
   registrations: Pick<
     ObservedRootRegistrations,
@@ -6433,94 +7786,6 @@ function requiredFilesystemDirectory(execution: WorkflowExecution): string {
     throw new Error("Filesystem operation has no selected directory");
   }
   return execution.selection.directory;
-}
-
-function effectiveMetadataForAccepted(
-  accepted: Pick<
-    AcceptedAssetState,
-    "entity" | "metadata" | "metadataSourceRecords" | "sourceAssociations"
-  >,
-  sourceRecords: readonly Pick<SourceRecord, "id" | "sourceIdentity">[],
-  metadataUsageContext: string,
-  configuration: MetadataPolicyConfiguration | undefined,
-) {
-  if (configuration !== undefined && configuration.version.length === 0)
-    throw new Error("Metadata Policy configuration version is empty");
-  const definitions = new Map(
-    (configuration?.policies ?? []).map((definition) => [
-      definition.id,
-      definition,
-    ]),
-  );
-  if (definitions.size !== (configuration?.policies.length ?? 0))
-    throw new Error("Metadata Policy configuration has duplicate identifiers");
-  for (const definition of definitions.values())
-    validateMetadataPolicy({ ...definition, subjectIds: [accepted.entity.id] });
-  const selected = configuration?.select(accepted) ?? [];
-  const selectedIds = [...new Set(selected)];
-  if (selectedIds.length !== selected.length)
-    throw new Error("Metadata Policy selection contains duplicate identifiers");
-  const selectedDefinitions = selectedIds.flatMap((policyId) => {
-    const definition = definitions.get(policyId);
-    if (definition === undefined)
-      throw new Error(
-        `Metadata Policy selection references unknown policy ${policyId}`,
-      );
-    return definition.metadataUsageContext === metadataUsageContext
-      ? [definition]
-      : [];
-  });
-  const policies: readonly MetadataPolicy[] = selectedDefinitions.map(
-    (definition) => ({
-      ...definition,
-      subjectIds: [accepted.entity.id],
-    }),
-  );
-  const provenance = [
-    ...(accepted.metadataSourceRecords ?? []),
-    ...sourceRecords,
-  ].filter(
-    (record, index, records) =>
-      records.findIndex((candidate) => candidate.id === record.id) === index,
-  );
-  return deriveEffectiveMetadata({
-    target: { kind: "entity", entityId: accepted.entity.id },
-    metadataUsageContext,
-    policies,
-    sourceRecords: provenance,
-    metadata: accepted.metadata,
-  });
-}
-
-/**
- * 已接受资产携带的来源实体也可以拥有展示元数据。它们不是根资产的别名，因此逐个目标
- * 推导后保留主体编号；没有针对这些从属实体选择根资产策略。
- */
-function effectiveRelatedEntityMetadataForAccepted(
-  accepted: Pick<
-    AcceptedAssetState,
-    "entity" | "entities" | "metadata" | "metadataSourceRecords"
-  >,
-  sourceRecords: readonly Pick<SourceRecord, "id" | "sourceIdentity">[],
-  metadataUsageContext: string,
-): readonly (EffectiveMetadata & { readonly subjectId: string })[] {
-  const provenance = [
-    ...(accepted.metadataSourceRecords ?? []),
-    ...sourceRecords,
-  ].filter(
-    (record, index, records) =>
-      records.findIndex((candidate) => candidate.id === record.id) === index,
-  );
-  return (accepted.entities ?? []).flatMap((entity) =>
-    entity.id === accepted.entity.id
-      ? []
-      : deriveEffectiveMetadata({
-          target: { kind: "entity", entityId: entity.id },
-          metadataUsageContext,
-          sourceRecords: provenance,
-          metadata: accepted.metadata,
-        }).values.map((value) => ({ ...value, subjectId: entity.id })),
-  );
 }
 
 function selectedIdentityMetadataPolicies(
@@ -6650,28 +7915,39 @@ function publicAccepted(
   sourceArtifactCandidates: readonly PublicSourceArtifactCandidate[] = [],
 ): AssetRefreshInspection["accepted"] | undefined {
   if (accepted === undefined) return undefined;
-  const effectiveMetadata = effectiveMetadataForAccepted(
-    accepted,
-    sourceRecords,
-    metadataUsageContext,
+  const facts = readEffectiveSubject(
+    {
+      ...accepted,
+      id: accepted.entity.id,
+      metadataSourceRecords: [
+        ...(accepted.metadataSourceRecords ?? []),
+        ...sourceRecords,
+      ],
+    },
     configuration,
+    metadataUsageContext,
   );
-  const coverRule = configuration?.artifactAssociationRules?.find(
-    (rule) =>
-      rule.usageContext === metadataUsageContext &&
-      rule.role === "asset.primary-cover",
-  );
-  const effectiveCover = deriveEffectiveArtifactAssociation({
-    target: { kind: "entity", entityId: accepted.entity.id },
-    role: "asset.primary-cover",
-    associations: accepted.artifactAssociations,
-    sourceAssociations: accepted.sourceAssociations,
-    ...(coverRule === undefined
-      ? {}
-      : { preferredSourceIdentities: coverRule.preferredSourceIdentities }),
-  });
+  const primaryCoverArtifactId = facts.descriptions
+    .find(
+      (description) =>
+        description.target.kind === "entity" &&
+        description.target.entityId === accepted.entity.id,
+    )
+    ?.artifactRoles.find(
+      (role) => role.role === "asset.primary-cover",
+    )?.artifactId;
   return {
     entity: accepted.entity,
+    facts: {
+      ...facts,
+      sourceArtifacts: sourceArtifactCandidates.map(
+        ({ role, mediaType, selectionEvidence }) => ({
+          role,
+          mediaType,
+          ...(selectionEvidence === undefined ? {} : { selectionEvidence }),
+        }),
+      ),
+    },
     sourceAssociations: accepted.sourceAssociations.map((association) => ({
       sourceIdentity: association.sourceIdentity,
       nativeAddress: association.nativeAddress,
@@ -6697,18 +7973,7 @@ function publicAccepted(
       : { currentLocationRevisions: accepted.currentLocationRevisions }),
     artifactAssociations: accepted.artifactAssociations,
     metadata: accepted.metadata,
-    effectiveMetadata: [
-      ...effectiveMetadata.values,
-      ...effectiveRelatedEntityMetadataForAccepted(
-        accepted,
-        sourceRecords,
-        metadataUsageContext,
-      ),
-    ],
-    ...(effectiveCover === undefined || "kind" in effectiveCover
-      ? {}
-      : { primaryCoverArtifactId: effectiveCover.association.artifactId }),
-    metadataPolicyConflicts: effectiveMetadata.conflicts,
+    ...(primaryCoverArtifactId === undefined ? {} : { primaryCoverArtifactId }),
     ...(accepted.currentRelatedEntities === undefined
       ? {}
       : { currentRelatedEntities: accepted.currentRelatedEntities }),
@@ -6845,7 +8110,12 @@ function publicInspection(
                 ...(disposition?.reason === undefined
                   ? {}
                   : { reason: disposition.reason }),
-                canRetry: status === "failed",
+                canRetry:
+                  status === "failed" &&
+                  sourceEnrichmentFailureIsRetryable(
+                    item.evidence,
+                    inspection.execution.compatibility.capabilityCoordinates,
+                  ),
               };
             },
           ),
@@ -6991,6 +8261,189 @@ function publicEvidenceComparison(
   };
 }
 
+/** 冻结普通显示与确认依据；读取预演时不会重新按当前配置选择历史事实。 */
+function freezeChangeImpactFactReads(
+  preview: ChangeImpactPreview,
+  configuration: MetadataPolicyConfiguration | undefined,
+  records: readonly SourceRecord[],
+): ChangeImpactPreview {
+  // 冻结的消费需求与详情读取采用同一形状：只有普通语境且三类选择器全部为空时，
+  // 才省略为无选择器（all-available），与确认后省略需求的普通详情一致；普通语境但
+  // 携带选择器的需求必须完整冻结并传入共同读取，令缺失资料、缺失必需角色与单值
+  // 冲突裁决与同需求详情一致。绝不在此重新发明元数据求值。
+  const keepSelectors =
+    preview.requestContext !== undefined &&
+    !(
+      preview.requestContext.metadataUsageContext ===
+        emptyInformationRequirement.metadataUsageContext &&
+      preview.requestContext.metadata.length === 0 &&
+      preview.requestContext.artifactRoles.length === 0 &&
+      preview.requestContext.relationshipTypes.length === 0
+    );
+  const requestContext = keepSelectors ? preview.requestContext : undefined;
+  const project = (
+    projection: AssetStateProjection,
+    roleDecisions?: readonly import("@digital/domain").ArtifactRoleDecision[],
+  ): EffectiveSubjectRead => {
+    const retained = projection.readBasis ?? preview.current.readBasis;
+    if (retained === undefined)
+      throw new Error("变更预演缺少冻结读取依据，请重新形成预演");
+    const sourceAssociations = projection.sourceAssociations.map(
+      (coordinate) =>
+        retained.sourceAssociations.find(
+          (association) =>
+            association.sourceIdentity === coordinate.sourceIdentity &&
+            association.nativeAddress === coordinate.nativeAddress,
+        ) ??
+        (preview.change.kind === "source-association" &&
+        preview.change.proposal.kind !== "retract" &&
+        preview.change.proposal.successor.sourceIdentity ===
+          coordinate.sourceIdentity &&
+        preview.change.proposal.successor.nativeAddress ===
+          coordinate.nativeAddress
+          ? preview.change.proposal.successor
+          : {
+              ...coordinate,
+              id: `preview-source:${coordinate.sourceIdentity}:${coordinate.nativeAddress}`,
+              subjectId: preview.assetId,
+            }),
+    );
+    const targets = new Map(
+      (retained.relationshipReadBasis?.targets ?? []).map(
+        ({ relationshipId, target }) => [relationshipId, target],
+      ),
+    );
+    for (const relationship of projection.relationships) {
+      if (targets.has(relationship.id)) continue;
+      const graph = preview.projectedObservedEntityGraphs?.find((candidate) =>
+        candidate.relationships.some(
+          ({ id: relationshipId }) => relationshipId === relationship.id,
+        ),
+      );
+      if (graph !== undefined) {
+        targets.set(relationship.id, {
+          kind: "observed",
+          assetId: preview.assetId,
+          artifactId: graph.artifactId,
+          capabilityId: graph.producer.capabilityId,
+          coverageId: graph.coverageId,
+          sourceSlot: relationship.sourceSlot,
+        });
+        continue;
+      }
+      const supporting = records.filter((record) =>
+        relationship.sourceRecordIds.includes(record.id),
+      );
+      const scopes = new Map(
+        supporting.map((record) => [
+          JSON.stringify([
+            record.sourceIdentity,
+            record.nativeAddress,
+            record.coverage.id,
+          ]),
+          record,
+        ]),
+      );
+      if (scopes.size !== 1) throw new Error("预演关系缺少唯一的来源支持范围");
+      const record = [...scopes.values()][0]!;
+      targets.set(relationship.id, {
+        kind: "source",
+        sourceSubjectId: preview.assetId,
+        sourceIdentity: record.sourceIdentity,
+        nativeAddress: record.nativeAddress,
+        coverageId: record.coverage.id,
+        sourceSlot: relationship.sourceSlot,
+      });
+    }
+    const knownEntities = new Map(
+      (retained.currentRelatedEntities ?? []).map((entity) => [
+        entity.id,
+        entity,
+      ]),
+    );
+    const recognitionSourceAssociation = sourceAssociations.find(
+      (association) =>
+        association.sourceIdentity ===
+          projection.recognitionSourceAssociation?.sourceIdentity &&
+        association.nativeAddress ===
+          projection.recognitionSourceAssociation.nativeAddress,
+    );
+    const {
+      recognitionSourceAssociation: _recognitionSourceAssociation,
+      ...facts
+    } = projection;
+    return readEffectiveSubject(
+      {
+        ...facts,
+        id: preview.assetId,
+        sourceAssociations,
+        ...(recognitionSourceAssociation === undefined
+          ? {}
+          : { recognitionSourceAssociation }),
+        metadataSourceRecords: [
+          ...(retained.metadataSourceRecords ?? []),
+          ...records,
+        ],
+        currentRelatedEntities: projection.entities.map((entity) => ({
+          ...entity,
+          kind: knownEntities.get(entity.id)?.kind ?? { status: "ordinary" },
+        })),
+        currentLocationRevisions: retained.currentLocationRevisions ?? [],
+        artifactRoleDecisions:
+          roleDecisions ?? retained.artifactRoleDecisions ?? [],
+        relationshipReadBasis: {
+          ...retained.relationshipReadBasis,
+          targets: [...targets].map(([relationshipId, target]) => ({
+            relationshipId,
+            target,
+          })),
+          decisions: retained.relationshipReadBasis?.decisions ?? [],
+          manualRelationshipIds:
+            retained.relationshipReadBasis?.manualRelationshipIds ?? [],
+        },
+      },
+      configuration,
+      requestContext?.metadataUsageContext,
+      requestContext,
+    );
+  };
+  return {
+    ...preview,
+    facts: {
+      current: project(preview.current),
+      // 预演的项目状态与确认后普通详情走同一求值，只多这一条待追加的头决定。
+      projected:
+        preview.change.kind === "artifact-role-decision"
+          ? project(
+              preview.projected,
+              projectArtifactRoleDecisionHead(
+                preview.current.readBasis?.artifactRoleDecisions ?? [],
+                preview.change.decision,
+              ),
+            )
+          : project(preview.projected),
+    },
+  };
+}
+
+const primaryCoverRole = "asset.primary-cover";
+const artifactRoleCandidateBaselineKey = "artifact-role-candidates";
+
+/** 候选引用只由这一冻结三元组导出，交付层因此无法伪造路径、材料图或旧修订。 */
+function artifactRoleCandidateReference(
+  candidate: ArtifactRoleCandidate,
+): string {
+  return `cover-candidate_${sha256(
+    new TextEncoder().encode(
+      JSON.stringify([
+        candidate.associationId,
+        candidate.artifactId,
+        candidate.revisionId,
+      ]),
+    ),
+  )}`;
+}
+
 function publicChangeImpactPreview(
   preview: ChangeImpactPreview,
 ): ChangeImpactPreviewInspection {
@@ -7019,8 +8472,9 @@ function publicChangeImpactPreview(
       } = value;
       return safe;
     };
+    const { readBasis: _readBasis, ...publicProjection } = projection;
     return {
-      ...projection,
+      ...publicProjection,
       metadata: projection.metadata.map(withoutPrivateProvenance),
       entities: projection.entities.map(withoutPrivateProvenance),
       entityMentions: projection.entityMentions.map(withoutPrivateProvenance),
@@ -7062,28 +8516,62 @@ function publicChangeImpactPreview(
         }),
     current: safeProjection(preview.current),
     projected: safeProjection(preview.projected),
+    ...(preview.facts === undefined ? {} : { facts: preview.facts }),
     metadataCount: preview.projected.metadata.length,
     entityCount: preview.projected.entities.length,
     mentionCount: preview.projected.entityMentions.length,
     resolutionCount: preview.projected.entityResolutionDecisions.length,
     relationshipCount: preview.projected.relationships.length,
     artifactCount: preview.projected.artifacts.length,
-    ...(preview.projected.primaryCoverArtifactId === undefined
+    ...(preview.facts?.projected.descriptions
+      .find(
+        (description) =>
+          description.target.kind === "entity" &&
+          description.target.entityId === preview.assetId,
+      )
+      ?.artifactRoles.find((role) => role.role === "asset.primary-cover")
+      ?.artifactId === undefined
       ? {}
-      : { primaryCoverArtifactId: preview.projected.primaryCoverArtifactId }),
-    blockingConditions: preview.blockingConditions,
+      : {
+          primaryCoverArtifactId: preview
+            .facts!.projected.descriptions.find(
+              (description) =>
+                description.target.kind === "entity" &&
+                description.target.entityId === preview.assetId,
+            )!
+            .artifactRoles.find((role) => role.role === "asset.primary-cover")!
+            .artifactId,
+        }),
+    blockingConditions:
+      preview.facts === undefined && preview.status === "awaiting-confirmation"
+        ? [
+            ...preview.blockingConditions,
+            "此预演缺少冻结的生效读取结果，请重新形成预演",
+          ]
+        : preview.blockingConditions,
   };
 }
 
 function assetStateProjection(
   accepted: AcceptedAssetState,
 ): AssetStateProjection {
-  const primaryCoverArtifactId = accepted.artifactAssociations.find(
-    ({ role }) => role === "asset.primary-cover",
-  )?.artifactId;
   return {
-    recognitionState: "recognized",
-    recognitionDecisionId: accepted.recognitionDecision.id,
+    readBasis: {
+      sourceAssociations: accepted.sourceAssociations,
+      metadataSourceRecords: accepted.metadataSourceRecords ?? [],
+      ...(accepted.relationshipReadBasis === undefined
+        ? {}
+        : { relationshipReadBasis: accepted.relationshipReadBasis }),
+      currentRelatedEntities: accepted.currentRelatedEntities ?? [],
+      currentLocationRevisions: accepted.currentLocationRevisions ?? [],
+      // 预演的当前事实必须与 ordinary 读取同义，人工封面决定同样属于已接受状态。
+      artifactRoleDecisions: accepted.artifactRoleDecisions ?? [],
+    },
+    recognitionState:
+      accepted.recognitionHeadDecisionId === null ? "unresolved" : "recognized",
+    ...(accepted.recognitionHeadDecisionId === null
+      ? {}
+      : { recognitionDecisionId: accepted.recognitionDecision.id }),
     sourceAssociations: accepted.sourceAssociations.map(
       ({ sourceIdentity, nativeAddress }) => ({
         sourceIdentity,
@@ -7109,7 +8597,6 @@ function assetStateProjection(
     blobs: accepted.blobs,
     artifactRevisions: accepted.artifactRevisions,
     artifactAssociations: accepted.artifactAssociations,
-    ...(primaryCoverArtifactId === undefined ? {} : { primaryCoverArtifactId }),
   };
 }
 
@@ -7152,7 +8639,6 @@ function projectSupportedArtifactGraph(input: {
   | "blobs"
   | "artifactRevisions"
   | "artifactAssociations"
-  | "primaryCoverArtifactId"
 > {
   const supports = input.current.artifactAssociationRecognitionSupports ?? [];
   const currentSourceAssociationIds = new Set(
@@ -7241,16 +8727,12 @@ function projectSupportedArtifactGraph(input: {
         .map((blob) => [blob.digest, blob]),
     ).values(),
   ];
-  const primaryCoverArtifactId = artifactAssociations.find(
-    ({ role }) => role === "asset.primary-cover",
-  )?.artifactId;
   return {
     artifacts,
     locations,
     blobs,
     artifactRevisions,
     artifactAssociations,
-    ...(primaryCoverArtifactId === undefined ? {} : { primaryCoverArtifactId }),
   };
 }
 
@@ -7333,20 +8815,37 @@ export class AssetRefreshWorkflow {
     Promise<AssetRefreshInspection>
   >();
   private informationFulfillmentClosing = false;
+  private closing = false;
 
   constructor(ports: AssetRefreshWorkflowPorts) {
     this.ports = ports;
+    const supervisor = ports.invocationSupervisor;
     this.observedRootExecution = new ObservedRootExecution(
       ports.observedRootRegistrations,
+      supervisor === undefined
+        ? undefined
+        : () => supervisor.lease() as OperationLease,
     );
     this.resumeClock = ports.resumeClock ?? systemAutomationClock;
+    const librarySnapshot = ports.assetLibrarySnapshot;
     this.sourceArtifactWork = new CheckpointedSourceArtifactWork({
       acquirers: ports.acquirers,
       managedStore: ports.managedStore,
+      ...(librarySnapshot === undefined
+        ? {}
+        : {
+            acquirerCapabilityTokensForSourceIdentity: (
+              sourceIdentity: string,
+            ) =>
+              (
+                assetLibrarySnapshotSourceScope(librarySnapshot, sourceIdentity)
+                  ?.acquirers ?? []
+              ).map(assetLibraryCapabilityToken),
+          }),
     });
     this.informationFulfillment = new InformationFulfillment({
-      readSubjects: async (selection) =>
-        await this.readInformationSubjectFacts(selection),
+      readSubjects: async (selection, requirement) =>
+        await this.readInformationSubjectFacts(selection, requirement),
       capabilities: ports.informationFulfillmentCapabilities ?? [],
       start: async (plan, initiation) =>
         await this.startInformationFulfillment(plan, initiation),
@@ -7358,19 +8857,185 @@ export class AssetRefreshWorkflow {
   /**
    * 交互调用方与自动调用方共用的唯一交付层无关履行接缝。其就绪状态从已接受 Catalogue
    * 事实重建；规划效果保留在既有耐久资产刷新工作流内。
+   *
+   * 库范围执行直接沿自己的冻结配置。根执行必须先把每个主体解析到明确的资产库，因为履行
+   * 会启动外部获取；多库共享资产绝不取首项配置。
    */
-  fulfillInformation(input: {
+  async fulfillInformation(input: {
     readonly selection: InformationSubjectSelection;
     readonly requirement: InformationRequirement;
     /** 来自已接受父执行的 Application 内部来源信息。 */
     readonly initiation?: InformationFulfillmentInitiation;
+    /** 有副作用的浏览所提供的明确资产库。 */
+    readonly assetLibraryId?: string;
   }): Promise<InformationReadiness> {
     if (this.informationFulfillmentClosing) {
       return Promise.resolve(
-        blockedInformationReadiness(input, "信息履行正在关闭"),
+        terminalInformationReadiness(input, "blocked", "信息履行正在关闭"),
       );
     }
-    return this.informationFulfillment.fulfill(input);
+    const fulfillment = {
+      selection: input.selection,
+      requirement: input.requirement,
+      ...(input.initiation === undefined
+        ? {}
+        : { initiation: input.initiation }),
+    };
+    if (
+      this.ports.assetLibrarySnapshot !== undefined ||
+      this.ports.assetLibraries === undefined
+    )
+      return await this.informationFulfillment.fulfill(fulfillment);
+    const contexts = await this.resolveInformationLibraryContexts(
+      input.selection.subjectIds,
+      input.assetLibraryId,
+    );
+    const readinessBySubject = new Map<string, InformationSubjectReadiness>();
+    const groups = new Map<
+      string,
+      { subjectIds: string[]; snapshot: AssetLibrarySnapshot }
+    >();
+    const terminal: {
+      subjectId: string;
+      status: "blocked" | "unavailable";
+      reason: string;
+    }[] = [];
+    for (const context of contexts) {
+      if (context.status === "library") {
+        const key = assetLibrarySnapshotFingerprint(context.snapshot);
+        const group = groups.get(key) ?? {
+          subjectIds: [],
+          snapshot: context.snapshot,
+        };
+        group.subjectIds.push(context.subjectId);
+        groups.set(key, group);
+        continue;
+      }
+      terminal.push({
+        subjectId: context.subjectId,
+        status: context.status,
+        reason: context.reason,
+      });
+    }
+    for (const group of groups.values()) {
+      const readiness = await this.workflowForLibrary(
+        group.snapshot,
+      ).fulfillInformation({
+        selection: { subjectIds: group.subjectIds },
+        requirement: input.requirement,
+        ...(input.initiation === undefined
+          ? {}
+          : { initiation: input.initiation }),
+      });
+      for (const subject of readiness.subjects)
+        readinessBySubject.set(subject.subjectId, subject);
+    }
+    for (const item of terminal) {
+      const readiness = terminalInformationReadiness(
+        {
+          selection: { subjectIds: [item.subjectId] },
+          requirement: input.requirement,
+          ...(input.initiation === undefined
+            ? {}
+            : { initiation: input.initiation }),
+        },
+        item.status,
+        item.reason,
+      );
+      readinessBySubject.set(item.subjectId, readiness.subjects[0]!);
+    }
+    return {
+      requirement: input.requirement,
+      subjects: input.selection.subjectIds.map((subjectId) => {
+        const subject = readinessBySubject.get(subjectId);
+        if (subject === undefined) throw new Error("信息履行遗漏了所选主体");
+        return subject;
+      }),
+    };
+  }
+
+  /**
+   * 把每个主体解析到它自己的资产库语境。已接受观察材料只落在唯一活动库时才自动补充；
+   * 多库共享要求显式选择，零库不启动获取。这里不建立「资产属于库」的领域事实。
+   */
+  private async resolveInformationLibraryContexts(
+    subjectIds: readonly string[],
+    assetLibraryId?: string,
+  ): Promise<readonly InformationLibraryContext[]> {
+    const libraries = this.ports.assetLibraries;
+    if (libraries === undefined) throw new Error("当前部署没有资产库配置");
+    const facts = this.ports.informationSubjectFactsQueries;
+    const observed =
+      facts?.readCurrentObservedMaterialRootIds === undefined
+        ? []
+        : await facts.readCurrentObservedMaterialRootIds({ subjectIds });
+    const rootsBySubject = new Map(
+      observed.map(({ subjectId, observedRootIds }) => [
+        subjectId,
+        new Set(observedRootIds),
+      ]),
+    );
+    const active = await libraries.list();
+    const snapshotCache = new Map<string, AssetLibrarySnapshot>();
+    const snapshotFor = async (
+      libraryId: string,
+    ): Promise<AssetLibrarySnapshot | undefined> => {
+      const cached = snapshotCache.get(libraryId);
+      if (cached !== undefined) return cached;
+      try {
+        const snapshot = await libraries.snapshot(libraryId);
+        snapshotCache.set(libraryId, snapshot);
+        return snapshot;
+      } catch {
+        return undefined;
+      }
+    };
+    const contexts: InformationLibraryContext[] = [];
+    for (const subjectId of subjectIds) {
+      const rootIds = rootsBySubject.get(subjectId);
+      const matching = active.filter((library) =>
+        library.rootIds.some((rootId) => rootIds?.has(rootId) === true),
+      );
+      const chosen =
+        assetLibraryId === undefined
+          ? matching
+          : matching.filter((library) => library.id === assetLibraryId);
+      if (assetLibraryId !== undefined && chosen.length !== 1) {
+        contexts.push({
+          subjectId,
+          status: "blocked",
+          reason: "所选资产库当前不包含该资产，请选择其所属资产库",
+        });
+        continue;
+      }
+      if (chosen.length === 0) {
+        contexts.push({
+          subjectId,
+          status: "unavailable",
+          reason: "该资产当前不属于任何资产库，因此不会自动补充资料",
+        });
+        continue;
+      }
+      if (chosen.length > 1) {
+        contexts.push({
+          subjectId,
+          status: "blocked",
+          reason: "该资产同时属于多个资产库，请选择要补充资料的资产库",
+        });
+        continue;
+      }
+      const snapshot = await snapshotFor(chosen[0]!.id);
+      if (snapshot === undefined) {
+        contexts.push({
+          subjectId,
+          status: "unavailable",
+          reason: "该资产所属资产库的配置当前不可用，因此不会自动补充资料",
+        });
+        continue;
+      }
+      contexts.push({ subjectId, status: "library", snapshot });
+    }
+    return contexts;
   }
 
   /**
@@ -7378,11 +9043,16 @@ export class AssetRefreshWorkflow {
    */
   close(): Promise<void> {
     this.informationFulfillmentClosing = true;
+    this.closing = true;
+    // scoped 记忆随产品关闭一起释放；每个 entry 只停止自身的规划，绝不关闭共享资源。
+    for (const scoped of this.libraryScoped.values()) void scoped.close();
+    this.libraryScoped.clear();
     return Promise.resolve();
   }
 
   private async readInformationSubjectFacts(
     selection: InformationSubjectSelection,
+    requirement: InformationRequirement,
   ): Promise<readonly InformationSubjectFacts[]> {
     const exactFacts = this.ports.informationSubjectFactsQueries;
     if (exactFacts !== undefined) {
@@ -7392,90 +9062,115 @@ export class AssetRefreshWorkflow {
       return await Promise.all(
         current
           .filter((facts) => selection.subjectIds.includes(facts.subjectId))
-          .map(async (facts) => ({
-            subjectId: facts.subjectId,
-            metadata: facts.metadata
-              .filter((fact) => fact.subjectId === facts.subjectId)
-              .map(({ property }) => ({ property })),
-            relationships: facts.relationships
-              .filter((fact) => fact.subjectId === facts.subjectId)
-              .map(({ type }) => ({ type })),
-            artifactAssociations: await Promise.all(
-              facts.artifactAssociations
-                .filter(
-                  (association) => association.subjectId === facts.subjectId,
-                )
-                .map(
-                  async ({
-                    role,
-                    managedLocations,
-                    currentSourceArtifact,
-                  }) => ({
-                    role,
-                    available:
-                      currentSourceArtifact !== false &&
-                      (await this.managedLocationsAreAvailable(
-                        managedLocations,
-                      )),
-                  }),
+          .map(
+            async (facts) =>
+              await this.informationFactsFromBasis(
+                facts.basis,
+                requirement,
+                new Map(
+                  facts.sourceArtifactCurrency.map((currency) => [
+                    currency.associationId,
+                    currency.current,
+                  ]),
                 ),
-            ),
-            sourceAssociations: facts.sourceAssociations.map(
-              ({ id, sourceIdentity }) => ({
-                sourceIdentity,
-                sourceAssociationId: id,
-              }),
-            ),
-          })),
+              ),
+          ),
       );
     }
     const accepted = await this.ports.reuseQueries.findAcceptedForSubjects(
       selection.subjectIds,
     );
     return await Promise.all(
-      accepted.map(async ({ subjectId, accepted: state }) => ({
-        subjectId,
-        metadata: state.metadata
-          .filter(
-            (fact) =>
-              fact.target.kind === "entity" &&
-              fact.target.entityId === subjectId,
-          )
-          .map(({ property }) => ({ property })),
-        relationships: (state.relationships ?? [])
-          .filter((fact) =>
-            fact.participants.some(
-              (participant) => participant.entityId === subjectId,
-            ),
-          )
-          .map(({ type }) => ({ type })),
-        artifactAssociations: await Promise.all(
-          state.artifactAssociations
-            .filter(
-              (association) =>
-                association.target.kind === "entity" &&
-                association.target.entityId === subjectId,
-            )
-            .map(async ({ artifactId, role }) => {
-              const managed = state.locations.filter(
-                (location) =>
-                  location.artifactId === artifactId &&
-                  location.kind === "managed",
-              );
-              return {
-                role,
-                available: await this.managedLocationsAreAvailable(managed),
-              };
-            }),
-        ),
-        sourceAssociations: state.sourceAssociations
-          .filter((association) => association.subjectId === subjectId)
-          .map(({ id, sourceIdentity }) => ({
-            sourceIdentity,
-            sourceAssociationId: id,
-          })),
-      })),
+      accepted.map(
+        async ({ subjectId, accepted: state }) =>
+          await this.informationFactsFromBasis(
+            { ...state, id: subjectId },
+            requirement,
+            new Map(),
+          ),
+      ),
     );
+  }
+
+  /**
+   * 信息就绪只把已生效且可用的共同读取结果转换为需求可用性：冲突或被排除的描述与关系
+   * 不算满足，未生效的图片角色不算可用。未请求的坐标不会进入这一投影。
+   */
+  private async informationFactsFromBasis(
+    basis: SubjectFactBasis,
+    requirement: InformationRequirement,
+    sourceCurrency: ReadonlyMap<string, boolean>,
+  ): Promise<InformationSubjectFacts> {
+    const subjectId = basis.id;
+    const read = readEffectiveSubject(
+      basis,
+      this.ports.metadataPolicyConfiguration,
+      requirement.metadataUsageContext,
+      requirement,
+    );
+    const description = read.descriptions.find(
+      (candidate) =>
+        candidate.target.kind === "entity" &&
+        candidate.target.entityId === subjectId,
+    );
+    return {
+      subjectId,
+      metadata: (description?.metadata ?? [])
+        .filter((item) => item.result.status === "resolved")
+        .map((item) => ({ property: item.property })),
+      relationships: read.relationships
+        .filter((relationship) =>
+          relationship.participants.some(
+            (participant) => participant.entityId === subjectId,
+          ),
+        )
+        .map(({ type }) => ({ type })),
+      artifactAssociations: await Promise.all(
+        (description?.artifactRoles ?? []).map(async (role) => ({
+          role: role.role,
+          available: await this.effectiveRoleIsAvailable(
+            role,
+            read.locations,
+            sourceCurrency,
+          ),
+        })),
+      ),
+      sourceAssociations: basis.sourceAssociations
+        .filter((association) => association.subjectId === subjectId)
+        .map(({ id, sourceIdentity }) => ({
+          sourceIdentity,
+          sourceAssociationId: id,
+        })),
+    };
+  }
+
+  /**
+   * 生效图片必须具有可访问的当前位置：观察位置只接受精确确认的当前内容；托管位置保留
+   * 真实字节可用性检查，并要求其来源绑定关联仍至少有一个是当前来源头部。
+   */
+  private async effectiveRoleIsAvailable(
+    role: EffectiveArtifactRoleRead,
+    locations: readonly CurrentLocationRead[],
+    sourceCurrency: ReadonlyMap<string, boolean>,
+  ): Promise<boolean> {
+    const location =
+      role.locationId === undefined
+        ? undefined
+        : locations.find((candidate) => candidate.id === role.locationId);
+    if (location === undefined || location.address === undefined) return false;
+    if (location.kind === "observed")
+      return location.content.status === "confirmed";
+    if (
+      !(await this.managedLocationsAreAvailable([
+        { address: location.address },
+      ]))
+    )
+      return false;
+    const sourceBound = role.associationIds.filter((id) =>
+      sourceCurrency.has(id),
+    );
+    if (sourceBound.length === 0) return true;
+    return sourceBound.some((id) => sourceCurrency.get(id) === true);
   }
 
   /**
@@ -7495,10 +9190,44 @@ export class AssetRefreshWorkflow {
     ).some(Boolean);
   }
 
+  /**
+   * 来自耐久账本的履行请求，其 child 只能由账本在同一条事务里写下并绑定 operation；返回
+   * `false` 表示这是普通创建路径。已绑定时抛内部哨兵让调用方沿用原执行身份，已中断时抛耐久
+   * 处置，两者都绝不落下第二份效果。
+   */
+  private async registerDurableInformationFulfillmentChild(
+    execution: WorkflowExecution,
+    initiation: MetadataRefreshInitiation | undefined,
+    onExecutionStarted: (execution: WorkflowExecution) => void,
+  ): Promise<boolean> {
+    const durable = initiation?.durableOperation;
+    const ledger = this.ports.libraryScanFulfillment;
+    if (durable === undefined || ledger === undefined) return false;
+    const outcome = await ledger.registerInformationFulfillmentChild({
+      parentExecutionId: durable.parentExecutionId,
+      operationId: durable.operationId,
+      execution,
+    });
+    switch (outcome.status) {
+      case "registered":
+        onExecutionStarted(execution);
+        return true;
+      case "existing":
+        throw new DurableInformationFulfillmentBound(outcome.executionId);
+      case "interrupted":
+        throw new DurableInformationFulfillmentInterrupted(outcome.reason);
+    }
+  }
+
   private async startInformationFulfillment(
     plan: InformationFulfillmentPlan,
     initiation?: InformationFulfillmentInitiation,
   ): Promise<InformationFulfillmentStart> {
+    if (
+      this.ports.assetLibraries !== undefined &&
+      this.ports.assetLibrarySnapshot === undefined
+    )
+      throw new Error("信息履行缺少资产库归属，不启动外部获取");
     if (this.informationFulfillmentClosing) {
       return {
         status: "blocked",
@@ -7516,77 +9245,92 @@ export class AssetRefreshWorkflow {
       const predecessor = this.informationWork.get(workKey);
       const metadataRefreshInitiation =
         metadataRefreshInitiationForInformationFulfillment(plan, initiation);
-      const started = await supervisor.invoke(async (control) => {
-        let durableExecutionId: string | undefined;
-        const onExecutionStarted = (execution: WorkflowExecution) => {
-          durableExecutionId = execution.id;
-          control.executionStarted(execution.id);
-        };
-        const launch = async () => {
-          if (plan.operation === "source-artifact-acquisition") {
-            return await this.acquireAcceptedSourceArtifacts(
-              plan,
-              onExecutionStarted,
-              predecessor,
-              metadataRefreshInitiation,
-              { onHostCheckpoint: () => control.safeCheckpoint() },
-            );
-          }
-          await predecessor;
-          return await this.refreshMetadataInternal(
-            {
-              selection: {
-                version: assetRefreshSelectionVersion,
-                subjects: [
-                  {
-                    subjectId: plan.subjectId,
-                    explanations: [
-                      {
-                        path: [
-                          "information-fulfillment",
-                          plan.operation,
-                          plan.sourceIdentity,
-                        ],
-                      },
-                    ],
-                  },
-                ],
-                filesystemScopes: [],
+      let started: { readonly id: string };
+      try {
+        started = await supervisor.invoke(async (control) => {
+          let durableExecutionId: string | undefined;
+          const onExecutionStarted = (execution: WorkflowExecution) => {
+            durableExecutionId = execution.id;
+            control.executionStarted(execution.id);
+          };
+          const launch = async () => {
+            if (plan.operation === "source-artifact-acquisition") {
+              return await this.acquireAcceptedSourceArtifacts(
+                plan,
+                onExecutionStarted,
+                predecessor,
+                metadataRefreshInitiation,
+                { onHostCheckpoint: () => control.safeCheckpoint() },
+              );
+            }
+            await predecessor;
+            return await this.refreshMetadataInternal(
+              {
+                selection: {
+                  version: assetRefreshSelectionVersion,
+                  subjects: [
+                    {
+                      subjectId: plan.subjectId,
+                      explanations: [
+                        {
+                          path: [
+                            "information-fulfillment",
+                            plan.operation,
+                            plan.sourceIdentity,
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                  filesystemScopes: [],
+                },
+                informationRequirement: plan.requirement,
+                onExecutionStarted,
+                onHostCheckpoint: () => control.safeCheckpoint(),
               },
-              informationRequirement: plan.requirement,
-              onExecutionStarted,
-              onHostCheckpoint: () => control.safeCheckpoint(),
-            },
-            plan.sourceIdentity,
-            plan.sourceAssociationId,
-            metadataRefreshInitiation,
-          );
-        };
-        const running = launch();
-        this.informationWork.set(workKey, running);
-        try {
-          await running;
-        } catch (error) {
-          if (error instanceof WorkflowCheckpointInterruption)
-            throw error.cause;
-          if (durableExecutionId === undefined) throw error;
-          const current =
-            await this.ports.executionQueries.inspectExecution(
-              durableExecutionId,
+              plan.sourceIdentity,
+              plan.sourceAssociationId,
+              metadataRefreshInitiation,
             );
-          if (current?.execution.status === "running") {
-            const failed = terminal(
-              current.execution,
-              "failed",
-              errorMessage(error),
-            );
-            await this.transition(current.execution, failed);
+          };
+          const running = launch();
+          this.informationWork.set(workKey, running);
+          try {
+            await running;
+          } catch (error) {
+            if (error instanceof WorkflowCheckpointInterruption)
+              throw error.cause;
+            if (durableExecutionId === undefined) throw error;
+            const current =
+              await this.ports.executionQueries.inspectExecution(
+                durableExecutionId,
+              );
+            if (current?.execution.status === "running") {
+              const failed = terminal(
+                current.execution,
+                "failed",
+                errorMessage(error),
+              );
+              await this.transition(current.execution, failed);
+            }
+          } finally {
+            if (this.informationWork.get(workKey) === running)
+              this.informationWork.delete(workKey);
           }
-        } finally {
-          if (this.informationWork.get(workKey) === running)
-            this.informationWork.delete(workKey);
-        }
-      });
+        });
+      } catch (error) {
+        if (error instanceof DurableInformationFulfillmentBound)
+          return {
+            status: "pending",
+            workflowExecutionId: error.executionId,
+          };
+        if (error instanceof DurableInformationFulfillmentInterrupted)
+          return {
+            status: "blocked",
+            reason: error.reason,
+          };
+        throw error;
+      }
       return { status: "pending", workflowExecutionId: started.id };
     }
   }
@@ -7710,6 +9454,15 @@ export class AssetRefreshWorkflow {
         initiatedBy: initiation?.initiatedBy ?? "information-fulfillment",
         acceptTrusted: false,
         configurationReferences: [],
+        ...(this.ports.assetLibrarySnapshot === undefined
+          ? {}
+          : { assetLibrary: this.ports.assetLibrarySnapshot }),
+        ...(initiation?.parentExecutionId === undefined
+          ? {}
+          : { parentExecutionId: initiation.parentExecutionId }),
+        ...(initiation?.directoryAuthorizations === undefined
+          ? {}
+          : { directoryAuthorizations: initiation.directoryAuthorizations }),
         ...(initiation === undefined
           ? {}
           : { operation: initiation.operation }),
@@ -7735,11 +9488,19 @@ export class AssetRefreshWorkflow {
       compatibility: this.compatibility(),
       dispositions: [],
     };
-    const startDisposition =
-      await this.ports.executionCommands.createExecution(execution);
-    if (startDisposition !== "started")
-      throw new AutomationExecutionNotStarted(startDisposition);
-    onExecutionStarted(execution);
+    if (
+      !(await this.registerDurableInformationFulfillmentChild(
+        execution,
+        initiation,
+        onExecutionStarted,
+      ))
+    ) {
+      const startDisposition =
+        await this.ports.executionCommands.createExecution(execution);
+      if (startDisposition !== "started")
+        throw new AutomationExecutionNotStarted(startDisposition);
+      onExecutionStarted(execution);
+    }
     notifyDurableCheckpoint(lifecycle ?? {}, execution);
     await predecessor;
     const sourceArtifactQueries = this.ports.currentSourceArtifactQueries;
@@ -8011,7 +9772,7 @@ export class AssetRefreshWorkflow {
                   location.kind === "observed" && location.address === address,
               ),
             )
-            .map((content) => content.entity.id),
+            .map((content) => content.id),
           ...(problem === undefined ? {} : { problem: "无法读取此文件" }),
         };
       }) ?? [];
@@ -8033,7 +9794,7 @@ export class AssetRefreshWorkflow {
                 location.address === `${snapshot?.root}/${relativePath}`,
             ),
           )
-          .map((content) => content.entity.id),
+          .map((content) => content.id),
       });
     }
     const assetIds = new Set(files.flatMap((file) => file.assetIds));
@@ -8054,7 +9815,7 @@ export class AssetRefreshWorkflow {
             problem: "未能检查此位置",
           })) ?? []),
       ],
-      contents: current.filter((content) => assetIds.has(content.entity.id)),
+      contents: current.filter((content) => assetIds.has(content.id)),
     };
   }
 
@@ -8224,6 +9985,11 @@ export class AssetRefreshWorkflow {
           );
           const proposal: RecognitionProposal = {
             id: id("recognition-proposal"),
+            boundaries: bindRecognitionMaterialBoundaries({
+              snapshot: selectedSnapshot,
+              boundRoot: bound.scope.root,
+              relativePaths: selectedPaths,
+            }),
             basis: {
               kind: "manual-boundary",
               proposedBy: input.initiatedBy.trim(),
@@ -8645,25 +10411,9 @@ export class AssetRefreshWorkflow {
     const revisions: import("@digital/domain").ObservedArtifactRevisionCandidate[] =
       [];
     for (const file of snapshot.files) {
-      const source = await this.openObservedByteSource(
-        scope,
-        file.relativePath,
-      );
-      const digest = createHash("sha256");
-      let offset = 0;
-      try {
-        for (;;) {
-          const chunk = await source.readChunk(offset, 1024 * 1024);
-          digest.update(chunk.bytes);
-          offset += chunk.bytes.byteLength;
-          checkpoint();
-          if (chunk.done) break;
-        }
-      } finally {
-        await source.close();
-      }
-      if (offset !== file.size || offset !== source.byteLength)
-        throw new Error(`完整文件在读取期间发生变化：${file.relativePath}`);
+      this.ports.observedRootRegistrations.assertDirectoryOperationLive(scope);
+      const { digest: digestValue, byteLength: offset } =
+        await this.streamWholeFileDigest(scope, file, checkpoint);
       const inspected: RecognitionEvidence[] = [];
       for (const inspector of this.ports.formatInspectors ?? []) {
         const formatSource = await this.openObservedByteSource(
@@ -8685,7 +10435,6 @@ export class AssetRefreshWorkflow {
           await formatSource.close();
         }
       }
-      const digestValue = digest.digest("hex");
       const inspectedRevision = inspected
         .map((item) => item.inspection?.revision)
         .find(
@@ -8711,6 +10460,79 @@ export class AssetRefreshWorkflow {
         },
       });
       evidence.push(...inspected);
+      revisions.push({
+        observedArtifactReference: file.relativePath,
+        blob,
+        producer,
+      });
+    }
+    return { evidence, revisions };
+  }
+
+  /** 流式复验整文件，返回精确摘要与长度；读取期间协作 checkpoint，长度不符即失败。 */
+  private async streamWholeFileDigest(
+    scope: BoundObservedScope,
+    file: FilesystemPackageSnapshot["files"][number],
+    checkpoint: () => void,
+  ): Promise<{ readonly digest: string; readonly byteLength: number }> {
+    const source = await this.openObservedByteSource(scope, file.relativePath);
+    const digest = createHash("sha256");
+    let offset = 0;
+    try {
+      for (;;) {
+        const chunk = await source.readChunk(offset, 1024 * 1024);
+        digest.update(chunk.bytes);
+        offset += chunk.bytes.byteLength;
+        checkpoint();
+        if (chunk.done) break;
+      }
+    } finally {
+      await source.close();
+    }
+    if (offset !== file.size || offset !== source.byteLength)
+      throw new Error(`完整文件在读取期间发生变化：${file.relativePath}`);
+    return { digest: digest.digest("hex"), byteLength: offset };
+  }
+
+  /**
+   * 来源无关的完整字节观察：只断言精确字节修订，不解析容器、编码或字幕语义，也不重复运行专用
+   * 格式检查器。用于需要明确离散范围修订的工作项，使正式范围决定预演能引用真实冻结修订。
+   */
+  private async observeWholeFileRevisions(
+    scope: BoundObservedScope,
+    snapshot: FilesystemPackageSnapshot,
+    checkpoint: () => void,
+  ): Promise<{
+    readonly evidence: readonly RecognitionEvidence[];
+    readonly revisions: readonly import("@digital/domain").ObservedArtifactRevisionCandidate[];
+  }> {
+    const evidence: RecognitionEvidence[] = [];
+    const revisions: import("@digital/domain").ObservedArtifactRevisionCandidate[] =
+      [];
+    const producer = this.ports.observedRootRegistrations.capability;
+    for (const file of snapshot.files) {
+      const { digest, byteLength } = await this.streamWholeFileDigest(
+        scope,
+        file,
+        checkpoint,
+      );
+      const blob: Blob = {
+        digest,
+        mediaType: "application/octet-stream",
+        byteLength,
+      };
+      evidence.push({
+        kind: "format.whole-file-observation",
+        explanation: "完整文件字节已复验",
+        producer,
+        inspection: {
+          observedArtifactReference: file.relativePath,
+          revision: blob,
+          identifiers: [],
+          metadata: [],
+          parts: [],
+        },
+      });
       revisions.push({
         observedArtifactReference: file.relativePath,
         blob,
@@ -8770,6 +10592,11 @@ export class AssetRefreshWorkflow {
     );
     const proposal: RecognitionProposal = {
       id: id("recognition-proposal"),
+      boundaries: bindRecognitionMaterialBoundaries({
+        snapshot: selected,
+        boundRoot: scope.observedRoot,
+        relativePaths: [...paths],
+      }),
       basis: {
         kind: "manual-boundary",
         evidence,
@@ -9106,11 +10933,1192 @@ export class AssetRefreshWorkflow {
     };
   }
 
-  /** 生产文件系统扫描边界：调用方绝不提供服务器路径。 */
+  /**
+   * 一次库扫描的生产边界：父执行与其全部目录条目先在同一事务里耐久落下，并且只有父
+   * 身份被公布给调用方；其后由同一个调用按冻结计划顺序观察每个代表目录。等价包含的
+   * 目录不再重复物理观察，其结果只按自身前缀投影。取消意图一旦写下就不再登记目录子，
+   * 已提交的结果保持不动。
+   *
+   * 周期触发使用同一个入口与同一本账，只是把范围缩到该目录授权内的有限相对范围：意图
+   * 只决定何时触发，不另造一套执行机制。
+   */
+  async scanAssetLibrary(input: {
+    readonly libraryId: string;
+    readonly acceptTrusted: boolean;
+    readonly initiatedBy?: string | undefined;
+    readonly informationRequirement?: InformationRequirement | undefined;
+    readonly onProgress?: ((message: string) => void) | undefined;
+    readonly onExecutionStarted?:
+      | ((execution: WorkflowExecution) => void)
+      | undefined;
+    readonly onHostCheckpoint?:
+      | ((execution: WorkflowExecution) => void)
+      | undefined;
+    readonly automation?:
+      | {
+          readonly intentId: string;
+          readonly trigger: AutomationTrigger;
+          readonly observedRootId: string;
+          readonly relativeScope: string;
+          readonly requestedAt: string;
+          readonly policyReferences: readonly string[];
+        }
+      | undefined;
+  }): Promise<LibraryScanRun> {
+    const libraries = this.ports.assetLibraries;
+    if (libraries === undefined) throw new Error("当前部署没有资产库配置");
+    const automation = input.automation;
+    const frozen = await libraries.freezeLibraryScan(input.libraryId);
+    const snapshot = frozen.snapshot;
+    const candidates =
+      automation === undefined
+        ? frozen.candidates
+        : frozen.candidates.filter(
+            (candidate) => candidate.id === automation.observedRootId,
+          );
+    if (candidates.length === 0) {
+      if (automation !== undefined)
+        throw new ObservedRootUnavailable("该目录已不在此资产库中，请重新设置");
+      throw new Error("资产库没有配置可扫描的目录");
+    }
+    if (automation !== undefined && candidates[0]?.unavailable !== undefined)
+      throw new ObservedRootUnavailable(
+        candidates[0].unavailable === "inactive"
+          ? "该目录已停用，无法自动刷新"
+          : "该目录当前不可观察，请检查后重试",
+      );
+    const plan = planLibraryScanDirectories({
+      assetLibraryId: snapshot.id,
+      configVersion: snapshot.configVersion,
+      roots: candidates,
+    });
+    const scoped: LibraryScanPlan =
+      automation === undefined || automation.relativeScope === "."
+        ? plan
+        : {
+            ...plan,
+            // 意图的有限范围只落到它自己的目录条目，绝不放宽成整库观察。
+            directories: plan.directories.map((directory) =>
+              directory.mode === "execute" &&
+              directory.unavailable === undefined
+                ? { ...directory, relativeScope: automation.relativeScope }
+                : directory,
+            ),
+          };
+    const frozenRoots =
+      automation === undefined
+        ? frozen.frozenRoots
+        : frozen.frozenRoots.filter(
+            (root) => root.id === automation.observedRootId,
+          );
+    const directoryAuthorizations =
+      automation === undefined
+        ? frozen.directoryAuthorizations
+        : frozen.directoryAuthorizations.filter(
+            (entry) => entry.observedRootId === automation.observedRootId,
+          );
+    const parent: WorkflowExecution = {
+      id: id("execution"),
+      workflowInput: {
+        version: "asset-refresh-input/1",
+        trigger: automation?.trigger ?? "interactive",
+        initiatedBy:
+          input.initiatedBy?.trim() ||
+          (automation === undefined
+            ? "interactive"
+            : `automation:${automation.intentId}`),
+        acceptTrusted: input.acceptTrusted,
+        configurationReferences:
+          automation === undefined
+            ? [`asset-library/${snapshot.id}/config/${snapshot.configVersion}`]
+            : [...automation.policyReferences],
+        assetLibrary: snapshot,
+        libraryScan: scoped,
+        // 冻结的可用观察根权威随父耐久写下；续跑与目录子都只重绑这一份快照。
+        observedRoots: frozenRoots,
+        // 本票的目录授权账目同样只冻结一次：后续每个效果、提交与恢复都复核这一份，
+        // 而不是回看今天的库配置。周期意图只带走它自己那一条目录授权。
+        directoryAuthorizations,
+      },
+      selection: {
+        intent: "scan-now",
+        informationRequirement:
+          input.informationRequirement ?? emptyInformationRequirement,
+      },
+      operationKind: "scan-asset-library",
+      filesystemSnapshots: [],
+      status: "running",
+      stage: "recognition",
+      sourceRecordIds: [],
+      compatibility: this.compatibility(),
+      dispositions: [{ key: "library-scan-directories", status: "running" }],
+      ...(automation === undefined
+        ? {}
+        : { automationIntentId: automation.intentId }),
+    };
+    const directoryRecords = scoped.directories.map(
+      libraryScanDirectoryFromPlan,
+    );
+    const disposition = await this.ports.executionCommands.createLibraryScan({
+      execution: parent,
+      directories: directoryRecords,
+      ...(automation === undefined
+        ? {}
+        : { requestedAt: automation.requestedAt }),
+      // 批次壳只在自动化父且部署接好了账本时与现代父同事务落下：它的存在与否就是现代父与
+      // 历史无规划父的耐久分界，普通扫描与旧库因此保持原样。
+      ...(automation === undefined ||
+      this.ports.libraryScanFulfillment === undefined
+        ? {}
+        : {
+            fulfillmentPlannerCoordinate: automatedInformationPlannerCoordinate(
+              this.ports.informationPlanner,
+            ),
+          }),
+    });
+    if (disposition !== "started")
+      throw new AutomationExecutionNotStarted(disposition);
+    input.onExecutionStarted?.(parent);
+    return await this.executeLibraryScanDirectories({
+      parent,
+      snapshot,
+      plan: scoped,
+      frozenRoots,
+      ledger: directoryRecords,
+      acceptTrusted: input.acceptTrusted,
+      ...(input.informationRequirement === undefined
+        ? {}
+        : { informationRequirement: input.informationRequirement }),
+      ...(input.onProgress === undefined
+        ? {}
+        : { onProgress: input.onProgress }),
+      ...(input.onHostCheckpoint === undefined
+        ? {}
+        : { onHostCheckpoint: input.onHostCheckpoint }),
+    });
+  }
+
+  /**
+   * 库扫描目录的执行与结算：既服务首次扫描（全部条目排队），也服务同一父的显式续跑
+   * （读取耐久计划、冻结权威与目录账本继续）。已结算或已取消的条目从账本如实保留、绝不
+   * 重新观察；注册但未终结的子按其既有兼容检查点继续；尚未开始的目录只用父冻结的权威绑定
+   * 观察，普通库配置变化不会替换它。取消意图一旦写下就停止新的登记，未开始目录如实记取消。
+   */
+  private async executeLibraryScanDirectories(input: {
+    readonly parent: WorkflowExecution;
+    readonly snapshot: AssetLibrarySnapshot;
+    readonly plan: LibraryScanPlan;
+    readonly frozenRoots: readonly ObservedRootSnapshot[];
+    readonly ledger: readonly LibraryScanDirectoryRecord[];
+    readonly acceptTrusted: boolean;
+    /**
+     * 续跑路径带来的耐久单持有者权利：父的汇总收尾因此和逐条恢复共用同一条 CAS，失去权利的
+     * 那一路写不进父的终态。前台新扫描没有这份权利，保持既有收尾。
+     */
+    readonly resumeClaim?:
+      | (() => { readonly token: string; readonly now: string })
+      | undefined;
+    readonly informationRequirement?: InformationRequirement | undefined;
+    readonly onProgress?: ((message: string) => void) | undefined;
+    readonly onHostCheckpoint?:
+      | ((execution: WorkflowExecution) => void)
+      | undefined;
+  }): Promise<LibraryScanRun> {
+    if (this.ports.assetLibraries === undefined)
+      throw new Error("当前部署没有资产库配置");
+    const { parent, snapshot, plan } = input;
+    const frozenRootById = new Map(
+      input.frozenRoots.map((root) => [root.id, root]),
+    );
+    // 本次父冻结的目录授权代次：每个目录子只携带自己那一条，后续效果与提交因此逐目录复核，
+    // 一个目录被移除不会连带剥夺同库其他目录的既有权威。
+    const authorityVersionByRoot = new Map(
+      (parent.workflowInput?.directoryAuthorizations ?? []).map((entry) => [
+        entry.observedRootId,
+        entry.authorityVersion,
+      ]),
+    );
+    const containerPaths = input.frozenRoots
+      .map((root) => root.containerPath)
+      .filter((value) => value.length > 0);
+    // 友好名只用于展示，绝不参与范围或归属：历史父或已移除库的名字查询失败绝不阻断
+    // 恢复与账本，缺名走既有的「该目录」回退。
+    const displayNameById = await this.scanDirectoryDisplayNames(snapshot.id);
+    const entries = new Map(
+      plan.directories.map((directory) => [
+        directory.directoryKey,
+        libraryScanDirectoryFromPlan(directory),
+      ]),
+    );
+    const ledgerBy = new Map(
+      input.ledger.map((record) => [record.directoryKey, record]),
+    );
+    const coveredBy = new Map<string, readonly LibraryScanDirectoryPlan[]>();
+    for (const directory of plan.directories) {
+      const representative = directory.executedByDirectoryKey;
+      if (directory.mode !== "covered" || representative === undefined)
+        continue;
+      const group = coveredBy.get(representative);
+      coveredBy.set(
+        representative,
+        group === undefined ? [directory] : [...group, directory],
+      );
+    }
+    const results = new Map<string, LibraryScanDirectoryResult>();
+    const summaries: LibraryScanEntryOutcome[] = [];
+    const settle = async (
+      entry: LibraryScanDirectoryRecord,
+      summary: LibraryScanEntryOutcome,
+      workItems: readonly LibraryScanDirectoryWorkItem[],
+      reason?: string,
+    ): Promise<void> => {
+      const result = libraryScanDirectoryResult({
+        entry,
+        displayName: displayNameById.get(entry.directoryKey) ?? "该目录",
+        summary,
+        workItems,
+        ...(reason === undefined ? {} : { reason }),
+      });
+      results.set(entry.directoryKey, result);
+      summaries.push(summary);
+      await this.ports.executionCommands.recordLibraryScanDirectoryResult(
+        libraryScanLedgerWrite({
+          parentExecutionId: parent.id,
+          result,
+          summary,
+        }),
+      );
+      input.onHostCheckpoint?.(parent);
+    };
+    // 一个代表子只装载一次，covered 条目按自身前缀投影。
+    const itemsByChild = new Map<
+      string,
+      readonly LibraryScanDirectoryWorkItem[]
+    >();
+    const itemsFor = async (
+      childExecutionId: string | undefined,
+    ): Promise<readonly LibraryScanDirectoryWorkItem[]> => {
+      if (childExecutionId === undefined) return [];
+      const cached = itemsByChild.get(childExecutionId);
+      if (cached !== undefined) return cached;
+      const loaded =
+        (await this.inspect(childExecutionId))?.execution.workItems ?? [];
+      itemsByChild.set(childExecutionId, loaded);
+      return loaded;
+    };
+    // 保留：从账本如实重建已终结条目的结果与计数，绝不重新观察或改写耐久成果。
+    const retain = async (
+      record: LibraryScanDirectoryRecord,
+      directory: LibraryScanDirectoryPlan,
+    ): Promise<void> => {
+      const raw = await itemsFor(record.childExecutionId);
+      const workItems =
+        directory.mode === "covered"
+          ? coveredWorkItems(raw, record.coveredPrefix ?? ".")
+          : raw;
+      const summary: LibraryScanEntryOutcome = {
+        outcome: record.outcome ?? "unresolved",
+        workItemCount: record.workItemCount,
+        unresolvedCount: record.unresolvedCount,
+        failedCount: record.failedCount,
+      };
+      results.set(
+        record.directoryKey,
+        libraryScanDirectoryResult({
+          entry: record,
+          displayName: displayNameById.get(record.directoryKey) ?? "该目录",
+          summary,
+          workItems,
+          ...(record.reason === undefined ? {} : { reason: record.reason }),
+        }),
+      );
+      summaries.push(summary);
+    };
+    // 第一步：先保留父创建时或上一轮已经结算／取消的目录条目（含 covered）。
+    for (const directory of plan.directories) {
+      const record = ledgerBy.get(directory.directoryKey);
+      if (record === undefined) continue;
+      if (record.stage !== "settled" && record.stage !== "cancelled") continue;
+      await retain(record, directory);
+    }
+    // 代表在上一轮已结算、但其 covered 目录尚未结算时，从代表的既有子如实投影续上，
+    // 绝不把这类目录误当成未开始而记取消。代表的取消或失败由投影共享，不伪造成功。
+    for (const directory of plan.directories) {
+      if (directory.mode !== "covered") continue;
+      if (results.has(directory.directoryKey)) continue;
+      const representative = ledgerBy.get(directory.executedByDirectoryKey!);
+      if (
+        representative === undefined ||
+        (representative.stage !== "settled" &&
+          representative.stage !== "cancelled")
+      )
+        continue;
+      const coveredEntry: LibraryScanDirectoryRecord = {
+        ...entries.get(directory.directoryKey)!,
+        ...(representative.childExecutionId === undefined
+          ? {}
+          : { childExecutionId: representative.childExecutionId }),
+      };
+      const projected =
+        representative.stage === "cancelled"
+          ? []
+          : coveredWorkItems(
+              await itemsFor(representative.childExecutionId),
+              directory.coveredByReference ?? ".",
+            );
+      await settle(
+        coveredEntry,
+        representative.stage === "cancelled"
+          ? libraryScanEntryOutcome({ cancelled: true })
+          : libraryScanEntryOutcome({ workItems: projected }),
+        projected,
+        representative.reason,
+      );
+    }
+    const unavailableReason = (kind: LibraryScanDirectoryUnavailable): string =>
+      kind === "missing"
+        ? "此目录对应的文件位置配置已缺失，无法观察"
+        : kind === "inactive"
+          ? "此目录对应的文件位置已停用，无法观察"
+          : "此目录对应的文件位置当前不可用，无法观察";
+    // 严格完整：在创建任何新目录子之前，先整体预检本次「待新观察」的目录集合——即所有
+    // 尚未登记（无 child）、未结算/取消（不在 results）、mode execute 且非 unavailable 的
+    // 目录。只要其中一个缺少对应冻结根或版本不符，本次恢复就不得启动集合内任何目录的新观察，
+    // 包括自身冻结依据完好的目录，绝不因完好目录排在缺失目录之前而先被观察。已登记子按自身
+    // 耐久依据继续、covered 从既结算代表投影、真正 unavailable 走独立失败，均不经此处，也不
+    // 要求为不存在的根虚构依据、不借今日字段。
+    const frozenSetIncomplete = plan.directories
+      .filter(
+        (directory) =>
+          directory.mode === "execute" &&
+          directory.unavailable === undefined &&
+          !results.has(directory.directoryKey) &&
+          ledgerBy.get(directory.directoryKey)?.childExecutionId === undefined,
+      )
+      .some((directory) => {
+        const root = frozenRootById.get(directory.scopeReference);
+        return (
+          root === undefined || root.configVersion !== directory.rootVersion
+        );
+      });
+    for (const directory of plan.directories) {
+      if (directory.mode !== "execute") continue;
+      if (results.has(directory.directoryKey)) continue;
+      if (
+        (await this.ports.executionQueries.inspectLibraryScan(parent.id))
+          ?.cancellationRequested !== undefined
+      )
+        break;
+      const covered = coveredBy.get(directory.directoryKey) ?? [];
+      const entry = entries.get(directory.directoryKey)!;
+      // 冻结读取时不可用的目录：逐条如实失败，绝不借今日根或猜测归属。
+      if (directory.unavailable !== undefined) {
+        const reason = unavailableReason(directory.unavailable);
+        const summary = libraryScanEntryOutcome({ error: reason });
+        await settle(entry, summary, [], reason);
+        continue;
+      }
+      const frozenRoot = frozenRootById.get(directory.scopeReference);
+      const record = ledgerBy.get(directory.directoryKey);
+      let childId: string | undefined;
+      let workItems: readonly LibraryScanDirectoryWorkItem[] = [];
+      let error: string | undefined;
+      let entryCancelled = false;
+      if (record?.childExecutionId !== undefined) {
+        // 已登记但未终结的子：按其既有兼容检查点继续，成果如实保留，不伪造成功。
+        childId = record.childExecutionId;
+        try {
+          let execution = (await this.inspect(childId))?.execution;
+          if (execution?.status === "running") {
+            try {
+              await this.resume({
+                executionId: childId,
+                ...(input.onProgress === undefined
+                  ? {}
+                  : { onProgress: input.onProgress }),
+                ...(input.onHostCheckpoint === undefined
+                  ? {}
+                  : { onHostCheckpoint: input.onHostCheckpoint }),
+              });
+            } catch (error_) {
+              rethrowWorkflowLifecycle(error_);
+              // 另一个进程仍持有这个目录子的有效声明：这既不是该目录失败也不是取消。整段父续跑
+              // 就此停下，账本前端不推进，由本次启动对该父的监督在声明终态或到期后重新接手。
+              if (error_ instanceof ResumeExecutionBusyError) throw error_;
+              // 扫描与领取之间这个子也可能已被竞争者耐久终结，那不属于本次失败：只有它仍在
+              // 运行中才把这次错误如实记为该目录的结果。
+              const reread = (await this.inspect(childId))?.execution;
+              if (reread === undefined || reread.status === "running")
+                throw error_;
+            }
+            execution = (await this.inspect(childId))?.execution;
+          }
+          if (execution === undefined) error = "未找到该目录的观察记录";
+          else if (execution.status === "running")
+            error = "目录子尚未到达可继续的持久检查点";
+          else if (execution.outcome === "cancelled") entryCancelled = true;
+          else if (
+            execution.status === "failed" &&
+            (execution.outcome === "failed" ||
+              execution.outcome === "interrupted")
+          )
+            error = execution.reason ?? "目录子未能继续完成";
+          else workItems = execution.workItems ?? [];
+        } catch (error_) {
+          rethrowWorkflowLifecycle(error_);
+          entryCancelled = errorMessage(error_) === "库扫描已取消";
+          if (!entryCancelled) error = errorMessage(error_);
+        }
+      } else {
+        // 新观察必须整体满足本次父冻结的根集合：上面已在启动任何新观察之前判定集合是否
+        // 完整。不完整时（例如缺 observedRoots 的旧父，或部分冻结根被删）此处对每个待新
+        // 观察目录一律诚实拒绝安全恢复，零新观察、不借今日根或配置、不新造今日字段——包括
+        // 自身根完好的目录也一并不启动。已登记子走上面的续跑分支、不可用目录走上面的独立
+        // 失败，均不经此处，绝不要求不存在的根。
+        if (frozenSetIncomplete) {
+          const reason = "此目录缺少本次扫描冻结的观察依据，无法安全恢复";
+          const summary = libraryScanEntryOutcome({ error: reason });
+          await settle(entry, summary, [], reason);
+          for (const candidate of covered) {
+            await settle(
+              entries.get(candidate.directoryKey)!,
+              summary,
+              [],
+              reason,
+            );
+          }
+          continue;
+        }
+        try {
+          const inspection = await this.workflowForLibrary(
+            snapshot,
+          ).scanObservedScope({
+            assetLibraryId: snapshot.id,
+            registrationId: directory.scopeReference,
+            relativeScope: directory.relativeScope,
+            acceptTrusted: input.acceptTrusted,
+            initiatedBy: parent.workflowInput?.initiatedBy,
+            informationRequirement: input.informationRequirement,
+            onProgress: input.onProgress,
+            // 目录子只重绑父冻结的这一份权威，绝不解析今日根替换旧快照。
+            libraryScanFrozenRoot: frozenRoot,
+            ...(authorityVersionByRoot.has(directory.scopeReference)
+              ? {
+                  directoryAuthorityVersion: authorityVersionByRoot.get(
+                    directory.scopeReference,
+                  ),
+                }
+              : {}),
+            // 目录子与父登记原子完成；取消胜出时这里不会留下新的观察执行。
+            libraryScanParent: {
+              parentExecutionId: parent.id,
+              directoryKey: directory.directoryKey,
+              coverage: covered.map((candidate) => ({
+                scopeReference: candidate.scopeReference,
+                rootVersion: candidate.rootVersion,
+                relativePrefix: candidate.coveredByReference ?? ".",
+              })),
+            },
+            onExecutionStarted: (child) => {
+              childId = child.id;
+            },
+            onHostCheckpoint: input.onHostCheckpoint,
+          });
+          childId = inspection.execution.id;
+          workItems = inspection.execution.workItems ?? [];
+        } catch (error_) {
+          rethrowWorkflowLifecycle(error_);
+          entryCancelled =
+            error_ instanceof LibraryScanCancelledBeforeChildError ||
+            (childId !== undefined &&
+              (await this.ports.executionQueries.inspectExecution(childId))
+                ?.execution.outcome === "cancelled");
+          if (!entryCancelled) error = errorMessage(error_);
+        }
+      }
+      const observed: LibraryScanDirectoryRecord = {
+        ...entry,
+        ...(childId === undefined ? {} : { childExecutionId: childId }),
+      };
+      const summary = libraryScanEntryOutcome({
+        ...(error === undefined ? {} : { error }),
+        ...(entryCancelled ? { cancelled: true } : {}),
+        workItems,
+      });
+      const reason = entryCancelled
+        ? "库扫描已取消，此目录没有继续观察"
+        : error === undefined
+          ? undefined
+          : sanitizeScanReason(error, containerPaths);
+      await settle(observed, summary, workItems, reason);
+      for (const candidate of covered) {
+        const coveredEntry: LibraryScanDirectoryRecord = {
+          ...entries.get(candidate.directoryKey)!,
+          ...(childId === undefined ? {} : { childExecutionId: childId }),
+        };
+        // 代表的观察没有完成时，被覆盖目录如实共享同一结果。
+        const projected =
+          error === undefined && !entryCancelled
+            ? coveredWorkItems(workItems, candidate.coveredByReference ?? ".")
+            : [];
+        await settle(
+          coveredEntry,
+          error === undefined && !entryCancelled
+            ? libraryScanEntryOutcome({ workItems: projected })
+            : summary,
+          error === undefined && !entryCancelled ? projected : [],
+          reason,
+        );
+      }
+    }
+    for (const directory of plan.directories) {
+      if (results.has(directory.directoryKey)) continue;
+      await settle(
+        entries.get(directory.directoryKey)!,
+        libraryScanEntryOutcome({ cancelled: true }),
+        [],
+        "库扫描已取消，此目录没有开始观察",
+      );
+    }
+    const aggregate = summarizeLibraryScan(summaries);
+    const current = await this.ports.executionQueries.inspectExecution(
+      parent.id,
+    );
+    if (current === undefined) throw new Error("未找到刷新记录");
+    const cancellation = (
+      await this.ports.executionQueries.inspectLibraryScan(parent.id)
+    )?.cancellationRequested;
+    // 父取消从耐久意图与目录账本一致推导：意图存在且确有目录被取消才算本次被取消，
+    // 取消到达时已完成的目录保持原结果。
+    const parentCancelled =
+      cancellation !== undefined &&
+      summaries.some((summary) => summary.outcome === "cancelled");
+    const unsuccessful =
+      aggregate.outcome === "failed" ||
+      aggregate.outcome === "cancelled" ||
+      aggregate.outcome === "interrupted";
+    const finished: WorkflowExecution = {
+      ...current.execution,
+      status: unsuccessful ? "failed" : "completed",
+      stage: unsuccessful ? "failed" : "completed",
+      outcome: aggregate.outcome,
+      ...(aggregate.outcome === "failed" || aggregate.outcome === "unresolved"
+        ? {
+            reason: `${aggregate.failedCount + aggregate.unresolvedCount} 个目录没有完成`,
+          }
+        : {}),
+      ...(cancellation === undefined
+        ? {}
+        : {
+            cancellation: {
+              requestedBy: cancellation.requestedBy,
+              requestedAt: cancellation.requestedAt,
+              ...(cancellation.reason === undefined
+                ? {}
+                : { reason: cancellation.reason }),
+            },
+          }),
+      dispositions: [
+        {
+          key: "library-scan-directories",
+          status:
+            parentCancelled || unsuccessful
+              ? ("failed" as const)
+              : ("completed" as const),
+        },
+      ],
+    };
+    await this.finishLibraryScanParent({
+      parent: current.execution,
+      finished,
+      snapshot,
+      ...(input.resumeClaim === undefined
+        ? {}
+        : { resumeClaim: input.resumeClaim }),
+    });
+    return {
+      parentExecutionId: parent.id,
+      assetLibraryId: snapshot.id,
+      configVersion: snapshot.configVersion,
+      outcome: aggregate.outcome,
+      cancelled: parentCancelled,
+      directories: plan.directories.map(
+        (directory) => results.get(directory.directoryKey)!,
+      ),
+    };
+  }
+
+  /**
+   * 库扫描父的收尾。现代自动化父在同一条 CAS 事务里落下完整耐久处置与原终态；没有账本的历史父
+   * 和普通父保持既有收尾，绝不在这里补造处置。规划只在父仍 running 时做一次、不启动任何效果。
+   */
+  private async finishLibraryScanParent(input: {
+    readonly parent: WorkflowExecution;
+    readonly finished: WorkflowExecution;
+    readonly snapshot: AssetLibrarySnapshot;
+    readonly resumeClaim?:
+      | (() => { readonly token: string; readonly now: string })
+      | undefined;
+  }): Promise<void> {
+    const claim = input.resumeClaim?.();
+    const ledger = this.ports.libraryScanFulfillment;
+    if (ledger === undefined || input.parent.automationIntentId === undefined) {
+      await this.ports.executionCommands.finishExecution(
+        input.parent,
+        input.finished,
+        claim,
+      );
+      return;
+    }
+    const batch = await ledger.inspectLibraryScanFulfillment(input.parent.id);
+    if (batch?.stage !== "awaiting-results") {
+      await this.ports.executionCommands.finishExecution(
+        input.parent,
+        input.finished,
+        claim,
+      );
+      return;
+    }
+    const planned = await this.planLibraryScanFulfillment(input, batch);
+    await ledger.finishLibraryScanWithFulfillmentPlan({
+      expectedParent: input.parent,
+      finishedParent: input.finished,
+      batch: planned,
+      ...(claim === undefined ? {} : { resumeClaim: claim }),
+    });
+  }
+
+  /**
+   * 用批次冻结的那一份规则坐标核对当前部署：不相等或读不到规划依据的主体只耐久中断，绝不把
+   * 今日规则当作原计划。其余主体用父冻结的库快照做一次无效果规划，完整 requirement 与具体计划
+   * 一起留下，child 之后按稳定 operation 身份绑定。
+   */
+  private async planLibraryScanFulfillment(
+    input: {
+      readonly parent: WorkflowExecution;
+      readonly snapshot: AssetLibrarySnapshot;
+    },
+    batch: LibraryScanFulfillmentInspection,
+  ): Promise<LibraryScanFulfillmentBatchWrite> {
+    const planner = this.ports.informationPlanner;
+    const subjects: LibraryScanFulfillmentSubjectWrite[] = [];
+    const operations: LibraryScanFulfillmentOperationWrite[] = [];
+    const accepted = await this.acceptedSubjectsOfLibraryScan(input.parent.id);
+    const initiation: InformationFulfillmentInitiation = {
+      version: "information-fulfillment-initiation/1",
+      parentExecutionId: input.parent.id,
+      ...(input.parent.workflowInput?.directoryAuthorizations === undefined
+        ? {}
+        : {
+            directoryAuthorizations:
+              input.parent.workflowInput.directoryAuthorizations,
+          }),
+    };
+    for (const subject of accepted) {
+      if (
+        batch.plannerCoordinate !==
+        automatedInformationPlannerCoordinate(planner)
+      ) {
+        subjects.push({
+          subjectId: subject.subjectId,
+          disposition: "interrupted",
+          reason: "信息履行规划规则已改变，这份扫描不按今日规则补齐",
+        });
+        continue;
+      }
+      const requirement =
+        planner?.requirementForAcceptedSubject(subject.facts) ??
+        input.parent.selection.informationRequirement;
+      if (requirement === undefined) {
+        subjects.push({
+          subjectId: subject.subjectId,
+          disposition: "interrupted",
+          reason: "该主体没有可复验的信息需求依据，不按今日状态补齐",
+        });
+        continue;
+      }
+      try {
+        const preparation = await this.workflowForLibrary(
+          input.snapshot,
+        ).prepareInformation({
+          selection: { subjectIds: [subject.subjectId] },
+          requirement,
+          initiation,
+        });
+        const prepared = preparation.subjects[0];
+        if (prepared === undefined || prepared.subjectId !== subject.subjectId)
+          throw new Error("信息履行规划没有覆盖该已接受主体");
+        subjects.push({
+          subjectId: subject.subjectId,
+          disposition: prepared.disposition,
+          requirement: prepared.requirement,
+          ...(prepared.reason === undefined ? {} : { reason: prepared.reason }),
+        });
+        for (const plan of prepared.plans)
+          operations.push({
+            operationId: plan.operationId,
+            subjectId: plan.subjectId,
+            plan,
+          });
+      } catch (error_) {
+        rethrowWorkflowLifecycle(error_);
+        subjects.push({
+          subjectId: subject.subjectId,
+          disposition: "interrupted",
+          reason: `该主体的信息履行规划依据无法读取：${errorMessage(error_)}`,
+        });
+      }
+    }
+    return {
+      parentExecutionId: input.parent.id,
+      plannerCoordinate: batch.plannerCoordinate,
+      subjects,
+      operations,
+    };
+  }
+
+  /** 只规划、不启动任何效果；父终态前写下耐久处置的唯一入口。 */
+  async prepareInformation(input: {
+    readonly selection: InformationSubjectSelection;
+    readonly requirement: InformationRequirement;
+    readonly initiation?: InformationFulfillmentInitiation;
+  }): Promise<InformationFulfillmentPreparation> {
+    return await this.informationFulfillment.prepare(input);
+  }
+
+  /**
+   * 执行一份来自耐久账本的规划。终态收敛只消费账本里的原计划，绝不在这里重新规划；child 由
+   * 登记事务按稳定 operation 身份原子绑定，已绑定时沿用原执行而不启动第二份效果。
+   */
+  async fulfillPreparedInformation(input: {
+    readonly preparation: InformationFulfillmentPreparation;
+    readonly initiation?: InformationFulfillmentInitiation;
+  }): Promise<InformationReadiness> {
+    return await this.informationFulfillment.fulfillPrepared(
+      input.preparation,
+      input.initiation,
+    );
+  }
+
+  /**
+   * 从父与它目录子的耐久结果收集本次扫描已接受的主体并按主体去重。这里只读已经写下的事实，
+   * 不按今日配置重新解释归属。
+   */
+  async acceptedSubjectsOfLibraryScan(
+    parentExecutionId: string,
+  ): Promise<readonly AcceptedInformationSubject[]> {
+    const carriers = [await this.inspect(parentExecutionId)];
+    const ledger =
+      await this.ports.executionQueries.inspectLibraryScan(parentExecutionId);
+    for (const entry of ledger?.directories ?? []) {
+      if (entry.mode !== "execute" || entry.childExecutionId === undefined)
+        continue;
+      carriers.push(await this.inspect(entry.childExecutionId));
+    }
+    const bySubject = new Map<string, AcceptedInformationSubject>();
+    for (const inspection of carriers) {
+      for (const accepted of [
+        ...(inspection?.accepted === undefined ? [] : [inspection.accepted]),
+        ...(inspection?.itemResults ?? []).flatMap((item) =>
+          item.accepted === undefined ? [] : [item.accepted],
+        ),
+      ]) {
+        bySubject.set(accepted.entity.id, {
+          subjectId: accepted.entity.id,
+          facts: accepted.facts,
+        });
+      }
+    }
+    return [...bySubject.values()];
+  }
+
+  /**
+   * 库目录的友好名只用于展示，绝不参与范围或结果归属。历史父的今日配置变化或库被正式
+   * 移除时，名字查询不能阻断恢复与检查：任何失败都回退为空表，让既有的「该目录」如实兜底。
+   */
+  private async scanDirectoryDisplayNames(
+    assetLibraryId: string,
+  ): Promise<ReadonlyMap<string, string>> {
+    const libraries = this.ports.assetLibraries;
+    if (libraries === undefined) return new Map();
+    try {
+      return new Map(
+        (await libraries.directories(assetLibraryId)).map((directory) => [
+          directory.id,
+          directory.displayName,
+        ]),
+      );
+    } catch {
+      return new Map();
+    }
+  }
+
+  /**
+   * 显式续跑同一库扫描父：先取得这份执行自己的耐久单持有者权利，再从父耐久写下的冻结计划、
+   * 冻结观察根权威与目录账本继续，绝不按今日库配置重选目录或补字段。普通配置版本变化不阻止
+   * 原父继续，真实的路径漂移由目录子重绑冻结权威时诚实拒绝。已结算目录与已终结子保持原成果，
+   * 未开始目录用同一冻结权威观察。
+   */
+  private async resumeAssetLibraryScan(
+    parent: WorkflowExecution,
+    input: {
+      readonly onProgress?: ((message: string) => void) | undefined;
+      readonly onHostCheckpoint?:
+        | ((execution: WorkflowExecution) => void)
+        | undefined;
+    },
+  ): Promise<AssetRefreshInspection> {
+    if (this.ports.assetLibraries === undefined)
+      throw new Error("当前部署没有资产库配置");
+    const decoded =
+      parent.workflowInput === undefined
+        ? ({ valid: false, reason: "库扫描记录缺少版本化输入" } as const)
+        : decodeAssetRefreshWorkflowInput(parent.workflowInput);
+    if (!decoded.valid) throw new Error(decoded.reason);
+    const plan = decoded.input.libraryScan;
+    const snapshot = decoded.input.assetLibrary;
+    if (plan === undefined || snapshot === undefined)
+      throw new Error("库扫描记录缺少冻结计划或资产库配置");
+    const ledger = await this.ports.executionQueries.inspectLibraryScan(
+      parent.id,
+    );
+    if (ledger === undefined) throw new Error("未找到库扫描目录账本");
+    return await this.withScanParentResumeOwnership(
+      parent.id,
+      async (claim) => {
+        await this.executeLibraryScanDirectories({
+          parent,
+          snapshot,
+          plan,
+          frozenRoots: decoded.input.observedRoots ?? [],
+          ledger: ledger.directories,
+          acceptTrusted: decoded.input.acceptTrusted,
+          resumeClaim: claim,
+          ...(parent.selection.informationRequirement === undefined
+            ? {}
+            : {
+                informationRequirement: parent.selection.informationRequirement,
+              }),
+          ...(input.onProgress === undefined
+            ? {}
+            : { onProgress: input.onProgress }),
+          ...(input.onHostCheckpoint === undefined
+            ? {}
+            : { onHostCheckpoint: input.onHostCheckpoint }),
+        });
+        return await this.inspectResumedPublic(parent.id);
+      },
+    );
+  }
+
+  /**
+   * 库扫描父的续跑与逐条恢复共用同一份耐久单持有者权利：领取失败（另一进程仍持有未过期声明）
+   * 时零写入退出，因此任何时刻只有一个推进者碰目录账本前端，也不会替同一个父第二次收尾。
+   * 权利在续跑期间按同一租约心跳续期，无论正常返回还是抛出都释放。
+   */
+  private async withScanParentResumeOwnership<T>(
+    executionId: string,
+    advance: (
+      resumeClaim: () => { readonly token: string; readonly now: string },
+    ) => Promise<T>,
+  ): Promise<T> {
+    const claimToken = randomUUID();
+    const leaseExpiry = () =>
+      new Date(
+        this.resumeClock.now().getTime() + resumeLeaseMilliseconds,
+      ).toISOString();
+    const disposition = await this.ports.recoveryLease.claimResumeExecution({
+      executionId,
+      token: claimToken,
+      now: this.resumeClock.now().toISOString(),
+      expiresAt: leaseExpiry(),
+    });
+    if (disposition === "terminal")
+      throw new Error("只有未完成的刷新记录可以继续");
+    if (disposition === "busy") throw new ResumeExecutionBusyError();
+    let claimLost = false;
+    let heartbeat: Promise<void> | undefined;
+    const renew = async (): Promise<void> => {
+      await heartbeat;
+      if (claimLost) throw new Error("继续刷新租约已失效");
+      const current = this.resumeClock.now();
+      const renewed = await this.ports.recoveryLease.renewResumeExecutionClaim({
+        executionId,
+        token: claimToken,
+        now: current.toISOString(),
+        expiresAt: new Date(
+          current.getTime() + resumeLeaseMilliseconds,
+        ).toISOString(),
+      });
+      if (!renewed) {
+        claimLost = true;
+        throw new Error("继续刷新租约已失效");
+      }
+    };
+    const timer = this.resumeClock.setInterval(() => {
+      if (heartbeat !== undefined || claimLost) return;
+      heartbeat = renew()
+        .catch(() => {
+          claimLost = true;
+        })
+        .finally(() => {
+          heartbeat = undefined;
+        });
+    }, resumeLeaseMilliseconds / 3);
+    try {
+      return await advance(() => ({
+        token: claimToken,
+        now: this.resumeClock.now().toISOString(),
+      }));
+    } finally {
+      this.resumeClock.clearInterval(timer);
+      await heartbeat;
+      await this.ports.recoveryLease.releaseResumeExecutionClaim({
+        executionId,
+        token: claimToken,
+      });
+    }
+  }
+
+  /**
+   * 一次库扫描的完整检查：目录归属、阶段与计数来自父的耐久账本，工作项只在子权威记录
+   * 上读取，covered 条目按自身前缀投影。友好名只用于显示，绝不参与范围或结果归属。
+   */
+  async inspectAssetLibraryScan(
+    parentExecutionId: string,
+  ): Promise<LibraryScanInspectionDetail | undefined> {
+    const ledger =
+      await this.ports.executionQueries.inspectLibraryScan(parentExecutionId);
+    if (ledger === undefined) return undefined;
+    // 友好名只用于显示，绝不参与范围或结果归属；历史父或已移除库不得被名字查询阻断检查。
+    const displayNameById = await this.scanDirectoryDisplayNames(
+      ledger.assetLibraryId,
+    );
+    // 一个代表子可能同时服务多个 covered 条目，其工作项只装载一次。
+    const itemsByChild = new Map<
+      string,
+      readonly LibraryScanDirectoryWorkItem[]
+    >();
+    const directories: LibraryScanDirectoryInspection[] = [];
+    for (const entry of ledger.directories) {
+      let items: readonly LibraryScanDirectoryWorkItem[] = [];
+      if (entry.childExecutionId !== undefined) {
+        const cached = itemsByChild.get(entry.childExecutionId);
+        if (cached === undefined) {
+          items =
+            (await this.inspect(entry.childExecutionId))?.execution.workItems ??
+            [];
+          itemsByChild.set(entry.childExecutionId, items);
+        } else items = cached;
+      }
+      directories.push({
+        ...entry,
+        displayName: displayNameById.get(entry.directoryKey) ?? "该目录",
+        workItems:
+          entry.mode === "covered"
+            ? coveredWorkItems(items, entry.coveredPrefix ?? ".")
+            : items,
+      });
+    }
+    return { ...ledger, directories };
+  }
+
+  /**
+   * 父取消：取消意图先耐久写下，此后任何目录子都不能再登记；仍运行的子沿既有取消语义
+   * 取消，已提交或在这一瞬间自行进入终态的结果如实保留。未开始目录的记账与完整汇总由
+   * 协调调用在其安全检查点上完成。
+   */
+  async cancelAssetLibraryScan(input: {
+    readonly parentExecutionId: string;
+    readonly requestedBy: string;
+    readonly reason?: string | undefined;
+    readonly requestedAt?: string | undefined;
+  }): Promise<LibraryScanInspectionDetail> {
+    if (input.requestedBy.trim().length === 0)
+      throw new Error("取消库扫描需要请求者");
+    const requestedAt = input.requestedAt ?? new Date().toISOString();
+    const requestedBy = input.requestedBy.trim();
+    const requested =
+      await this.ports.executionCommands.requestLibraryScanCancellation({
+        parentExecutionId: input.parentExecutionId,
+        requestedBy,
+        requestedAt,
+        ...(input.reason === undefined ? {} : { reason: input.reason }),
+      });
+    if (requested.status === "absent") throw new Error("未找到刷新记录");
+    if (
+      requested.status === "recorded" ||
+      requested.status === "already-requested"
+    ) {
+      for (const childExecutionId of requested.childExecutionIds) {
+        try {
+          await this.cancel({
+            executionId: childExecutionId,
+            requestedBy,
+            requestedAt,
+            ...(input.reason === undefined ? {} : { reason: input.reason }),
+          });
+        } catch (error) {
+          // 子可能在意图写下的瞬间已完成；它已有的领域事实不属于本次取消。
+          rethrowWorkflowLifecycle(error);
+        }
+      }
+    }
+    const inspection = await this.inspectAssetLibraryScan(
+      input.parentExecutionId,
+    );
+    if (inspection === undefined) throw new Error("未找到刷新记录");
+    return inspection;
+  }
+
+  /**
+   * 未形成提案的观察材料的有界查询：结果给出形成该观察的冻结根与相对范围，人工入口据此
+   * 校验确切归属，绝不回落到“第一个活动目录”。
+   */
+  async unrecognizedLibraryScanObservations(input: {
+    readonly parentExecutionId?: string | undefined;
+    readonly assetLibraryId?: string | undefined;
+    readonly directoryKey?: string | undefined;
+    readonly limit?: number | undefined;
+  }): Promise<readonly UnrecognizedLibraryScanObservation[]> {
+    const limit = input.limit ?? 50;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200)
+      throw new Error("未识别观察查询必须有界");
+    return await this.ports.executionQueries.listUnrecognizedLibraryScanObservations(
+      {
+        ...(input.parentExecutionId === undefined
+          ? {}
+          : { parentExecutionId: input.parentExecutionId }),
+        ...(input.assetLibraryId === undefined
+          ? {}
+          : { assetLibraryId: input.assetLibraryId }),
+        ...(input.directoryKey === undefined
+          ? {}
+          : { directoryKey: input.directoryKey }),
+        limit,
+      },
+    );
+  }
+
+  /**
+   * 按库冻结配置复用的 scoped workflow。共享持久化、产物存储、来源连接与调用监督器仍由
+   * 组合根单例持有，这里只持有范围视图与它自己的履行记忆。已接受父执行的派生履行同样
+   * 沿父快照，因此配置编辑不会改变它规划出的子执行能力集合。
+   */
+  private readonly libraryScoped = new Map<string, AssetRefreshWorkflow>();
+
+  workflowForLibrary(snapshot: AssetLibrarySnapshot): AssetRefreshWorkflow {
+    if (this.closing)
+      throw new Error("资产刷新工作流正在关闭，不再规划新的库范围执行");
+    const key = `${snapshot.id}\u0000${snapshot.configVersion}\u0000${assetLibrarySnapshotFingerprint(snapshot)}`;
+    const existing = this.libraryScoped.get(key);
+    if (existing !== undefined) return existing;
+    const frozenSourceTokens = (
+      pick: (
+        source: AssetLibrarySnapshotSource,
+      ) => readonly AssetLibraryCapability[],
+    ): ReadonlySet<string> =>
+      new Set(
+        snapshot.sources.flatMap((source) =>
+          pick(source).map(assetLibraryCapabilityToken),
+        ),
+      );
+    // scoped 过滤只按完整坐标匹配：同 ID 但实现或契约版本不同的接缝一律留在范围外。
+    const directoryInterpreterTokens = new Set(
+      snapshot.directoryInterpreters.map(assetLibraryCapabilityToken),
+    );
+    const recognizerTokens = new Set(
+      snapshot.recognizers.map(assetLibraryCapabilityToken),
+    );
+    const collectorTokens = frozenSourceTokens(({ collectors }) => collectors);
+    const sourceCandidateInterpreterTokens = frozenSourceTokens(
+      ({ sourceCandidateInterpreters }) => sourceCandidateInterpreters,
+    );
+    const sourceInterpreterTokens = frozenSourceTokens(
+      ({ sourceInterpreters }) => sourceInterpreters,
+    );
+    const sourceAssociationInterpreterTokens = frozenSourceTokens(
+      ({ sourceAssociationInterpreters }) => sourceAssociationInterpreters,
+    );
+    const acquirerTokens = frozenSourceTokens(({ acquirers }) => acquirers);
+    const informationFulfillmentTokens = frozenSourceTokens(
+      ({ informationFulfillments }) => informationFulfillments,
+    );
+    const scoped = new AssetRefreshWorkflow({
+      ...this.ports,
+      assetLibrarySnapshot: snapshot,
+      directoryInterpreters: this.ports.directoryInterpreters.filter((item) =>
+        directoryInterpreterTokens.has(
+          assetLibraryCapabilityToken(item.capability),
+        ),
+      ),
+      recognizers: this.ports.recognizers.filter((item) =>
+        recognizerTokens.has(assetLibraryCapabilityToken(item.capability)),
+      ),
+      collectors: this.ports.collectors.filter((item) =>
+        collectorTokens.has(assetLibraryCapabilityToken(item.capability)),
+      ),
+      sourceInterpreters: this.ports.sourceInterpreters.filter((item) =>
+        sourceInterpreterTokens.has(
+          assetLibraryCapabilityToken(item.capability),
+        ),
+      ),
+      ...(this.ports.sourceAssociationCandidateInterpreters === undefined
+        ? {}
+        : {
+            sourceAssociationCandidateInterpreters:
+              this.ports.sourceAssociationCandidateInterpreters.filter((item) =>
+                sourceCandidateInterpreterTokens.has(
+                  assetLibraryCapabilityToken(item.capability),
+                ),
+              ),
+          }),
+      ...(this.ports.sourceAssociationInterpreters === undefined
+        ? {}
+        : {
+            sourceAssociationInterpreters:
+              this.ports.sourceAssociationInterpreters.filter((item) =>
+                sourceAssociationInterpreterTokens.has(
+                  assetLibraryCapabilityToken(item.capability),
+                ),
+              ),
+          }),
+      acquirers: this.ports.acquirers.filter((item) =>
+        acquirerTokens.has(assetLibraryCapabilityToken(item.capability)),
+      ),
+      ...(this.ports.informationFulfillmentCapabilities === undefined
+        ? {}
+        : {
+            informationFulfillmentCapabilities:
+              this.ports.informationFulfillmentCapabilities.filter((item) =>
+                informationFulfillmentTokens.has(
+                  assetLibraryCapabilityToken(item.declaration),
+                ),
+              ),
+          }),
+    });
+    this.libraryScoped.set(key, scoped);
+    return scoped;
+  }
+
+  private async assertAssetLibraryCurrent(): Promise<void> {
+    const snapshot = this.ports.assetLibrarySnapshot;
+    if (
+      snapshot !== undefined &&
+      !(await this.ports.assetLibraries?.isCurrent(snapshot))
+    )
+      throw new Error("资产库配置已变更或移除，请重新扫描");
+  }
+
   async scanObservedScope(input: {
+    readonly assetLibraryId?: string;
     readonly registrationId: string;
     readonly relativeScope: string;
     readonly acceptTrusted: boolean;
+    readonly libraryScanParent?: LibraryScanChildCoordinates | undefined;
+    readonly libraryScanFrozenRoot?: ObservedRootSnapshot | undefined;
+    /** 库扫描父冻结的本目录授权代次；新扫描由当前授权取得。 */
+    readonly directoryAuthorityVersion?: number | undefined;
     readonly informationRequirement?: InformationRequirement | undefined;
     readonly executionId?: string | undefined;
     readonly automationIntentId?: string | undefined;
@@ -9129,6 +12137,34 @@ export class AssetRefreshWorkflow {
       | ((execution: WorkflowExecution) => void)
       | undefined;
   }): Promise<AssetRefreshInspection> {
+    if (
+      input.libraryScanFrozenRoot === undefined &&
+      this.ports.assetLibraries !== undefined &&
+      this.ports.assetLibrarySnapshot === undefined
+    ) {
+      const snapshot = await this.ports.assetLibraries.snapshotForRoot({
+        registrationId: input.registrationId,
+        ...(input.assetLibraryId === undefined
+          ? {}
+          : { libraryId: input.assetLibraryId }),
+      });
+      return await this.workflowForLibrary(snapshot).scanObservedScope({
+        ...input,
+        // 解析到库之后，本次调用的 I/O 权威只能来自该库自己的目录授权；另一库共享同一
+        // 物理根不会为该目录续权。
+        assetLibraryId: snapshot.id,
+      });
+    }
+    // 携带冻结权威时，授权来自这份快照本身：普通库配置版本变化绝不阻止原目录子继续，
+    // 真实的路径漂移由 rebindFrozenScope 的当前权威检查诚实拒绝，而不是在此静默换根。
+    if (input.libraryScanFrozenRoot === undefined)
+      await this.assertAssetLibraryCurrent();
+    if (
+      input.libraryScanFrozenRoot === undefined &&
+      this.ports.assetLibrarySnapshot !== undefined &&
+      !this.ports.assetLibrarySnapshot.rootIds.includes(input.registrationId)
+    )
+      throw new Error("所选目录不属于此资产库");
     return await this.observedRootExecution.invoke(
       input,
       async (resolved) =>
@@ -9136,6 +12172,14 @@ export class AssetRefreshWorkflow {
           scope: resolved.scope,
           requestedSelection: resolved.requestedSelection,
           resolvedSelection: resolved.resolvedSelection,
+          ...(resolved.directoryAuthorityVersion === undefined
+            ? {}
+            : {
+                directoryAuthorityVersion: resolved.directoryAuthorityVersion,
+              }),
+          ...(resolved.libraryScanParent === undefined
+            ? {}
+            : { libraryScanParent: resolved.libraryScanParent }),
           operationKind: "scan-filesystem",
           intent: "scan-now",
           acceptTrusted: input.acceptTrusted,
@@ -9377,25 +12421,53 @@ export class AssetRefreshWorkflow {
    */
   async inspectCurrentCatalogueSubject(
     subjectId: string,
-  ): Promise<AssetRefreshInspection["accepted"] | undefined> {
-    const [current] = await this.ports.reuseQueries.findAcceptedForSubjects([
-      subjectId,
-    ]);
-    if (current === undefined || current.subjectId !== subjectId)
-      return undefined;
-    // 精确主体检查与分页共用同一当前成员资格：材料退出后不再作为当前已收录内容投影。
+    informationRequirement?: InformationRequirement,
+    assetLibraryId?: string,
+  ): Promise<EffectiveSubjectRead | undefined> {
     const page = await this.listCurrentCataloguePage({
       subjectIds: [subjectId],
+      ...(informationRequirement === undefined
+        ? {}
+        : { informationRequirement }),
+      ...(assetLibraryId === undefined ? {} : { assetLibraryId }),
     });
-    if (!page.items.some((item) => item.entity.id === subjectId))
-      return undefined;
-    return publicAccepted(
-      current.accepted,
-      [],
-      "asset.ordinary",
-      this.ports.metadataPolicyConfiguration,
-      await this.publicSourceArtifactCandidates(current.accepted),
-    );
+    return page.items.find((item) => item.id === subjectId);
+  }
+
+  /**
+   * 只读投影所选精确主体真正导致资料冲突的候选值。这里保留与共同生效读取完全相同的
+   * 一次精确主体查询依据，只透传已报告冲突的候选断言值、来源身份及可用支持记录标识；
+   * 绝不重新裁决、不透传被排除断言，也不把来源关联历史当作冲突证据。主体不存在返回
+   * undefined，让交付层明确未找到。
+   */
+  async inspectSubjectConflictEvidence(
+    subjectId: string,
+    informationRequirement?: InformationRequirement,
+  ): Promise<
+    | {
+        readonly id: string;
+        readonly conflicts: readonly SubjectConflictEvidence[];
+      }
+    | undefined
+  > {
+    const queries = this.ports.currentCatalogueQueries;
+    if (queries === undefined)
+      throw new Error("Current Catalogue page query is not configured");
+    if (subjectId.length === 0)
+      throw new Error("Current Catalogue subject selection is invalid");
+    const page = await queries.listCurrentCataloguePage({
+      subjectIds: [subjectId],
+    });
+    const accepted = page.items.find((item) => item.entity.id === subjectId);
+    if (accepted === undefined) return undefined;
+    return {
+      id: subjectId,
+      conflicts: subjectConflictEvidence(
+        { ...accepted, id: accepted.entity.id },
+        this.ports.metadataPolicyConfiguration,
+        informationRequirement?.metadataUsageContext,
+      ),
+    };
   }
 
   /**
@@ -9410,9 +12482,7 @@ export class AssetRefreshWorkflow {
           readonly subjectId: string;
         })[];
         readonly metadataConflicts: readonly PublicMetadataConflict[];
-        readonly accepted: readonly NonNullable<
-          AssetRefreshInspection["accepted"]
-        >[];
+        readonly accepted: readonly EffectiveSubjectRead[];
       }
     | undefined
   > {
@@ -9421,15 +12491,10 @@ export class AssetRefreshWorkflow {
         entityId,
       );
     if (found === undefined) return undefined;
-    const projected = await Promise.all(
-      found.accepted.map(async ({ accepted }) =>
-        publicAccepted(
-          accepted,
-          [],
-          "asset.ordinary",
-          this.ports.metadataPolicyConfiguration,
-          await this.publicSourceArtifactCandidates(accepted),
-        ),
+    const projected = found.accepted.map(({ accepted }) =>
+      readEffectiveSubject(
+        { ...accepted, id: accepted.entity.id },
+        this.ports.metadataPolicyConfiguration,
       ),
     );
     const metadataProjection = effectiveIdentityMemberMetadata(
@@ -9451,10 +12516,7 @@ export class AssetRefreshWorkflow {
       // 公开读取必须沿用产品资料策略，不能把原始断言当成当前展示资料。
       metadata: metadataProjection.values,
       metadataConflicts: metadataProjection.conflicts,
-      accepted: projected.filter(
-        (item): item is NonNullable<AssetRefreshInspection["accepted"]> =>
-          item !== undefined,
-      ),
+      accepted: projected,
     };
   }
 
@@ -9755,11 +12817,31 @@ export class AssetRefreshWorkflow {
     });
   }
 
+  /**
+   * 点名决定的当前读取：主头仍在时用普通当前事实；主头已被撤回时，那份仍生效的决定只
+   * 提供事实依据，投影明确标记身份未解决，绝不因此新建或自动继任身份。
+   */
+  private async namedRecognitionTarget(input: {
+    readonly assetId: string;
+    readonly decisionId: string;
+  }): Promise<{ readonly accepted: AcceptedAssetState } | undefined> {
+    const [current] = await this.ports.reuseQueries.findAcceptedForSubjects([
+      input.assetId,
+    ]);
+    if (current !== undefined && current.subjectId === input.assetId)
+      return { accepted: current.accepted };
+    return await this.ports.reuseQueries.findAcceptedForDecision?.({
+      decisionId: input.decisionId,
+    });
+  }
+
   async prepareRecognitionRetraction(input: {
     readonly assetId: string;
     readonly predecessorDecisionId: string;
     readonly proposedBy: string;
     readonly reason: string;
+    /** 消费者据以查看确认后的普通详情需求；随预演冻结，缺省为普通语境。 */
+    readonly informationRequirement?: InformationRequirement;
     readonly onExecutionStarted?: (execution: WorkflowExecution) => void;
   }): Promise<ChangeImpactPreviewInspection> {
     if (
@@ -9767,15 +12849,55 @@ export class AssetRefreshWorkflow {
       input.reason.trim().length === 0
     )
       throw new Error("身份撤回必须包含提议者和原因");
-    const [target] = await this.ports.reuseQueries.findAcceptedForSubjects([
-      input.assetId,
-    ]);
-    if (
-      target === undefined ||
-      target.subjectId !== input.assetId ||
-      target.accepted.recognitionDecision.id !== input.predecessorDecisionId
-    )
-      throw new Error("点名的识别决定不是该内容的当前身份");
+    const target = await this.namedRecognitionTarget({
+      assetId: input.assetId,
+      decisionId: input.predecessorDecisionId,
+    });
+    if (target === undefined) throw new Error("所选内容不存在或尚未确认");
+    // 可点名任一仍生效的决定：主头与追加范围都能被明确撤回，绝不只允许当前身份。
+    // 主头为空时点名的决定只是事实依据，撤回它不会结束主来源，也不会让身份出现。
+    const headDecisionId =
+      target.accepted.recognitionHeadDecisionId === null
+        ? undefined
+        : target.accepted.recognitionDecision.id;
+    const withdrawsHead = headDecisionId === input.predecessorDecisionId;
+    const headDecisionIds =
+      headDecisionId === undefined ? [] : [headDecisionId];
+    const effectiveBoundaries =
+      await this.ports.reuseQueries.listEffectiveMaterialBoundariesForSubject?.(
+        {
+          assetId: input.assetId,
+        },
+      );
+    if (!withdrawsHead && effectiveBoundaries === undefined)
+      throw new Error("该内容没有可点名撤回的追加范围记录");
+    const declarations = groupMaterialScopeDeclarations(
+      effectiveBoundaries ?? [],
+      { headDecisionIds },
+    );
+    const namedDeclaration = declarations.find(
+      (declaration) => declaration.decisionId === input.predecessorDecisionId,
+    );
+    if (!withdrawsHead && namedDeclaration === undefined)
+      throw new Error("点名的识别决定不是该内容当前生效的范围");
+    // 范围局部基线只覆盖与点名决定相交的完整声明：不相交决定的新增或撤回不该让这份
+    // 预演过期，相交一侧的支持变化则必须让它过期且不落任何写。
+    const intersectingDeclarations =
+      namedDeclaration === undefined
+        ? undefined
+        : declarations.filter((declaration) =>
+            materialScopeDeclarationsIntersect(declaration, namedDeclaration),
+          );
+    const scopeDecisionIds =
+      intersectingDeclarations === undefined
+        ? undefined
+        : [
+            ...new Set(
+              intersectingDeclarations.map(
+                (declaration) => declaration.decisionId,
+              ),
+            ),
+          ].toSorted();
     const initial: WorkflowExecution = {
       id: id("execution"),
       workflowInput: {
@@ -9787,7 +12909,8 @@ export class AssetRefreshWorkflow {
       },
       selection: {
         intent: "directed-recognition",
-        informationRequirement: emptyInformationRequirement,
+        informationRequirement:
+          input.informationRequirement ?? emptyInformationRequirement,
       },
       operationKind: "rescrape",
       status: "running",
@@ -9801,20 +12924,23 @@ export class AssetRefreshWorkflow {
     if (started !== "started") throw new AutomationExecutionNotStarted(started);
     input.onExecutionStarted?.(initial);
     const current = assetStateProjection(target.accepted);
+    // 只有撤主才结束主来源：追加撤回绝不因为来源关联挂在主头上就删掉仅由主来源支持的封面。
+    const endingSourceAssociationId = withdrawsHead
+      ? target.accepted.recognitionSourceAssociation?.id
+      : undefined;
     const projectedArtifactGraph = projectSupportedArtifactGraph({
       current: target.accepted,
       endingRecognitionDecisionId: input.predecessorDecisionId,
-      ...(target.accepted.recognitionSourceAssociation === undefined
+      ...(endingSourceAssociationId === undefined
         ? {}
-        : {
-            endingSourceAssociationId:
-              target.accepted.recognitionSourceAssociation.id,
-          }),
+        : { endingSourceAssociationId }),
     });
     const baseline =
       await this.ports.changeImpactCommands.freezeChangeImpactBaseline({
         assetId: input.assetId,
-        recognitionDecisionId: input.predecessorDecisionId,
+        // 身份基线取当前主头；主头为空时取点名决定的读取依据。
+        recognitionDecisionId: target.accepted.recognitionDecision.id,
+        ...(scopeDecisionIds === undefined ? {} : { scopeDecisionIds }),
         ...(target.accepted.recognitionSourceAssociation === undefined
           ? {}
           : {
@@ -9822,8 +12948,10 @@ export class AssetRefreshWorkflow {
                 target.accepted.recognitionSourceAssociation.id,
             }),
       });
-    const [afterRetractionBaseline] =
-      await this.ports.reuseQueries.findAcceptedForSubjects([input.assetId]);
+    const afterRetractionBaseline = await this.namedRecognitionTarget({
+      assetId: input.assetId,
+      decisionId: input.predecessorDecisionId,
+    });
     if (
       afterRetractionBaseline === undefined ||
       acceptedConcurrencyFingerprint(afterRetractionBaseline.accepted) !==
@@ -9840,7 +12968,13 @@ export class AssetRefreshWorkflow {
       recognitionSourceAssociation: _recognitionSourceAssociation,
       ...unresolvedProjection
     } = current;
-    const preview: ChangeImpactPreview = {
+    // 冻结与该决定相交的完整范围声明集合：确认时任何相交决定的新增、撤回、取代或边界
+    // 变化都必须让这份预演过期，而不是静默落在已经改变的范围上。
+    const scopeBaseline =
+      intersectingDeclarations === undefined
+        ? undefined
+        : materialScopeDeclarationBaseline(intersectingDeclarations);
+    let preview: ChangeImpactPreview = {
       version: "change-impact-preview/2",
       id: id("change-impact-preview"),
       executionId: initial.id,
@@ -9860,7 +12994,11 @@ export class AssetRefreshWorkflow {
             : target.accepted.proposal.basis.evidence,
         manual: [],
         sourceCandidates: [],
-        conflicts: ["撤回当前身份后，内容保持可按精确 ID 检查但身份未解决"],
+        conflicts: [
+          withdrawsHead
+            ? "撤回当前身份后，内容保持可按精确 ID 检查但身份未解决"
+            : "撤回该追加范围后，其材料失去范围支持，当前身份保持不变",
+        ],
       },
       baselines: [
         {
@@ -9868,28 +13006,677 @@ export class AssetRefreshWorkflow {
           value: input.predecessorDecisionId,
         },
         { key: "complete-current-projection", value: baseline },
+        ...(scopeBaseline === undefined
+          ? []
+          : [
+              {
+                key: "recognition-scope-declarations",
+                value: JSON.stringify(scopeBaseline),
+              },
+              {
+                key: "recognition-scope-decision-ids",
+                value: JSON.stringify(scopeDecisionIds),
+              },
+            ]),
       ],
       current,
-      projected: {
-        ...unresolvedProjection,
-        ...projectedArtifactGraph,
-        recognitionState: "unresolved",
-        sourceAssociations: target.accepted.sourceAssociations
-          .filter(
-            ({ id: associationId }) =>
-              associationId !==
-              target.accepted.recognitionSourceAssociation?.id,
-          )
-          .map(({ sourceIdentity, nativeAddress }) => ({
-            sourceIdentity,
-            nativeAddress,
-          })),
-      },
+      projected: withdrawsHead
+        ? {
+            ...unresolvedProjection,
+            ...projectedArtifactGraph,
+            recognitionState: "unresolved",
+            sourceAssociations: target.accepted.sourceAssociations
+              .filter(
+                ({ id: associationId }) =>
+                  associationId !==
+                  target.accepted.recognitionSourceAssociation?.id,
+              )
+              .map(({ sourceIdentity, nativeAddress }) => ({
+                sourceIdentity,
+                nativeAddress,
+              })),
+          }
+        : { ...current, ...projectedArtifactGraph },
       blockingConditions: [],
+      requestContext: initial.selection.informationRequirement,
       status: "awaiting-confirmation",
     };
+    preview = freezeChangeImpactFactReads(
+      preview,
+      this.ports.metadataPolicyConfiguration,
+      [],
+    );
     await this.ports.recognitionChangeImpact.finishExecutionWithRecognitionRetractionPreview(
       { expectedExecution: initial, execution: initial, preview },
+    );
+    return publicChangeImpactPreview(preview);
+  }
+
+  /**
+   * 封面卡与预演共用的当前事实：候选只来自共同读取认定的精确当前图片修订，生效封面
+   * 与问题也来自同一求值，因此视图永远拿不到第二套封面裁决。
+   */
+  private async artifactRoleCoverFacts(entityId: string): Promise<{
+    readonly basis: SubjectFactBasis;
+    readonly target: DescriptionTarget;
+    readonly candidates: readonly ArtifactRoleCandidate[];
+    readonly effective?: EffectiveArtifactRoleRead;
+    readonly decision?: ArtifactRoleDecision;
+    readonly problems: readonly string[];
+  }> {
+    const queries = this.ports.informationSubjectFactsQueries;
+    if (queries === undefined) throw new Error("当前部署没有共同事实读取");
+    const [subject] = await queries.readCurrentInformationSubjectFacts({
+      subjectIds: [entityId],
+    });
+    if (subject === undefined) throw new Error("未找到该实体的当前事实");
+    const target: DescriptionTarget = { kind: "entity", entityId };
+    const read = readEffectiveSubject(
+      subject.basis,
+      this.ports.metadataPolicyConfiguration,
+    );
+    const description = read.descriptions.find(
+      (candidate) =>
+        descriptionTargetKey(candidate.target) === descriptionTargetKey(target),
+    );
+    const decision = (subject.basis.artifactRoleDecisions ?? []).find(
+      (candidate) =>
+        candidate.role === primaryCoverRole &&
+        descriptionTargetKey(candidate.target) === descriptionTargetKey(target),
+    );
+    const effectiveRole = description?.artifactRoles.find(
+      (role) => role.role === primaryCoverRole,
+    );
+    return {
+      basis: subject.basis,
+      target,
+      candidates: artifactRoleCandidates(
+        subject.basis,
+        target,
+        primaryCoverRole,
+      ),
+      ...(effectiveRole === undefined ? {} : { effective: effectiveRole }),
+      ...(decision === undefined ? {} : { decision }),
+      problems: (description?.conflicts ?? [])
+        .filter((conflict) => conflict.role === primaryCoverRole)
+        .map((conflict) => conflict.explanation),
+    };
+  }
+
+  /** 列出当前合格封面候选、生效封面与人工意图。 */
+  async inspectArtifactRoleCovers(input: {
+    readonly entityId: string;
+  }): Promise<ArtifactRoleCoverInspection> {
+    const facts = await this.artifactRoleCoverFacts(input.entityId);
+    const referenceOf = (candidate: ArtifactRoleCandidate) =>
+      artifactRoleCandidateReference(candidate);
+    const effective = facts.effective;
+    const effectiveReference =
+      effective === undefined
+        ? undefined
+        : facts.candidates.find(
+            (candidate) =>
+              candidate.artifactId === effective.artifactId &&
+              effective.associationIds.includes(candidate.associationId),
+          );
+    const decided =
+      facts.decision === undefined || facts.decision.kind === "clear"
+        ? undefined
+        : facts.candidates.find(
+            (candidate) =>
+              JSON.stringify([
+                candidate.associationId,
+                candidate.artifactId,
+                candidate.revisionId,
+              ]) ===
+              JSON.stringify([
+                facts.decision?.selected?.associationId,
+                facts.decision?.selected?.artifactId,
+                facts.decision?.selected?.revisionId,
+              ]),
+          );
+    return {
+      entityId: input.entityId,
+      candidates: facts.candidates.map((candidate) => ({
+        reference: referenceOf(candidate),
+        kind: candidate.kind,
+        locationId: candidate.locationId,
+        address: candidate.address,
+      })),
+      ...(effectiveReference === undefined
+        ? {}
+        : { effectiveReference: referenceOf(effectiveReference) }),
+      ...(facts.decision === undefined
+        ? {}
+        : {
+            decision: {
+              kind: facts.decision.kind,
+              ...(decided === undefined
+                ? {}
+                : { reference: referenceOf(decided) }),
+            },
+          }),
+      problems: facts.problems,
+    };
+  }
+
+  /**
+   * 形成选择或撤回的预演：只追加一条决定，冻结期望头、候选集、适用政策版本与资产
+   * 完整事实基线；不访问网络、不扫描媒体、不生成派生图。
+   */
+  async prepareArtifactRoleDecision(input: {
+    readonly entityId: string;
+    readonly initiatedBy: string;
+    /** 留空即为撤回当前人工选择。 */
+    readonly candidateReference?: string;
+    readonly informationRequirement?: InformationRequirement;
+  }): Promise<ChangeImpactPreviewInspection> {
+    if (input.initiatedBy.trim().length === 0)
+      throw new Error("封面决定缺少发起者");
+    const facts = await this.artifactRoleCoverFacts(input.entityId);
+    const selected =
+      input.candidateReference === undefined
+        ? undefined
+        : facts.candidates.find(
+            (candidate) =>
+              artifactRoleCandidateReference(candidate) ===
+              input.candidateReference,
+          );
+    if (input.candidateReference !== undefined && selected === undefined)
+      throw new Error("封面候选引用不属于该实体当前合格的封面");
+    const expectedHeadDecisionId = facts.decision?.id ?? null;
+    if (selected === undefined && expectedHeadDecisionId === null)
+      throw new Error("该实体当前没有可撤回的人工封面选择");
+    if (
+      selected !== undefined &&
+      facts.decision?.kind === "select" &&
+      JSON.stringify(facts.decision.selected) ===
+        JSON.stringify({
+          associationId: selected.associationId,
+          artifactId: selected.artifactId,
+          revisionId: selected.revisionId,
+        })
+    )
+      throw new Error("该封面已经是当前人工选择");
+    const [target] = await this.ports.reuseQueries.findAcceptedForSubjects([
+      input.entityId,
+    ]);
+    if (target === undefined) throw new Error("未找到该实体的已接受事实");
+    const decision: ArtifactRoleDecision = {
+      id: id("artifact-role-decision"),
+      target: facts.target,
+      role: primaryCoverRole,
+      kind: selected === undefined ? "clear" : "select",
+      ...(selected === undefined
+        ? {}
+        : {
+            selected: {
+              associationId: selected.associationId,
+              artifactId: selected.artifactId,
+              revisionId: selected.revisionId,
+            },
+          }),
+      ...(expectedHeadDecisionId === null
+        ? {}
+        : { predecessorDecisionId: expectedHeadDecisionId }),
+      initiatedBy: input.initiatedBy,
+    };
+    validateArtifactRoleDecision(decision);
+    const current = assetStateProjection(target.accepted);
+    const baseline =
+      await this.ports.changeImpactCommands.freezeChangeImpactBaseline({
+        assetId: input.entityId,
+        recognitionDecisionId: target.accepted.recognitionDecision.id,
+        ...(target.accepted.recognitionSourceAssociation === undefined
+          ? {}
+          : {
+              recognitionSourceAssociationId:
+                target.accepted.recognitionSourceAssociation.id,
+            }),
+      });
+    let preview: ChangeImpactPreview = {
+      version: "change-impact-preview/2",
+      id: id("change-impact-preview"),
+      // 决定本身是这份预演的因果来源，因此不挂任何工作流执行。
+      executionId: `artifact-role-decision:${decision.id}`,
+      assetId: input.entityId,
+      change: {
+        kind: "artifact-role-decision",
+        decision,
+        expectedHeadDecisionId,
+      },
+      evidenceComparison: {
+        observed: [],
+        manual: [],
+        sourceCandidates: [],
+        conflicts: [
+          selected === undefined
+            ? "撤回后封面回到既有本地与来源政策的裁决"
+            : "确认后这张精确图片成为该实体的当前封面，优先于本地与来源政策",
+        ],
+      },
+      baselines: [
+        {
+          key: "recognition-decision",
+          value: target.accepted.recognitionDecision.id,
+        },
+        { key: "complete-current-projection", value: baseline },
+        {
+          key: artifactRoleCandidateBaselineKey,
+          value: JSON.stringify(facts.candidates),
+        },
+        {
+          key: "artifact-role-decision-head",
+          value: expectedHeadDecisionId ?? "none",
+        },
+        {
+          key: "artifact-role-policy-version",
+          value: this.compatibility().policyVersion,
+        },
+      ],
+      current,
+      projected: current,
+      blockingConditions: [],
+      requestContext: input.informationRequirement,
+      status: "awaiting-confirmation",
+    };
+    preview = freezeChangeImpactFactReads(
+      preview,
+      this.ports.metadataPolicyConfiguration,
+      [],
+    );
+    await this.ports.changeImpactCommands.saveArtifactRoleDecisionPreview(
+      preview,
+    );
+    return publicChangeImpactPreview(preview);
+  }
+
+  /**
+   * 范围追加／修订的明确决定：完整声明取自那次观察冻结的工作项，绝不以本次可见文件
+   * 代替整个声明；主头只在点名的就是主头时前进，追加不会另造第二个身份。
+   */
+  async prepareRecognitionScopeAmendment(input: {
+    readonly sourceExecutionId: string;
+    readonly workItemKey: string;
+    readonly proposedBy: string;
+    readonly reason: string;
+    /** 缺省时使用那次观察为该工作项点名的决定。 */
+    readonly decisionId?: string;
+    readonly informationRequirement?: InformationRequirement;
+    readonly onExecutionStarted?: (execution: WorkflowExecution) => void;
+  }): Promise<ChangeImpactPreviewInspection> {
+    if (
+      input.proposedBy.trim().length === 0 ||
+      input.reason.trim().length === 0
+    )
+      throw new Error("范围决定必须包含提议者和原因");
+    const source = await this.ports.executionQueries.inspectExecution(
+      input.sourceExecutionId,
+    );
+    if (source === undefined)
+      throw new Error("找不到形成该范围决定的那次观察记录");
+    const frozen = source.execution.workItems?.find(
+      (item) => item.key === input.workItemKey,
+    );
+    const assetId = frozen?.retainedAssetId ?? source.execution.acceptedAssetId;
+    const namedDecisionId = input.decisionId ?? frozen?.retainedDecisionId;
+    const snapshot = source.execution.snapshot;
+    if (
+      frozen === undefined ||
+      frozen.outcome !== "unresolved" ||
+      frozen.boundaries === undefined ||
+      frozen.boundaries.length === 0 ||
+      assetId === undefined ||
+      namedDecisionId === undefined ||
+      snapshot === undefined
+    )
+      throw new Error(
+        "这个工作项没有可应用的完整范围与点名决定，需要重新扫描后再明确决定",
+      );
+    const target = await this.namedRecognitionTarget({
+      assetId,
+      decisionId: namedDecisionId,
+    });
+    if (target === undefined) throw new Error("所选内容不存在或尚未确认");
+    const headDecisionId =
+      target.accepted.recognitionHeadDecisionId === null
+        ? undefined
+        : target.accepted.recognitionDecision.id;
+    const effectiveBoundaries =
+      await this.ports.reuseQueries.listEffectiveMaterialBoundariesForSubject?.(
+        {
+          assetId,
+        },
+      );
+    if (effectiveBoundaries === undefined)
+      throw new Error("该内容没有可点名修订的范围决定记录");
+    const declarations = groupMaterialScopeDeclarations(effectiveBoundaries, {
+      headDecisionIds: headDecisionId === undefined ? [] : [headDecisionId],
+    });
+    const namedDeclaration = declarations.find(
+      (declaration) => declaration.decisionId === namedDecisionId,
+    );
+    if (namedDeclaration === undefined)
+      throw new Error("点名的识别决定不是该内容当前生效的范围");
+    const scopeDeclarations =
+      await this.ports.reuseQueries.listMaterialScopeDeclarations?.({
+        scopeAddress: snapshot.root,
+      });
+    if (
+      scopeDeclarations === undefined ||
+      !scopeDeclarations.some(
+        (declaration) => declaration.decisionId === namedDecisionId,
+      )
+    )
+      throw new Error(
+        "该范围缺少可核对的相交声明记录，需要重新扫描后再明确决定",
+      );
+    const materialReferences = frozen.relativePaths;
+    const evidence = (frozen.planningEvidence ?? []).filter(
+      (item) =>
+        item.inspection !== undefined &&
+        materialReferences.includes(item.inspection.observedArtifactReference),
+    );
+    if (evidence.length === 0)
+      throw new Error(
+        "该范围没有可归属的文件检查证据，需要重新扫描后再明确决定",
+      );
+    // 从同一次冻结的通用完整字节观察逐材料重建精确修订：不在预演时重读当前文件，也不从
+    // size/mtime 推导摘要。缺失、重复或矛盾都保留既有语义，要求重新扫描后再明确决定。
+    const revisions = new Map<
+      string,
+      import("@digital/domain").ObservedArtifactRevisionCandidate
+    >();
+    for (const item of evidence) {
+      if (item.kind !== "format.whole-file-observation") continue;
+      const inspection = item.inspection;
+      if (inspection === undefined) continue;
+      const reference = inspection.observedArtifactReference;
+      if (revisions.has(reference))
+        throw new Error(
+          "该范围材料存在重复的文件修订，需要重新扫描后再明确决定",
+        );
+      revisions.set(reference, {
+        observedArtifactReference: reference,
+        blob: inspection.revision,
+        producer: item.producer,
+      });
+    }
+    if (materialReferences.some((reference) => !revisions.has(reference)))
+      throw new Error("该范围材料缺少完整的文件修订，需要重新扫描后再明确决定");
+    const observedArtifactRevisions = [...revisions.values()];
+    const proposal = validateRecognitionProposal({
+      id: id("recognition-proposal"),
+      boundaries: frozen.boundaries,
+      basis: {
+        kind: "manual-boundary",
+        proposedBy: input.proposedBy,
+        observationSnapshotId: snapshot.id,
+        materialReferences,
+        revisesProposalIds: [],
+        metadata: [],
+        evidence,
+      },
+      ruleResults: [],
+      observedArtifactAssociations: materialReferences.map(
+        (observedArtifactReference) => ({
+          observedArtifactReference,
+          role: "asset.material-delivered" as const,
+        }),
+      ),
+      observedArtifactRevisions,
+    });
+    const roots = source.execution.workflowInput?.observedRoots ?? [];
+    const declaredDirectories = frozen.boundaries.flatMap((boundary) => {
+      if (boundary.kind !== "directory") return [];
+      const [owner] = roots.filter(
+        (root) => root.id === boundary.scopeReference,
+      );
+      if (owner === undefined)
+        throw new Error(
+          "冻结范围引用的观察根已经不存在，需要重新扫描后再明确决定",
+        );
+      return [
+        observedAddress(owner.containerPath, boundary.directoryReference),
+      ];
+    });
+    // 裁剪只保留声明范围内的观察：范围内的排除项与诊断随范围一起冻结，完整语义不伪装。
+    const inDeclaredRange = (relativePath: string) =>
+      materialReferences.includes(relativePath) ||
+      declaredDirectories.some((directory) =>
+        isWithinObservedDirectory(
+          directory,
+          observedAddress(snapshot.root, relativePath),
+        ),
+      );
+    const selectedSnapshot: FilesystemPackageSnapshot = {
+      ...snapshot,
+      files: snapshot.files.filter((file) =>
+        inDeclaredRange(file.relativePath),
+      ),
+      excluded: snapshot.excluded.filter((item) =>
+        inDeclaredRange(item.relativePath),
+      ),
+      ...(snapshot.diagnostics === undefined
+        ? {}
+        : {
+            diagnostics: snapshot.diagnostics.filter((item) =>
+              inDeclaredRange(item.relativePath),
+            ),
+          }),
+    };
+    const initial: WorkflowExecution = {
+      id: id("execution"),
+      workflowInput: {
+        version: "asset-refresh-input/1",
+        trigger: "interactive",
+        initiatedBy: input.proposedBy,
+        acceptTrusted: false,
+        configurationReferences: [],
+        // 复用源执行已耐久冻结的观察根，使应用后新增材料位置能按同一根版本建立当前正向支持。
+        observedRoots: roots,
+      },
+      selection: {
+        intent: "directed-recognition",
+        informationRequirement:
+          input.informationRequirement ?? emptyInformationRequirement,
+      },
+      operationKind: "rescrape",
+      status: "running",
+      stage: "recognition",
+      sourceRecordIds: [],
+      // 明确决定针对那次观察的裁剪范围形成；该快照是支持证据的载体，不是新的观察。
+      snapshot: selectedSnapshot,
+      acceptedAssetId: assetId,
+      compatibility: this.compatibility(),
+      dispositions: [],
+    };
+    const started = await this.ports.executionCommands.createExecution(initial);
+    if (started !== "started") throw new AutomationExecutionNotStarted(started);
+    input.onExecutionStarted?.(initial);
+    // 范围载体（上面的完整三项 proposal/execution snapshot）决定这条离散范围是否成立；
+    // 交付载体只负责把尚未落到原主体上的材料并进当前事实。原 MKV 已是主体的既有观察
+    // 位置，snapshot-local 语义下重扫会重新铸成第二个 artifact，因此交付快照与关联/修订
+    // 只含未交付项，让 rangeRecognition 恰好贡献这些新增，避免重复材料。
+    const deliveredAddresses = new Set(
+      target.accepted.locations
+        .filter((location) => location.kind === "observed")
+        .map((location) => location.address),
+    );
+    const deliveryReferences = materialReferences.filter(
+      (reference) => !deliveredAddresses.has(`${snapshot.root}/${reference}`),
+    );
+    const deliverySnapshot: FilesystemPackageSnapshot = {
+      ...selectedSnapshot,
+      files: selectedSnapshot.files.filter((file) =>
+        deliveryReferences.includes(file.relativePath),
+      ),
+    };
+    const deliveryProposal: RecognitionProposal = {
+      ...proposal,
+      observedArtifactAssociations: deliveryReferences.map(
+        (observedArtifactReference) => ({
+          observedArtifactReference,
+          role: "asset.material-delivered" as const,
+        }),
+      ),
+      observedArtifactRevisions: observedArtifactRevisions.filter((revision) =>
+        deliveryReferences.includes(revision.observedArtifactReference),
+      ),
+    };
+    const rangeRecognition = createAcceptedRecognition({
+      proposal: deliveryProposal,
+      snapshot: deliverySnapshot,
+      managedArtifacts: [],
+      current: target.accepted,
+      ...(this.ports.observedRootRegistrations.objectIdentityContract ===
+      undefined
+        ? {}
+        : {
+            objectIdentityContract:
+              this.ports.observedRootRegistrations.objectIdentityContract,
+          }),
+    });
+    const amendsHead =
+      headDecisionId !== undefined && namedDecisionId === headDecisionId;
+    const successorDecisionId = id("recognition-decision");
+    const current = assetStateProjection(target.accepted);
+    // 范围基线只覆盖与点名声明相交的完整范围：不相交主体新增不该让这份预演过期，
+    // 相交一侧的支持刷新则必须让它过期且不落任何写。
+    const intersectingScopeDeclarations = scopeDeclarations.filter(
+      (declaration) =>
+        materialScopeDeclarationsIntersect(declaration, namedDeclaration),
+    );
+    const scopeDecisionIds = [
+      ...new Set(
+        intersectingScopeDeclarations.map(
+          (declaration) => declaration.decisionId,
+        ),
+      ),
+    ].toSorted();
+    const baseline =
+      await this.ports.changeImpactCommands.freezeChangeImpactBaseline({
+        assetId,
+        // 身份基线取当前主头；主头为空时取点名决定的读取依据。
+        recognitionDecisionId: target.accepted.recognitionDecision.id,
+        ...(target.accepted.recognitionSourceAssociation === undefined
+          ? {}
+          : {
+              recognitionSourceAssociationId:
+                target.accepted.recognitionSourceAssociation.id,
+            }),
+        scopeDecisionIds,
+      });
+    const afterBaseline = await this.namedRecognitionTarget({
+      assetId,
+      decisionId: namedDecisionId,
+    });
+    if (
+      afterBaseline === undefined ||
+      acceptedConcurrencyFingerprint(afterBaseline.accepted) !==
+        acceptedConcurrencyFingerprint(target.accepted)
+    ) {
+      await this.transition(
+        initial,
+        terminal(
+          initial,
+          "failed",
+          "形成范围决定预演期间当前事实或支持已经变化",
+        ),
+      );
+      throw new Error("形成范围决定预演期间当前事实或支持已经变化");
+    }
+    const unionBy = <T>(
+      left: readonly T[],
+      right: readonly T[],
+      key: (item: T) => string,
+    ): readonly T[] => {
+      const seen = new Set(left.map(key));
+      return [...left, ...right.filter((item) => !seen.has(key(item)))];
+    };
+    // 范围决定只改变被点名那一份声明的材料归属：其余当前事实原样保留。
+    const projected: AssetStateProjection = {
+      ...current,
+      artifacts: unionBy(
+        current.artifacts,
+        rangeRecognition.artifacts,
+        ({ id: artifactId }) => artifactId,
+      ),
+      locations: unionBy(
+        current.locations,
+        rangeRecognition.locations,
+        (item) => `${item.artifactId}\u0000${item.address}`,
+      ),
+      blobs: unionBy(
+        current.blobs,
+        rangeRecognition.blobs,
+        ({ digest }) => digest,
+      ),
+      artifactRevisions: unionBy(
+        current.artifactRevisions,
+        rangeRecognition.artifactRevisions,
+        ({ id: revisionId }) => revisionId,
+      ),
+      artifactAssociations: unionBy(
+        current.artifactAssociations,
+        rangeRecognition.artifactAssociations,
+        ({ id: associationId }) => associationId,
+      ),
+      // 只有点名的是主头时当前身份才改由新决定授权；追加修订绝不改写主头，
+      // 主头为空时保持未解决，绝不自动继任或新造身份。
+      ...(amendsHead ? { recognitionDecisionId: successorDecisionId } : {}),
+    };
+    const scopeBaseline = materialScopeDeclarationBaseline(
+      intersectingScopeDeclarations,
+    );
+    let preview: ChangeImpactPreview = {
+      version: "change-impact-preview/2",
+      id: id("change-impact-preview"),
+      executionId: initial.id,
+      assetId,
+      proposal,
+      change: {
+        kind: "recognition-scope-amendment",
+        proposal,
+        successorDecisionId,
+        predecessorDecisionId: namedDecisionId,
+        scopeAddress: snapshot.root,
+      },
+      evidenceComparison: {
+        observed: [],
+        manual: evidence,
+        sourceCandidates: [],
+        conflicts: [
+          amendsHead
+            ? "确认这份修订后，当前身份改由新范围授权；历史决定与撤回记录保持不变"
+            : "确认这份修订后，只有点名的追加范围改变，当前身份保持不变",
+        ],
+      },
+      baselines: [
+        { key: "recognition-decision", value: namedDecisionId },
+        { key: "complete-current-projection", value: baseline },
+        {
+          key: "recognition-scope-declarations",
+          value: JSON.stringify(scopeBaseline),
+        },
+        {
+          key: "recognition-scope-decision-ids",
+          value: JSON.stringify(scopeDecisionIds),
+        },
+      ],
+      current,
+      projected,
+      blockingConditions: [],
+      requestContext: initial.selection.informationRequirement,
+      status: "awaiting-confirmation",
+    };
+    preview = freezeChangeImpactFactReads(
+      preview,
+      this.ports.metadataPolicyConfiguration,
+      [],
+    );
+    await this.ports.recognitionChangeImpact.finishExecutionWithRecognitionScopeAmendmentPreview(
+      { expectedExecution: initial, execution: initial, proposal, preview },
     );
     return publicChangeImpactPreview(preview);
   }
@@ -10571,7 +14358,7 @@ export class AssetRefreshWorkflow {
         ? {}
         : { endingSourceAssociationId: predecessor.id }),
     });
-    const preview: ChangeImpactPreview = {
+    let preview: ChangeImpactPreview = {
       version: "change-impact-preview/2",
       id: id("change-impact-preview"),
       executionId: input.execution.id,
@@ -10616,8 +14403,15 @@ export class AssetRefreshWorkflow {
         ],
       },
       blockingConditions,
+      requestContext: input.execution.selection.informationRequirement,
       status: "awaiting-confirmation",
     };
+    preview = freezeChangeImpactFactReads(
+      preview,
+      this.ports.metadataPolicyConfiguration,
+      (await this.ports.executionQueries.inspectExecution(input.execution.id))
+        ?.sourceRecords ?? [],
+    );
     const awaiting: WorkflowExecution = {
       ...input.execution,
       sourceAssociationDecision: {
@@ -10694,6 +14488,40 @@ export class AssetRefreshWorkflow {
   }
 
   /**
+   * 纯读投影：列出某主体在耐久接受历史中归属的资产库身份。只读取既有执行检查点里记录的
+   * accepted 主体与其创建时冻结的 workflowInput.assetLibrary，不触发任何采集，也不任选其一；
+   * 多于一个即多库共享，交由上层以友好名称引导明确的定向补充。
+   */
+  async assetLibraryIdsOwningSubject(
+    subjectId: string,
+  ): Promise<readonly string[]> {
+    const executions = await this.ports.executionQueries.listExecutions();
+    const owners = new Set<string>();
+    for (const execution of executions) {
+      const libraryId = execution.workflowInput?.assetLibrary?.id;
+      if (libraryId === undefined) continue;
+      const accepted =
+        execution.acceptedAssetId === subjectId ||
+        (execution.workItems ?? []).some(
+          (item) => item.acceptedAssetId === subjectId,
+        );
+      if (accepted) owners.add(libraryId);
+    }
+    return [...owners];
+  }
+
+  /**
+   * 从耐久接受历史证明某主体唯一归属的资产库：恰好一个库返回其身份；零个或多个
+   * （多库不任选）返回 undefined，交由调用方友好引导明确的定向补充。
+   */
+  private async uniqueOwningAssetLibraryId(
+    subjectId: string,
+  ): Promise<string | undefined> {
+    const owners = await this.assetLibraryIdsOwningSubject(subjectId);
+    return owners.length === 1 ? owners[0] : undefined;
+  }
+
+  /**
    * 给一个已接受主体显式补充新来源。它建立独立的耐久执行，并复用普通来源采集、解释、
    * 来源产物和 SourceEnrichmentPersistence 提交路径。
    */
@@ -10701,6 +14529,19 @@ export class AssetRefreshWorkflow {
     input: ExplicitSourceEnrichmentInput,
   ): Promise<AssetRefreshInspection> {
     return await atPublicWorkflowBoundary(async () => {
+      // 定向补充须先确立可靠资产库语境并在任何外部效果前原子冻结其当前完整 09 范围：
+      // 调用方已范围化到某库则沿用该活动快照；否则以明确传入或耐久接受历史证明的唯一归属
+      // 定位库，绝不借今日全局能力伪称补充，也绝不在多库归属时任选其一。
+      if (this.ports.assetLibrarySnapshot === undefined) {
+        const libraryId =
+          input.assetLibraryId ??
+          (await this.uniqueOwningAssetLibraryId(input.subjectId));
+        if (libraryId === undefined || this.ports.assetLibraries === undefined)
+          throw new Error("请从明确的资产库发起定向补充");
+        return await this.workflowForLibrary(
+          await this.ports.assetLibraries.snapshot(libraryId),
+        ).enrichSource(input);
+      }
       const capabilities = (
         this.ports.sourceAddressingCapabilities ?? []
       ).filter(
@@ -10751,6 +14592,9 @@ export class AssetRefreshWorkflow {
           initiatedBy: input.initiatedBy ?? "interactive",
           acceptTrusted: false,
           configurationReferences: [],
+          ...(this.ports.assetLibrarySnapshot === undefined
+            ? {}
+            : { assetLibrary: this.ports.assetLibrarySnapshot }),
         },
         selection: {
           intent: "source-enrichment",
@@ -10843,6 +14687,487 @@ export class AssetRefreshWorkflow {
     });
   }
 
+  /**
+   * 明确"再次获取"一个已终止失败的来源补充项：创建全新执行并耐久关联前次失败执行与
+   * 该项，按创建时活动资产库原子冻结完整 09 来源范围。自动候选由当前已接受主体／当前
+   * 证据重新推导（保持选定来源与精确地址，当前线索消失则不续取）；显式项复用旧保存的
+   * 规范化非秘密输入，但新冻结寻址能力须兼容同一精确地址，否则提示明确的新定向补充。
+   * 旧 failed 检查点与来源记录绝不冒充新结果，旧失败历史不改写；中断的新执行只 resume 新 ID。
+   */
+  async retrySourceEnrichment(input: {
+    readonly executionId: string;
+    readonly subjectId: string;
+    readonly sourceIdentity: string;
+    readonly initiatedBy?: string;
+    readonly onExecutionStarted?: (execution: WorkflowExecution) => void;
+    readonly onProgress?: (message: string) => void;
+    readonly onCheckpoint?: (execution: WorkflowExecution) => void;
+    readonly onHostCheckpoint?: (execution: WorkflowExecution) => void;
+  }): Promise<AssetRefreshInspection> {
+    return await atPublicWorkflowBoundary(async () => {
+      const prior = await this.ports.executionQueries.inspectExecution(
+        input.executionId,
+      );
+      const priorExecution = prior?.execution;
+      if (priorExecution === undefined)
+        throw new Error("找不到要再次获取的来源补充执行");
+      if (priorExecution.status === "running")
+        throw new Error("只有已终止的来源补充可以再次获取");
+      const failedItem = (priorExecution.sourceEnrichments ?? []).find(
+        (item) =>
+          item.subjectId === input.subjectId &&
+          item.stage === "failed" &&
+          item.evidence.sourceIdentity === input.sourceIdentity,
+      );
+      if (failedItem === undefined)
+        throw new Error("所选主体没有可再次获取的失败来源补充项");
+      // 严校所选失败项：需具备精确来源坐标，且其生产者属于前次执行的兼容能力集。缺证据、
+      // 畸形或生产者不再兼容的旧项不得借今日全局能力伪称恢复，只诚实引导新的定向补充。
+      if (
+        !sourceEnrichmentFailureIsRetryable(
+          failedItem.evidence,
+          priorExecution.compatibility.capabilityCoordinates,
+        )
+      )
+        throw new Error(
+          "该失败项缺少可靠的当前证据，请从明确的资产库发起新的定向补充",
+        );
+      // retry 恒以创建时活动资产库原子冻结完整 09 范围：缺可靠库归属不借今日配置伪称恢复；
+      // 即便调用方已是旧 scoped 实例，也要重取当前活动快照并在不一致时重新范围化，绝不借旧快照。
+      const libraryId = priorExecution.workflowInput?.assetLibrary?.id;
+      if (
+        libraryId === undefined ||
+        this.ports.assetLibraries === undefined ||
+        this.ports.assetLibrarySnapshot === undefined
+      ) {
+        if (libraryId === undefined || this.ports.assetLibraries === undefined)
+          throw new Error(
+            "该失败项缺少可靠的资产库归属，请从明确的资产库发起新的定向补充",
+          );
+        return await this.workflowForLibrary(
+          await this.ports.assetLibraries.snapshot(libraryId),
+        ).retrySourceEnrichment(input);
+      }
+      const activeLibrary = await this.ports.assetLibraries.snapshot(libraryId);
+      if (
+        activeLibrary.id !== this.ports.assetLibrarySnapshot.id ||
+        activeLibrary.configVersion !==
+          this.ports.assetLibrarySnapshot.configVersion ||
+        assetLibrarySnapshotFingerprint(activeLibrary) !==
+          assetLibrarySnapshotFingerprint(this.ports.assetLibrarySnapshot)
+      )
+        return await this.workflowForLibrary(
+          activeLibrary,
+        ).retrySourceEnrichment(input);
+
+      let explicitEvidence:
+        | readonly {
+            readonly subjectId: string;
+            readonly evidence: RecognitionEvidence;
+            readonly normalizedInput: Readonly<Record<string, string>>;
+          }[]
+        | undefined;
+      let addressingCapability: SourceAddressingCapability | undefined;
+      if (failedItem.explicitInput !== undefined) {
+        const capabilities = (
+          this.ports.sourceAddressingCapabilities ?? []
+        ).filter(
+          (candidate) =>
+            candidate.inputRequirement.sourceIdentity === input.sourceIdentity,
+        );
+        if (capabilities.length !== 1)
+          throw new Error("当前来源能力不再支持该项的定向补充，请明确重新定向");
+        addressingCapability = capabilities[0]!;
+        const normalized = addressingCapability.normalize(
+          failedItem.explicitInput,
+        );
+        if (
+          normalized.status === "invalid" ||
+          normalized.evidence.sourceAddress !==
+            failedItem.evidence.sourceAddress
+        )
+          throw new Error("旧定向输入与当前来源能力不兼容，请明确重新定向");
+        explicitEvidence = [
+          {
+            subjectId: input.subjectId,
+            evidence: normalized.evidence,
+            normalizedInput: normalized.normalizedInput,
+          },
+        ];
+      }
+
+      const sourceAddress = failedItem.evidence.sourceAddress!;
+      // 精准锁定所选旧失败项：自动分支只允许同主体／来源／精确规范地址的单一候选。
+      const restrictTo = {
+        subjectId: input.subjectId,
+        sourceIdentity: input.sourceIdentity,
+        sourceAddress,
+      };
+      const retryIntent = {
+        version: "source-enrichment-retry/1" as const,
+        priorExecutionId: priorExecution.id,
+        subjectId: input.subjectId,
+        sourceIdentity: input.sourceIdentity,
+        sourceAddress,
+        ...(failedItem.explicitInput === undefined
+          ? {}
+          : { explicitInput: failedItem.explicitInput }),
+        // 显式项创建时即耐久绑定所采用的精确寻址能力坐标，使首检查点前中断也留有可严校的耐久依据。
+        ...(addressingCapability === undefined
+          ? {}
+          : {
+              addressingCapability: {
+                capabilityId: addressingCapability.capability.capabilityId,
+                capabilityVersion:
+                  addressingCapability.capability.capabilityVersion,
+                contractVersion:
+                  addressingCapability.capability.contractVersion,
+              },
+            }),
+      };
+
+      const requirement =
+        priorExecution.selection.informationRequirement ??
+        emptyInformationRequirement;
+      const resolvedSelection = await freezeAssetRefreshSelection({
+        version: "asset-refresh-selection/1",
+        subjects: [
+          {
+            subjectId: input.subjectId,
+            explanations: [{ path: ["source-enrichment", input.subjectId] }],
+          },
+        ],
+        filesystemScopes: [],
+      });
+      const initial: WorkflowExecution = {
+        id: id("execution"),
+        workflowInput: {
+          version: "asset-refresh-input/1",
+          trigger: "interactive",
+          initiatedBy: input.initiatedBy ?? "interactive",
+          acceptTrusted: false,
+          configurationReferences: [],
+          ...(this.ports.assetLibrarySnapshot === undefined
+            ? {}
+            : { assetLibrary: this.ports.assetLibrarySnapshot }),
+          parentExecutionId: priorExecution.id,
+          sourceEnrichmentRetry: retryIntent,
+        },
+        selection: {
+          intent: "source-enrichment",
+          informationRequirement: requirement,
+        },
+        operationKind: "refresh-metadata",
+        requestedSelection: {
+          version: "asset-refresh-selection/1",
+          subjects: [
+            {
+              subjectId: input.subjectId,
+              explanations: [{ path: ["source-enrichment", input.subjectId] }],
+            },
+          ],
+          filesystemScopes: [],
+        },
+        resolvedSelection,
+        filesystemSnapshots: [],
+        targetDispositions: [
+          {
+            key: `subject:${input.subjectId}`,
+            target: { kind: "subject", subjectId: input.subjectId },
+            status: "running",
+          },
+        ],
+        status: "running",
+        stage: "recognition",
+        sourceRecordIds: [],
+        acceptedAssetId: input.subjectId,
+        // 显式项的寻址能力在创建事务内即记入耐久兼容集，早于任何外部效果与首检查点。
+        compatibility: this.compatibility(
+          addressingCapability === undefined
+            ? []
+            : [addressingCapability.capability],
+        ),
+        dispositions: [],
+      };
+      const start = await this.ports.executionCommands.createExecution(initial);
+      if (start !== "started") throw new AutomationExecutionNotStarted(start);
+      input.onExecutionStarted?.(initial);
+      let execution = initial;
+      const enrichment = await this.enrichAcceptedSubjectsInExecution({
+        execution,
+        selection: resolvedSelection,
+        informationRequirement: requirement,
+        ...(explicitEvidence === undefined ? {} : { explicitEvidence }),
+        restrictTo,
+        onProgress: input.onProgress,
+        onCheckpoint: input.onCheckpoint,
+        onHostCheckpoint: input.onHostCheckpoint,
+      });
+      execution = enrichment.execution;
+      const applied = (execution.sourceEnrichments ?? []).some(
+        (item) =>
+          item.subjectId === input.subjectId &&
+          item.stage === "applied" &&
+          item.evidence.sourceIdentity === input.sourceIdentity &&
+          item.evidence.sourceAddress === restrictTo.sourceAddress,
+      );
+      const finished: WorkflowExecution = applied
+        ? {
+            ...execution,
+            status: "completed",
+            stage: "completed",
+            outcome: "accepted",
+            targetDispositions: execution.targetDispositions!.map((item) => ({
+              ...item,
+              status: "completed" as const,
+            })),
+          }
+        : enrichment.failed > 0
+          ? {
+              ...execution,
+              status: "failed",
+              stage: "failed",
+              outcome: "failed",
+              reason: "再次获取未完成；本地身份与材料保持不变，可稍后重试",
+              targetDispositions: execution.targetDispositions!.map((item) => ({
+                ...item,
+                status: "failed" as const,
+              })),
+            }
+          : {
+              // 当前已无可用自动来源线索（配置或证据变化使候选消失）：既不伪造成功，
+              // 也不退回失败重试，明确提示改用定向补充。
+              ...execution,
+              status: "completed",
+              stage: "completed",
+              outcome: "no-change",
+              reason: "当前已无可用自动来源线索，请使用明确的定向补充",
+              targetDispositions: execution.targetDispositions!.map((item) => ({
+                ...item,
+                status: "no-change" as const,
+              })),
+            };
+      await this.transition(execution, finished);
+      return await this.inspectPublic(finished.id);
+    });
+  }
+
+  /**
+   * 首来源检查点之前被中断的新重试之正式续跑。从 workflowInput 中耐久版本化的精确意图重建
+   * 同一操作：显式项复用保存的规范化非秘密输入并验证当前寻址能力兼容同一精确地址，自动项以
+   * 同主体／来源／精确规范地址锁定唯一候选。沿同一新执行与同一租约继续，绝不退回普通自动补充、
+   * 不重开旧失败执行、不以当前候选替换显式输入；当前线索改变／消失／歧义则零外部效果并友好引导。
+   */
+  private async resumeSourceEnrichmentRetry(
+    execution: WorkflowExecution,
+    intent: NonNullable<AssetRefreshWorkflowInput["sourceEnrichmentRetry"]>,
+    input: {
+      readonly onProgress?: ((message: string) => void) | undefined;
+      readonly onCheckpoint?:
+        | ((execution: WorkflowExecution) => void)
+        | undefined;
+      readonly onHostCheckpoint?:
+        | ((execution: WorkflowExecution) => void)
+        | undefined;
+    },
+    mutationClaim: () => { readonly token: string; readonly now: string },
+  ): Promise<AssetRefreshInspection> {
+    const restrictTo = {
+      subjectId: intent.subjectId,
+      sourceIdentity: intent.sourceIdentity,
+      sourceAddress: intent.sourceAddress,
+    };
+    let explicitEvidence:
+      | readonly {
+          readonly subjectId: string;
+          readonly evidence: RecognitionEvidence;
+          readonly normalizedInput: Readonly<Record<string, string>>;
+        }[]
+      | undefined;
+    if (intent.explicitInput !== undefined) {
+      // 显式 retry 必须保持耐久显式模式：先沿用创建路径的同一唯一原则，按来源收集当前寻址能力并要求
+      // 恰一项，再核对该唯一项三段坐标与耐久坐标相等。缺失／同来源不唯一（即便旧能力项仍在、与另一
+      // 不同 capabilityId 并存）／实现或合同版本漂移／拒绝规范化／改址，一律零外部效果并友好引导新的
+      // 定向补充；绝不因旧项仍匹配耐久坐标或自动材料仍给原地址而续取，也不退化为自动候选或改写旧规范输入。
+      const durable = intent.addressingCapability;
+      const sameSource = (this.ports.sourceAddressingCapabilities ?? []).filter(
+        (candidate) =>
+          candidate.inputRequirement.sourceIdentity === intent.sourceIdentity,
+      );
+      const unique = sameSource.length === 1 ? sameSource[0] : undefined;
+      const capability =
+        durable === undefined ||
+        unique === undefined ||
+        unique.capability.capabilityId !== durable.capabilityId ||
+        unique.capability.capabilityVersion !== durable.capabilityVersion ||
+        unique.capability.contractVersion !== durable.contractVersion
+          ? undefined
+          : unique;
+      const normalized = capability?.normalize(intent.explicitInput);
+      if (
+        normalized === undefined ||
+        normalized.status !== "accepted" ||
+        normalized.evidence.sourceAddress !== intent.sourceAddress
+      ) {
+        // 寻址依据不再兼容：把这条耐久新执行终结为无变化的友好引导，不进入任何采集或自动候选循环。
+        const finished: WorkflowExecution = {
+          ...execution,
+          status: "completed",
+          stage: "completed",
+          outcome: "no-change",
+          reason:
+            "当前来源能力与原来的定向依据不再兼容，请从明确的资产库发起新的定向补充",
+          targetDispositions: (execution.targetDispositions ?? []).map(
+            (item) => ({ ...item, status: "no-change" as const }),
+          ),
+        };
+        await this.transition(execution, finished, mutationClaim());
+        return await this.inspectResumedPublic(finished.id);
+      }
+      explicitEvidence = [
+        {
+          subjectId: intent.subjectId,
+          evidence: normalized.evidence,
+          normalizedInput: normalized.normalizedInput,
+        },
+      ];
+    }
+    const resolvedSelection = await freezeAssetRefreshSelection({
+      version: "asset-refresh-selection/1",
+      subjects: [
+        {
+          subjectId: intent.subjectId,
+          explanations: [{ path: ["source-enrichment", intent.subjectId] }],
+        },
+      ],
+      filesystemScopes: [],
+    });
+    const enrichment = await this.enrichAcceptedSubjectsInExecution({
+      execution,
+      selection: resolvedSelection,
+      informationRequirement:
+        execution.selection.informationRequirement ??
+        emptyInformationRequirement,
+      ...(explicitEvidence === undefined ? {} : { explicitEvidence }),
+      restrictTo,
+      onProgress: input.onProgress,
+      onCheckpoint: input.onCheckpoint,
+      onHostCheckpoint: input.onHostCheckpoint,
+      resumeClaim: mutationClaim(),
+    });
+    const running = enrichment.execution;
+    const applied = (running.sourceEnrichments ?? []).some(
+      (item) =>
+        item.subjectId === restrictTo.subjectId &&
+        item.stage === "applied" &&
+        item.evidence.sourceIdentity === restrictTo.sourceIdentity &&
+        item.evidence.sourceAddress === restrictTo.sourceAddress,
+    );
+    const finished: WorkflowExecution = applied
+      ? {
+          ...running,
+          status: "completed",
+          stage: "completed",
+          outcome: "accepted",
+          targetDispositions: running.targetDispositions!.map((item) => ({
+            ...item,
+            status: "completed" as const,
+          })),
+        }
+      : enrichment.failed > 0
+        ? {
+            ...running,
+            status: "failed",
+            stage: "failed",
+            outcome: "failed",
+            reason: "再次获取未完成；本地身份与材料保持不变，可稍后重试",
+            targetDispositions: running.targetDispositions!.map((item) => ({
+              ...item,
+              status: "failed" as const,
+            })),
+          }
+        : {
+            ...running,
+            status: "completed",
+            stage: "completed",
+            outcome: "no-change",
+            reason: "当前已无可用自动来源线索，请使用明确的定向补充",
+            targetDispositions: running.targetDispositions!.map((item) => ({
+              ...item,
+              status: "no-change" as const,
+            })),
+          };
+    await this.transition(running, finished, mutationClaim());
+    return await this.inspectResumedPublic(finished.id);
+  }
+
+  /**
+   * 无采集地投影某主体已终止的失败来源补充项，供普通主体读取与页面重开时展示友好的
+   * "再次获取"。每个主体—来源只取最新一条终态记录（新执行覆盖旧证据），据此诚实区分
+   * 可靠可重试与须发起新定向的旧／畸形项；绝不触发任何采集，也不外显来源地址、检查点、
+   * 版本或内部键。页面自身不得据此自动重试。
+   */
+  async inspectRetryableSourceEnrichments(subjectId: string): Promise<
+    readonly {
+      readonly executionId: string;
+      readonly subjectId: string;
+      readonly sourceIdentity: string;
+      readonly canRetry: boolean;
+    }[]
+  > {
+    if (subjectId.length === 0) throw new Error("来源补充重试投影需要主体身份");
+    const executions = await this.ports.executionQueries.listExecutions();
+    const seen = new Set<string>();
+    const options: {
+      readonly executionId: string;
+      readonly subjectId: string;
+      readonly sourceIdentity: string;
+      readonly canRetry: boolean;
+    }[] = [];
+    for (const execution of executions) {
+      for (const item of execution.sourceEnrichments ?? []) {
+        if (item.subjectId !== subjectId) continue;
+        const sourceIdentity = item.evidence.sourceIdentity;
+        if (sourceIdentity === undefined) continue;
+        const key = `${subjectId}\u0000${sourceIdentity}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (execution.status === "running" || item.stage !== "failed") continue;
+        options.push({
+          executionId: execution.id,
+          subjectId,
+          sourceIdentity,
+          canRetry: sourceEnrichmentFailureIsRetryable(
+            item.evidence,
+            execution.compatibility.capabilityCoordinates,
+          ),
+        });
+      }
+      const retryIntent =
+        execution.workflowInput?.version === "asset-refresh-input/1"
+          ? execution.workflowInput.sourceEnrichmentRetry
+          : undefined;
+      if (
+        execution.status !== "running" &&
+        execution.outcome === "no-change" &&
+        retryIntent !== undefined &&
+        retryIntent.subjectId === subjectId
+      ) {
+        const intentKey = `${subjectId}\u0000${retryIntent.sourceIdentity}`;
+        if (!seen.has(intentKey)) {
+          seen.add(intentKey);
+          options.push({
+            executionId: execution.id,
+            subjectId,
+            sourceIdentity: retryIntent.sourceIdentity,
+            canRetry: false,
+          });
+        }
+      }
+    }
+    return options;
+  }
+
   async refreshMetadata(
     input: MetadataRefreshInput,
   ): Promise<AssetRefreshInspection> {
@@ -10882,6 +15207,15 @@ export class AssetRefreshWorkflow {
         // 元数据刷新绝不作出识别决策。来源刷新运行审阅策略属于它引用的领域过程。
         acceptTrusted: false,
         configurationReferences: [],
+        ...(this.ports.assetLibrarySnapshot === undefined
+          ? {}
+          : { assetLibrary: this.ports.assetLibrarySnapshot }),
+        ...(initiation?.parentExecutionId === undefined
+          ? {}
+          : { parentExecutionId: initiation.parentExecutionId }),
+        ...(initiation?.directoryAuthorizations === undefined
+          ? {}
+          : { directoryAuthorizations: initiation.directoryAuthorizations }),
         ...(initiation === undefined
           ? {}
           : { operation: initiation.operation }),
@@ -10906,12 +15240,22 @@ export class AssetRefreshWorkflow {
       compatibility: this.compatibility(),
       dispositions: [],
     };
-    const startDisposition =
-      await this.ports.executionCommands.createExecution(initial);
-    if (startDisposition !== "started") {
-      throw new AutomationExecutionNotStarted(startDisposition);
+    if (
+      !(await this.registerDurableInformationFulfillmentChild(
+        initial,
+        initiation,
+        (created) => {
+          input.onExecutionStarted?.(created);
+        },
+      ))
+    ) {
+      const startDisposition =
+        await this.ports.executionCommands.createExecution(initial);
+      if (startDisposition !== "started") {
+        throw new AutomationExecutionNotStarted(startDisposition);
+      }
+      input.onExecutionStarted?.(initial);
     }
-    input.onExecutionStarted?.(initial);
     notifyDurableCheckpoint(input, initial);
     const acceptedTargets =
       await this.ports.reuseQueries.findAcceptedForSubjects(
@@ -11088,6 +15432,27 @@ export class AssetRefreshWorkflow {
       return await this.inspectPublic(failed.id);
     }
     execution = enrichment.execution;
+    // 补充成功提交后，把此前因“无当前来源”而记 failed 的同一主体提升为 completed，
+    // 让汇总据已提交结果诚实计数，不沿用补充前的 failed。
+    const enrichedSubjectIds = new Set(
+      (execution.sourceEnrichments ?? [])
+        .filter((checkpoint) => checkpoint.stage === "applied")
+        .map((checkpoint) => checkpoint.subjectId),
+    );
+    if (enrichedSubjectIds.size > 0)
+      execution = {
+        ...execution,
+        targetDispositions: execution.targetDispositions!.map((target) => {
+          if (
+            target.target.kind !== "subject" ||
+            target.status !== "failed" ||
+            !enrichedSubjectIds.has(target.target.subjectId)
+          )
+            return target;
+          const { reason: _reason, ...promoted } = target;
+          return { ...promoted, status: "completed" as const };
+        }),
+      };
     const completed =
       execution.targetDispositions?.filter(
         (target) =>
@@ -11174,6 +15539,15 @@ export class AssetRefreshWorkflow {
       readonly evidence: RecognitionEvidence;
       readonly normalizedInput: Readonly<Record<string, string>>;
     }[];
+    /**
+     * 精准重试约束：只允许与所选旧失败项同 subjectId／sourceIdentity／精确规范
+     * sourceAddress 的单一自动候选。当前证据改变、消失或歧义则不规划任何采集。
+     */
+    readonly restrictTo?: {
+      readonly subjectId: string;
+      readonly sourceIdentity: string;
+      readonly sourceAddress: string;
+    };
   }): Promise<{
     readonly execution: WorkflowExecution;
     readonly failed: number;
@@ -11243,7 +15617,16 @@ export class AssetRefreshWorkflow {
           [candidateInterpreter.capability],
           input.resumeClaim,
         );
-        const candidateEvidence = candidateInterpreter.interpret(state);
+        const acceptedBasis = target.accepted.proposal.basis;
+        const candidateEvidence = candidateInterpreter.interpret({
+          ...state,
+          observedEvidence:
+            acceptedBasis.kind === "source-interpretation"
+              ? target.accepted.proposal.ruleResults.flatMap(
+                  (result) => result.evidence,
+                )
+              : acceptedBasis.evidence,
+        });
         const evidence =
           candidateEvidence === undefined
             ? undefined
@@ -11254,7 +15637,31 @@ export class AssetRefreshWorkflow {
         if (
           evidence === undefined ||
           evidence.sourceIdentity === undefined ||
-          evidence.sourceAddress === undefined ||
+          evidence.sourceAddress === undefined
+        )
+          continue;
+        // 冻结库范围在外部效果前约束来源候选：库未启用的来源不生成任务，也不留下失败
+        // 检查点（禁用来源＝零效果），本地格式检查独立照常。
+        if (
+          this.ports.assetLibrarySnapshot !== undefined &&
+          assetLibrarySnapshotSourceScope(
+            this.ports.assetLibrarySnapshot,
+            evidence.sourceIdentity,
+          ) === undefined
+        )
+          continue;
+        // 精准重试只保留与所选旧失败项同主体／来源／精确规范地址的唯一候选；当前
+        // 证据改变、消失或落到其它来源时全部跳过，零外部效果。
+        if (
+          input.restrictTo !== undefined &&
+          !(
+            target.subjectId === input.restrictTo.subjectId &&
+            evidence.sourceIdentity === input.restrictTo.sourceIdentity &&
+            evidence.sourceAddress === input.restrictTo.sourceAddress
+          )
+        )
+          continue;
+        if (
           state.sourceAssociations.some(
             (association) =>
               association.sourceIdentity === evidence.sourceIdentity,
@@ -11960,6 +16367,9 @@ export class AssetRefreshWorkflow {
     readonly operationKind: NonNullable<WorkflowExecution["operationKind"]>;
     readonly requestedSelection: AssetRefreshSelection;
     readonly resolvedSelection: ResolvedAssetRefreshSelection;
+    readonly libraryScanParent?: LibraryScanChildCoordinates | undefined;
+    /** 本次调用实际取得的库目录授权代次，随子执行耐久冻结。 */
+    readonly directoryAuthorityVersion?: number | undefined;
     readonly directedCurrent?: {
       readonly subjectId: string;
       readonly accepted: AcceptedRecognition;
@@ -11991,6 +16401,9 @@ export class AssetRefreshWorkflow {
     const observationInitial: WorkflowExecution = {
       id: input.executionId ?? id("execution"),
       workflowInput: {
+        ...(this.ports.assetLibrarySnapshot === undefined
+          ? {}
+          : { assetLibrary: this.ports.assetLibrarySnapshot }),
         version: "asset-refresh-input/1",
         trigger,
         initiatedBy,
@@ -12006,6 +16419,31 @@ export class AssetRefreshWorkflow {
             );
           return observedRoots.length === 0 ? {} : { observedRoots };
         })(),
+        // 目录子只冻结自己那一条授权代次：本目录被移除或重连后它的下一次效果与提交被持久
+        // 拒绝，同库其他目录的既有权威不受牵连。
+        ...(() => {
+          if (input.directoryAuthorityVersion === undefined) return {};
+          const [observedRoot] = input.resolvedSelection.filesystemScopes
+            .map((scope) => scope.observedRoot)
+            .filter((root) => root !== undefined);
+          return observedRoot === undefined
+            ? {}
+            : {
+                directoryAuthorizations: [
+                  {
+                    observedRootId: observedRoot.id,
+                    authorityVersion: input.directoryAuthorityVersion,
+                  },
+                ],
+              };
+        })(),
+        ...(input.libraryScanParent === undefined
+          ? {}
+          : {
+              parentExecutionId: input.libraryScanParent.parentExecutionId,
+              parentDirectoryKey: input.libraryScanParent.directoryKey,
+              directoryCoverage: input.libraryScanParent.coverage,
+            }),
       },
       selection: {
         directory,
@@ -12036,12 +16474,33 @@ export class AssetRefreshWorkflow {
         ? {}
         : { automationIntentId: input.automationIntentId }),
     };
-    const startDisposition = await this.ports.executionCommands.createExecution(
-      observationInitial,
-      input.requestedAt,
-    );
-    if (startDisposition !== "started") {
-      throw new AutomationExecutionNotStarted(startDisposition);
+    const parent = input.libraryScanParent;
+    if (parent === undefined) {
+      const startDisposition =
+        await this.ports.executionCommands.createExecution(
+          observationInitial,
+          input.requestedAt,
+        );
+      if (startDisposition !== "started") {
+        throw new AutomationExecutionNotStarted(startDisposition);
+      }
+    } else {
+      // 目录子与父登记在同一条事务里落下；取消胜出时这里既不插入子也不留下目录绑定。
+      const registered =
+        await this.ports.executionCommands.registerLibraryScanChild({
+          parentExecutionId: parent.parentExecutionId,
+          directoryKey: parent.directoryKey,
+          execution: observationInitial,
+          ...(input.requestedAt === undefined
+            ? {}
+            : { requestedAt: input.requestedAt }),
+        });
+      if (registered === "cancelled")
+        throw new LibraryScanCancelledBeforeChildError(
+          parent.parentExecutionId,
+        );
+      if (registered !== "registered")
+        throw new Error("此目录已在本次库扫描中登记，不能重复物理观察");
     }
     input.onExecutionStarted?.(observationInitial);
     let observationExecution = await this.freezeCapabilityParticipation(
@@ -12189,6 +16648,9 @@ export class AssetRefreshWorkflow {
           }),
         );
         for (const group of inspectionGroups) {
+          this.ports.observedRootRegistrations.assertDirectoryOperationLive(
+            input.scope,
+          );
           planningExecution = await this.freezeCapabilityParticipation(
             planningExecution,
             [inspector.capability],
@@ -12319,70 +16781,87 @@ export class AssetRefreshWorkflow {
         : input.directedSourceAddress === undefined
           ? planRecognitionWorkItems(snapshot, interpretations)
           : directedWorkItems;
+    plannedWorkItems = plannedWorkItems.map((plan) => ({
+      ...plan,
+      boundaries: bindRecognitionMaterialBoundaries({
+        snapshot,
+        boundRoot: input.scope.root,
+        relativePaths: plan.relativePaths,
+        ...(plan.materialBoundary === undefined
+          ? {}
+          : { materialBoundary: plan.materialBoundary }),
+      }),
+    }));
     if (
       input.intent === "scan-now" &&
       input.directedSourceAddress === undefined
     ) {
-      const manualContents = (
-        (await this.ports.currentCatalogueQueries?.listCurrentCatalogue()) ?? []
-      ).filter((content) => content.proposal.basis.kind === "manual-boundary");
-      for (const content of manualContents) {
-        const addresses = content.locations
-          .filter((location) => location.kind === "observed")
-          .map((location) => location.address);
-        const files = snapshot.files.filter((file) =>
-          addresses.includes(`${snapshot.root}/${file.relativePath}`),
+      const effective =
+        await this.ports.reuseQueries.listEffectiveMaterialBoundaries({
+          scope: input.scope.root,
+          relativeScope: input.scope.relativeScope,
+        });
+      const declarations =
+        await this.ports.reuseQueries.listMaterialScopeDeclarations?.({
+          scopeAddress: observedAddress(
+            input.scope.root.containerPath,
+            input.scope.relativeScope,
+          ),
+        });
+      plannedWorkItems = reconcileRecognitionMaterialPlans({
+        snapshot,
+        boundRoot: input.scope.root,
+        plans: plannedWorkItems,
+        effective,
+        formatInterpretation,
+        ...(declarations === undefined ? {} : { declarations }),
+      });
+      // 07 已把同一来源身份下的材料范围扩大点名为原决定的离散范围修订。为这类工作项补充来源无关
+      // 的精确字节观察，使后续正式范围决定预演能引用真实冻结修订；未知媒体只断言字节修订，不解析
+      // 容器/编码/字幕，也不重复运行专用格式检查器。仅覆盖这些工作项引用的文件，不做全库哈希。
+      const isScopeRevision = (item: AssetRefreshWorkItemPlan) =>
+        item.retainedAssetId !== undefined &&
+        item.retainedDecisionId !== undefined &&
+        item.reuseAcceptedBoundary !== true &&
+        item.boundaryConflict === undefined;
+      const scopeRevisionCandidates = plannedWorkItems.filter(isScopeRevision);
+      if (scopeRevisionCandidates.length > 0) {
+        const scopeRevisionPaths = new Set(
+          scopeRevisionCandidates.flatMap((item) => item.relativePaths),
         );
-        const missing = addresses.filter(
-          (address) =>
-            address.startsWith(`${snapshot.root}/`) &&
-            !snapshot.files.some(
-              (file) => `${snapshot.root}/${file.relativePath}` === address,
-            ),
+        const revisionSnapshot: FilesystemPackageSnapshot = {
+          ...snapshot,
+          files: snapshot.files.filter((file) =>
+            scopeRevisionPaths.has(file.relativePath),
+          ),
+        };
+        const observed = await this.observeWholeFileRevisions(
+          input.scope,
+          revisionSnapshot,
+          () => input.onProgress?.("复验范围修订材料的精确字节"),
         );
-        if (missing.length > 0) {
-          formatFailures.push({
-            key: `manual-boundary-missing:${content.entity.id}`,
-            status: "failed",
-            materialReferences: missing.map((address) =>
-              address.slice(snapshot.root.length + 1),
-            ),
-            reason: "已添加的内容中有文件无法找到，请检查文件位置后重试",
-          });
-          hasExplicitWorkItems = true;
-        }
-        if (files.length === 0) continue;
-        const references = files.map((file) => file.relativePath);
-        // 已采用的人工范围优先于本次重新推导的自动分组，不能静默裁剪自动提案后采用。
-        plannedWorkItems = plannedWorkItems.filter(
-          (plan) =>
-            !plan.relativePaths.some((reference) =>
-              references.includes(reference),
-            ),
+        const observationsByPath = new Map(
+          observed.evidence
+            .filter((item) => item.inspection !== undefined)
+            .map((item) => [item.inspection!.observedArtifactReference, item]),
         );
-        if (references.length === addresses.length) {
-          plannedWorkItems = [
-            ...plannedWorkItems,
-            {
-              key: `manual-boundary:${content.entity.id}`,
-              relativePaths: references,
-              evidence: formatInterpretation.flatMap((interpretation) =>
-                interpretation.workItems.flatMap((item) =>
-                  item.evidence.filter(
-                    (evidence) =>
-                      evidence.inspection !== undefined &&
-                      references.includes(
-                        evidence.inspection.observedArtifactReference,
-                      ),
-                  ),
-                ),
-              ),
-            },
-          ];
-          hasExplicitWorkItems = true;
-        }
+        plannedWorkItems = plannedWorkItems.map((item) =>
+          isScopeRevision(item)
+            ? {
+                ...item,
+                evidence: [
+                  ...item.evidence,
+                  ...item.relativePaths.flatMap((relativePath) => {
+                    const observation = observationsByPath.get(relativePath);
+                    return observation === undefined ? [] : [observation];
+                  }),
+                ],
+              }
+            : item,
+        );
       }
     }
+    hasExplicitWorkItems = hasExplicitWorkItems || plannedWorkItems.length > 0;
     const evidence = plannedWorkItems.flatMap((item) => item.evidence);
     const initial: WorkflowExecution = {
       ...planningExecution,
@@ -12402,6 +16881,33 @@ export class AssetRefreshWorkflow {
             workItems: plannedWorkItems.map((item) => ({
               key: item.key,
               relativePaths: item.relativePaths,
+              ...(item.boundaries === undefined
+                ? {}
+                : { boundaries: item.boundaries }),
+              ...(item.boundaryBaseline === undefined
+                ? {}
+                : { boundaryBaseline: item.boundaryBaseline }),
+              ...(item.retainedAssetId === undefined
+                ? {}
+                : { retainedAssetId: item.retainedAssetId }),
+              ...(item.retainedDecisionId === undefined
+                ? {}
+                : { retainedDecisionId: item.retainedDecisionId }),
+              ...(item.reuseAcceptedBoundary === undefined
+                ? {}
+                : { reuseAcceptedBoundary: item.reuseAcceptedBoundary }),
+              ...(item.boundaryConflict === undefined
+                ? {}
+                : { boundaryConflict: item.boundaryConflict }),
+              ...(item.materialBoundary === undefined
+                ? {}
+                : { materialBoundary: item.materialBoundary }),
+              ...(item.observedArtifactAssociations === undefined
+                ? {}
+                : {
+                    observedArtifactAssociations:
+                      item.observedArtifactAssociations,
+                  }),
               ...(item.observedArtifactBoundary === undefined
                 ? {}
                 : { observedArtifactBoundary: item.observedArtifactBoundary }),
@@ -12410,6 +16916,12 @@ export class AssetRefreshWorkflow {
                 : {
                     observedArtifactBoundaryProducer:
                       item.observedArtifactBoundaryProducer,
+                  }),
+              ...(item.independentIdentityDeclaredBy === undefined
+                ? {}
+                : {
+                    independentIdentityDeclaredBy:
+                      item.independentIdentityDeclaredBy,
                   }),
               planningEvidence: item.evidence,
               reuseFingerprint: this.workItemReuseFingerprint(
@@ -12513,6 +17025,10 @@ export class AssetRefreshWorkflow {
       for (const collector of collectors) {
         input.onProgress?.("正在获取官方来源");
         try {
+          // 发起外部请求前复核该目录租约：撤销后绝不启动下一 collector 的外部效果。
+          this.ports.observedRootRegistrations.assertDirectoryOperationLive(
+            input.scope,
+          );
           collectionExecution = await this.bindCollectorConfiguration(
             collectionExecution,
             collector,
@@ -12522,6 +17038,11 @@ export class AssetRefreshWorkflow {
             collectionExecution,
             [collector.capability],
           );
+          // bind/freeze 是可 await 的异步前置效果：撤销落在其间时不得再发起不可中止的 collect
+          // 外部请求，故在真正 collect 之前复核同一 scope 租约（发起前的检查不是最终效果门）。
+          this.ports.observedRootRegistrations.assertDirectoryOperationLive(
+            input.scope,
+          );
           const collected = retainCollectedRecordProvenance(
             collector,
             await collector.collect(
@@ -12529,9 +17050,18 @@ export class AssetRefreshWorkflow {
               this.collectionExecutionContext(collectionExecution),
             ),
           );
+          // 不可中止的已发请求可返回，但撤销期间返回不得把结果并入或进入后续暂存/提交：
+          // 合并前用同一 scope 租约复核。
+          this.ports.observedRootRegistrations.assertDirectoryOperationLive(
+            input.scope,
+          );
           sourceRecords.push(...collected.records);
           collectionFailures.push(...collected.failures);
         } catch (error) {
+          // 撤销期间返回的错误不是普通采集失败：再次复核让取消向上中止，绝不继续下一 collector。
+          this.ports.observedRootRegistrations.assertDirectoryOperationLive(
+            input.scope,
+          );
           collectionFailures.push({
             capability: collector.capability,
             reason: errorMessage(error),
@@ -12850,6 +17380,10 @@ export class AssetRefreshWorkflow {
                 candidate,
               ),
               requireCheckpointStore: false,
+              assertEffectLive: () =>
+                this.ports.observedRootRegistrations.assertDirectoryOperationLive(
+                  input.scope,
+                ),
               beforeAcquire: async (capability) => {
                 acquisitionExecution = await this.freezeCapabilityParticipation(
                   acquisitionExecution,
@@ -12904,6 +17438,11 @@ export class AssetRefreshWorkflow {
         };
         await this.transition(acquisitionExecution, acquiredExecution);
         notifyDurableCheckpoint(input, acquiredExecution);
+        // 易失 checkpoint 路径无 stage：托管 store 才是本路径的耐久最终效果，撤销后不得把
+        // 已获取来源写入托管位置，故在真正 store 之前复核同一 scope 租约。
+        this.ports.observedRootRegistrations.assertDirectoryOperationLive(
+          input.scope,
+        );
         const managed = await this.sourceArtifactWork.store({
           acquisition: acquired.value.checkpoint,
           ...(acquired.value.staged === undefined
@@ -13163,6 +17702,22 @@ export class AssetRefreshWorkflow {
           prior.sourceRecordIds.length > 0
         )
           continue;
+        if (
+          recognitionCandidateContexts({
+            evidence: plan.evidence,
+            interpretations: [],
+            ...(plan.materialBoundary === undefined
+              ? {}
+              : { materialBoundary: plan.materialBoundary }),
+          }).some(
+            (context) =>
+              context.basis.kind === "observed-evidence" &&
+              this.ports.recognizers.some((recognizer) =>
+                recognizer.canRecognize(frozenRecognitionInput(context)),
+              ),
+          )
+        )
+          continue;
         const applicable = frozenInvocations.filter(
           (invocation) => invocation.planKey === plan.key,
         );
@@ -13337,6 +17892,20 @@ export class AssetRefreshWorkflow {
       if (
         execution.workItems?.find((item) => item.key === plan.key)?.outcome !==
         undefined
+      )
+        continue;
+      if (plan.boundaryConflict !== undefined) {
+        execution = completeWorkItem(execution, plan.key, {
+          sourceRecordIds: [],
+          outcome: "unresolved",
+          reason: plan.boundaryConflict,
+        });
+        await this.transitionAfterWorkItem(execution, resumeClaim);
+        continue;
+      }
+      if (
+        execution.workItems?.find((item) => item.key === plan.key)?.outcome !==
+        undefined
       ) {
         continue;
       }
@@ -13357,22 +17926,104 @@ export class AssetRefreshWorkflow {
         await this.transitionAfterWorkItem(execution, resumeClaim);
         continue;
       }
-      const retained = await this.ports.reuseQueries.findAcceptedForWorkItem({
-        directory: requiredFilesystemDirectory(initial),
-        relativePaths: plan.relativePaths,
-      });
-      if (retained?.accepted.proposal.basis.kind === "manual-boundary") {
-        const baseline = retained.execution.snapshot;
+      const exactRetained =
+        await this.ports.reuseQueries.findAcceptedForWorkItem({
+          directory: requiredFilesystemDirectory(initial),
+          relativePaths: plan.relativePaths,
+        });
+      const retained =
+        plan.retainedAssetId === undefined ||
+        exactRetained?.accepted.entity.id === plan.retainedAssetId
+          ? exactRetained
+          : (
+              await this.ports.reuseQueries.findAcceptedForSubjects([
+                plan.retainedAssetId,
+              ])
+            )[0];
+      if (plan.retainedAssetId !== undefined && retained === undefined) {
+        execution = completeWorkItem(execution, plan.key, {
+          sourceRecordIds: [],
+          outcome: "unresolved",
+          reason:
+            "材料仍有已确认的范围支持，但当前资产身份已结束，需要明确处理",
+        });
+        await this.transitionAfterWorkItem(execution, resumeClaim);
+        continue;
+      }
+      if (retained !== undefined && plan.reuseAcceptedBoundary === true) {
+        // 追加范围只复用支持它的决定；内容变化时不借主身份的刷新改写，见下方处置。
+        const refreshesHeadDecision =
+          plan.retainedDecisionId === undefined ||
+          plan.retainedDecisionId === retained.accepted.recognitionDecision.id;
+        // 比较基线只能是被点名决定自己那次观察：主头的执行里没有追加材料，拿它当基线
+        // 会把未变的追加材料判成缺失，进而被误判成需要修订。
+        const decisionObservation =
+          plan.retainedDecisionId === undefined
+            ? undefined
+            : await this.ports.reuseQueries.findAcceptedForDecision?.({
+                decisionId: plan.retainedDecisionId,
+              });
+        if (
+          plan.retainedDecisionId !== undefined &&
+          (decisionObservation === undefined ||
+            decisionObservation.execution.snapshot === undefined)
+        ) {
+          // 没有唯一可比的观察记录就诚实停下：不借主身份的执行顶替，也不把缺证据说成内容变化。
+          execution = completeWorkItem(execution, plan.key, {
+            sourceRecordIds: [],
+            outcome: "unresolved",
+            reason:
+              "该范围决定没有可比的观察记录，需要明确决定后才能继续，不会改写当前身份",
+          });
+          await this.transitionAfterWorkItem(execution, resumeClaim);
+          continue;
+        }
+        const reusedProposal =
+          decisionObservation?.proposal ?? retained.accepted.proposal;
+        const reusedExecution =
+          decisionObservation?.execution ?? retained.execution;
+        const localAssociations: readonly ObservedArtifactAssociationCandidate[] =
+          [
+            ...plan.relativePaths.map((observedArtifactReference) => ({
+              observedArtifactReference,
+              role: "asset.material-delivered" as const,
+            })),
+            ...(plan.observedArtifactAssociations ?? []).filter(
+              (item) => item.role !== "asset.material-delivered",
+            ),
+            ...(reusedProposal.observedArtifactAssociations ?? []).filter(
+              (item) =>
+                item.role !== "asset.material-delivered" &&
+                plan.relativePaths.includes(item.observedArtifactReference) &&
+                !(plan.observedArtifactAssociations ?? []).some(
+                  (candidate) =>
+                    candidate.role === item.role &&
+                    candidate.observedArtifactReference ===
+                      item.observedArtifactReference,
+                ),
+            ),
+          ];
+        const baseline = reusedExecution.snapshot;
         const previousEvidence =
-          retained.execution.workItems?.find(
+          reusedExecution.workItems?.find(
             (item) => item.acceptedAssetId === retained.accepted.entity.id,
-          )?.planningEvidence ?? retained.accepted.proposal.basis.evidence;
+          )?.planningEvidence ?? [];
+        // 冻结坐标只在基线那次运行真的按工作项留下证据时才存在；缺失时不能凭"历史里
+        // 没有可比坐标"就把材料判成需要修订。
+        const frozenCoordinates =
+          previousEvidence.length === 0 || baseline === undefined
+            ? undefined
+            : inspectedRevisionCoordinates(previousEvidence, baseline.root);
         const changed =
           baseline === undefined ||
-          inspectedRevisionCoordinates(
-            plan.evidence,
-            requiredFilesystemSnapshot(initial).root,
-          ) !== inspectedRevisionCoordinates(previousEvidence, baseline.root) ||
+          // 冻结坐标属于正在刷新的那份决定：追加范围的比较只看该决定自己那次观察里
+          // 的文件事实，绝不借主身份的运行坐标把未变的追加材料误判成需要修订。
+          (refreshesHeadDecision &&
+            frozenCoordinates !== undefined &&
+            inspectedRevisionCoordinates(
+              plan.evidence,
+              requiredFilesystemSnapshot(initial).root,
+            ) !== frozenCoordinates) ||
           plan.relativePaths.some((reference) => {
             const file = initial.snapshot?.files.find(
               (item) => item.relativePath === reference,
@@ -13389,33 +18040,57 @@ export class AssetRefreshWorkflow {
               file.modifiedAt !== previous.modifiedAt
             );
           }) ||
-          observedPartAssociationsRequireReconciliation(
-            attachObservedFormatFacts(
-              {
-                ...retained.accepted.proposal,
-                basis: {
-                  ...retained.accepted.proposal.basis,
-                  evidence: plan.evidence,
-                  materialReferences: plan.relativePaths,
+          // 追加范围不与主身份的产物图比较是否需协调：那份判断只属于正在被刷新的当前
+          // 决定，否则会把未变化的追加范围误判成需要修订。
+          (refreshesHeadDecision &&
+            observedPartAssociationsRequireReconciliation(
+              attachObservedFormatFacts(
+                {
+                  id: id("recognition-proposal"),
+                  boundaries: retained.accepted.recognitionDecision.boundaries,
+                  observedArtifactAssociations: localAssociations,
+                  basis: {
+                    kind: "accepted-boundary",
+                    recognitionDecisionId:
+                      retained.accepted.recognitionDecision.id,
+                    observationSnapshotId:
+                      requiredFilesystemSnapshot(initial).id,
+                    evidence: plan.evidence,
+                    materialReferences: plan.relativePaths,
+                  },
+                  ruleResults: [],
                 },
-              },
-              plan.evidence,
-            ),
-            retained.accepted,
-          );
+                plan.evidence,
+              ),
+              retained.accepted,
+            ));
+        if (changed && !refreshesHeadDecision) {
+          // 追加范围的内容变化不能借主身份的刷新改写：材料仍受该决定支持，但更新它需要
+          // 一份明确决定，经共同预演确认后才会落库。
+          execution = completeWorkItem(execution, plan.key, {
+            sourceRecordIds: [],
+            outcome: "unresolved",
+            reason:
+              "这批材料的内容已变化，其追加范围需要明确决定后才能更新，不会自动改写当前身份",
+          });
+          await this.transitionAfterWorkItem(execution, resumeClaim);
+          continue;
+        }
         if (changed) {
           const snapshot = requiredFilesystemSnapshot(initial);
           const proposal = attachObservedFormatFacts(
             {
-              ...retained.accepted.proposal,
               id: id("recognition-proposal"),
+              boundaries: retained.accepted.recognitionDecision.boundaries,
+              observedArtifactAssociations: localAssociations,
               basis: {
-                ...retained.accepted.proposal.basis,
+                kind: "accepted-boundary",
+                recognitionDecisionId: retained.accepted.recognitionDecision.id,
                 observationSnapshotId: snapshot.id,
                 materialReferences: plan.relativePaths,
                 evidence: plan.evidence,
-                revisesProposalIds: [retained.accepted.proposal.id],
               },
+              ruleResults: [],
             },
             plan.evidence,
           );
@@ -13425,16 +18100,74 @@ export class AssetRefreshWorkflow {
               plan.relativePaths.includes(file.relativePath),
             ),
           };
-          const managedObservedParts =
-            await this.materializeObservedArtifactParts(
-              proposal,
-              selectedSnapshot,
+          // 范围载体（上面完整三项 proposal/boundaries/materialReferences、冻结执行快照
+          // 与范围 CAS）继续声明整条离散范围；交付载体只对本次相对耐久基线确有字节变化的
+          // 引用铸造新的 Artifact/Location/Revision。snapshot-local 下按完整范围重扫会把未变
+          // 材料重新铸成第二个 Artifact，而来源建立的原始 MKV 又按读取 model (i) 保持 current，
+          // 于是出现重复；只用变化项创建 accepted 又会让新决定没续接未变 MP4 的精确支持、MP4
+          // 掉出 current。故交付与完整下一状态分开构造：delta 只含变化引用，交给
+          // refreshAcceptedRecognition 的 accepted 是"当前完整事实减去被变化坐标替换的旧本地
+          // 观察事实，再并入本次增量"。选择只依据工作项冻结的相对引用、Location 地址与
+          // Artifact/Revision 关系，绝不依据文件名或 presentation 输出。
+          const deliveryReferences =
+            baseline === undefined
+              ? plan.relativePaths
+              : plan.relativePaths.filter((reference) => {
+                  const file = snapshot.files.find(
+                    (item) => item.relativePath === reference,
+                  );
+                  const previous = baseline.files.find(
+                    (item) =>
+                      `${baseline.root}/${item.relativePath}` ===
+                      `${snapshot.root}/${reference}`,
+                  );
+                  return (
+                    file === undefined ||
+                    previous === undefined ||
+                    file.size !== previous.size ||
+                    file.modifiedAt !== previous.modifiedAt
+                  );
+                });
+          const deliverySnapshot: FilesystemPackageSnapshot = {
+            ...selectedSnapshot,
+            files: selectedSnapshot.files.filter((file) =>
+              deliveryReferences.includes(file.relativePath),
+            ),
+          };
+          const deliveryProposal: RecognitionProposal = {
+            ...proposal,
+            observedArtifactAssociations: (
+              proposal.observedArtifactAssociations ?? []
+            ).filter((candidate) =>
+              deliveryReferences.includes(candidate.observedArtifactReference),
+            ),
+            observedArtifactRevisions: (
+              proposal.observedArtifactRevisions ?? []
+            ).filter((candidate) =>
+              deliveryReferences.includes(candidate.observedArtifactReference),
+            ),
+          };
+          // 提交基线只能取最后一次持久化的运行中审计：可选预览失败的处置随 next 一起
+          // 前进，绝不能把它当成数据库里已经存在的状态，否则刷新会判自己过期而整笔回滚。
+          const expectedExecution = persistedWorkflowExecution(execution);
+          let managedObservedParts: readonly ManagedObservedArtifactPart[] = [];
+          let observedPartsFailure: string | undefined;
+          try {
+            managedObservedParts = await this.materializeObservedArtifactParts(
+              deliveryProposal,
+              deliverySnapshot,
               withObservedMaterialImageRequirement(requirement),
               input.scope,
             );
-          const accepted = createAcceptedRecognition({
-            proposal,
-            snapshot: selectedSnapshot,
+          } catch (error) {
+            rethrowWorkflowLifecycle(error);
+            // 与首次准入一致：预览属于非必要处理，失败只局部记录，不否定已成立的
+            // 本地材料，也不撤回该资产已有的身份与支持。
+            observedPartsFailure = errorMessage(error);
+          }
+          const delta = createAcceptedRecognition({
+            proposal: deliveryProposal,
+            snapshot: deliverySnapshot,
             managedArtifacts: [],
             managedObservedParts,
             current: retained.accepted,
@@ -13446,40 +18179,152 @@ export class AssetRefreshWorkflow {
                     this.ports.observedRootRegistrations.objectIdentityContract,
                 }),
           });
-          const expectedExecution = persistedWorkflowExecution(execution);
-          execution = completeWorkItem(expectedExecution, plan.key, {
-            sourceRecordIds: [],
-            proposalId: proposal.id,
-            acceptedAssetId: accepted.entity.id,
-            outcome: "accepted",
-          });
-          await this.ports.recognitionReevaluation.refreshAcceptedRecognition({
-            expectedExecution,
-            execution,
-            current: retained.accepted,
-            accepted,
-            observedMaterialAcceptances: observedMaterialAcceptanceBindings({
-              accepted,
-              snapshot: selectedSnapshot,
-              workItemKey: plan.key,
-              acceptanceKind: "a-work-item",
-              relativePaths: plan.relativePaths,
-              ...(plan.observedArtifactBoundary === undefined
-                ? {}
-                : { observedArtifactBoundary: plan.observedArtifactBoundary }),
-            }),
-            sourceRecords: [],
-            expectedLineageHeads: [],
-            ...(resumeClaim === undefined ? {} : { resumeClaim }),
-          });
+          // 完整下一状态：以 retained.accepted 为左、delta 为右，先按被交付坐标（同一观察
+          // 根下的确切地址）移除其旧本地观察事实，再按稳定 ID 并入增量；未变化的 MP4/MKV
+          // 与来源建立的 MKV 原样沿用既有 Artifact/Location/Revision/Association。
+          const deliveryAddresses = new Set(
+            deliveryReferences.map(
+              (reference) => `${snapshot.root}/${reference}`,
+            ),
+          );
+          const replacedArtifactIds = new Set(
+            retained.accepted.locations
+              .filter(
+                (location) =>
+                  location.kind === "observed" &&
+                  deliveryAddresses.has(location.address),
+              )
+              .map((location) => location.artifactId),
+          );
+          const unionById = <T>(
+            left: readonly T[],
+            right: readonly T[],
+            key: (item: T) => string,
+          ): readonly T[] => {
+            const seen = new Set(left.map(key));
+            return [...left, ...right.filter((item) => !seen.has(key(item)))];
+          };
+          const accepted: AcceptedRecognition = {
+            ...delta,
+            proposal,
+            artifacts: unionById(
+              retained.accepted.artifacts.filter(
+                (artifact) => !replacedArtifactIds.has(artifact.id),
+              ),
+              delta.artifacts,
+              ({ id: artifactId }) => artifactId,
+            ),
+            locations: unionById(
+              retained.accepted.locations.filter(
+                (location) =>
+                  !(
+                    location.kind === "observed" &&
+                    replacedArtifactIds.has(location.artifactId)
+                  ),
+              ),
+              delta.locations,
+              (location) => location.id,
+            ),
+            blobs: unionById(
+              retained.accepted.blobs,
+              delta.blobs,
+              (blob) => blob.digest,
+            ),
+            artifactRevisions: unionById(
+              retained.accepted.artifactRevisions.filter(
+                (revision) => !replacedArtifactIds.has(revision.artifactId),
+              ),
+              delta.artifactRevisions,
+              ({ id: revisionId }) => revisionId,
+            ),
+            artifactAssociations: unionById(
+              retained.accepted.artifactAssociations.filter(
+                (association) =>
+                  !replacedArtifactIds.has(association.artifactId),
+              ),
+              delta.artifactAssociations,
+              ({ id: associationId }) => associationId,
+            ),
+          };
+          execution = completeWorkItem(
+            observedPartsFailure === undefined
+              ? expectedExecution
+              : {
+                  ...expectedExecution,
+                  dispositions: [
+                    ...expectedExecution.dispositions,
+                    {
+                      key: `work-item:${plan.key}:observed-parts`,
+                      status: "failed",
+                      reason: `本地内容成立，材料预览尚未生成：${observedPartsFailure}`,
+                    },
+                  ],
+                },
+            plan.key,
+            {
+              sourceRecordIds: [],
+              proposalId: proposal.id,
+              acceptedAssetId: accepted.entity.id,
+              outcome: "accepted",
+            },
+          );
+          try {
+            await this.ports.recognitionReevaluation.refreshAcceptedRecognition(
+              {
+                expectedExecution,
+                execution,
+                current: retained.accepted,
+                accepted,
+                observedMaterialAcceptances: observedMaterialAcceptanceBindings(
+                  {
+                    accepted,
+                    snapshot: selectedSnapshot,
+                    workItemKey: plan.key,
+                    acceptanceKind: "a-work-item",
+                    relativePaths: plan.relativePaths,
+                    ...(plan.observedArtifactBoundary === undefined
+                      ? {}
+                      : {
+                          observedArtifactBoundary:
+                            plan.observedArtifactBoundary,
+                        }),
+                  },
+                ),
+                sourceRecords: [],
+                expectedLineageHeads: [],
+                ...(plan.boundaryBaseline === undefined
+                  ? {}
+                  : {
+                      expectedBoundary: {
+                        keys: plan.boundaryBaseline,
+                        // 与冻结该基线时同一份相交范围：本次观察的快照根就是
+                        // `resolve(root.containerPath, relativeScope)`。
+                        scopeAddress: snapshot.root,
+                      },
+                    }),
+                ...(resumeClaim === undefined ? {} : { resumeClaim }),
+              },
+            );
+          } catch (error) {
+            if (!(error instanceof RecognitionBoundaryBaselineStale))
+              throw error;
+            // 范围基线在冻结之后被其他决定改动；这次刷新已整体回滚，保持未解决并
+            // 由下一次扫描重新检查，不能凭旧提交写入材料或结束任何支持。
+            execution = completeWorkItem(expectedExecution, plan.key, {
+              sourceRecordIds: [],
+              outcome: "unresolved",
+              reason: errorMessage(error),
+            });
+            await this.transitionAfterWorkItem(execution, resumeClaim);
+          }
           continue;
         }
         execution = completeWorkItem(execution, plan.key, {
           sourceRecordIds: [],
-          proposalId: retained.accepted.proposal.id,
+          proposalId: reusedProposal.id,
           acceptedAssetId: retained.accepted.entity.id,
           outcome: "no-change",
-          reason: "保留用户已经确认的内容范围",
+          reason: "保留已经确认的资产范围",
         });
         await this.transitionAfterWorkItem(execution, resumeClaim);
         continue;
@@ -13530,6 +18375,60 @@ export class AssetRefreshWorkflow {
       const persistedInspection = persisted?.workItemInspections?.find(
         (item) => item.workItem.key === plan.key,
       );
+      let localProposals: readonly RecognitionProposal[];
+      try {
+        localProposals =
+          persistedInspection?.proposal === undefined
+            ? await this.recognizePlannedWorkItem({
+                evidence: plan.evidence,
+                boundaries: plan.boundaries ?? [],
+                ...(plan.materialBoundary === undefined
+                  ? {}
+                  : { materialBoundary: plan.materialBoundary }),
+                ...(plan.observedArtifactAssociations === undefined
+                  ? {}
+                  : {
+                      observedArtifactAssociations:
+                        plan.observedArtifactAssociations,
+                    }),
+                sourceRecords: [],
+                basisKind: "observed-evidence",
+                beforeInterpret: async (capability) =>
+                  await freezeWorkItemCapability(plan.key, capability),
+                beforeRecognize: async (capability) =>
+                  await freezeWorkItemCapability(plan.key, capability),
+              })
+            : persistedInspection.proposal.basis.kind === "observed-evidence"
+              ? [persistedInspection.proposal]
+              : [];
+      } catch (error) {
+        rethrowWorkflowLifecycle(error);
+        execution = completeWorkItem(execution, plan.key, {
+          sourceRecordIds: prior?.sourceRecordIds ?? [],
+          outcome: "failed",
+          reason: errorMessage(error),
+        });
+        await this.transitionAfterWorkItem(execution, resumeClaim);
+        continue;
+      }
+      const localAdmission = localProposals.length > 0;
+      const admissionRequirement: InformationRequirement = localAdmission
+        ? withObservedMaterialImageRequirement({
+            ...requirement,
+            metadata: requirement.metadata.map((item) => ({
+              ...item,
+              necessity: "optional",
+            })),
+            artifactRoles: requirement.artifactRoles.map((item) => ({
+              ...item,
+              necessity: "optional",
+            })),
+            relationshipTypes: requirement.relationshipTypes.map((item) => ({
+              ...item,
+              necessity: "optional",
+            })),
+          })
+        : requirement;
       const records: SourceRecord[] =
         prior === undefined || prior.sourceRecordIds.length === 0
           ? []
@@ -13539,7 +18438,10 @@ export class AssetRefreshWorkflow {
       const failures: SourceCollectionFailure[] = [];
       const consumedSharedKeys = new Set<string>();
       let usedDurablySharedRecords = false;
-      if (prior === undefined || prior.sourceRecordIds.length === 0) {
+      if (
+        !localAdmission &&
+        (prior === undefined || prior.sourceRecordIds.length === 0)
+      ) {
         const durableOnlyRecords = durableOnlyCollectionPlans.get(plan.key);
         if (durableOnlyRecords !== undefined) {
           records.push(...durableOnlyRecords);
@@ -13551,6 +18453,10 @@ export class AssetRefreshWorkflow {
             )) {
               try {
                 input.onProgress?.("正在获取官方来源");
+                if (input.scope !== undefined)
+                  this.ports.observedRootRegistrations.assertDirectoryOperationLive(
+                    input.scope,
+                  );
                 const sharedKey = sourceCollectionShareKey(collector, evidence);
                 if (
                   sharedKey !== undefined &&
@@ -13579,6 +18485,12 @@ export class AssetRefreshWorkflow {
                   resumeClaim,
                 );
                 await freezeWorkItemCapability(plan.key, collector.capability);
+                // bind/freeze 是可 await 的异步前置效果：撤销落在其间时不得再发起不可中止的
+                // collect/collectShared 外部请求，故在真正 request 之前复核同一 scope 租约。
+                if (input.scope !== undefined)
+                  this.ports.observedRootRegistrations.assertDirectoryOperationLive(
+                    input.scope,
+                  );
                 const collectionContext =
                   this.collectionExecutionContext(execution);
                 const collected = retainCollectedRecordProvenance(
@@ -13606,10 +18518,21 @@ export class AssetRefreshWorkflow {
                           return pending;
                         })()),
                 );
+                // 不可中止的已发请求可返回，但撤销期间返回不得把结果并入或进入下一效果：
+                // 合并前用同一目录租约复核。
+                if (input.scope !== undefined)
+                  this.ports.observedRootRegistrations.assertDirectoryOperationLive(
+                    input.scope,
+                  );
                 records.push(...collected.records);
                 failures.push(...collected.failures);
               } catch (error) {
                 rethrowWorkflowLifecycle(error);
+                // 撤销期间返回的错误不是普通采集失败：再次复核让取消向上中止，绝不继续下一 collector。
+                if (input.scope !== undefined)
+                  this.ports.observedRootRegistrations.assertDirectoryOperationLive(
+                    input.scope,
+                  );
                 failures.push({
                   capability: collector.capability,
                   reason: errorMessage(error),
@@ -13671,11 +18594,23 @@ export class AssetRefreshWorkflow {
         notifyDurableCheckpoint(input, execution, false);
       }
       try {
-        const proposals: readonly RecognitionProposal[] =
-          persistedInspection?.proposal === undefined
+        const proposals: readonly RecognitionProposal[] = localAdmission
+          ? localProposals
+          : persistedInspection?.proposal === undefined
             ? await this.recognizePlannedWorkItem({
                 evidence: plan.evidence,
+                boundaries: plan.boundaries ?? [],
+                ...(plan.materialBoundary === undefined
+                  ? {}
+                  : { materialBoundary: plan.materialBoundary }),
+                ...(plan.observedArtifactAssociations === undefined
+                  ? {}
+                  : {
+                      observedArtifactAssociations:
+                        plan.observedArtifactAssociations,
+                    }),
                 sourceRecords: records,
+                basisKind: "source-interpretation",
                 beforeInterpret: async (capability) =>
                   await freezeWorkItemCapability(plan.key, capability),
                 beforeRecognize: async (capability) =>
@@ -13701,7 +18636,7 @@ export class AssetRefreshWorkflow {
         }
         assertInterpretationSatisfiesInformationRequirement(
           proposal,
-          requirement,
+          admissionRequirement,
         );
         if (
           !input.acceptTrusted ||
@@ -13740,11 +18675,36 @@ export class AssetRefreshWorkflow {
           notifyDurableCheckpoint(input, execution, false);
           continue;
         }
+        // 能力声明独立内容身份的候选落在另一份已确认范围里：识别链已经给出明确结论，这里
+        // 停下等待点名决定，绝不自动并入所属资产，也不自动新建身份。
+        if (
+          plan.independentIdentityDeclaredBy !== undefined &&
+          plan.retainedAssetId !== undefined &&
+          plan.retainedDecisionId !== undefined
+        ) {
+          const expectedExecution = execution;
+          execution = completeWorkItem(execution, plan.key, {
+            sourceRecordIds: recordIds,
+            proposalId: proposal.id,
+            outcome: "unresolved",
+            reason:
+              "能力把这份内容声明为独立身份，但它落在已确认的另一资产范围内；需要明确决定，不会自动并入或新建身份",
+          });
+          await this.ports.executionCommands.finishExecutionWithProposal(
+            expectedExecution,
+            execution,
+            proposal,
+            resumeClaim,
+          );
+          notifyDurableCheckpoint(input, execution, false);
+          continue;
+        }
         let currentAccepted =
-          await this.ports.reuseQueries.findAcceptedForWorkItem({
+          retained ??
+          (await this.ports.reuseQueries.findAcceptedForWorkItem({
             directory: requiredFilesystemDirectory(initial),
             relativePaths: plan.relativePaths,
-          });
+          }));
         if (
           currentAccepted === undefined &&
           plan.observedArtifactBoundary === undefined
@@ -13821,6 +18781,36 @@ export class AssetRefreshWorkflow {
           )
             throw new Error("仅更改来源地址必须使用来源关联更换流程");
           if (!sameIdentity) {
+            // 07 已把同一来源身份下的材料范围扩大点名为原决定的离散范围修订。正式扫描必须
+            // 留下可明确范围决定的工作项，交由 prepareRecognitionScopeAmendment 形成范围决定
+            // 预演，绝不自动换身份或进入通用身份更正。仅当来源身份坐标未变、差异是范围扩大
+            // 时成立；真正的来源身份变更仍走下方通用取代预演。
+            if (
+              plan.retainedAssetId !== undefined &&
+              plan.retainedDecisionId !== undefined &&
+              plan.reuseAcceptedBoundary !== true &&
+              plan.boundaryConflict === undefined &&
+              plan.independentIdentityDeclaredBy === undefined &&
+              recognitionSourceCoordinate(currentAccepted.accepted.proposal) ===
+                recognitionSourceCoordinate(proposal)
+            ) {
+              const expectedExecution = execution;
+              execution = completeWorkItem(execution, plan.key, {
+                sourceRecordIds: recordIds,
+                proposalId: proposal.id,
+                outcome: "unresolved",
+                reason:
+                  "同一内容的材料范围扩大，需要明确范围决定后再更新，不会自动改写身份",
+              });
+              await this.ports.executionCommands.finishExecutionWithProposal(
+                expectedExecution,
+                execution,
+                proposal,
+                resumeClaim,
+              );
+              notifyDurableCheckpoint(input, execution, false);
+              continue;
+            }
             const change = await this.changeImpactPreview({
               execution,
               current: currentAccepted.accepted,
@@ -13869,7 +18859,7 @@ export class AssetRefreshWorkflow {
           id:
             currentWorkItem?.plannedAssetId ??
             inferCheckpointedAcceptedAssetId(
-              selectSourceArtifacts(proposal, requirement),
+              selectSourceArtifacts(proposal, admissionRequirement),
               [
                 ...(currentWorkItem?.sourceArtifactAcquisitions ?? []),
                 ...(currentWorkItem?.managedSourceArtifacts ?? []),
@@ -13894,7 +18884,7 @@ export class AssetRefreshWorkflow {
         }
         const selectedSourceArtifacts = selectSourceArtifacts(
           proposal,
-          requirement,
+          admissionRequirement,
         );
         for (const [
           selectionIndex,
@@ -13935,6 +18925,11 @@ export class AssetRefreshWorkflow {
             (item) => sourceArtifactCheckpointMatchesCandidate(item, candidate),
           );
           if (acquisition === undefined) {
+            // 发起不可中止的来源产物获取外部请求前复核该目录租约：撤销后绝不启动下一外部效果。
+            if (input.scope !== undefined)
+              this.ports.observedRootRegistrations.assertDirectoryOperationLive(
+                input.scope,
+              );
             const acquired = await runSourceArtifactAcquisitionEffect({
               necessity:
                 requirement.artifactRoles.find(
@@ -13950,10 +18945,24 @@ export class AssetRefreshWorkflow {
                     candidate,
                   ),
                   requireCheckpointStore: true,
+                  ...(input.scope === undefined
+                    ? {}
+                    : {
+                        assertEffectLive: () =>
+                          this.ports.observedRootRegistrations.assertDirectoryOperationLive(
+                            input.scope!,
+                          ),
+                      }),
                   beforeAcquire: async (capability) =>
                     await freezeWorkItemCapability(plan.key, capability),
                 }),
             });
+            // 已发获取请求可返回，但撤销期间返回不得继续形成 checkpoint/stage/managed 效果：
+            // 处理结果前用同一目录租约复核。
+            if (input.scope !== undefined)
+              this.ports.observedRootRegistrations.assertDirectoryOperationLive(
+                input.scope,
+              );
             if (acquired.status === "optional-failed") {
               const dispositionKey = sourceArtifactDispositionKey(
                 "acquire",
@@ -13990,6 +18999,11 @@ export class AssetRefreshWorkflow {
             await this.transitionAfterWorkItem(execution, resumeClaim);
             notifyDurableCheckpoint(input, execution, false);
           }
+          // 托管 store 是阶段转换前的耐久副作用：撤销后不得把已获取来源写入托管位置。
+          if (input.scope !== undefined)
+            this.ports.observedRootRegistrations.assertDirectoryOperationLive(
+              input.scope,
+            );
           const managed = await this.sourceArtifactWork.store({
             acquisition,
             requireCheckpointStore: true,
@@ -14014,15 +19028,32 @@ export class AssetRefreshWorkflow {
           sharedManagedArtifacts.set(sharedKey, managed);
           managedArtifacts.push(managed);
         }
-        const managedObservedParts =
-          await this.materializeObservedArtifactParts(
+        let managedObservedParts: readonly ManagedObservedArtifactPart[] = [];
+        try {
+          managedObservedParts = await this.materializeObservedArtifactParts(
             proposal,
             itemSnapshot,
-            requirement,
+            admissionRequirement,
             input.scope,
             async (capability) =>
               await freezeWorkItemCapability(plan.key, capability),
           );
+        } catch (error) {
+          rethrowWorkflowLifecycle(error);
+          if (!localAdmission) throw error;
+          execution = {
+            ...execution,
+            dispositions: [
+              ...execution.dispositions,
+              {
+                key: `work-item:${plan.key}:observed-parts`,
+                status: "failed",
+                reason: `本地内容成立，材料预览尚未生成：${errorMessage(error)}`,
+              },
+            ],
+          };
+          await this.transitionAfterWorkItem(execution, resumeClaim);
+        }
         const accepted = createAcceptedRecognition({
           proposal,
           snapshot: itemSnapshot,
@@ -14111,7 +19142,7 @@ export class AssetRefreshWorkflow {
         }
         for (const rawCandidate of selectSourceArtifacts(
           proposal,
-          requirement,
+          admissionRequirement,
         )) {
           const candidate = resolveSourceArtifactSubject(
             rawCandidate,
@@ -14140,7 +19171,8 @@ export class AssetRefreshWorkflow {
     const acceptedSubjectIds = [
       ...new Set(
         (execution.workItems ?? []).flatMap((item) =>
-          item.outcome === "accepted" && item.acceptedAssetId !== undefined
+          (item.outcome === "accepted" || item.outcome === "no-change") &&
+          item.acceptedAssetId !== undefined
             ? [item.acceptedAssetId]
             : [],
         ),
@@ -14184,10 +19216,12 @@ export class AssetRefreshWorkflow {
     execution = enrichment.execution;
     const workItemTerminal = terminalFromWorkItems(execution);
     const terminalExecution: WorkflowExecution =
-      enrichment.failed === 0 || workItemTerminal.outcome !== "accepted"
+      enrichment.failed === 0
         ? workItemTerminal
         : {
             ...workItemTerminal,
+            status: "completed",
+            stage: "completed",
             outcome: "partially-succeeded",
             reason: `${enrichment.failed} 个来源补充未完成；成功工作项已保留`,
           };
@@ -14216,7 +19250,11 @@ export class AssetRefreshWorkflow {
    */
   private async recognizePlannedWorkItem(input: {
     readonly evidence: readonly import("@digital/domain").RecognitionEvidence[];
+    readonly boundaries: readonly RecognitionMaterialBoundary[];
+    readonly materialBoundary?: PlannedMaterialBoundary;
+    readonly observedArtifactAssociations?: readonly ObservedArtifactAssociationCandidate[];
     readonly sourceRecords: readonly SourceRecord[];
+    readonly basisKind?: "observed-evidence" | "source-interpretation";
     readonly beforeInterpret: (
       capability: CapabilityCoordinate,
     ) => void | Promise<void>;
@@ -14225,29 +19263,63 @@ export class AssetRefreshWorkflow {
     ) => void | Promise<void>;
   }): Promise<readonly RecognitionProposal[]> {
     const proposals: RecognitionProposal[] = [];
-    const interpretations = await interpretRetainedSourceRecords({
-      interpreters: this.ports.sourceInterpreters,
-      evidence: input.evidence,
-      sourceRecords: input.sourceRecords,
-      beforeInterpret: input.beforeInterpret,
-    });
+    const interpretations =
+      input.basisKind === "observed-evidence"
+        ? []
+        : await interpretRetainedSourceRecords({
+            interpreters: this.ports.sourceInterpreters,
+            evidence: input.evidence,
+            sourceRecords: input.sourceRecords,
+            beforeInterpret: input.beforeInterpret,
+          });
     const candidateContexts = recognitionCandidateContexts({
       evidence: input.evidence,
       interpretations,
+      ...(input.materialBoundary === undefined
+        ? {}
+        : { materialBoundary: input.materialBoundary }),
     });
     for (const recognizer of this.ports.recognizers) {
       for (const candidateContext of candidateContexts) {
+        if (
+          input.basisKind !== undefined &&
+          candidateContext.basis.kind !== input.basisKind
+        )
+          continue;
         const recognizerInput = frozenRecognitionInput(candidateContext);
         if (!recognizer.canRecognize(recognizerInput)) continue;
         await input.beforeRecognize(recognizer.capability);
         proposals.push(
           validateRecognitionProposalForRecords(
             attachObservedFormatFacts(
-              bindRecognitionProposalToRecognizer(
-                recognizer,
-                recognizer.recognize(recognizerInput),
-                recognizerInput,
-              ),
+              {
+                ...bindRecognitionProposalToRecognizer(
+                  recognizer,
+                  recognizer.recognize(recognizerInput),
+                  recognizerInput,
+                  input.boundaries,
+                ),
+                ...(input.observedArtifactAssociations === undefined
+                  ? {}
+                  : {
+                      observedArtifactAssociations:
+                        input.observedArtifactAssociations.filter(
+                          (candidate) =>
+                            candidate.role === "asset.material-delivered" ||
+                            recognizerInput.evidence.some(
+                              (evidence) =>
+                                evidence.inspection
+                                  ?.observedArtifactReference ===
+                                  candidate.observedArtifactReference &&
+                                ((candidate.role !== "asset.primary-cover" &&
+                                  candidate.role !== "asset.material-image") ||
+                                  evidence.inspection.revision.mediaType.startsWith(
+                                    "image/",
+                                  )),
+                            ),
+                        ),
+                    }),
+              },
               recognizerInput.evidence,
             ),
             input.sourceRecords,
@@ -14308,6 +19380,7 @@ export class AssetRefreshWorkflow {
           "No capability can materialize the selected observed Artifact Part",
         );
       await onCapabilityParticipated?.(acquirer.capability);
+      this.ports.observedRootRegistrations.assertDirectoryOperationLive(scope!);
       const byteSource = await this.openObservedByteSource(
         scope!,
         candidate.observedArtifactReference,
@@ -14320,6 +19393,9 @@ export class AssetRefreshWorkflow {
       } finally {
         await byteSource.close();
       }
+      // 不可取消的获取返回后，继续托管存储效果前复核本目录授权：撤销即停止，
+      // 绝不把已撤销目录取得的字节写入托管存储。
+      this.ports.observedRootRegistrations.assertDirectoryOperationLive(scope!);
       if (
         acquired.candidateId !== candidate.id ||
         mediaTypeEssence(acquired.mediaType) !==
@@ -14544,20 +19620,28 @@ export class AssetRefreshWorkflow {
       ...(input?.subjectIds === undefined
         ? {}
         : { subjectIds: input.subjectIds }),
+      ...(input?.assetLibraryId === undefined
+        ? {}
+        : { assetLibraryId: input.assetLibraryId }),
     });
-    const items = [];
-    for (const accepted of page.items) {
-      const projected = publicAccepted(
-        accepted,
-        [],
-        "asset.ordinary",
-        this.ports.metadataPolicyConfiguration,
-        await this.publicSourceArtifactCandidates(accepted),
-      );
-      if (projected !== undefined) items.push(projected);
-    }
     return {
-      items,
+      items: await Promise.all(
+        page.items.map(async (accepted) => ({
+          ...readEffectiveSubject(
+            { ...accepted, id: accepted.entity.id },
+            this.ports.metadataPolicyConfiguration,
+            input?.informationRequirement?.metadataUsageContext,
+            input?.informationRequirement,
+          ),
+          sourceArtifacts: (
+            await this.publicSourceArtifactCandidates(accepted)
+          ).map(({ role, mediaType, selectionEvidence }) => ({
+            role,
+            mediaType,
+            ...(selectionEvidence === undefined ? {} : { selectionEvidence }),
+          })),
+        })),
+      ),
       ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
     };
   }
@@ -14565,36 +19649,43 @@ export class AssetRefreshWorkflow {
   /** 检索索引使用与详情相同的生效元数据规则；不为检索重新定义来源优先级。 */
   async listCurrentCatalogueIndex(
     metadataProperties: readonly string[],
+    assetLibraryId?: string,
   ): Promise<readonly CurrentCatalogueIndexEntry[]> {
     const queries = this.ports.currentCatalogueQueries;
     if (queries === undefined)
       throw new Error("Current Catalogue index query is not configured");
-    const facts = await queries.listCurrentCatalogueIndex(metadataProperties);
+    const library =
+      assetLibraryId === undefined
+        ? undefined
+        : await this.ports.assetLibraries?.get(assetLibraryId);
+    if (assetLibraryId !== undefined && library === undefined)
+      throw new Error("资产库不存在或已移除");
+    const facts = await queries.listCurrentCatalogueIndex(
+      metadataProperties,
+      library?.rootIds,
+      assetLibraryId,
+    );
     return facts.map((item) => ({
-      entity: item.entity,
-      additionOrder: item.additionOrder,
-      sourceAssociations: item.sourceAssociations.map(
-        ({ sourceIdentity, nativeAddress }) => ({
-          sourceIdentity,
-          nativeAddress,
-        }),
-      ),
-      ...(item.recognitionSourceAssociation === undefined
-        ? {}
-        : {
-            recognitionSourceAssociation: {
-              sourceIdentity: item.recognitionSourceAssociation.sourceIdentity,
-              nativeAddress: item.recognitionSourceAssociation.nativeAddress,
-            },
-          }),
-      effectiveMetadata: effectiveMetadataForAccepted(
-        item,
-        [],
-        "asset.ordinary",
+      ...readEffectiveSubject(
+        {
+          ...item,
+          id: item.entity.id,
+          artifactAssociations: [],
+          artifactRevisions: [],
+          blobs: [],
+          locations: [],
+        },
         this.ports.metadataPolicyConfiguration,
-      ).values,
-      currentRelatedEntities: item.currentRelatedEntities ?? [],
-      relationships: item.relationships ?? [],
+        "asset.ordinary",
+        {
+          metadata: metadataProperties.map((property) => ({
+            property,
+            necessity: "optional",
+          })),
+          artifactRoles: [],
+        },
+      ),
+      additionOrder: item.additionOrder,
     }));
   }
 
@@ -14613,23 +19704,18 @@ export class AssetRefreshWorkflow {
     );
   }
 
-  /** 仅供兼容的完整当前 Catalogue 投影。 */
-  async listCurrentCatalogue(): Promise<
-    readonly NonNullable<AssetRefreshInspection["accepted"]>[]
-  > {
-    const current =
-      (await this.ports.currentCatalogueQueries?.listCurrentCatalogue()) ?? [];
-    const result: NonNullable<AssetRefreshInspection["accepted"]>[] = [];
-    for (const accepted of current) {
-      const item = publicAccepted(
-        accepted,
-        [],
-        "asset.ordinary",
-        this.ports.metadataPolicyConfiguration,
-        await this.publicSourceArtifactCandidates(accepted),
-      );
-      if (item !== undefined) result.push(item);
-    }
+  /** 完整读取仍复用有界普通读取；不再暴露检查 DTO。 */
+  async listCurrentCatalogue(): Promise<readonly EffectiveSubjectRead[]> {
+    const result: EffectiveSubjectRead[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.listCurrentCataloguePage({
+        limit: maximumBrowsePageLimit,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      result.push(...page.items);
+      cursor = page.nextCursor;
+    } while (cursor !== undefined);
     return result;
   }
 
@@ -15523,6 +20609,29 @@ export class AssetRefreshWorkflow {
       return;
     }
     coordinated = enrichment.execution;
+    // 与初次刷新一致：补充成功提交后把同一主体的 failed 提升为 completed，让续跑汇总
+    // 据已提交结果诚实计数，混合成功／失败时保留成功范围。
+    {
+      const enrichedSubjectIds = new Set(
+        (coordinated.sourceEnrichments ?? [])
+          .filter((checkpoint) => checkpoint.stage === "applied")
+          .map((checkpoint) => checkpoint.subjectId),
+      );
+      if (enrichedSubjectIds.size > 0)
+        coordinated = {
+          ...coordinated,
+          targetDispositions: coordinated.targetDispositions!.map((target) => {
+            if (
+              target.target.kind !== "subject" ||
+              target.status !== "failed" ||
+              !enrichedSubjectIds.has(target.target.subjectId)
+            )
+              return target;
+            const { reason: _reason, ...promoted } = target;
+            return { ...promoted, status: "completed" as const };
+          }),
+        };
+    }
     const completed =
       coordinated.targetDispositions?.filter(
         (target) =>
@@ -15649,6 +20758,8 @@ export class AssetRefreshWorkflow {
     if (preview.status !== "awaiting-confirmation") {
       return preview;
     }
+    if (preview.facts === undefined)
+      throw new Error("此预演缺少冻结的生效读取结果，请重新形成预演");
     if (preview.blockingConditions.length > 0) {
       throw new Error("存在阻塞条件，不能应用变更影响预演");
     }
@@ -15690,6 +20801,55 @@ export class AssetRefreshWorkflow {
       });
       return await this.requireDurableChangeImpactPreview(preview.id);
     }
+    if (preview.change.kind === "recognition-scope-amendment") {
+      const change = preview.change;
+      const plan: RecognitionScopeAmendmentPlan = {
+        successorDecision: {
+          id: change.successorDecisionId,
+          proposalId: change.proposal.id,
+          assetId: preview.assetId,
+          boundaries: change.proposal.boundaries,
+          acceptedRuleResults: change.proposal.ruleResults,
+        },
+        supersession: {
+          id: id("recognition-decision-supersession"),
+          predecessorDecisionId: change.predecessorDecisionId,
+          successorDecisionId: change.successorDecisionId,
+        },
+        scopeAddress: change.scopeAddress,
+      };
+      await this.ports.changeImpactCommands.applyRecognitionScopeAmendmentPreview(
+        { preview, plan },
+      );
+      return await this.requireDurableChangeImpactPreview(preview.id);
+    }
+    if (preview.change.kind === "artifact-role-decision") {
+      const queries = this.ports.informationSubjectFactsQueries;
+      const [subject] =
+        queries === undefined
+          ? []
+          : await queries.readCurrentInformationSubjectFacts({
+              subjectIds: [preview.assetId],
+            });
+      // 确认只按同一规则重算候选指纹；主体事实读不到时交事务置为过期，绝不补齐。
+      const currentCandidateBaseline =
+        subject === undefined
+          ? null
+          : JSON.stringify(
+              artifactRoleCandidates(
+                subject.basis,
+                preview.change.decision.target,
+                preview.change.decision.role,
+              ),
+            );
+      await this.ports.changeImpactCommands.applyArtifactRoleDecisionPreview({
+        preview,
+        confirmedBy: input.confirmedBy,
+        currentCandidateBaseline,
+        policyVersion: this.compatibility().policyVersion,
+      });
+      return await this.requireDurableChangeImpactPreview(preview.id);
+    }
     const proposal = preview.change.proposal;
     if (preview.projected.recognitionDecisionId === undefined)
       throw new Error("身份更正预演缺少后继识别决策");
@@ -15697,6 +20857,7 @@ export class AssetRefreshWorkflow {
       id: preview.projected.recognitionDecisionId,
       proposalId: proposal.id,
       assetId: preview.assetId,
+      boundaries: proposal.boundaries,
       acceptedRuleResults: proposal.ruleResults,
     };
     const projectedRecognitionSourceAssociation =
@@ -15903,113 +21064,115 @@ export class AssetRefreshWorkflow {
         currentSourceRecordIds,
       ),
     );
-    if (
-      projectedArtifactGraph.artifactAssociations.filter(
-        ({ role }) => role === "asset.primary-cover",
-      ).length > 1
-    )
-      blockingConditions.push(
-        "现有主封面仍有独立有效支持，不能由本次身份更正隐式替换",
-      );
-    const currentPrimaryCoverArtifactId =
-      input.current.artifactAssociations.find(
-        (association) => association.role === "asset.primary-cover",
-      )?.artifactId;
-    return {
-      execution,
-      preview: {
-        version: "change-impact-preview/2",
-        id: id("change-impact-preview"),
-        executionId: execution.id,
-        assetId: input.current.entity.id,
+    // 图片候选随支持保留，生效角色在共同读取中裁决。
+    const preview: ChangeImpactPreview = {
+      version: "change-impact-preview/2",
+      id: id("change-impact-preview"),
+      executionId: execution.id,
+      assetId: input.current.entity.id,
+      proposal: input.proposal,
+      change: {
+        kind: "recognition-supersession",
         proposal: input.proposal,
-        change: {
-          kind: "recognition-supersession",
-          proposal: input.proposal,
-        },
-        evidenceComparison: {
-          observed:
-            input.proposal.basis.kind === "source-interpretation"
-              ? []
-              : input.proposal.basis.evidence,
-          manual:
-            input.proposal.basis.kind === "manual-boundary"
-              ? input.proposal.basis.evidence
-              : [],
-          sourceCandidates:
-            proposedInterpretation === undefined
-              ? []
-              : [
-                  {
-                    outcome: "accepted",
-                    sourceIdentity: proposedInterpretation.sourceIdentity,
-                    nativeAddress: proposedInterpretation.sourceAddress,
-                    sourceRecordIds: proposedInterpretation.sourceRecordIds,
-                    ruleResults: input.proposal.ruleResults,
-                    explanation: "识别提议中的来源解释",
-                  },
-                ],
-          conflicts: [],
-        },
-        baselines: [
-          ...(currentRecognitionAssociation === undefined
+      },
+      evidenceComparison: {
+        observed:
+          input.proposal.basis.kind === "source-interpretation"
+            ? []
+            : input.proposal.basis.evidence,
+        manual:
+          input.proposal.basis.kind === "manual-boundary"
+            ? input.proposal.basis.evidence
+            : [],
+        sourceCandidates:
+          proposedInterpretation === undefined
             ? []
             : [
                 {
-                  key: "source-association",
-                  value: currentRecognitionAssociation.id,
+                  outcome: "accepted",
+                  sourceIdentity: proposedInterpretation.sourceIdentity,
+                  nativeAddress: proposedInterpretation.sourceAddress,
+                  sourceRecordIds: proposedInterpretation.sourceRecordIds,
+                  ruleResults: input.proposal.ruleResults,
+                  explanation: "识别提议中的来源解释",
                 },
-              ]),
-          {
-            key: "recognition-decision",
-            value: input.current.recognitionDecision.id,
-          },
-          {
-            key: "source-records",
-            value: (currentInterpretation?.sourceRecordIds ?? [])
-              .toSorted()
-              .join(","),
-          },
-          { key: "complete-current-projection", value: fullBaseline },
-        ],
-        current: {
-          recognitionState: "recognized",
-          recognitionDecisionId: input.current.recognitionDecision.id,
-          sourceAssociations: input.current.sourceAssociations.map(
-            ({ sourceIdentity, nativeAddress }) => ({
-              sourceIdentity,
-              nativeAddress,
-            }),
-          ),
-          ...(currentRecognitionAssociation === undefined
-            ? {}
-            : {
-                recognitionSourceAssociation: {
-                  sourceIdentity: currentRecognitionAssociation.sourceIdentity,
-                  nativeAddress: currentRecognitionAssociation.nativeAddress,
-                },
-              }),
-          metadata: input.current.metadata,
-          entities: input.current.entities ?? [],
-          entityMentions: input.current.entityMentions ?? [],
-          entityResolutionDecisions:
-            input.current.entityResolutionDecisions ?? [],
-          relationships: input.current.relationships ?? [],
-          artifacts: input.current.artifacts,
-          locations: input.current.locations,
-          blobs: input.current.blobs,
-          artifactRevisions: input.current.artifactRevisions,
-          artifactAssociations: input.current.artifactAssociations,
-          ...(currentPrimaryCoverArtifactId === undefined
-            ? {}
-            : { primaryCoverArtifactId: currentPrimaryCoverArtifactId }),
+              ],
+        conflicts: [],
+      },
+      baselines: [
+        ...(currentRecognitionAssociation === undefined
+          ? []
+          : [
+              {
+                key: "source-association",
+                value: currentRecognitionAssociation.id,
+              },
+            ]),
+        {
+          key: "recognition-decision",
+          value: input.current.recognitionDecision.id,
         },
-        projected: {
-          recognitionState: "recognized",
-          recognitionDecisionId: successorRecognitionDecisionId,
-          sourceAssociations:
-            proposedInterpretation === undefined
-              ? input.current.sourceAssociations
+        {
+          key: "source-records",
+          value: (currentInterpretation?.sourceRecordIds ?? [])
+            .toSorted()
+            .join(","),
+        },
+        { key: "complete-current-projection", value: fullBaseline },
+      ],
+      current: {
+        ...assetStateProjection(input.current),
+        recognitionState: "recognized",
+        recognitionDecisionId: input.current.recognitionDecision.id,
+        sourceAssociations: input.current.sourceAssociations.map(
+          ({ sourceIdentity, nativeAddress }) => ({
+            sourceIdentity,
+            nativeAddress,
+          }),
+        ),
+        ...(currentRecognitionAssociation === undefined
+          ? {}
+          : {
+              recognitionSourceAssociation: {
+                sourceIdentity: currentRecognitionAssociation.sourceIdentity,
+                nativeAddress: currentRecognitionAssociation.nativeAddress,
+              },
+            }),
+        metadata: input.current.metadata,
+        entities: input.current.entities ?? [],
+        entityMentions: input.current.entityMentions ?? [],
+        entityResolutionDecisions:
+          input.current.entityResolutionDecisions ?? [],
+        relationships: input.current.relationships ?? [],
+        artifacts: input.current.artifacts,
+        locations: input.current.locations,
+        blobs: input.current.blobs,
+        artifactRevisions: input.current.artifactRevisions,
+        artifactAssociations: input.current.artifactAssociations,
+      },
+      projected: {
+        readBasis: {
+          ...assetStateProjection(input.current).readBasis!,
+          sourceAssociations: [
+            ...input.current.sourceAssociations,
+            ...projectedRecognition.sourceAssociations,
+          ],
+        },
+        recognitionState: "recognized",
+        recognitionDecisionId: successorRecognitionDecisionId,
+        sourceAssociations:
+          proposedInterpretation === undefined
+            ? input.current.sourceAssociations
+                .filter(
+                  (association) =>
+                    association.id !== currentRecognitionAssociation?.id,
+                )
+                .map(({ sourceIdentity, nativeAddress }) => ({
+                  sourceIdentity,
+                  nativeAddress,
+                }))
+            : [
+                ...input.current.sourceAssociations
                   .filter(
                     (association) =>
                       association.id !== currentRecognitionAssociation?.id,
@@ -16017,65 +21180,219 @@ export class AssetRefreshWorkflow {
                   .map(({ sourceIdentity, nativeAddress }) => ({
                     sourceIdentity,
                     nativeAddress,
-                  }))
-              : [
-                  ...input.current.sourceAssociations
-                    .filter(
-                      (association) =>
-                        association.id !== currentRecognitionAssociation?.id,
-                    )
-                    .map(({ sourceIdentity, nativeAddress }) => ({
-                      sourceIdentity,
-                      nativeAddress,
-                    })),
-                  {
-                    sourceIdentity: proposedInterpretation.sourceIdentity,
-                    nativeAddress: proposedInterpretation.sourceAddress,
-                  },
-                ],
-          ...(proposedInterpretation === undefined
-            ? {}
-            : {
-                recognitionSourceAssociation: {
+                  })),
+                {
                   sourceIdentity: proposedInterpretation.sourceIdentity,
                   nativeAddress: proposedInterpretation.sourceAddress,
                 },
-              }),
-          metadata: [
-            ...retainedMetadata,
-            ...projectedRecognitionFacts.metadata,
-          ],
-          entities: [
-            ...retainedEntities,
-            ...projectedRecognitionFacts.entities,
-          ],
-          entityMentions: [
-            ...retainedMentions,
-            ...projectedRecognitionFacts.entityMentions,
-          ],
-          entityResolutionDecisions: [
-            ...retainedResolutions,
-            ...projectedRecognitionFacts.entityResolutionDecisions,
-          ],
-          relationships: [
-            ...retainedRelationships,
-            ...projectedRecognitionFacts.relationships,
-          ],
-          ...projectedArtifactGraph,
-        },
-        ...(projectedRecognition.observedEntityGraphs === undefined
+              ],
+        ...(proposedInterpretation === undefined
           ? {}
           : {
-              projectedObservedEntityGraphs:
-                projectedRecognition.observedEntityGraphs,
+              recognitionSourceAssociation: {
+                sourceIdentity: proposedInterpretation.sourceIdentity,
+                nativeAddress: proposedInterpretation.sourceAddress,
+              },
             }),
-        blockingConditions,
-        status: "awaiting-confirmation",
+        metadata: [...retainedMetadata, ...projectedRecognitionFacts.metadata],
+        entities: [...retainedEntities, ...projectedRecognitionFacts.entities],
+        entityMentions: [
+          ...retainedMentions,
+          ...projectedRecognitionFacts.entityMentions,
+        ],
+        entityResolutionDecisions: [
+          ...retainedResolutions,
+          ...projectedRecognitionFacts.entityResolutionDecisions,
+        ],
+        relationships: [
+          ...retainedRelationships,
+          ...projectedRecognitionFacts.relationships,
+        ],
+        ...projectedArtifactGraph,
       },
+      ...(projectedRecognition.observedEntityGraphs === undefined
+        ? {}
+        : {
+            projectedObservedEntityGraphs:
+              projectedRecognition.observedEntityGraphs,
+          }),
+      blockingConditions,
+      requestContext: execution.selection.informationRequirement,
+      status: "awaiting-confirmation",
+    };
+    return {
+      execution,
+      preview: freezeChangeImpactFactReads(
+        preview,
+        this.ports.metadataPolicyConfiguration,
+        input.sourceRecords,
+      ),
     };
   }
 
   /** 继续同一个兼容的非终态执行；这不是重试。 */
+  /**
+   * 下一次进入的耐久分类：只读取已提交的证据，判定等待、可继续、只耐久收尾或明确中断。
+   * 本判定绝不打开 I/O 权威、领取声明或产生效果；当前权威始终由 `resume` 在任何一个效果之前
+   * 逐条复核。因此它只决定启动能否立即就绪，既不放宽核心完整性，也不借今天的库配置补旧边界。
+   */
+  private async classifyRecoveryEntry(execution: WorkflowExecution): Promise<
+    | {
+        readonly kind: "scan-parent";
+        readonly wrapUpOnly: boolean;
+      }
+    | {
+        readonly kind: "library-scoped";
+        readonly snapshot: AssetLibrarySnapshot;
+      }
+    | { readonly kind: "waiting"; readonly projection: "public" | "resumed" }
+    | {
+        readonly kind: "continuable";
+        readonly decoded: AssetRefreshWorkflowInputDecodeResult;
+      }
+    | {
+        readonly kind: "interrupted";
+        readonly decoded: AssetRefreshWorkflowInputDecodeResult;
+        readonly reason: string;
+      }
+  > {
+    const decode = (): AssetRefreshWorkflowInputDecodeResult =>
+      execution.workflowInputInvalid !== undefined
+        ? {
+            valid: false as const,
+            reason: execution.workflowInputInvalid.reason,
+          }
+        : execution.workflowInput === undefined
+          ? {
+              valid: false as const,
+              reason: "刷新记录缺少版本化输入，无法安全继续；请重新开始刷新",
+            }
+          : decodeAssetRefreshWorkflowInput(execution.workflowInput);
+    if (execution.operationKind === "scan-asset-library") {
+      const decoded = decode();
+      if (!decoded.valid)
+        return { kind: "interrupted", decoded, reason: decoded.reason };
+      const plan = decoded.input.libraryScan;
+      const snapshot = decoded.input.assetLibrary;
+      if (plan === undefined || snapshot === undefined)
+        return {
+          kind: "interrupted",
+          decoded,
+          reason: "库扫描记录缺少冻结的目录计划，无法安全继续；请重新开始刷新",
+        };
+      const ledger = await this.ports.executionQueries.inspectLibraryScan(
+        execution.id,
+      );
+      if (ledger === undefined)
+        return {
+          kind: "interrupted",
+          decoded,
+          reason: "库扫描的目录账本无法读取，无法安全继续；请重新开始刷新",
+        };
+      // 全部目录都已结算时，父只剩汇总与登记，不会再产生任何观察效果。
+      return {
+        kind: "scan-parent",
+        wrapUpOnly: ledger.directories.every(
+          (entry) => entry.stage === "settled" || entry.stage === "cancelled",
+        ),
+      };
+    }
+    const librarySnapshot = execution.workflowInput?.assetLibrary;
+    if (
+      librarySnapshot !== undefined &&
+      this.ports.assetLibrarySnapshot === undefined
+    ) {
+      const decoded = decodeAssetLibrarySnapshot(librarySnapshot);
+      if (decoded !== undefined)
+        return { kind: "library-scoped", snapshot: decoded };
+    }
+    const confirmationPreview =
+      await this.ports.changeImpactQueries.inspectChangeImpactPreviewForExecution(
+        execution.id,
+      );
+    if (
+      confirmationPreview?.version === "change-impact-preview/2" &&
+      confirmationPreview.status === "awaiting-confirmation"
+    )
+      return { kind: "waiting", projection: "resumed" };
+    if (
+      execution.workflowInput?.version ===
+        "source-association-decision-input/1" &&
+      execution.sourceAssociationDecision?.state === "awaiting-selection"
+    )
+      return { kind: "waiting", projection: "public" };
+    const decoded = decode();
+    const durableRetryIntent = decoded.valid
+      ? decoded.input.sourceEnrichmentRetry
+      : undefined;
+    // 首来源检查点之前中断的新重试：能力坐标尚未冻结，续跑安全依据是耐久精确意图与创建时
+    // 重取的活动库配置，而非任何冻结参与集；因此这条路径跳过面向冻结范围的恢复兼容校验。
+    const durableRetryBeforeFirstCheckpoint =
+      durableRetryIntent !== undefined &&
+      execution.workItems === undefined &&
+      execution.acceptedAssetId !== undefined &&
+      (execution.sourceEnrichments?.length ?? 0) === 0;
+    let interruptionReason = decoded.valid
+      ? this.legacyFilesystemScopeRecoveryReason(execution)
+      : decoded.reason;
+    // 配置版本变化不终结已创建的执行：它沿自己的冻结计划继续（ADR-0068），新的耐久创建
+    // 才由持久化在同一事务内验证当前配置。
+    if (
+      execution.dispositions.some(
+        (disposition) => disposition.key === "manual-boundary",
+      )
+    )
+      interruptionReason = "人工确认尚未提交，请回到待添加内容重新确认";
+    if (
+      interruptionReason === undefined &&
+      execution.workItems === undefined &&
+      !(
+        (execution.stage === "recognition" &&
+          execution.snapshot?.complete === true) ||
+        // 其 workflowInput 已耐久版本化保存可严格解码的精确意图（主体／来源／精确地址／
+        // 必要非秘密规范输入），本身就是可安全续跑的持久依据。
+        durableRetryBeforeFirstCheckpoint
+      ) &&
+      execution.stage !== "source-records-retained" &&
+      execution.stage !== "source-artifacts-acquired" &&
+      execution.stage !== "source-artifacts-stored" &&
+      execution.stage !== "cover-acquired" &&
+      execution.stage !== "cover-stored"
+    )
+      interruptionReason = "刷新记录尚未到达可继续的持久检查点";
+    if (
+      interruptionReason === undefined &&
+      decoded.valid &&
+      !durableRetryBeforeFirstCheckpoint
+    ) {
+      try {
+        await this.assertResumeCompatibility(
+          execution.compatibility,
+          decoded.input.configurationReferences,
+          decoded.input.observedRoots ?? [],
+          ...(decoded.input.assetLibrary === undefined
+            ? []
+            : [
+                {
+                  assetLibraryId: decoded.input.assetLibrary.id,
+                  ...(decoded.input.directoryAuthorizations === undefined
+                    ? {}
+                    : {
+                        directoryAuthorizations:
+                          decoded.input.directoryAuthorizations,
+                      }),
+                },
+              ]),
+        );
+      } catch (error) {
+        interruptionReason = errorMessage(error);
+      }
+    }
+    if (interruptionReason !== undefined)
+      return { kind: "interrupted", decoded, reason: interruptionReason };
+    return { kind: "continuable", decoded };
+  }
+
   async resume(input: {
     readonly executionId: string;
     readonly onProgress?: ((message: string) => void) | undefined;
@@ -16093,74 +21410,32 @@ export class AssetRefreshWorkflow {
     if (inspection.execution.status !== "running") {
       throw new Error("只有未完成的刷新记录可以继续");
     }
-    const confirmationPreview =
-      await this.ports.changeImpactQueries.inspectChangeImpactPreviewForExecution(
-        inspection.execution.id,
+    const classification = await this.classifyRecoveryEntry(
+      inspection.execution,
+    );
+    // 库扫描父有专属续跑：读取耐久计划、冻结权威与目录账本继续同一父，绝不落入按今日
+    // 配置判定的通用逐库恢复，也不从今日 scanCandidates 重建。那份续跑在任何目录写入之前
+    // 先领取与其他恢复一致的耐久单持有者权利，竞争的一路因此零账本写入。
+    if (classification.kind === "scan-parent")
+      return await this.resumeAssetLibraryScan(inspection.execution, input);
+    if (classification.kind === "library-scoped")
+      return await this.workflowForLibrary(classification.snapshot).resume(
+        input,
       );
-    if (
-      confirmationPreview?.version === "change-impact-preview/2" &&
-      confirmationPreview.status === "awaiting-confirmation"
-    ) {
-      // 所有 V2 确认等待都不持有外部资源；重启只恢复同一耐久等待，不能把执行改写为中断。
-      return await this.inspectResumedPublic(inspection.execution.id);
-    }
-    if (
-      inspection.execution.workflowInput?.version ===
-        "source-association-decision-input/1" &&
-      inspection.execution.sourceAssociationDecision?.state ===
-        "awaiting-selection"
-    ) {
-      // 等待态不持有外部资源；重新打开只保留耐久用户决定，不重放或终结它。
-      return await this.inspectPublic(inspection.execution.id);
-    }
-    const decodedInput =
-      inspection.execution.workflowInputInvalid !== undefined
-        ? {
-            valid: false as const,
-            reason: inspection.execution.workflowInputInvalid.reason,
-          }
-        : inspection.execution.workflowInput === undefined
-          ? {
-              valid: false as const,
-              reason: "刷新记录缺少版本化输入，无法安全继续；请重新开始刷新",
-            }
-          : decodeAssetRefreshWorkflowInput(inspection.execution.workflowInput);
+    if (classification.kind === "waiting")
+      // 等待态不持有外部资源；重新打开只保留耐久用户决定或耐久等待，不重放也不终结它。
+      return classification.projection === "public"
+        ? await this.inspectPublic(inspection.execution.id)
+        : await this.inspectResumedPublic(inspection.execution.id);
+    const decodedInput = classification.decoded;
+    const durableRetryIntent = decodedInput.valid
+      ? decodedInput.input.sourceEnrichmentRetry
+      : undefined;
     const hasExplicitWorkItems = inspection.execution.workItems !== undefined;
-    const hasDurableObservationCheckpoint =
-      inspection.execution.stage === "recognition" &&
-      inspection.execution.snapshot?.complete === true;
-    let interruptionReason: string | undefined = decodedInput.valid
-      ? this.legacyFilesystemScopeRecoveryReason(inspection.execution)
-      : decodedInput.reason;
-    if (
-      inspection.execution.dispositions.some(
-        (disposition) => disposition.key === "manual-boundary",
-      )
-    )
-      interruptionReason = "人工确认尚未提交，请回到待添加内容重新确认";
-    if (
-      interruptionReason === undefined &&
-      !hasExplicitWorkItems &&
-      !hasDurableObservationCheckpoint &&
-      inspection.execution.stage !== "source-records-retained" &&
-      inspection.execution.stage !== "source-artifacts-acquired" &&
-      inspection.execution.stage !== "source-artifacts-stored" &&
-      inspection.execution.stage !== "cover-acquired" &&
-      inspection.execution.stage !== "cover-stored"
-    ) {
-      interruptionReason = "刷新记录尚未到达可继续的持久检查点";
-    }
-    if (interruptionReason === undefined && decodedInput.valid) {
-      try {
-        await this.assertResumeCompatibility(
-          inspection.execution.compatibility,
-          decodedInput.input.configurationReferences,
-          decodedInput.input.observedRoots ?? [],
-        );
-      } catch (error) {
-        interruptionReason = errorMessage(error);
-      }
-    }
+    // 缺边界、缺冻结配置、不兼容能力或缺耐久检查点都在同一份判定里给出明确中断原因；耐久
+    // 终结在领取声明之后进行，已提交结果与原始载荷一律保留。
+    let interruptionReason: string | undefined =
+      classification.kind === "interrupted" ? classification.reason : undefined;
     let resumedScope: BoundObservedScope | undefined;
     if (interruptionReason === undefined && decodedInput.valid) {
       try {
@@ -16188,10 +21463,9 @@ export class AssetRefreshWorkflow {
       ? decodedInput.input.acceptTrusted
       : false;
     const claimToken = randomUUID();
-    const leaseMilliseconds = 30_000;
     const leaseExpiry = () =>
       new Date(
-        this.resumeClock.now().getTime() + leaseMilliseconds,
+        this.resumeClock.now().getTime() + resumeLeaseMilliseconds,
       ).toISOString();
     let disposition: "claimed" | "terminal" | "busy";
     try {
@@ -16228,7 +21502,7 @@ export class AssetRefreshWorkflow {
         token: claimToken,
         now: current.toISOString(),
         expiresAt: new Date(
-          current.getTime() + leaseMilliseconds,
+          current.getTime() + resumeLeaseMilliseconds,
         ).toISOString(),
       });
       if (!renewed) {
@@ -16245,7 +21519,7 @@ export class AssetRefreshWorkflow {
         .finally(() => {
           heartbeat = undefined;
         });
-    }, leaseMilliseconds / 3);
+    }, resumeLeaseMilliseconds / 3);
     try {
       notifyDurableCheckpoint(input, inspection.execution);
       try {
@@ -16331,6 +21605,22 @@ export class AssetRefreshWorkflow {
           await this.transition(resumed, finished, mutationClaim());
           return await this.inspectResumedPublic(finished.id);
         }
+        const retryIntent = durableRetryIntent;
+        if (
+          !hasExplicitWorkItems &&
+          retryIntent !== undefined &&
+          inspection.execution.acceptedAssetId !== undefined &&
+          (inspection.execution.sourceEnrichments?.length ?? 0) === 0
+        ) {
+          // 首来源检查点之前中断的新重试：沿同新 ID 与同精确操作续跑，绝不退回普通自动补充，
+          // 也不重开旧失败执行或以当前候选替换显式输入。
+          return await this.resumeSourceEnrichmentRetry(
+            inspection.execution,
+            retryIntent,
+            input,
+            mutationClaim,
+          );
+        }
         if (
           !hasExplicitWorkItems &&
           inspection.execution.acceptedAssetId !== undefined
@@ -16415,6 +21705,33 @@ export class AssetRefreshWorkflow {
           ? inspection.execution.workItems.map((item) => ({
               key: item.key,
               relativePaths: item.relativePaths,
+              ...(item.boundaries === undefined
+                ? {}
+                : { boundaries: item.boundaries }),
+              ...(item.boundaryBaseline === undefined
+                ? {}
+                : { boundaryBaseline: item.boundaryBaseline }),
+              ...(item.retainedAssetId === undefined
+                ? {}
+                : { retainedAssetId: item.retainedAssetId }),
+              ...(item.retainedDecisionId === undefined
+                ? {}
+                : { retainedDecisionId: item.retainedDecisionId }),
+              ...(item.reuseAcceptedBoundary === undefined
+                ? {}
+                : { reuseAcceptedBoundary: item.reuseAcceptedBoundary }),
+              ...(item.boundaryConflict === undefined
+                ? {}
+                : { boundaryConflict: item.boundaryConflict }),
+              ...(item.materialBoundary === undefined
+                ? {}
+                : { materialBoundary: item.materialBoundary }),
+              ...(item.observedArtifactAssociations === undefined
+                ? {}
+                : {
+                    observedArtifactAssociations:
+                      item.observedArtifactAssociations,
+                  }),
               ...(item.observedArtifactBoundary === undefined
                 ? {}
                 : { observedArtifactBoundary: item.observedArtifactBoundary }),
@@ -16423,6 +21740,12 @@ export class AssetRefreshWorkflow {
                 : {
                     observedArtifactBoundaryProducer:
                       item.observedArtifactBoundaryProducer,
+                  }),
+              ...(item.independentIdentityDeclaredBy === undefined
+                ? {}
+                : {
+                    independentIdentityDeclaredBy:
+                      item.independentIdentityDeclaredBy,
                   }),
               evidence: item.planningEvidence!,
             }))
@@ -16627,6 +21950,14 @@ export class AssetRefreshWorkflow {
                       candidate,
                     ),
                     requireCheckpointStore: true,
+                    ...(resumedScope === undefined
+                      ? {}
+                      : {
+                          assertEffectLive: () =>
+                            this.ports.observedRootRegistrations.assertDirectoryOperationLive(
+                              resumedScope!,
+                            ),
+                        }),
                     beforeAcquire: async (capability) => {
                       await retainResumedCapabilities([capability]);
                       checkpointExecution = resumedExecution;
@@ -16694,6 +22025,12 @@ export class AssetRefreshWorkflow {
               notifyDurableCheckpoint(input, acquiredExecution, false);
             }
             await renew();
+            // 恢复路径的托管 store 是阶段转换前的耐久最终效果：撤销落在已发获取期间时，
+            // 不得把已获取来源写入托管位置，故在真正 store 之前用重绑的 resumedScope 复核。
+            if (resumedScope !== undefined)
+              this.ports.observedRootRegistrations.assertDirectoryOperationLive(
+                resumedScope,
+              );
             const managed = await this.sourceArtifactWork.store({
               acquisition,
               ...(staged === undefined ? {} : { staged }),
@@ -16971,7 +22308,7 @@ export class AssetRefreshWorkflow {
       token,
       now,
       expiresAt: new Date(
-        this.resumeClock.now().getTime() + 30_000,
+        this.resumeClock.now().getTime() + resumeLeaseMilliseconds,
       ).toISOString(),
     });
     if (disposition === "busy") throw new ResumeExecutionBusyError();
@@ -17093,6 +22430,11 @@ export class AssetRefreshWorkflow {
           );
           const proposal: RecognitionProposal = {
             id: id("recognition-proposal"),
+            boundaries: bindRecognitionMaterialBoundaries({
+              snapshot: selectedSnapshot,
+              boundRoot: bound.scope.root,
+              relativePaths: checkpoint.input.relativePaths,
+            }),
             basis: {
               kind: "manual-boundary",
               proposedBy: checkpoint.input.initiatedBy,
@@ -17194,48 +22536,172 @@ export class AssetRefreshWorkflow {
       )
         continue;
       lifecycle?.onCheckpoint?.();
-      const material = execution.materialAssociation;
-      if (material?.state === "awaiting-confirmation") {
-        lifecycle?.onWaitingExecution?.(execution.id);
+      const inspection = await this.continueDiscoveredExecution(
+        execution,
+        lifecycle,
+      );
+      if (inspection !== undefined) recovered.push(inspection);
+    }
+    return recovered;
+  }
+
+  /**
+   * 启动的第一遍：逐条按下一转换所需的原证据判定等待、可继续、只耐久收尾或明确中断，并给出
+   * 简体中文原因与下一步动作。这一步不领取声明、不打开权威也不产生效果，因此宿主可以在它完成
+   * 后立即就绪，让被接纳的执行沿原 ID 在自己的监督下继续。
+   *
+   * 恢复只对崩溃遗留的工作说话。`within` 给出既有的启动恢复集合时，本进程之后正常调用新建的
+   * 活跃执行一律不在范围内；仍挂在未终结扫描父账本下的派生子也一律不由这里接管——父的续跑链
+   * 会按耐久子 ID 自己继续或如实中断它们，第二个 owner 只会与父抢同一份终结基线。
+   */
+  async classifyRunningExecutions(
+    exclude?: ReadonlySet<string>,
+    within?: ReadonlySet<string>,
+  ): Promise<readonly RecoveryClassification[]> {
+    const running = await this.ports.executionQueries.listRunningExecutions();
+    const items: RecoveryClassification[] = [];
+    const supervisedParents = new Set(
+      running
+        .filter((execution) => execution.operationKind === "scan-asset-library")
+        .map((execution) => execution.id),
+    );
+    for (const execution of running) {
+      if (exclude?.has(execution.id) === true) continue;
+      if (within !== undefined && !within.has(execution.id)) continue;
+      const supervisedBy = execution.workflowInput?.parentExecutionId;
+      if (supervisedBy !== undefined && supervisedParents.has(supervisedBy))
+        continue;
+      const subject = await this.recoverySubjectLabel(execution);
+      if (execution.materialAssociation !== undefined) {
+        items.push(
+          execution.materialAssociation.state === "awaiting-confirmation"
+            ? {
+                executionId: execution.id,
+                category: "waiting",
+                subject,
+                nextAction: "请回到这条记录完成确认，它会原样继续",
+              }
+            : {
+                executionId: execution.id,
+                category: "continuable",
+                subject,
+                nextAction: "无需操作，这次启动会继续这条记录",
+              },
+        );
         continue;
       }
-      if (material !== undefined) {
-        const inspection = await this.recoverObservedMaterialAssociation(
-          execution,
-          lifecycle?.onCheckpoint,
-        );
-        if (inspection !== undefined) recovered.push(inspection);
+      const classification = await this.classifyRecoveryEntry(execution);
+      if (classification.kind === "waiting") {
+        items.push({
+          executionId: execution.id,
+          category: "waiting",
+          subject,
+          nextAction: "请回到这条记录完成确认，它会原样继续",
+        });
         continue;
       }
-      try {
-        recovered.push(
-          await this.resume({
-            executionId: execution.id,
-            onHostCheckpoint: lifecycle?.onCheckpoint,
-          }),
-        );
-      } catch (error) {
-        // 保留且未过期的声明既不是已恢复、等待审阅，也不是终态。它尚未分类时，不得报告
-        // 启动就绪。因此单进程宿主保持准入屏障关闭，直到操作方或声明持有者解决它。
-        if (error instanceof ResumeExecutionBusyError) {
-          const current = await this.ports.executionQueries.inspectExecution(
-            execution.id,
-          );
-          if (current?.execution.status === "running") {
-            lifecycle?.onWaitingExecution?.(execution.id);
-          }
-          continue;
-        }
-        // 竞争持有者也可能在启动扫描与声明尝试之间将其终态化。`resume()` 为明确调用方
-        // 保留公开错误，但启动恢复把现在已终态的行视为已经协调，而不是让整个宿主失败。
+      if (classification.kind === "interrupted") {
+        items.push({
+          executionId: execution.id,
+          category: "interrupted",
+          subject,
+          reason: classification.reason,
+          nextAction: "请重新发起一次刷新",
+        });
+        continue;
+      }
+      items.push({
+        executionId: execution.id,
+        category:
+          classification.kind === "scan-parent" && classification.wrapUpOnly
+            ? "wrap-up"
+            : "continuable",
+        subject,
+        nextAction:
+          classification.kind === "scan-parent" && classification.wrapUpOnly
+            ? "无需操作，正在补齐这次扫描的汇总登记"
+            : "无需操作，这次启动会继续这条记录",
+      });
+    }
+    return items;
+  }
+
+  /**
+   * 沿原 ID 继续一个已分类的执行；终态或等待中的执行没有新的耐久结果，返回 undefined。
+   */
+  async continueRunningExecution(
+    executionId: string,
+    lifecycle?: RecoveryLifecycle,
+  ): Promise<AssetRefreshInspection | undefined> {
+    const current =
+      await this.ports.executionQueries.inspectExecution(executionId);
+    if (current === undefined || current.execution.status !== "running")
+      return undefined;
+    return await this.continueDiscoveredExecution(current.execution, lifecycle);
+  }
+
+  /**
+   * 单个非终态执行的一次进入：观察材料走它自己的耐久收尾，其余沿版本化输入续跑。等待中的执行
+   * 只登记等待，明确中断的执行在同一次进入里耐久终结并保留已提交结果。
+   */
+  private async continueDiscoveredExecution(
+    execution: WorkflowExecution,
+    lifecycle?: RecoveryLifecycle,
+  ): Promise<AssetRefreshInspection | undefined> {
+    const material = execution.materialAssociation;
+    if (material?.state === "awaiting-confirmation") {
+      lifecycle?.onWaitingExecution?.(execution.id);
+      return undefined;
+    }
+    if (material !== undefined)
+      return await this.recoverObservedMaterialAssociation(
+        execution,
+        lifecycle?.onCheckpoint,
+      );
+    try {
+      return await this.resume({
+        executionId: execution.id,
+        onHostCheckpoint: lifecycle?.onCheckpoint,
+      });
+    } catch (error) {
+      // 保留且未过期的声明既不是已恢复、等待审阅，也不是终态。它尚未分类时，不得报告
+      // 启动就绪。因此单进程宿主保持准入屏障关闭，直到操作方或声明持有者解决它。
+      if (error instanceof ResumeExecutionBusyError) {
         const current = await this.ports.executionQueries.inspectExecution(
           execution.id,
         );
-        if (current?.execution.status !== "running") continue;
-        throw error;
+        if (current?.execution.status === "running") {
+          lifecycle?.onWaitingExecution?.(execution.id);
+        }
+        return undefined;
       }
+      // 竞争持有者也可能在启动扫描与声明尝试之间将其终态化。`resume()` 为明确调用方
+      // 保留公开错误，但启动恢复把现在已终态的行视为已经协调，而不是让整个宿主失败。
+      const current = await this.ports.executionQueries.inspectExecution(
+        execution.id,
+      );
+      if (current?.execution.status !== "running") return undefined;
+      throw error;
     }
-    return recovered;
+  }
+
+  /** 面向使用者的定位文本：库名与触发方式，绝不携带坐标、路径或标识符。 */
+  private async recoverySubjectLabel(
+    execution: WorkflowExecution,
+  ): Promise<string> {
+    // 触发方式以版本化输入里耐久保存的那份为准：旧的 trigger_kind 列对自动化行为空，
+    // 借它分类会把周期计划报成「手动刷新」。
+    const trigger = execution.workflowInput?.trigger ?? execution.trigger;
+    const kind = isAutomationTrigger(trigger) ? "自动刷新" : "手动刷新";
+    const libraryId = execution.workflowInput?.assetLibrary?.id;
+    if (libraryId === undefined) return `资产库的${kind}`;
+    const displayName = await this.ports.assetLibraries
+      ?.get(libraryId)
+      .then((library) => library?.displayName)
+      .catch(() => undefined);
+    return displayName === undefined
+      ? `资产库的${kind}`
+      : `${displayName}的${kind}`;
   }
 
   private ordinaryScanReusePlan(
@@ -17254,6 +22720,10 @@ export class AssetRefreshWorkflow {
           files,
           directories: snapshot.directories,
           excluded: snapshot.excluded,
+          // 范围内的诊断同样参与复用判断；没有诊断的旧记录保持原指纹。
+          ...(snapshot.diagnostics === undefined
+            ? {}
+            : { diagnostics: snapshot.diagnostics }),
         }),
       ),
     );
@@ -17322,8 +22792,13 @@ export class AssetRefreshWorkflow {
             containsBoundary(directory.relativePath),
           ),
           excluded: snapshot.excluded,
+          // 范围内的诊断同样参与复用判断；没有诊断的旧记录保持原指纹。
+          ...(snapshot.diagnostics === undefined
+            ? {}
+            : { diagnostics: snapshot.diagnostics }),
           key: plan.key,
           relativePaths: plan.relativePaths,
+          boundaries: plan.boundaries,
           evidence: plan.evidence,
           informationRequirement,
           trustedRuleCoordinates:
@@ -17545,10 +23020,21 @@ export class AssetRefreshWorkflow {
     if (scope === undefined) {
       throw new Error("冻结文件范围在恢复校验后不可读取");
     }
+    // 恢复沿执行自己冻结的库目录授权重建权威，绝不采用当前配置为新代次续权。
+    const libraryId = execution.workflowInput?.assetLibrary?.id;
+    const authorityVersion =
+      execution.workflowInput?.directoryAuthorizations?.find(
+        (authorization) =>
+          authorization.observedRootId === scope.observedRoot.id,
+      )?.authorityVersion;
     try {
       return await this.ports.observedRootRegistrations.rebindFrozenScope({
         root: scope.observedRoot,
         relativeScope: scope.relativeScope,
+        ...(libraryId === undefined ? {} : { assetLibraryId: libraryId }),
+        ...(authorityVersion === undefined
+          ? {}
+          : { directoryAuthorityVersion: authorityVersion }),
       });
     } catch (error) {
       if (error instanceof ObservedRootUnavailable) throw error;
@@ -17588,6 +23074,10 @@ export class AssetRefreshWorkflow {
     frozen: WorkflowCompatibility,
     configurationReferences: readonly string[],
     observedRoots: readonly ObservedRootSnapshot[] = [],
+    context?: {
+      readonly assetLibraryId: string;
+      readonly directoryAuthorizations?: readonly FrozenDirectoryAuthorization[];
+    },
   ): Promise<void> {
     const current = this.compatibility();
     if (
@@ -17615,6 +23105,7 @@ export class AssetRefreshWorkflow {
     if (observedRoots.length > 0) {
       await this.ports.observedRootRegistrations.assertFrozenRootsCurrent(
         observedRoots,
+        context,
       );
     }
     if (configurationReferences.length === 0) return;
@@ -17898,13 +23389,27 @@ export class AssetRefreshWorkflow {
 
 type AssetRefreshAutomationOperations = Pick<
   AssetRefreshWorkflow,
-  "scanObservedScope" | "recoverRunningExecutions" | "fulfillInformation"
+  | "scanAssetLibrary"
+  | "inspect"
+  | "recoverRunningExecutions"
+  | "fulfillPreparedInformation"
+  | "acceptedSubjectsOfLibraryScan"
+  | "workflowForLibrary"
 >;
 
+/** 自动化收尾使用的账本窄端口：读耐久处置、绑定 child、收口历史父。 */
+type LibraryScanFulfillmentLedger = LibraryScanFulfillmentCommands &
+  LibraryScanFulfillmentQueries;
+
 type AssetRefreshAutomationPorts = {
+  readonly assetLibraries?: AssetLibraries;
   readonly executionQueries: WorkflowExecutionQueries;
   readonly automationQueries: AutomationQueries;
   readonly automationCommands: AutomationCommands;
+  /**
+   * 信息履行账本。终态父的内容整理只从这份耐久载体继续；没有它时自动化绝不按今日事实补齐。
+   */
+  readonly libraryScanFulfillment?: LibraryScanFulfillmentLedger;
   /**
    * 自动化意图耐久化前检查授权。这仍是 Application 持有的边界：调度不推断文件系统
    * 权威，也绝不接收宿主机路径映射。
@@ -17916,11 +23421,6 @@ type AssetRefreshAutomationPorts = {
   readonly recognitionPolicyVersion: string;
   /** 旧版静态中立需求；绝不持久化到意图。 */
   readonly informationRequirement?: InformationRequirement;
-  /**
-   * 由外层组合为每个已接受主体重建。这里它是不透明中立需求回调：Application 绝不
-   * 接收资产视图、组件、路由或提供方专用模型。
-   */
-  readonly informationRequirementForAcceptedSubject?: AutomationInformationRequirementResolver;
 };
 
 export class AssetRefreshAutomation {
@@ -17936,6 +23436,7 @@ export class AssetRefreshAutomation {
   }
 
   async enableAutomation(input: {
+    readonly assetLibraryId: string;
     readonly observedRootId: string;
     readonly relativeScope: string;
     readonly intervalMilliseconds: number;
@@ -17949,32 +23450,50 @@ export class AssetRefreshAutomation {
     readonly intent: AutomationIntent;
     readonly initial?: AutomationTriggerResult;
   }> {
+    const libraries = this.ports.assetLibraries;
+    if (libraries === undefined) throw new Error("当前部署没有资产库配置");
     if (
       !Number.isSafeInteger(input.intervalMilliseconds) ||
       input.intervalMilliseconds <= 0
     )
       throw new Error("自动刷新间隔必须为正数");
-    // 在首次耐久写入前立即解析。后续触发通过 `scanObservedScope` 再次解析，因此本次
+    // 归属先于授权：一次冻结读取同时给出该库目录清单与其权威闭包，全局根仍 active
+    // 不足以让本库对该目录做周期观察。
+    const frozen = await libraries.freezeLibraryScan(input.assetLibraryId);
+    const candidate = frozen.candidates.find(
+      (entry) => entry.id === input.observedRootId,
+    );
+    if (candidate === undefined)
+      throw new ObservedRootUnavailable("该目录不在此资产库中，请刷新后重试");
+    if (candidate.unavailable !== undefined)
+      throw new ObservedRootUnavailable(
+        candidate.unavailable === "missing"
+          ? "该目录已不在此资产库中，请刷新后重试"
+          : candidate.unavailable === "inactive"
+            ? "该目录已停用，请刷新后重试"
+            : "该目录允许的观察目标当前不可用，请刷新后重试",
+      );
+    const frozenRoot = frozen.frozenRoots.find(
+      (root) => root.id === input.observedRootId,
+    );
+    const authorization =
+      frozenRoot === undefined
+        ? undefined
+        : freezeObservedRootAutomationAuthorization(frozenRoot);
+    if (authorization === undefined)
+      throw new ObservedRootUnavailable(
+        "文件位置的允许链接目标当前不可用，请刷新后重试",
+      );
+    // 在首次耐久写入前立即解析。后续触发通过库目录扫描沿本库冻结授权再次解析，因此本次
     // 预检与运行之间的配置变更不能授权文件系统工作。
     const preflight =
       await this.ports.observedRootRegistrations.resolveActiveScope({
         registrationId: input.observedRootId,
         relativeScope: input.relativeScope,
       });
-    let authorization: AutomationObservedRootAuthorization;
     try {
-      if (preflight.root.id !== input.observedRootId) {
+      if (preflight.root.id !== input.observedRootId)
         throw new ObservedRootUnavailable("文件位置配置不一致，请刷新后重试");
-      }
-      const frozenAuthorization = freezeObservedRootAutomationAuthorization(
-        preflight.root,
-      );
-      if (frozenAuthorization === undefined) {
-        throw new ObservedRootUnavailable(
-          "文件位置的允许链接目标当前不可用，请刷新后重试",
-        );
-      }
-      authorization = frozenAuthorization;
     } finally {
       // 预检证明已配置范围现在可以绑定；它不向后续定时器授予权威。在耐久配置写入前
       // 释放其短期描述符。
@@ -17985,8 +23504,8 @@ export class AssetRefreshAutomation {
     const intent: AutomationIntent = {
       id: id("automation-intent"),
       scope: {
-        // 持久化权威边界返回的注册坐标，而不是调用方未规范化的路径拼写。原子持久化端口
-        // 写入意图时仍会证明该精确冻结坐标当前有效。
+        // 持久化的是本库目录授权坐标与权威边界返回的规范化范围，而不是调用方拼写。
+        assetLibraryId: frozen.snapshot.id,
         observedRootId: preflight.root.id,
         relativeScope: preflight.relativeScope,
       },
@@ -18047,30 +23566,40 @@ export class AssetRefreshAutomation {
     if (intent === undefined) throw new Error("未找到自动刷新意图");
     if (trigger !== "scan-now" && !intent.enabled)
       return { status: "disabled", reason: "自动刷新已停用" };
-    const executionId = id("execution");
+    let parentExecutionId: string | undefined;
     try {
-      const execution = await this.workflow.scanObservedScope({
-        registrationId: intent.scope.observedRootId,
-        relativeScope: intent.scope.relativeScope,
+      const run = await this.workflow.scanAssetLibrary({
+        libraryId: intent.scope.assetLibraryId,
         acceptTrusted: intent.acceptTrusted,
-        // 识别前无法得到视图专用需求。保持扫描输入中立，并从已接受主体重建需求。
-        ...(this.ports.informationRequirementForAcceptedSubject === undefined
-          ? { informationRequirement: this.ports.informationRequirement }
-          : {}),
-        executionId,
-        automationIntentId: intent.id,
-        trigger,
-        initiatedBy: `automation:${intent.id}`,
-        configurationReferences: intent.policyReferences,
-        requestedAt: now.toISOString(),
-        onExecutionStarted: lifecycle?.onExecutionStarted,
+        // 识别前无法得到视图专用需求。规划在父仍 running 时按批次冻结的规则坐标重建需求。
+        ...(this.ports.informationRequirement === undefined
+          ? {}
+          : { informationRequirement: this.ports.informationRequirement }),
+        // 周期触发与人工扫描共用同一入口、同一本目录账；意图只提供触发时间与目录范围。
+        automation: {
+          intentId: intent.id,
+          trigger,
+          observedRootId: intent.scope.observedRootId,
+          relativeScope: intent.scope.relativeScope,
+          requestedAt: now.toISOString(),
+          policyReferences: intent.policyReferences,
+        },
+        onExecutionStarted: (execution) => {
+          parentExecutionId = execution.id;
+          lifecycle?.onExecutionStarted?.(execution);
+        },
         onHostCheckpoint: lifecycle?.onCheckpoint,
       });
-      const childHasUnavailablePrerequisite =
-        await this.fulfillAcceptedInformation(execution);
+      parentExecutionId = run.parentExecutionId;
+      const execution = await this.workflow.inspect(run.parentExecutionId);
+      if (execution === undefined)
+        throw new Error("自动刷新的扫描记录未能耐久保存");
+      const reconciliation = await this.reconcileParentInformation(
+        run.parentExecutionId,
+      );
       const hasUnavailablePrerequisite =
         executionHasUnavailablePrerequisite(execution.execution) ||
-        childHasUnavailablePrerequisite;
+        reconciliation.hasUnavailablePrerequisite;
       if (trigger !== "scan-now" && hasUnavailablePrerequisite) {
         await this.ports.automationCommands.setAutomationIntentEnabled(
           intent.id,
@@ -18085,7 +23614,7 @@ export class AssetRefreshAutomation {
           ? { status: "disabled", reason: "自动刷新已停用" }
           : { status: "skipped", reason: "同一自动刷新意图已有进行中的执行" };
       if (trigger !== "scan-now" && error instanceof ObservedRootUnavailable) {
-        // 重复定时器不能把一个持续不可用的根变成无界的等价失败执行历史。耐久意图仍是
+        // 重复定时器不能把一个持续不可用的目录变成无界的等价失败执行历史。耐久意图仍是
         // 审计坐标；挂载或权限修复后，由操作方明确重新启用。
         await this.ports.automationCommands.setAutomationIntentEnabled(
           intent.id,
@@ -18096,11 +23625,17 @@ export class AssetRefreshAutomation {
       }
       throw error;
     } finally {
-      await this.releaseTerminalTrigger(intentId, executionId, trigger, now);
+      if (parentExecutionId !== undefined)
+        await this.releaseTerminalTrigger(
+          intentId,
+          parentExecutionId,
+          trigger,
+          now,
+        );
     }
   }
 
-  /** 通用恢复后，自动化只贡献运行时持有者释放。 */
+  /** 通用恢复后，自动化只贡献耐久信息履行接续与运行时持有者释放。 */
   async releaseRecoveredAutomationRuntime(
     recovered: readonly AssetRefreshInspection[],
   ): Promise<void> {
@@ -18111,7 +23646,7 @@ export class AssetRefreshAutomation {
         execution.automationIntentId !== undefined &&
         isAutomationTrigger(trigger)
       ) {
-        await this.fulfillAcceptedInformation(inspection);
+        await this.reconcileParentInformation(execution.id);
         await this.releaseTerminalTrigger(
           execution.automationIntentId,
           execution.id,
@@ -18122,74 +23657,311 @@ export class AssetRefreshAutomation {
     }
   }
 
-  private async fulfillAcceptedInformation(
-    inspection: AssetRefreshInspection,
-  ): Promise<boolean> {
-    const accepted = [
-      ...(inspection.accepted === undefined ? [] : [inspection.accepted]),
-      ...(inspection.itemResults ?? []).flatMap((item) =>
-        item.accepted === undefined ? [] : [item.accepted],
-      ),
-    ];
-    const resolver = this.ports.informationRequirementForAcceptedSubject;
-    const initiation = {
-      version: "information-fulfillment-initiation/1" as const,
-      parentExecutionId: inspection.execution.id,
-    };
-    if (resolver !== undefined) {
-      const bySubject = new Map(
-        accepted.map((subject) => [subject.entity.id, subject]),
-      );
-      const readiness = await Promise.all(
-        [...bySubject.values()].map(
-          async (subject) =>
-            await this.workflow.fulfillInformation({
-              selection: { subjectIds: [subject.entity.id] },
-              requirement: resolver(subject),
-              initiation,
-            }),
-        ),
-      );
-      return await this.requiredReadinessHasUnavailablePrerequisite(readiness);
-    }
-    const requirement = this.ports.informationRequirement;
-    if (requirement === undefined) return false;
-    const subjectIds = accepted.map((subject) => subject.entity.id);
-    if (subjectIds.length === 0) return false;
-    const readiness = await this.workflow.fulfillInformation({
-      selection: { subjectIds: [...new Set(subjectIds)] },
-      requirement,
-      initiation,
-    });
-    return await this.requiredReadinessHasUnavailablePrerequisite([readiness]);
+  /**
+   * 父扫描之后的信息履行接续只读它自己的耐久账本：终态恢复绝不重新规划，仍未登记的计划才交给
+   * 既有履行接缝按稳定 operation 身份绑定 child，已绑定的沿用原执行。没有批次的父只按历史中断
+   * 收口，绝不按今日能力补造计划；父已提交的结果原样保留。
+   */
+  private async reconcileParentInformation(
+    parentExecutionId: string,
+  ): Promise<InformationFulfillmentReconciliation> {
+    const ledger = this.ports.libraryScanFulfillment;
+    if (ledger === undefined)
+      return {
+        hasUnavailablePrerequisite: false,
+        fulfilledCount: 0,
+        interrupted: ["这份部署没有信息履行账本，不能按今日事实补齐内容整理"],
+      };
+    const parent = await this.workflow.inspect(parentExecutionId);
+    if (parent === undefined)
+      return {
+        hasUnavailablePrerequisite: false,
+        fulfilledCount: 0,
+        interrupted: ["这次扫描的记录无法读取，未补齐它的内容整理"],
+      };
+    const batch = await ledger.inspectLibraryScanFulfillment(parentExecutionId);
+    if (batch === undefined)
+      return parent.execution.automationIntentId === undefined
+        ? {
+            hasUnavailablePrerequisite: false,
+            fulfilledCount: 0,
+            interrupted: [],
+          }
+        : await this.closeHistoricalParentInformation(parent, ledger);
+    if (batch.stage === "awaiting-results")
+      return {
+        hasUnavailablePrerequisite: false,
+        fulfilledCount: 0,
+        interrupted: [
+          batch.reason ?? "这次扫描结束前没有写下耐久规划，未补齐它的内容整理",
+        ],
+      };
+    return await this.registerDurableOperations(parent, batch, ledger);
   }
 
-  private async requiredReadinessHasUnavailablePrerequisite(
-    readiness: readonly InformationReadiness[],
-  ): Promise<boolean> {
-    const executionIds = new Set(
-      readiness.flatMap((result) =>
-        result.subjects.flatMap((subject) =>
-          subject.inputs.flatMap((input) =>
-            input.necessity !== "required"
-              ? []
-              : (input.executionReferences ?? []).map(
-                  (reference) => reference.workflowExecutionId,
-                ),
-          ),
-        ),
+  /**
+   * 迁移前的父没有批次，也就没有任何可复验的原规划。收口前先判定父的冻结输入与每个目录载体的
+   * 可读性：只有都能读回时才据其汇集接受主体（可读且为零即空 closed 批次），任一载体缺失或无法
+   * 判读就只写批次级耐久中断，绝不借今日解析器伪造处置，也不新建 child 或计划。已有 `/1` child
+   * 保持原 ID 不被重开，父已提交的原扫描结果原样保留。数据库故障仍回滚抛错，绝不当成撤权或成功。
+   */
+  private async closeHistoricalParentInformation(
+    parent: AssetRefreshInspection,
+    ledger: LibraryScanFulfillmentLedger,
+  ): Promise<InformationFulfillmentReconciliation> {
+    const closure = await this.readHistoricalFulfillmentClosure(
+      parent.execution.id,
+    );
+    try {
+      await ledger.closeLegacyLibraryScanFulfillment(closure);
+    } catch (error) {
+      rethrowWorkflowLifecycle(error);
+      return {
+        hasUnavailablePrerequisite: false,
+        fulfilledCount: 0,
+        interrupted: [
+          `该父的观察依据无法读取，未补齐它的内容整理：${errorMessage(error)}`,
+        ],
+      };
+    }
+    const closed = await ledger.inspectLibraryScanFulfillment(
+      parent.execution.id,
+    );
+    if (closed === undefined)
+      return {
+        hasUnavailablePrerequisite: false,
+        fulfilledCount: 0,
+        interrupted: ["该父的历史信息履行收口无法读回"],
+      };
+    return await this.summariseDurableFulfillment(closed);
+  }
+
+  private async readHistoricalFulfillmentClosure(
+    parentExecutionId: string,
+  ): Promise<LegacyLibraryScanFulfillmentClosure> {
+    const unreadableReason =
+      await this.historicalCarrierUnreadableReason(parentExecutionId);
+    if (unreadableReason !== undefined)
+      return { parentExecutionId, acceptedSubjectIds: [], unreadableReason };
+    const accepted =
+      await this.workflow.acceptedSubjectsOfLibraryScan(parentExecutionId);
+    return {
+      parentExecutionId,
+      acceptedSubjectIds: accepted.map((subject) => subject.subjectId),
+    };
+  }
+
+  private async historicalCarrierUnreadableReason(
+    parentExecutionId: string,
+  ): Promise<string | undefined> {
+    const parent = await this.workflow.inspect(parentExecutionId);
+    if (parent === undefined)
+      return "这次扫描的记录无法读取，未补齐它的内容整理";
+    if (!historicalCarrierReadable(parent.execution))
+      return "该父扫描的冻结输入无法读回，未补齐它的内容整理";
+    const ledger =
+      await this.ports.executionQueries.inspectLibraryScan(parentExecutionId);
+    if (ledger === undefined)
+      return "该父扫描的目录账本无法读取，未补齐它的内容整理";
+    for (const entry of ledger.directories) {
+      if (entry.mode !== "execute" || entry.childExecutionId === undefined)
+        continue;
+      const child = await this.workflow.inspect(entry.childExecutionId);
+      if (child === undefined || !historicalCarrierReadable(child.execution))
+        return "该父的内容整理载体无法读回，未补齐它的内容整理";
+    }
+    return undefined;
+  }
+
+  /**
+   * 只把账本里仍处于 `planned` 的原计划交给履行接缝，逐主体一份，因此一个操作登记成功不会替
+   * 同主体的其他操作结案。登记完成即返回，不等待远程效果；结果一律按重新读回的耐久行汇总。
+   */
+  private async registerDurableOperations(
+    parent: AssetRefreshInspection,
+    batch: LibraryScanFulfillmentInspection,
+    ledger: LibraryScanFulfillmentLedger,
+  ): Promise<InformationFulfillmentReconciliation> {
+    const interrupted: string[] = [];
+    const owed = batch.subjects.filter((subject) =>
+      subject.operations.some(
+        (operation) => operation.disposition === "planned",
       ),
     );
-    for (const executionId of executionIds) {
-      const inspection =
-        await this.ports.executionQueries.inspectExecution(executionId);
-      if (
-        inspection !== undefined &&
-        executionHasUnavailablePrerequisite(inspection.execution)
-      )
-        return true;
+    if (owed.length !== 0) {
+      const initiation: InformationFulfillmentInitiation = {
+        version: "information-fulfillment-initiation/1",
+        parentExecutionId: parent.execution.id,
+        // 派生获取继承父执行冻结的库目录授权，效果接缝据此逐根复核，撤销/重连不替旧快照续权。
+        ...(parent.execution.workflowInput?.directoryAuthorizations ===
+        undefined
+          ? {}
+          : {
+              directoryAuthorizations:
+                parent.execution.workflowInput.directoryAuthorizations,
+            }),
+        fromDurableLedger: true,
+      };
+      // 派生履行沿父执行自己冻结的库快照，不借当前配置重新解释能力集合。
+      const workflow =
+        parent.execution.workflowInput?.assetLibrary === undefined
+          ? this.workflow
+          : this.workflow.workflowForLibrary(
+              parent.execution.workflowInput.assetLibrary,
+            );
+      for (const subject of owed) {
+        const plans = subject.operations.flatMap((operation) =>
+          operation.disposition === "planned" && operation.plan !== undefined
+            ? [operation.plan]
+            : [],
+        );
+        const requirement = plans[0]?.requirement;
+        if (plans.length === 0 || requirement === undefined) {
+          interrupted.push(
+            "耐久账本缺少该主体的原计划版本，未补齐它的内容整理",
+          );
+          continue;
+        }
+        try {
+          await workflow.fulfillPreparedInformation({
+            preparation: {
+              requirement,
+              subjects: [
+                {
+                  subjectId: subject.subjectId,
+                  requirement,
+                  disposition: "planned",
+                  inputs: [],
+                  plans,
+                },
+              ],
+            },
+            initiation,
+          });
+        } catch (error) {
+          rethrowWorkflowLifecycle(error);
+          interrupted.push(
+            `该主体的信息履行登记无法完成：${errorMessage(error)}`,
+          );
+        }
+      }
     }
-    return false;
+    const settled = await ledger.inspectLibraryScanFulfillment(
+      parent.execution.id,
+    );
+    if (settled === undefined)
+      return {
+        hasUnavailablePrerequisite: false,
+        fulfilledCount: 0,
+        interrupted: [...interrupted, "该父的信息履行账本无法读回"],
+      };
+    const durable = await this.summariseDurableFulfillment(settled);
+    return {
+      hasUnavailablePrerequisite: durable.hasUnavailablePrerequisite,
+      fulfilledCount: durable.fulfilledCount,
+      interrupted: [...interrupted, ...durable.interrupted],
+    };
+  }
+
+  /**
+   * 逐条汇总耐久行，原原因逐字节带出：child 的运行结果以执行行为权威，因此这里只引用它，
+   * 不复制第二份终态，也不据此自动重试。
+   */
+  private async summariseDurableFulfillment(
+    batch: LibraryScanFulfillmentInspection,
+  ): Promise<InformationFulfillmentReconciliation> {
+    let hasUnavailablePrerequisite = false;
+    let fulfilledCount = 0;
+    const interrupted: string[] = [];
+    for (const subject of batch.subjects) {
+      if (subject.disposition === "interrupted") {
+        interrupted.push(subject.reason ?? "该主体的信息履行处置无法确定");
+        continue;
+      }
+      for (const operation of subject.operations) {
+        if (operation.disposition === "interrupted") {
+          interrupted.push(operation.reason ?? "该计划的信息履行登记已中断");
+          continue;
+        }
+        if (
+          operation.disposition === "planned" ||
+          operation.childExecutionId === undefined
+        )
+          continue;
+        const child = await this.ports.executionQueries.inspectExecution(
+          operation.childExecutionId,
+        );
+        if (
+          child !== undefined &&
+          executionHasUnavailablePrerequisite(child.execution)
+        )
+          hasUnavailablePrerequisite = true;
+        fulfilledCount += 1;
+      }
+    }
+    if (batch.stage === "interrupted")
+      interrupted.push(
+        batch.reason ?? "这次扫描没有留下可复验的信息履行规划依据",
+      );
+    return { hasUnavailablePrerequisite, fulfilledCount, interrupted };
+  }
+
+  /**
+   * 已经完成的父扫描还可能在崩溃前没来得及登记内容整理。启动与轮询都只按耐久账本挑出欠账的父，
+   * 从最早那份开始逐个接续：不重开终态观察，也不按今日事实重算计划，只登记它自己欠下的原计划，
+   * 并把无法核对的条目如实中断。
+   */
+  async reconcileTerminalFulfillment(lifecycle?: {
+    readonly onCheckpoint: () => void;
+  }): Promise<readonly AutomationFulfillmentReconciliation[]> {
+    const ledger = this.ports.libraryScanFulfillment;
+    if (ledger === undefined) return [];
+    const [intents, debtParentIds] = await Promise.all([
+      this.ports.automationQueries.listAutomationIntents(),
+      ledger.listTerminalLibraryScanFulfillmentDebt(),
+    ]);
+    const owedByIntent = new Map<string, AssetRefreshInspection[]>();
+    // 账本按创建顺序给出欠账父，因此接续从最早那份欠账开始；后来一次扫描不能把旧父永久挤出收尾。
+    for (const parentExecutionId of debtParentIds) {
+      const parent = await this.workflow.inspect(parentExecutionId);
+      const intentId = parent?.execution.automationIntentId;
+      if (parent === undefined || intentId === undefined) continue;
+      const group = owedByIntent.get(intentId);
+      if (group === undefined) owedByIntent.set(intentId, [parent]);
+      else group.push(parent);
+    }
+    const results: AutomationFulfillmentReconciliation[] = [];
+    for (const intent of intents) {
+      lifecycle?.onCheckpoint?.();
+      let fulfilled = false;
+      const interrupted: string[] = [];
+      for (const parent of owedByIntent.get(intent.id) ?? []) {
+        const reconciliation = await this.reconcileParentInformation(
+          parent.execution.id,
+        );
+        if (
+          reconciliation.hasUnavailablePrerequisite &&
+          intent.enabled &&
+          parent.execution.workflowInput?.trigger !== "scan-now"
+        )
+          await this.ports.automationCommands.setAutomationIntentEnabled(
+            intent.id,
+            false,
+            "prerequisite-unavailable",
+          );
+        if (reconciliation.fulfilledCount > 0) fulfilled = true;
+        interrupted.push(...reconciliation.interrupted);
+      }
+      if (!fulfilled && interrupted.length === 0) continue;
+      results.push({
+        intentId: intent.id,
+        status: interrupted.length === 0 ? "continued" : "interrupted",
+        ...(interrupted.length === 0
+          ? {}
+          : { reason: interrupted[0] ?? "该父的内容整理未能补齐" }),
+      });
+    }
+    return results;
   }
 
   async triggerDueAutomation(
@@ -18244,14 +24016,27 @@ export class AssetRefreshAutomation {
     const newestFirstExecutions = await listExecutions.call(
       this.ports.executionQueries,
     );
-    const parent = newestFirstExecutions.find(
-      (execution) => execution.automationIntentId === intent.id,
+    // 这份计划的父不止最新那一个：旧父欠下的履行子仍在运行时，新一次定时扫描同样要等它收尾，
+    // 否则后来的父会永久遮住那份还没补齐的耐久内容整理。
+    const parents = new Set(
+      newestFirstExecutions
+        .filter((execution) => execution.automationIntentId === intent.id)
+        .map((execution) => execution.id),
     );
-    if (parent === undefined) return undefined;
-    const prefix = `information-fulfillment:${parent.id}:`;
-    const children = newestFirstExecutions.filter((execution) =>
-      execution.workflowInput?.initiatedBy?.startsWith(prefix),
-    );
+    if (parents.size === 0) return undefined;
+    const children = newestFirstExecutions.filter((execution) => {
+      const workflowInput = execution.workflowInput;
+      if (workflowInput === undefined) return false;
+      if (workflowInput.parentExecutionId !== undefined)
+        return parents.has(workflowInput.parentExecutionId);
+      // 只有缺少耐久父 ID 载体的早期执行才回退到发起文案。
+      return [...parents].some(
+        (parentId) =>
+          workflowInput.initiatedBy?.startsWith(
+            `information-fulfillment:${parentId}:`,
+          ) === true,
+      );
+    });
     if (children.some((child) => child.status === "running")) return "waiting";
     if (children.some(executionHasUnavailablePrerequisite))
       return "unavailable";
@@ -18275,6 +24060,20 @@ export class AssetRefreshAutomation {
       });
   }
 }
+
+/** 父扫描之后信息履行耐久接续的结果，只含业务可读文本。 */
+export type InformationFulfillmentReconciliation = {
+  readonly hasUnavailablePrerequisite: boolean;
+  readonly fulfilledCount: number;
+  readonly interrupted: readonly string[];
+};
+
+/** 一个周期计划本次接续的结果；界面据此逐条给出状态、原因与下一步。 */
+export type AutomationFulfillmentReconciliation = {
+  readonly intentId: string;
+  readonly status: "continued" | "interrupted";
+  readonly reason?: string;
+};
 
 function isAutomationTrigger(
   trigger: string | undefined,
@@ -18346,8 +24145,14 @@ export type AssetRefreshAutomationWorkflow = Pick<
   | "listAutomationIntents"
   | "triggerAutomation"
   | "triggerDueAutomation"
+  | "reconcileTerminalFulfillment"
 > &
-  Pick<AssetRefreshWorkflow, "recoverRunningExecutions">;
+  Pick<
+    AssetRefreshWorkflow,
+    | "recoverRunningExecutions"
+    | "classifyRunningExecutions"
+    | "continueRunningExecution"
+  >;
 
 export function attachAssetRefreshAutomation(
   workflow: AssetRefreshWorkflow,
@@ -18355,6 +24160,10 @@ export function attachAssetRefreshAutomation(
 ): AssetRefreshWorkflow & AssetRefreshAutomationWorkflow {
   const recoverRunningExecutions =
     workflow.recoverRunningExecutions.bind(workflow);
+  const classifyRunningExecutions =
+    workflow.classifyRunningExecutions.bind(workflow);
+  const continueRunningExecution =
+    workflow.continueRunningExecution.bind(workflow);
   return Object.assign(workflow, {
     enableAutomation: automation.enableAutomation.bind(automation),
     disableAutomation: automation.disableAutomation.bind(automation),
@@ -18365,6 +24174,22 @@ export function attachAssetRefreshAutomation(
       await automation.releaseRecoveredAutomationRuntime(recovered);
       return recovered;
     },
+    classifyRunningExecutions: (
+      exclude?: ReadonlySet<string>,
+      within?: ReadonlySet<string>,
+    ) => classifyRunningExecutions(exclude, within),
+    continueRunningExecution: async (
+      executionId: string,
+      lifecycle?: RecoveryLifecycle,
+    ) => {
+      const inspection = await continueRunningExecution(executionId, lifecycle);
+      // 单条继续完成后同样由自动化贡献耐久接续与运行时持有者释放，与整批恢复入口一致。
+      if (inspection !== undefined)
+        await automation.releaseRecoveredAutomationRuntime([inspection]);
+      return inspection;
+    },
+    reconcileTerminalFulfillment:
+      automation.reconcileTerminalFulfillment.bind(automation),
     triggerDueAutomation: automation.triggerDueAutomation.bind(automation),
   });
 }
@@ -18884,6 +24709,10 @@ function sameRecognitionIdentity(
   compareSourceFacts: boolean,
 ): boolean {
   return (
+    sameRecognitionMaterialBoundaries(
+      current.recognitionDecision.boundaries,
+      proposal.boundaries,
+    ) &&
     recognitionSourceCoordinate(current.proposal) ===
       recognitionSourceCoordinate(proposal) &&
     recognitionMaterialBoundary(
@@ -19008,7 +24837,9 @@ function recognitionMaterialBoundary(
               kind: proposal.basis.kind,
               evidence: withoutCapabilityProvenance(proposal.basis.evidence),
               artifactRevisions: withoutCapabilityProvenance(
-                proposal.basis.artifactRevisions,
+                proposal.basis.kind === "observed-evidence"
+                  ? proposal.basis.artifactRevisions
+                  : [],
               ),
             },
     // 观察证据提议已在 basis 中完整携带格式元数据、组成部分和修订版；再次比较其
@@ -19278,6 +25109,128 @@ function observedMaterialAcceptanceBindings(input: {
   });
 }
 
+/**
+ * 代表正文依据：整批已确认材料就是一个文件，或来源规则把目录内的材料声明为代表正文，
+ * 且这些文件的格式检查被明确接受的规则覆盖时，它们的内嵌标题才代表资产本身，可以沿
+ * 共同事实成为实体标题。目录范围（例如 RJ 音声）里未被声明为代表正文的台本或图片修订
+ * 绝不会被当成音声标题的代表正文；核心不解析目录名，也不按格式或顺序任选正文。
+ * 同名多格式正文只有共同指认同一标题时才有代表依据，分歧时诚实缺失，不从路径造标题。
+ * 代表决定授权下的材料刷新沿用同一条决定与同一判定：正文被替换后，只要代表正文集合
+ * 不变，实体标题就跟着新修订走，而不是停在旧修订上或凭空消失。
+ */
+function selectRepresentativeBodyEntityMetadata(input: {
+  readonly proposal: RecognitionProposal;
+  readonly assetId: string;
+  readonly recognitionDecisionId: string;
+  readonly observedRevisionByReference: ReadonlyMap<
+    string,
+    { readonly artifactId: string; readonly revisionId: string }
+  >;
+  readonly observedMetadata: readonly MetadataAssertion[];
+}): readonly MetadataAssertion[] {
+  const { basis } = input.proposal;
+  if (basis.kind !== "observed-evidence" && basis.kind !== "accepted-boundary")
+    return [];
+  const [boundary] = input.proposal.boundaries;
+  if (input.proposal.boundaries.length !== 1 || boundary === undefined)
+    return [];
+  const inspectedReferences = new Set(
+    (input.proposal.observedArtifactRevisions ?? []).map(
+      (candidate) => candidate.observedArtifactReference,
+    ),
+  );
+  let bodyReferences: readonly string[];
+  if (boundary.kind === "discrete") {
+    // 材料唯一且格式检查只覆盖一个观察引用，两者才同指那条正文。
+    if (boundary.materialReferences.length !== 1) return [];
+    const [inspectedReference] = [...inspectedReferences];
+    if (inspectedReferences.size !== 1 || inspectedReference === undefined)
+      return [];
+    // 整批依据只有那一个修订时，才谈得上这条正文代表资产本身。
+    if (
+      basis.kind === "observed-evidence" &&
+      basis.artifactRevisions.length !== 1
+    )
+      return [];
+    bodyReferences = [inspectedReference];
+  } else {
+    // 目录范围的代表正文只认来源规则的声明，核心不解释路径含义。
+    bodyReferences = [
+      ...new Set(
+        (input.proposal.observedArtifactAssociations ?? [])
+          .filter((candidate) => candidate.role === "asset.representative-body")
+          .map((candidate) => candidate.observedArtifactReference)
+          .filter((reference) => inspectedReferences.has(reference)),
+      ),
+    ].toSorted();
+    if (bodyReferences.length === 0) return [];
+  }
+  const represented = bodyReferences.every((reference) =>
+    basis.kind === "observed-evidence"
+      ? basis.artifactRevisions.some(
+          (candidate) =>
+            candidate.observedArtifactReference === reference &&
+            input.proposal.ruleResults.some(
+              (result) =>
+                result.outcome === "satisfied" &&
+                result.evidence.some(
+                  (evidence) =>
+                    evidence.inspection?.observedArtifactReference ===
+                    reference,
+                ),
+            ),
+        )
+      : basis.evidence.some(
+          (evidence) =>
+            evidence.inspection?.observedArtifactReference === reference,
+        ),
+  );
+  if (!represented) return [];
+  const titles: MetadataAssertion[] = [];
+  for (const reference of bodyReferences) {
+    const parent = input.observedRevisionByReference.get(reference);
+    if (parent === undefined) return [];
+    const bodyTitles = [
+      ...new Map(
+        input.observedMetadata
+          .filter(
+            (assertion) =>
+              assertion.property === "asset.title" &&
+              assertion.target.kind === "artifact-revision" &&
+              assertion.target.artifactId === parent.artifactId &&
+              assertion.target.revisionId === parent.revisionId,
+          )
+          .map((title) => [title.sourceSlot, title]),
+      ).values(),
+    ];
+    // 少一份代表正文的精确修订标题，代表依据就不成立。
+    if (bodyTitles.length === 0) return [];
+    titles.push(...bodyTitles);
+  }
+  if (bodyReferences.length === 1) return projectEntityTitles(titles, input);
+  // 多份同名正文必须共同指认同一个标题；分歧时诚实缺失，不按格式或数组顺序任选。
+  if (
+    titles.length !== bodyReferences.length ||
+    titles.some(
+      (title) =>
+        JSON.stringify(title.value) !== JSON.stringify(titles[0]!.value),
+    )
+  )
+    return [];
+  return projectEntityTitles([titles[0]!], input);
+}
+
+function projectEntityTitles(
+  titles: readonly MetadataAssertion[],
+  input: { readonly assetId: string; readonly recognitionDecisionId: string },
+): readonly MetadataAssertion[] {
+  return titles.map((assertion) => ({
+    ...assertion,
+    target: { kind: "entity" as const, entityId: input.assetId },
+    recognitionDecisionId: input.recognitionDecisionId,
+  }));
+}
+
 function createAcceptedRecognition(options: {
   readonly proposal: RecognitionProposal;
   readonly snapshot: FilesystemPackageSnapshot;
@@ -19396,6 +25349,42 @@ function createAcceptedRecognition(options: {
     if ("file" in observed)
       observedByRelativePath.set(observed.file.relativePath, artifact);
   }
+  for (const candidate of proposal.observedArtifactAssociations ?? []) {
+    if (candidate.role === "asset.material-delivered") continue;
+    const artifact = observedByRelativePath.get(
+      candidate.observedArtifactReference,
+    );
+    if (artifact === undefined)
+      throw new Error(
+        "Observed artifact role is outside the accepted material boundary",
+      );
+    const revision = (proposal.observedArtifactRevisions ?? []).find(
+      (item) =>
+        item.observedArtifactReference ===
+          candidate.observedArtifactReference &&
+        (candidate.role !== "asset.primary-cover" &&
+        candidate.role !== "asset.material-image"
+          ? true
+          : item.blob.mediaType.startsWith("image/")),
+    );
+    // 无精确图片修订依据就不产生封面角色，图片头检查也不冒称完整解码。
+    if (revision === undefined) continue;
+    // 材料身份与代表角色都钉在同一稳定实体目标上，共用同一 Artifact；精确修订只在
+    // 共同生效读取里按当前位置解析，不由关联自己冒充内容寻据。
+    const association: ArtifactAssociation = {
+      id: `artifact-association_${sha256(new TextEncoder().encode(JSON.stringify([asset.id, artifact.id, candidate.role, candidate.producer])))}`,
+      target: { kind: "entity", entityId: asset.id },
+      artifactId: artifact.id,
+      role: candidate.role,
+      ...(candidate.producer === undefined
+        ? {}
+        : { producer: candidate.producer }),
+    };
+    if (!localAssociationIds.has(association.id)) {
+      localAssociationIds.add(association.id);
+      localAssociations.push(association);
+    }
+  }
   const managed = projectManagedSourceArtifacts(
     options.managedArtifacts,
     asset.id,
@@ -19417,7 +25406,10 @@ function createAcceptedRecognition(options: {
         "Observed Artifact Revision is outside the accepted work boundary",
       );
     const revision: ArtifactRevision = {
-      id: `artifact-revision_${sha256(new TextEncoder().encode(`${observedArtifact.id}\u0000${candidate.blob.digest}`))}`,
+      id: observedArtifactRevisionId(
+        observedArtifact.id,
+        candidate.blob.digest,
+      ),
       artifactId: observedArtifact.id,
       blobDigest: candidate.blob.digest,
       producer: candidate.producer,
@@ -19450,7 +25442,7 @@ function createAcceptedRecognition(options: {
       continue;
     }
     const revision: ArtifactRevision = {
-      id: `artifact-revision_${sha256(new TextEncoder().encode(`${observedArtifact.id}\u0000${part.origin.digest}`))}`,
+      id: observedArtifactRevisionId(observedArtifact.id, part.origin.digest),
       artifactId: observedArtifact.id,
       blobDigest: part.origin.digest,
       producer: part.producer,
@@ -19577,6 +25569,15 @@ function createAcceptedRecognition(options: {
       },
     };
   });
+  const recognitionDecisionId =
+    options.current?.recognitionDecision.id ?? id("recognition-decision");
+  const representativeEntityMetadata = selectRepresentativeBodyEntityMetadata({
+    proposal,
+    assetId: asset.id,
+    recognitionDecisionId,
+    observedRevisionByReference,
+    observedMetadata,
+  });
   const recognitionSourceAssociation: SourceAssociation | undefined =
     options.current?.recognitionSourceAssociation ??
     (interpretation === undefined
@@ -19677,10 +25678,12 @@ function createAcceptedRecognition(options: {
       ? {}
       : { recognitionSourceAssociation }),
     recognitionDecision: {
-      id: options.current?.recognitionDecision.id ?? id("recognition-decision"),
+      id: recognitionDecisionId,
       proposalId:
         options.current?.recognitionDecision.proposalId ?? proposal.id,
       assetId: asset.id,
+      boundaries:
+        options.current?.recognitionDecision.boundaries ?? proposal.boundaries,
       acceptedRuleResults:
         options.current?.recognitionDecision.acceptedRuleResults ??
         proposal.ruleResults,
@@ -19716,6 +25719,7 @@ function createAcceptedRecognition(options: {
     metadata: [
       ...sourceMetadata,
       ...observedMetadata,
+      ...representativeEntityMetadata,
       ...(proposal.basis.kind !== "manual-boundary"
         ? []
         : proposal.basis.metadata.map((assertion) => ({
@@ -19855,6 +25859,15 @@ function observedArtifactAssociationId(
 function observedLocationId(artifactId: string, address: string): string {
   return `location_${sha256(
     new TextEncoder().encode(`${artifactId}\u0000observed\u0000${address}`),
+  )}`;
+}
+
+function observedArtifactRevisionId(
+  artifactId: string,
+  blobDigest: string,
+): string {
+  return `artifact-revision_${sha256(
+    new TextEncoder().encode(`${artifactId}\u0000${blobDigest}`),
   )}`;
 }
 

@@ -96,7 +96,13 @@ const journey: CliJourney = {
     return [
       {
         name: "register live RJ01668691 corpus root",
-        args: ["root-create", "RJ01668691 验收语料", source],
+        args: [
+          "library-create",
+          "RJ01668691 验收语料",
+          "--directory",
+          source,
+          "--json",
+        ],
         env: { DIGITAL_PRODUCT_DATA: data },
         haltOnFailure: true,
       },

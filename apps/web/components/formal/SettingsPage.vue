@@ -19,24 +19,25 @@ import "vue-sonner/style.css";
 import { Button } from "#/components/ui/button";
 import { Toaster } from "#/components/ui/sonner";
 import { Switch } from "#/components/ui/switch";
+import { useLibraryNavigation } from "#/composables/use-library-navigation";
 
 import AutomationSettingsDialog from "./AutomationSettingsDialog.vue";
-import RootSettingsDialog from "./RootSettingsDialog.vue";
+import LibrarySettingsDialog from "./LibrarySettingsDialog.vue";
 import SourceConnectionDialog from "./SourceConnectionDialog.vue";
 const sections = [
-  { id: "roots", label: "文件位置", icon: Folder },
+  { id: "libraries", label: "资产库", icon: Folder },
   { id: "sources", label: "来源连接", icon: Link },
   { id: "automation", label: "自动刷新", icon: RefreshCw },
   { id: "storage", label: "产品数据", icon: ShieldCheck },
 ];
-const section = ref("roots");
+const section = ref("libraries");
 const data = ref<SettingsSnapshot>();
+const libraryNavigation = useLibraryNavigation();
 const loading = ref(true);
 const error = ref("");
 const pending = ref(new Set<string>());
-const rootDialog = ref<{
-  root?: SettingsSnapshot["roots"][number];
-  reconnect?: boolean;
+const libraryDialog = ref<{
+  library?: SettingsSnapshot["libraries"][number];
 }>();
 const sourceDialog = ref<{
   source: string;
@@ -109,26 +110,64 @@ async function perform(
   }
 }
 function saved() {
-  rootDialog.value = undefined;
+  libraryDialog.value = undefined;
   sourceDialog.value = undefined;
   planDialog.value = undefined;
   void reload();
 }
-async function rootAction(root: SettingsSnapshot["roots"][number]) {
-  if (root.status === "revoked") {
-    rootDialog.value = { root, reconnect: true };
-    return;
-  }
+async function librarySaved() {
+  libraryDialog.value = undefined;
+  await libraryNavigation.refresh();
+  await reload();
+}
+async function removeLibrary(library: SettingsSnapshot["libraries"][number]) {
   await perform(
-    root.id,
-    () =>
-      sendAction("/api/settings/roots", {
-        action: "deactivate",
-        id: root.id,
-        expectedVersion: root.configVersion,
-      }),
-    "文件位置已停用",
+    library.id,
+    async () => {
+      await sendAction("/api/settings/libraries", {
+        action: "remove",
+        id: library.id,
+        expectedVersion: library.configVersion,
+      });
+      await libraryNavigation.refresh();
+    },
+    "资产库已移除，内容与历史记录已保留",
   );
+}
+async function scanLibrary(library: SettingsSnapshot["libraries"][number]) {
+  await perform(
+    library.id,
+    () =>
+      sendAction("/api/refresh", {
+        assetLibraryId: library.id,
+        acceptTrusted: true,
+      }),
+    "已开始扫描资产库",
+  );
+}
+type SettingsDirectory =
+  SettingsSnapshot["libraries"][number]["directoryViews"][number];
+async function reconnectDirectory(
+  library: SettingsSnapshot["libraries"][number],
+  directory: SettingsDirectory,
+) {
+  await perform(
+    directory.directoryId,
+    () =>
+      sendAction("/api/settings/libraries", {
+        action: "reconnect",
+        id: library.id,
+        directoryId: directory.directoryId,
+      }),
+    "目录已重新连接，等待下一次扫描确认文件",
+  );
+}
+function planDirectory(plan: SettingsSnapshot["automation"][number]) {
+  return data.value?.libraries
+    .find((library) => library.id === plan.assetLibraryId)
+    ?.directoryViews.find(
+      (directory) => directory.observedRootId === plan.observedRootId,
+    );
 }
 async function verify(source: SettingsSnapshot["sources"][number]) {
   await perform(
@@ -167,6 +206,7 @@ async function togglePlan(
         enabled
           ? {
               action: "enable",
+              assetLibraryId: plan.assetLibraryId,
               observedRootId: plan.observedRootId,
               relativeScope: plan.relativeScope,
               intervalMilliseconds: plan.intervalMilliseconds,
@@ -229,14 +269,18 @@ async function checkNow(plan: SettingsSnapshot["automation"][number]) {
             {{ sections.find((item) => item.id === section)?.label }}
           </h2>
           <Button
-            v-if="section === 'roots' && data"
+            v-if="section === 'libraries' && data"
             size="sm"
-            @click="rootDialog = {}"
-            ><Plus class="size-4" />添加位置</Button
+            @click="libraryDialog = {}"
+            ><Plus class="size-4" />添加资产库</Button
           ><Button
             v-if="
               section === 'automation' &&
-              data?.roots.some((root) => root.status === 'active')
+              data?.libraries.some((library) =>
+                library.directoryViews.some(
+                  (directory) => directory.status === 'active',
+                ),
+              )
             "
             size="sm"
             @click="planDialog = {}"
@@ -259,63 +303,87 @@ async function checkNow(plan: SettingsSnapshot["automation"][number]) {
           }}<Button variant="ghost" size="sm" @click="reload">重试</Button>
         </div>
         <template v-if="data">
-          <template v-if="section === 'roots'">
+          <template v-if="section === 'libraries'">
             <div
-              v-if="!data.roots.length"
+              v-if="!data.libraries.length"
               class="rounded-lg border border-dashed p-6 text-center"
             >
-              <p>连接你的第一个文件夹</p>
-              <Button class="mt-4" @click="rootDialog = {}"
-                >添加文件位置</Button
+              <p>创建资产库，读取你整理好的内容</p>
+              <Button class="mt-4" @click="libraryDialog = {}"
+                >添加资产库</Button
               >
             </div>
             <div
-              v-for="root in data.roots"
-              :key="root.id"
+              v-for="library in data.libraries"
+              :key="library.id"
               class="mb-2 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border px-3 py-3"
             >
               <Folder class="size-5 shrink-0 text-muted-foreground" />
               <div class="min-w-0 flex-1">
-                <h3 class="font-medium">{{ root.displayName }}</h3>
-                <p class="mt-1 break-all text-sm text-muted-foreground">
-                  {{ root.containerPath }}
-                </p>
-                <p
-                  v-if="root.status === 'revoked'"
-                  class="mt-1 text-sm text-muted-foreground"
+                <a
+                  :href="`/?library=${encodeURIComponent(library.id)}`"
+                  class="font-medium hover:underline"
+                  >{{ library.displayName }}</a
                 >
-                  已停用
-                </p>
-                <p
-                  v-else-if="!root.reachable"
-                  role="alert"
-                  class="mt-1 text-sm text-destructive"
+                <div
+                  v-for="directory in library.directoryViews"
+                  :key="directory.directoryId"
+                  class="mt-1 flex flex-wrap items-center gap-x-2"
                 >
-                  {{ root.problem }}
+                  <p class="break-all text-sm text-muted-foreground">
+                    {{ directory.containerPath }}
+                  </p>
+                  <template v-if="directory.status === 'removed'">
+                    <span class="text-sm text-destructive">{{
+                      directory.problem ?? "已从资产库移除，等待重新连接"
+                    }}</span>
+                    <Button
+                      variant="link"
+                      size="sm"
+                      class="h-auto p-0"
+                      :disabled="pending.has(directory.directoryId)"
+                      @click="reconnectDirectory(library, directory)"
+                      >重新连接</Button
+                    >
+                  </template>
+                  <p
+                    v-else-if="!directory.reachable"
+                    role="alert"
+                    class="text-sm text-destructive"
+                  >
+                    {{ directory.problem ?? "目录当前不可访问" }}
+                  </p>
+                </div>
+                <p class="mt-1 text-sm text-muted-foreground">
+                  {{
+                    data.recognitionProfiles
+                      .filter((profile) =>
+                        library.recognitionProfileIds.includes(profile.id),
+                      )
+                      .map((profile) => profile.displayName)
+                      .join("、")
+                  }}
                 </p>
               </div>
               <div class="flex flex-wrap gap-1">
                 <Button
-                  v-if="root.status === 'active'"
                   variant="ghost"
                   size="sm"
-                  :disabled="pending.has(root.id)"
-                  @click="rootDialog = { root }"
+                  :disabled="pending.has(library.id)"
+                  @click="libraryDialog = { library }"
                   >编辑</Button
                 ><Button
-                  v-if="root.status === 'active' && !root.reachable"
                   variant="outline"
                   size="sm"
-                  @click="reload"
-                  >重新检查</Button
+                  :disabled="pending.has(library.id)"
+                  @click="scanLibrary(library)"
+                  >扫描</Button
                 ><Button
                   variant="ghost"
                   size="sm"
-                  :disabled="pending.has(root.id)"
-                  @click="rootAction(root)"
-                  >{{
-                    root.status === "active" ? "停用位置" : "重新连接"
-                  }}</Button
+                  :disabled="pending.has(library.id)"
+                  @click="removeLibrary(library)"
+                  >移除</Button
                 >
               </div>
             </div>
@@ -387,6 +455,23 @@ async function checkNow(plan: SettingsSnapshot["automation"][number]) {
             </div>
           </template>
           <template v-else-if="section === 'automation'">
+            <ul
+              v-if="data.recovery.length"
+              class="mb-4 grid gap-2 rounded-lg bg-stone-50 p-3"
+            >
+              <li
+                v-for="(item, index) in data.recovery"
+                :key="`recovery-${index}`"
+                class="text-sm"
+              >
+                <span class="font-medium">{{ item.subject }}</span>
+                · {{ item.status }}
+                <template v-if="item.reason">：{{ item.reason }}</template>
+                <template v-if="item.nextAction">
+                  {{ item.nextAction }}</template
+                >
+              </li>
+            </ul>
             <p
               v-if="!data.automation.length"
               class="text-sm text-muted-foreground"
@@ -399,19 +484,18 @@ async function checkNow(plan: SettingsSnapshot["automation"][number]) {
               class="mb-2 flex flex-wrap items-center gap-3 rounded-lg border px-3 py-3"
             >
               <div class="min-w-0 flex-1">
-                <h3 class="font-medium">
-                  {{
-                    data.roots.find((root) => root.id === plan.observedRootId)
-                      ?.displayName ?? plan.folder
-                  }}
-                </h3>
+                <h3 class="font-medium">{{ plan.folder }}</h3>
                 <p class="mt-1 break-all text-sm text-muted-foreground">
                   {{
                     plan.relativeScope === "."
-                      ? "整个文件位置"
-                      : plan.relativeScope
+                      ? "整个目录"
+                      : `目录内的 ${plan.relativeScope}`
                   }}
                   · {{ intervalLabel(plan.intervalMilliseconds) }}
+                  ·
+                  {{
+                    plan.enabled ? "启用中" : (plan.disabledReason ?? "已停用")
+                  }}
                 </p>
               </div>
               <Switch
@@ -419,11 +503,7 @@ async function checkNow(plan: SettingsSnapshot["automation"][number]) {
                 :model-value="plan.enabled"
                 :disabled="
                   pending.has(plan.id) ||
-                  !data.roots.some(
-                    (root) =>
-                      root.id === plan.observedRootId &&
-                      root.status === 'active',
-                  )
+                  planDirectory(plan)?.status !== 'active'
                 "
                 @update:model-value="togglePlan(plan, $event)"
               />
@@ -432,11 +512,7 @@ async function checkNow(plan: SettingsSnapshot["automation"][number]) {
                 size="sm"
                 :disabled="
                   pending.has(plan.id) ||
-                  !data.roots.some(
-                    (root) =>
-                      root.id === plan.observedRootId &&
-                      root.status === 'active',
-                  )
+                  planDirectory(plan)?.status !== 'active'
                 "
                 @click="planDialog = { plan }"
                 >调整计划</Button
@@ -463,12 +539,13 @@ async function checkNow(plan: SettingsSnapshot["automation"][number]) {
         </template>
       </div>
     </div>
-    <RootSettingsDialog
-      v-if="rootDialog && data"
-      v-bind="rootDialog"
-      :roots="data.roots"
-      @close="rootDialog = undefined"
-      @saved="saved"
+    <LibrarySettingsDialog
+      v-if="libraryDialog && data"
+      v-bind="libraryDialog"
+      :profiles="data.recognitionProfiles"
+      :sources="data.librarySources"
+      @close="libraryDialog = undefined"
+      @saved="librarySaved"
     />
     <SourceConnectionDialog
       v-if="sourceDialog"
@@ -479,7 +556,7 @@ async function checkNow(plan: SettingsSnapshot["automation"][number]) {
     <AutomationSettingsDialog
       v-if="planDialog && data"
       v-bind="planDialog"
-      :roots="data.roots"
+      :libraries="data.libraries"
       @close="planDialog = undefined"
       @saved="saved"
     />

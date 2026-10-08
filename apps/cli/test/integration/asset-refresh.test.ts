@@ -105,12 +105,46 @@ async function registerRoot(input: {
   readonly cwd: string;
   readonly env: Record<string, string>;
 }): Promise<string> {
-  const command = runtime(["root-create", "测试文件位置", input.source], {
-    cwd: input.cwd,
-    env: input.env,
-  });
+  const command = runtime(
+    ["library-create", "测试文件位置", "--directory", input.source, "--json"],
+    {
+      cwd: input.cwd,
+      env: input.env,
+    },
+  );
   await expect(runCli(command.runtime)).resolves.toBe(0);
-  return (JSON.parse(command.stdout()) as { readonly id: string }).id;
+  return (
+    JSON.parse(command.stdout()) as { readonly rootIds: readonly string[] }
+  ).rootIds[0]!;
+}
+
+/** 通过公开的资产库入口登记单一目录，返回该目录对应的观察根编号。 */
+async function seedLibraryRoot(
+  workflow: {
+    readonly assetLibraries: {
+      save(input: {
+        readonly displayName: string;
+        readonly directories: readonly string[];
+        readonly recognitionProfileIds: readonly string[];
+        readonly sourceIdentities: readonly string[];
+      }): Promise<{ readonly rootIds: readonly string[] }>;
+      readonly recognitionProfiles: readonly { readonly id: string }[];
+      readonly sources: readonly { readonly id: string }[];
+    };
+  },
+  displayName: string,
+  directory: string,
+): Promise<string> {
+  const libraries = workflow.assetLibraries;
+  const saved = await libraries.save({
+    displayName,
+    directories: [directory],
+    recognitionProfileIds: libraries.recognitionProfiles.map(
+      (profile) => profile.id,
+    ),
+    sourceIdentities: libraries.sources.map((source) => source.id),
+  });
+  return saved.rootIds[0]!;
 }
 
 async function tree(
@@ -199,15 +233,9 @@ describe("Asset Refresh CLI", () => {
     const workflow = product.result;
     let assetId: string;
     try {
-      const root = await workflow.observedRootRegistrations.create({
-        displayName: "明确来源材料",
-        containerPath: source,
-        readOnly: true,
-        symlinkMode: "do-not-follow",
-        allowedTargetRootIds: [],
-      });
+      const rootId = await seedLibraryRoot(workflow, "明确来源材料", source);
       const scan = await workflow.scanObservedScope({
-        registrationId: root.id,
+        registrationId: rootId,
         relativeScope: ".",
         acceptTrusted: false,
       });
@@ -801,10 +829,13 @@ describe("Asset Refresh CLI", () => {
     } as const;
     const before = await tree(source, snapshotOptions);
 
-    const scan = runtime(["root-create", "重叠位置", source], {
-      cwd: source,
-      env: { DIGITAL_PRODUCT_DATA: inside },
-    });
+    const scan = runtime(
+      ["library-create", "重叠位置", "--directory", source, "--json"],
+      {
+        cwd: source,
+        env: { DIGITAL_PRODUCT_DATA: inside },
+      },
+    );
     await expect(runCli(scan.runtime)).resolves.toBe(1);
 
     expect(scan.stderr()).toContain("不能与产品数据或托管产物目录重叠");
@@ -825,10 +856,13 @@ describe("Asset Refresh CLI", () => {
     } as const;
     const before = await tree(source, snapshotOptions);
 
-    const scan = runtime(["root-create", "链接重叠位置", source], {
-      cwd: source,
-      env: { DIGITAL_PRODUCT_DATA: productData },
-    });
+    const scan = runtime(
+      ["library-create", "链接重叠位置", "--directory", source, "--json"],
+      {
+        cwd: source,
+        env: { DIGITAL_PRODUCT_DATA: productData },
+      },
+    );
     await expect(runCli(scan.runtime)).resolves.toBe(1);
 
     expect(scan.stderr()).toContain("不能与产品数据或托管产物目录重叠");
@@ -896,28 +930,18 @@ describe("Asset Refresh CLI", () => {
     let assetId: string;
     let rootId: string;
     try {
-      const targetRoot = await product.result.observedRootRegistrations.create({
-        displayName: "CLI target",
-        containerPath: admitted,
-        readOnly: true,
-        symlinkMode: "do-not-follow",
-        allowedTargetRootIds: [],
-      });
+      const targetRootId = await seedLibraryRoot(
+        product.result,
+        "CLI target",
+        admitted,
+      );
       await product.result.scanObservedScope({
-        registrationId: targetRoot.id,
+        registrationId: targetRootId,
         relativeScope: ".",
         acceptTrusted: true,
       });
-      assetId = (await product.result.listCurrentCatalogue())[0]!.entity.id;
-      rootId = (
-        await product.result.observedRootRegistrations.create({
-          displayName: "CLI material",
-          containerPath: material,
-          readOnly: true,
-          symlinkMode: "do-not-follow",
-          allowedTargetRootIds: [],
-        })
-      ).id;
+      assetId = (await product.result.listCurrentCataloguePage()).items[0]!.id;
+      rootId = await seedLibraryRoot(product.result, "CLI material", material);
     } finally {
       await product.close();
     }
@@ -983,15 +1007,13 @@ describe("Asset Refresh CLI", () => {
       { start: (application) => application.workflow },
     );
     try {
-      const root = await product.result.observedRootRegistrations.create({
-        displayName: "CLI 当前目录材料",
-        containerPath: source,
-        readOnly: true,
-        symlinkMode: "do-not-follow",
-        allowedTargetRootIds: [],
-      });
+      const rootId = await seedLibraryRoot(
+        product.result,
+        "CLI 当前目录材料",
+        source,
+      );
       const initial = await product.result.scanObservedScope({
-        registrationId: root.id,
+        registrationId: rootId,
         relativeScope: ".",
         acceptTrusted: false,
       });
@@ -1006,7 +1028,7 @@ describe("Asset Refresh CLI", () => {
       });
       await rm(path.join(source, "local.txt"));
       await product.result.scanObservedScope({
-        registrationId: root.id,
+        registrationId: rootId,
         relativeScope: ".",
         acceptTrusted: false,
       });

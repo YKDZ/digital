@@ -239,7 +239,14 @@ async function registerObservedRoot(input: {
   const result = await new Promise<CliJourneyResult>((resolve, reject) => {
     const child = spawn(
       target.executable,
-      [...target.prefix, "root-create", input.displayName, input.containerPath],
+      [
+        ...target.prefix,
+        "library-create",
+        input.displayName,
+        "--directory",
+        input.containerPath,
+        "--json",
+      ],
       {
         cwd: input.context.workDir,
         env: { ...process.env, DIGITAL_PRODUCT_DATA: input.dataDirectory },
@@ -323,7 +330,13 @@ const journey: CliJourney = {
     return [
       {
         name: "register terminal failed refresh root",
-        args: ["root-create", "终端失败测试目录", state.terminalFailureSource],
+        args: [
+          "library-create",
+          "终端失败测试目录",
+          "--directory",
+          state.terminalFailureSource,
+          "--json",
+        ],
         env: { DIGITAL_PRODUCT_DATA: state.dataDirectory },
         haltOnFailure: true,
       },

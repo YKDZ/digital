@@ -11,16 +11,13 @@ export const libraryCategories = {
 } as const;
 export type LibraryCategory = keyof typeof libraryCategories;
 
-/** 检索只需要名称、书籍署名和展示判定所用的事实，正文和文件图无需进入索引。 */
+/** 署名和集数来自生效关系；索引只载入名称与展示判定需要的描述。 */
 export const libraryIndexMetadataProperties = [
   "asset.title",
   "asset.content-classification",
   "asset.title.zh-hans",
-  "book.contributor",
   "book.isbn-13",
   "book.publisher",
-  "bangumi.episode.season-position",
-  "bangumi.episode.continuous-position",
   "bangumi.subject.name",
   "bangumi.subject.name.zh-hans",
 ] as const;
@@ -28,6 +25,7 @@ export const libraryIndexMetadataProperties = [
 export function projectLibraryAsset(
   asset: AssetViewModel | BangumiSeriesViewModel,
 ) {
+  // 首页卡片必须保留生效读取的问题与状态，否则缺失／冲突资产只显示标题。
   if ("works" in asset)
     return {
       id: asset.id,
@@ -39,6 +37,9 @@ export function projectLibraryAsset(
       description: asset.summary,
       publisher: undefined,
       date: asset.date,
+      factProblems: asset.factProblems,
+      informationReadiness: undefined,
+      missingFacts: undefined,
     };
   const creators =
     asset.book?.contributors ??
@@ -67,5 +68,8 @@ export function projectLibraryAsset(
       asset.book?.publicationDate ??
       asset.releaseDate ??
       asset.publicationDateTime,
+    factProblems: asset.factProblems,
+    informationReadiness: asset.informationReadiness,
+    missingFacts: asset.missingFacts,
   };
 }

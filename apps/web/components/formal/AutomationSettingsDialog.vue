@@ -3,7 +3,7 @@ import {
   sendAction,
   type SettingsSnapshot,
 } from "@digital/web-delivery/client";
-import { ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { toast } from "vue-sonner";
 
 import { Button } from "#/components/ui/button";
@@ -24,15 +24,33 @@ import {
 } from "#/components/ui/select";
 import { Switch } from "#/components/ui/switch";
 const props = defineProps<{
-  roots: SettingsSnapshot["roots"];
+  libraries: SettingsSnapshot["libraries"];
   plan?: SettingsSnapshot["automation"][number];
 }>();
 const emit = defineEmits<{ close: []; saved: [] }>();
-const rootId = ref(
-  props.plan?.observedRootId ??
-    props.roots.find((root) => root.status === "active")?.id ??
+const libraryId = ref(
+  props.plan?.assetLibraryId ??
+    props.libraries.find((library) =>
+      library.directoryViews.some(
+        (directory) => directory.observedRootId === props.plan?.observedRootId,
+      ),
+    )?.id ??
+    props.libraries[0]?.id ??
     "",
 );
+const availableRoots = computed(
+  () =>
+    props.libraries
+      .find((library) => library.id === libraryId.value)
+      ?.directoryViews.filter((directory) => directory.status === "active") ??
+    [],
+);
+const rootId = ref(
+  props.plan?.observedRootId ?? availableRoots.value[0]?.observedRootId ?? "",
+);
+watch(libraryId, () => {
+  rootId.value = availableRoots.value[0]?.observedRootId ?? "";
+});
 const scope = ref(props.plan?.relativeScope ?? ".");
 const interval = ref(String(props.plan?.intervalMilliseconds ?? 3600000));
 const trusted = ref(props.plan?.acceptTrusted ?? true);
@@ -44,6 +62,7 @@ async function save() {
   try {
     await sendAction("/api/automation", {
       action: "enable",
+      assetLibraryId: libraryId.value,
       observedRootId: rootId.value,
       relativeScope: scope.value,
       intervalMilliseconds: Number(interval.value),
@@ -67,15 +86,28 @@ async function save() {
       <DialogHeader><DialogTitle>自动刷新计划</DialogTitle></DialogHeader>
       <form class="grid gap-4" @submit.prevent="save">
         <label class="grid gap-2 text-sm font-medium"
-          >文件位置<Select v-model="rootId" :disabled="busy || !!plan"
-            ><SelectTrigger aria-label="计划文件位置"
+          >资产库<Select v-model="libraryId" :disabled="busy || !!plan"
+            ><SelectTrigger aria-label="计划资产库"
               ><SelectValue /></SelectTrigger
             ><SelectContent
               ><SelectItem
-                v-for="root in roots.filter((item) => item.status === 'active')"
-                :key="root.id"
-                :value="root.id"
-                >{{ root.displayName }}</SelectItem
+                v-for="library in libraries"
+                :key="library.id"
+                :value="library.id"
+                >{{ library.displayName }}</SelectItem
+              ></SelectContent
+            ></Select
+          ></label
+        >
+        <label class="grid gap-2 text-sm font-medium"
+          >目录<Select v-model="rootId" :disabled="busy || !!plan"
+            ><SelectTrigger aria-label="计划目录"><SelectValue /></SelectTrigger
+            ><SelectContent
+              ><SelectItem
+                v-for="root in availableRoots"
+                :key="root.observedRootId"
+                :value="root.observedRootId"
+                >{{ root.containerPath }}</SelectItem
               ></SelectContent
             ></Select
           ></label

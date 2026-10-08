@@ -156,9 +156,11 @@ const journey: CliJourney = {
       ...works.map((work) => ({
         name: `register ${work.sourceNativeAddress} root`,
         args: [
-          "root-create",
+          "library-create",
           `${work.sourceNativeAddress} 验收语料`,
+          "--directory",
           path.join(corpus, "assets/kikoeru/VoiceWork", work.directory),
+          "--json",
         ],
         env: { DIGITAL_PRODUCT_DATA: data },
         haltOnFailure: true,

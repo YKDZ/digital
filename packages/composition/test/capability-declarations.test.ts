@@ -109,7 +109,7 @@ describe("capability declarations", () => {
       new DlsiteSourceAddressing().capability,
       new DlsiteCollector().capability,
       new DlsiteSourceInterpreter().capability,
-      new FanboxDateDirectoryInterpreter("creator").capability,
+      new FanboxDateDirectoryInterpreter().capability,
       fanboxOfficialCollectionCapability,
       new FanboxSourceInterpreter().capability,
     ];

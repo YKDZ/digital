@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 
-import type { AssetRefreshInspection } from "@digital/application";
+import type {
+  AssetRefreshInspection,
+  SelectedMetadataRead,
+} from "@digital/application";
 import type { RawFilesystemSnapshot } from "@digital/test-support";
 
 import {
@@ -178,23 +181,50 @@ function assertSourceRecordIdentity(
   );
 }
 
+/** 普通读取只给出资产自身实体目标上已生效的选定值。 */
+function effectiveMetadataReads(
+  accepted: AcceptedProjection,
+): readonly SelectedMetadataRead[] {
+  return accepted.facts.descriptions
+    .filter(
+      (description) =>
+        description.target.kind === "entity" &&
+        description.target.entityId === accepted.facts.id,
+    )
+    .flatMap((description) =>
+      description.metadata.flatMap((entry) =>
+        entry.result.status === "resolved" ? entry.result.values : [],
+      ),
+    );
+}
+
 function assertEffectiveTmdbTitle(
   value: JourneyInspection,
   accepted: AcceptedProjection,
 ): void {
-  const title = accepted.effectiveMetadata.find(
+  const title = effectiveMetadataReads(accepted).find(
     (metadata) => metadata.property === "asset.title",
   );
-  assert.ok(title?.value.trim().length);
-  assert.equal(title?.sourceIdentity, "tmdb");
-  assert.deepEqual(
-    title?.sourceRecordIds,
-    title?.selectedAssertion.sourceRecordIds,
+  assert.ok(title !== undefined, "an effective title must be readable");
+  assert.ok(title.value.trim().length);
+  assert.equal(title.sourceIdentity, "tmdb");
+  const citedRecords = new Set(
+    title.assertions.flatMap((assertion) => assertion.sourceRecordIds),
   );
-  assert.equal(title?.sourceSlot, title?.selectedAssertion.sourceSlot);
+  assert.equal(title.sourceRecordIds.length, citedRecords.size);
+  assert.ok(
+    title.sourceRecordIds.every((id) => citedRecords.has(id)),
+    "the effective title must cite exactly its own assertion records",
+  );
+  assert.ok(
+    title.assertions.every(
+      (assertion) => assertion.sourceSlot === title.sourceSlot,
+    ),
+    "the effective title must cite only its own source slot",
+  );
   const currentExecutionSourceIdentities = sourceIdentityByRecord(value);
   assert.ok(
-    title?.sourceRecordIds.every((id) => {
+    title.sourceRecordIds.every((id) => {
       const sourceIdentity = currentExecutionSourceIdentities.get(id);
       // 未变化的刷新可以继续引用更早的来源记录；公开执行检查只携带本次记录，
       // 因而只有当前可见的记录 ID 能在这里再次核对身份。
@@ -202,26 +232,33 @@ function assertEffectiveTmdbTitle(
     }),
     "the effective title must not cite a visible non-TMDB source record",
   );
-  assert.deepEqual(title?.reasoning, {
+  assert.deepEqual(title.reasoning, {
     kind: "source-preference",
     preferredSource: "tmdb",
   });
-  const omdbAlternative = title?.alternatives.find(
-    (alternative) => alternative.sourceIdentity === "omdb",
+  // 生效读取不再携带策略备选值；未被选中的 OMDb 断言只能在已接受原始断言中复核。
+  const omdbTitleAssertion = accepted.metadata.find(
+    (assertion) =>
+      assertion.property === "asset.title" &&
+      assertion.sourceRecordIds.some(
+        (id) => currentExecutionSourceIdentities.get(id) === "omdb",
+      ),
   );
   assert.ok(
-    omdbAlternative !== undefined,
-    "the policy audit must retain OMDb's unselected title assertion",
+    omdbTitleAssertion !== undefined,
+    "the accepted projection must retain OMDb's unselected title assertion",
   );
-  assert.deepEqual(omdbAlternative?.exclusion, {
-    kind: "source-preference",
-    selectedSource: "tmdb",
-    disagreesWithSelected: omdbAlternative?.value !== title?.value,
-  });
+  const selectedRecordIds = new Set(title.sourceRecordIds);
+  assert.ok(
+    omdbTitleAssertion.sourceRecordIds.every(
+      (id) => !selectedRecordIds.has(id),
+    ),
+    "the selected TMDB title must not cite OMDb's source records",
+  );
 }
 
 function assertEffectiveOmdbRating(accepted: AcceptedProjection): void {
-  const rating = accepted.effectiveMetadata.find(
+  const rating = effectiveMetadataReads(accepted).find(
     (metadata) =>
       metadata.property.startsWith("rating.") &&
       metadata.sourceIdentity === "omdb",
@@ -231,8 +268,7 @@ function assertEffectiveOmdbRating(accepted: AcceptedProjection): void {
     "OMDb must contribute an effective native rating",
   );
   assert.ok(
-    (rating?.qualifiers ?? rating?.selectedAssertion.qualifiers ?? []).length >
-      0,
+    (rating.qualifiers ?? []).length > 0,
     "an OMDb rating must retain its native qualifiers",
   );
 }
@@ -429,12 +465,24 @@ const journey: CliJourney = {
       {
         ...live,
         name: "register strict TMDB film root",
-        args: ["root-create", "恐怖直播 验收语料", strict.directory],
+        args: [
+          "library-create",
+          "恐怖直播 验收语料",
+          "--directory",
+          strict.directory,
+          "--json",
+        ],
       },
       {
         ...live,
         name: "register directed BDMV film root",
-        args: ["root-create", "怒火救援 验收语料", directed.directory],
+        args: [
+          "library-create",
+          "怒火救援 验收语料",
+          "--directory",
+          directed.directory,
+          "--json",
+        ],
       },
       {
         ...live,

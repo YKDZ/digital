@@ -74,6 +74,24 @@ const returnHref = `/series/${encodeURIComponent(props.series.id)}?season=${enco
         </p>
         <p v-else class="text-muted-foreground">暂无简介。</p>
 
+        <section
+          v-if="episode.materials.length"
+          class="grid gap-2"
+          aria-label="本集材料"
+        >
+          <h2 class="text-sm font-medium text-muted-foreground">本集材料</h2>
+          <ul class="grid gap-1">
+            <li
+              v-for="material in episode.materials"
+              :key="`${material.name}-${material.revisionId ?? ''}`"
+              class="flex items-center gap-2 text-sm"
+            >
+              <span class="min-w-0 truncate">{{ material.name }}</span>
+              <Badge variant="outline">{{ material.format }}</Badge>
+            </li>
+          </ul>
+        </section>
+
         <AssetActions
           v-if="showActions"
           :target="episode.actionTarget"

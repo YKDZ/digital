@@ -5,10 +5,16 @@ import {
   type AssetRefreshSelection,
   type ResolvedAssetRefreshSelection,
 } from "./asset-refresh-selection.ts";
+import type { OperationLease } from "./execution-host.ts";
+import { OperationLeaseInvalidated } from "./execution-host.ts";
+import type { LibraryScanChildCoordinates } from "./library-scan-plan.ts";
+import { normalizeObservedRelativeScope } from "./observed-root-authority.ts";
 import type {
   BoundObservedScope,
   ObservedRootRegistrations,
+  ObservedRootSnapshot,
 } from "./observed-root-registrations.ts";
+import { ObservedRootUnavailable } from "./observed-root-registrations.ts";
 import { atPublicWorkflowBoundary } from "./workflow-invocation-lifecycle.ts";
 
 /** Application 中每个新文件系统操作共同接受的输入。 */
@@ -16,6 +22,26 @@ export type RegisteredObservedRootRequest = {
   readonly registrationId: string;
   readonly relativeScope: string;
   readonly subjects?: AssetRefreshSelection["subjects"];
+  /**
+   * 本次调用的库语境。目录 I/O 权威只从该库自己的授权账目解析，另一库共享同一物理根
+   * 不会为本目录续权。
+   */
+  readonly assetLibraryId?: string | undefined;
+  /**
+   * 库扫描父创建时冻结的本目录授权代次。存在时只重绑这一份权威；缺失表示本次新建的
+   * 工作，只要求该目录当前仍是本库活动授权。
+   */
+  readonly directoryAuthorityVersion?: number | undefined;
+  /**
+   * 库扫描目录子的父归属坐标。它只随本次调用交给工作流，用于原子登记与只读覆盖；
+   * 范围解析与授权仍完全来自被引用的观察根。
+   */
+  readonly libraryScanParent?: LibraryScanChildCoordinates | undefined;
+  /**
+   * 库扫描父创建时冻结的观察根权威。存在时目录子只能重新绑定这一份快照，绝不解析
+   * 今日根来替换旧快照；这是父续跑与原配置漂移时诚实失败的唯一来源。
+   */
+  readonly libraryScanFrozenRoot?: ObservedRootSnapshot | undefined;
 };
 
 /**
@@ -26,12 +52,25 @@ export type RegisteredObservedRootInvocation = {
   readonly scope: BoundObservedScope;
   readonly requestedSelection: AssetRefreshSelection;
   readonly resolvedSelection: ResolvedAssetRefreshSelection;
+  readonly libraryScanParent?: LibraryScanChildCoordinates | undefined;
+  /**
+   * 本次调用实际取得的库目录授权代次；调用方把它随耐久输入一起冻结，后续效果与提交
+   * 因此复核这一份，而不是回看今日授权。
+   */
+  readonly directoryAuthorityVersion?: number | undefined;
 };
 
 type ObservedRootExecutionRegistrations = Pick<
   ObservedRootRegistrations,
-  "resolveActiveScope" | "closeBoundScope" | "reportCleanupFailure"
+  | "resolveActiveScope"
+  | "rebindFrozenScope"
+  | "closeBoundScope"
+  | "reportCleanupFailure"
+  | "bindDirectoryOperation"
 >;
+
+/** 为一次库目录工作创建一个尚未绑定的 Host 操作租约。 */
+export type DirectoryOperationLeaseFactory = () => OperationLease;
 
 /**
  * 扫描、重新刮削和定向识别共享的深层注册范围执行接缝。它持有调用方绝不能复制的
@@ -39,9 +78,16 @@ type ObservedRootExecutionRegistrations = Pick<
  */
 export class ObservedRootExecution {
   private readonly registrations: ObservedRootExecutionRegistrations;
+  private readonly directoryLeaseFactory:
+    | DirectoryOperationLeaseFactory
+    | undefined;
 
-  constructor(registrations: ObservedRootExecutionRegistrations) {
+  constructor(
+    registrations: ObservedRootExecutionRegistrations,
+    directoryLeaseFactory?: DirectoryOperationLeaseFactory,
+  ) {
     this.registrations = registrations;
+    this.directoryLeaseFactory = directoryLeaseFactory;
   }
 
   async invoke<Result>(
@@ -57,10 +103,65 @@ export class ObservedRootExecution {
     request: RegisteredObservedRootRequest,
     invocation: (input: RegisteredObservedRootInvocation) => Promise<Result>,
   ): Promise<Result> {
-    const resolved = await this.registrations.resolveActiveScope({
-      registrationId: request.registrationId,
-      relativeScope: request.relativeScope,
-    });
+    const relativeScope = normalizeObservedRelativeScope(request.relativeScope);
+    const resolved =
+      request.libraryScanFrozenRoot === undefined
+        ? await this.registrations.resolveActiveScope({
+            registrationId: request.registrationId,
+            relativeScope: request.relativeScope,
+            ...(request.assetLibraryId === undefined
+              ? {}
+              : { assetLibraryId: request.assetLibraryId }),
+          })
+        : {
+            scope: await this.registrations.rebindFrozenScope({
+              root: request.libraryScanFrozenRoot,
+              relativeScope: request.relativeScope,
+              ...(request.assetLibraryId === undefined
+                ? {}
+                : { assetLibraryId: request.assetLibraryId }),
+              ...(request.directoryAuthorityVersion === undefined
+                ? {}
+                : {
+                    directoryAuthorityVersion:
+                      request.directoryAuthorityVersion,
+                  }),
+            }),
+            relativeScope,
+            root: request.libraryScanFrozenRoot,
+            directoryAuthorityVersion: request.directoryAuthorityVersion,
+          };
+    // 库目录工作复用同一 ExecutionHost：把本次真实 I/O 绑定到其冻结的库、根与授权代次，
+    // remove/重连撤销该坐标时，打开来源的后续块与下一效果前的复核据此一并停住。中立范围不绑定。
+    let directoryLease: OperationLease | undefined;
+    let directoryBinding: { release(): void } | undefined;
+    if (
+      request.assetLibraryId !== undefined &&
+      this.directoryLeaseFactory !== undefined
+    ) {
+      const lease = this.directoryLeaseFactory();
+      try {
+        directoryBinding = lease.bindObservedRoot({
+          registrationId: resolved.root.id,
+          registrationVersion: resolved.root.configVersion,
+          assetLibraryId: request.assetLibraryId,
+          ...(resolved.directoryAuthorityVersion === undefined
+            ? {}
+            : {
+                directoryAuthorityVersion: resolved.directoryAuthorityVersion,
+              }),
+        });
+      } catch (error) {
+        lease.release();
+        if (error instanceof OperationLeaseInvalidated)
+          throw new ObservedRootUnavailable(
+            "此目录已从资产库移除或重新连接，本次工作不能继续",
+          );
+        throw error;
+      }
+      directoryLease = lease;
+      this.registrations.bindDirectoryOperation(resolved.scope, lease);
+    }
     let result!: Result;
     let workFailed = false;
     let primaryError: unknown;
@@ -95,6 +196,12 @@ export class ObservedRootExecution {
         scope: resolved.scope,
         requestedSelection,
         resolvedSelection,
+        ...(resolved.directoryAuthorityVersion === undefined
+          ? {}
+          : { directoryAuthorityVersion: resolved.directoryAuthorityVersion }),
+        ...(request.libraryScanParent === undefined
+          ? {}
+          : { libraryScanParent: request.libraryScanParent }),
       });
     } catch (error) {
       workFailed = true;
@@ -113,6 +220,8 @@ export class ObservedRootExecution {
           ...(workFailed ? { primaryError } : {}),
         });
       }
+      directoryBinding?.release();
+      directoryLease?.release();
     }
     if (workFailed) throw primaryError;
     if (cleanupError !== undefined) throw cleanupError;

@@ -2,6 +2,7 @@
 import { useResizeObserver } from "@vueuse/core";
 import { computed, onBeforeUnmount, ref } from "vue";
 
+import AssetInfoNotice from "#/components/formal/AssetInfoNotice.vue";
 import LibraryCover from "#/components/formal/LibraryCover.vue";
 import type { LibraryAsset } from "#/lib/library";
 const props = defineProps<{ assets: readonly LibraryAsset[] }>();
@@ -59,6 +60,9 @@ const layout = computed(() => {
       :style="style"
       role="listitem"
     >
+      <div class="pointer-events-none absolute top-2 left-2 z-10">
+        <AssetInfoNotice :asset="asset" variant="card" />
+      </div>
       <button
         type="button"
         class="group w-full min-w-0 rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-4"

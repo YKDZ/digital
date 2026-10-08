@@ -3,6 +3,7 @@ import type { CatalogueAssetViewModel } from "@digital/web-delivery/client";
 import { computed } from "vue";
 
 import AssetActions from "./AssetActions.vue";
+import AssetInfoNotice from "./AssetInfoNotice.vue";
 import BangumiAssetDetail from "./BangumiAssetDetail.vue";
 import BangumiEpisodeDetail from "./BangumiEpisodeDetail.vue";
 import BookAssetDetail from "./BookAssetDetail.vue";
@@ -17,6 +18,7 @@ const props = withDefaults(
     readonly asset: CatalogueAssetViewModel;
     readonly selectedEpisodeId?: string;
     readonly selectedWorkId?: string;
+    readonly library?: string;
     readonly showActions?: boolean;
   }>(),
   { showActions: true },
@@ -43,6 +45,7 @@ const selectedBangumiEpisode = computed(() => {
 </script>
 
 <template>
+  <AssetInfoNotice v-if="ordinaryAsset" :asset="ordinaryAsset" />
   <BangumiEpisodeDetail
     v-if="bangumiAsset && selectedBangumiEpisode"
     :series="bangumiAsset"
@@ -55,6 +58,7 @@ const selectedBangumiEpisode = computed(() => {
     v-else-if="bangumiAsset"
     :asset="bangumiAsset"
     :selected-work-id="selectedWorkId"
+    :library="library"
     :show-actions="showActions"
   />
   <FanboxAssetDetail

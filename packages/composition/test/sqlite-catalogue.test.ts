@@ -5124,9 +5124,7 @@ describe("SqliteCatalogue lifecycle", () => {
     await materializeOldContractMedia(manifest);
     const workflow = composeAssetRefresh(productDataDirectory, {});
     const currentIds = async () =>
-      (await workflow.listCurrentCatalogue())
-        .map(({ entity }) => entity.id)
-        .toSorted();
+      (await workflow.listCurrentCatalogue()).map(({ id }) => id).toSorted();
     try {
       expect(await currentIds()).toEqual(
         Object.values(manifest.assets).toSorted(),
@@ -5139,8 +5137,8 @@ describe("SqliteCatalogue lifecycle", () => {
       });
       expect(await currentIds()).toEqual(
         [
-          manifest.assets.bothRootsFile,
-          manifest.assets.childOnlyFile,
+          manifest.assets.bothRootsFile!,
+          manifest.assets.childOnlyFile!,
         ].toSorted(),
       );
 
@@ -5980,8 +5978,11 @@ describe("SqliteCatalogue lifecycle", () => {
       const current = await workflow.listCurrentCatalogue();
       // 互换形态的两个地址在公开根完整扫描后仍然退出，只有形态与材料一致的
       // 目录包与文件留在当前目录；同址热观察不会把 file 边界升成 directory 支持。
-      expect(current.map(({ entity }) => entity.id).toSorted()).toEqual(
-        [manifest.assets.directoryPackage, manifest.assets.keptFile].toSorted(),
+      expect(current.map(({ id }) => id).toSorted()).toEqual(
+        [
+          manifest.assets.directoryPackage!,
+          manifest.assets.keptFile!,
+        ].toSorted(),
       );
       const attention = await workflow.listCurrentAttentionPage();
       expect(attention.items).toEqual([]);
@@ -6199,7 +6200,7 @@ describe("SqliteCatalogue lifecycle", () => {
           limit: 100,
         })
       ).items
-        .map(({ entity }) => entity.id)
+        .map(({ id }) => id)
         .toSorted();
     try {
       const primaryRoot = await workflow.observedRootRegistrations.create({
@@ -6285,10 +6286,10 @@ describe("SqliteCatalogue lifecycle", () => {
       ).toBe("applied");
 
       const detailId = async (subjectId: string) =>
-        (await workflow.inspectCurrentCatalogueSubject(subjectId))?.entity.id;
+        (await workflow.inspectCurrentCatalogueSubject(subjectId))?.id;
       const relatedIds = async () =>
         (await workflow.inspectCurrentCatalogueEntity(series.id))!.accepted
-          .map(({ entity }) => entity.id)
+          .map(({ id }) => id)
           .toSorted();
 
       // 停用前：分页、精确主体与关系反查对同一成员资格给出一致答案。
@@ -17389,16 +17390,23 @@ describe("SQLite Asset Refresh persistence", () => {
         .join(""),
       encodeURIComponent(secret),
     ];
-    const evidence = new FanboxDateDirectoryInterpreter("customudon").interpret(
-      {
-        id: "snapshot",
-        root: "/observed/25.01.01 post",
-        complete: true,
-        files: [],
-        excluded: [],
-        observedAt: "2026-07-29T00:00:00.000Z",
-      },
-    )[0];
+    const plan = new FanboxDateDirectoryInterpreter().interpret({
+      id: "snapshot",
+      root: "/observed",
+      complete: true,
+      files: [
+        {
+          relativePath: "customudon/25.01.01 post/1.bin",
+          size: 1,
+          modifiedAt: "2026-07-29T00:00:00.000Z",
+        },
+      ],
+      excluded: [],
+      observedAt: "2026-07-29T00:00:00.000Z",
+    });
+    if (!("workItems" in plan))
+      throw new Error("FANBOX 目录约定没有形成工作项计划");
+    const evidence = plan.workItems[0]!.evidence[0]!;
 
     for (const [index, reflection] of reflections.entries()) {
       const title =
@@ -22207,8 +22215,14 @@ describe("SQLite Asset Refresh persistence", () => {
 
 /** 持久化端口只能通过 Drizzle 访问 `DatabaseSync`。 */
 function rejectDirectDatabaseQueries(): void {
-  const prepare = DatabaseSync.prototype.prepare;
-  const exec = DatabaseSync.prototype.exec;
+  const prepare: DatabaseSync["prepare"] = Reflect.get(
+    DatabaseSync.prototype,
+    "prepare",
+  );
+  const exec: DatabaseSync["exec"] = Reflect.get(
+    DatabaseSync.prototype,
+    "exec",
+  );
   vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (
     this: DatabaseSync,
     source: string,

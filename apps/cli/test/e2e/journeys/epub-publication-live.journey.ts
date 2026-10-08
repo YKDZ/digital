@@ -633,9 +633,11 @@ const journey: CliJourney = {
       ...state.roots.map((root, index) => ({
         name: `register EPUB publication root ${String(index + 1)}`,
         args: [
-          "root-create",
+          "library-create",
           `EPUB publication ${String(index + 1)}`,
+          "--directory",
           root.directory,
+          "--json",
         ],
         env: environment,
         haltOnFailure: true,

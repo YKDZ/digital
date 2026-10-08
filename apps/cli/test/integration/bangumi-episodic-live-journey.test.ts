@@ -135,7 +135,7 @@ function inspection(
     const artifactId = `artifact-${address}`;
     const subjectId = "subject-100";
     return {
-      key: `bangumi:season-1:episode-${position}`,
+      key: `bangumi:episode:${JSON.stringify([".", 1, position])}`,
       relativePaths: [
         `Season 1/示例作品 - S01E${String(position).padStart(2, "0")} - 第 ${position} 集.mkv`,
       ],
@@ -323,7 +323,7 @@ function multiSeasonInspection(): AssetRefreshInspection {
   }
   if (season2?.accepted !== undefined) {
     (season2 as { key: string; relativePaths: string[] }).key =
-      "bangumi:season-2:episode-1";
+      `bangumi:episode:${JSON.stringify([".", 2, 1])}`;
     (season2 as { key: string; relativePaths: string[] }).relativePaths = [
       "Season 2/示例作品 - S02E01 - 第 1 集.mkv",
     ];

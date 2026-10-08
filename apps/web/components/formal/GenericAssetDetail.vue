@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "#/components/ui/card";
 
 import AssetActions from "./AssetActions.vue";
 import AssetCover from "./AssetCover.vue";
+import AssetCoverChoice from "./AssetCoverChoice.vue";
 
 const emit = defineEmits<{ refreshed: [] }>();
 withDefaults(
@@ -79,6 +80,21 @@ withDefaults(
           </ul></CardContent
         ></Card
       >
+      <Card v-if="asset.files?.length"
+        ><CardHeader><CardTitle>本内容材料</CardTitle></CardHeader
+        ><CardContent
+          ><ul class="grid gap-2">
+            <li
+              v-for="file in asset.files"
+              :key="`${file.name}-${file.revisionId ?? ''}`"
+              class="flex items-center gap-2 text-sm"
+            >
+              <span class="min-w-0 truncate">{{ file.name }}</span
+              ><Badge variant="outline">{{ file.format }}</Badge>
+            </li>
+          </ul></CardContent
+        ></Card
+      >
       <p
         v-if="
           !asset.introduction &&
@@ -94,6 +110,11 @@ withDefaults(
         v-if="showActions"
         :target="asset.refreshTarget"
         @done="emit('refreshed')"
+      />
+      <AssetCoverChoice
+        v-if="showActions"
+        :subject-id="asset.refreshTarget.subjectId"
+        @refreshed="emit('refreshed')"
       />
       <Button
         v-if="asset.officialPage"

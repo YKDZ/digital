@@ -23,6 +23,12 @@ const inspectionOnlyDouble: WorkflowExecutionQueries = {
   async inspectRawSourceRecord() {
     return undefined;
   },
+  async inspectLibraryScan() {
+    return undefined;
+  },
+  async listUnrecognizedLibraryScanObservations() {
+    return [];
+  },
 };
 
 type AssertFalse<Value extends false> = Value;

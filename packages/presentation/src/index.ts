@@ -1,6 +1,6 @@
 import type {
-  AcceptedAssetState,
-  EffectiveMetadata,
+  EffectiveSubjectRead,
+  SelectedMetadataRead,
   InformationRequirement,
 } from "@digital/application";
 import * as v from "valibot";
@@ -46,12 +46,16 @@ export const generalAssetViewInformationRequirement: InformationRequirement = {
   ],
 };
 
-/** 图书视图实际消费的信息；来源/提供方保持开放。 */
+/**
+ * 图书视图实际消费的信息；来源/提供方保持开放。
+ *
+ * 资料语境与普通查询一致：书籍详情、索引和预演对同一需求采用相同的来源优先级政策，
+ * 避免同一实体的多来源标题在不同入口分别表现为单值与冲突。仅请求的坐标不同。
+ */
 export const bookViewInformationRequirement: InformationRequirement = {
-  metadataUsageContext: "asset.book-view",
+  metadataUsageContext: "asset.ordinary",
   metadata: [
     { property: "asset.title", necessity: "required" },
-    { property: "book.contributor", necessity: "optional" },
     { property: "book.isbn-13", necessity: "optional" },
     { property: "book.publisher", necessity: "optional" },
     { property: "book.publication-date", necessity: "optional" },
@@ -62,7 +66,7 @@ export const bookViewInformationRequirement: InformationRequirement = {
     { role: "asset.primary-cover", necessity: "optional" },
     { role: "asset.material-image", necessity: "optional" },
   ],
-  relationshipTypes: [],
+  relationshipTypes: [{ type: "asset.contribution", necessity: "optional" }],
 };
 
 /** 影片视图实际消费的信息；来源/提供方保持开放。 */
@@ -97,6 +101,7 @@ export const dlsiteAssetViewInformationRequirement: InformationRequirement = {
     { property: "asset.declared-language", necessity: "optional" },
     { property: "asset.content-classification", necessity: "optional" },
     { property: "dlsite.product.price-jpy", necessity: "optional" },
+    { property: "dlsite.product.genre", necessity: "optional" },
   ],
   artifactRoles: [
     {
@@ -159,6 +164,18 @@ export type AssetViewModel = {
   readonly cardComponent: AssetViewComponent;
   readonly detailComponent: AssetViewComponent;
   readonly title: string;
+  readonly factProblems?: readonly {
+    readonly target: EffectiveSubjectRead["descriptions"][number]["target"];
+    readonly message: string;
+    readonly conflicts: EffectiveSubjectRead["descriptions"][number]["conflicts"];
+  }[];
+  /**
+   * 被请求且必需的坐标在生效描述里确定为 missing 的坐标集。它与 informationReadiness
+   * 的获取状态分属两个维度：这里表达“当前事实确实没有值”，履行状态表达“还能不能取到”。
+   * 坐标只供展示层映射友好名称，绝不作为公共文案直接渲染。
+   */
+  readonly missingFacts?: readonly string[];
+  readonly informationReadiness?: EffectiveSubjectRead["informationReadiness"];
   readonly introduction?: string;
   readonly summary?: string;
   readonly body?: string;
@@ -207,12 +224,19 @@ export type AssetViewModel = {
     readonly priceJpy?: string;
     readonly languages: readonly string[];
     readonly classifications: readonly string[];
+    readonly genres: readonly {
+      readonly vocabulary: string;
+      readonly termId: string;
+      readonly label: string;
+    }[];
     readonly credits: readonly DlsiteViewCreditGroup[];
     readonly fileTree?: readonly AssetFileTreeNode[];
-    readonly series?: {
+    readonly series: readonly {
+      readonly id: string;
+      readonly relationshipId: string;
       readonly name: string;
       readonly position?: string;
-    };
+    }[];
   };
   readonly book?: {
     readonly title: string;
@@ -248,95 +272,11 @@ export type AssetViewModel = {
   };
 };
 
-export type AssetViewFacts = {
-  readonly id: string;
-  readonly primaryCoverArtifactId?: string;
-  /** 所有当前来源关联；其中一项可能仍是识别溯源。 */
-  readonly sourceAssociations?: readonly {
-    readonly sourceIdentity?: string;
-    readonly nativeAddress: string;
-  }[];
-  /** @deprecated 请使用 `sourceAssociations`；为现有来源视图保留。 */
-  readonly sourceAssociation?: {
-    readonly sourceIdentity?: string;
-    readonly nativeAddress: string;
-  };
-  /**
-   * 为该视图使用上下文选出的有效元数据。展示层接收选定值，而不是无序的来源断言集合。
-   */
-  readonly metadata: readonly (Pick<EffectiveMetadata, "property" | "value"> & {
-    readonly subjectId?: string;
-    readonly sourceSlot?: string;
-  })[];
-  readonly sourceArtifactCandidates?: readonly {
-    readonly sourceRecordId: string;
-    readonly role: string;
-    readonly mediaType: string;
-    readonly selectionEvidence?: {
-      readonly suggestedFilename?: string;
-      readonly declaredByteLength?: number;
-      readonly sourceOrdinal?: number;
-    };
-  }[];
-  /** 当前相关实体只接收唯一生效种类投影，绝不接收来源解释候选。 */
-  readonly currentRelatedEntities?: readonly Pick<
-    NonNullable<AcceptedAssetState["currentRelatedEntities"]>[number],
-    | "id"
-    | "label"
-    | "kind"
-    | "sourceIdentity"
-    | "identityNamespace"
-    | "sourceKey"
-  >[];
-  readonly relationships?: readonly {
-    readonly type: string;
-    readonly participants: readonly {
-      readonly entityId: string;
-      readonly role: string;
-    }[];
-    readonly qualifiers?: readonly {
-      readonly key: string;
-      readonly value: string;
-    }[];
-  }[];
-  readonly artifactAssociations: readonly {
-    readonly target:
-      | { readonly kind: "entity"; readonly entityId: string }
-      | {
-          readonly kind: "artifact-revision";
-          readonly artifactId: string;
-          readonly revisionId: string;
-        };
-    readonly artifactId: string;
-    readonly role: string;
-    readonly observedArtifactPart?: {
-      readonly artifactId: string;
-      readonly revisionId: string;
-      readonly locator: string;
-    };
-  }[];
-  readonly artifactRevisions?: readonly {
-    readonly id: string;
-    readonly artifactId: string;
-    readonly blobDigest?: string;
-  }[];
-  readonly blobs?: readonly {
-    readonly digest: string;
-    readonly byteLength: number;
-  }[];
-  /** 当前观察与精确确认选出的 Location→revision；历史修订版本身不构成 target。 */
-  readonly currentLocationRevisions?: readonly {
-    readonly locationId: string;
-    readonly revisionId: string;
-  }[];
-  readonly locations: readonly {
-    readonly id?: string;
-    readonly artifactId: string;
-    readonly kind: "managed" | "observed";
-    readonly address: string;
-    readonly byteLength?: number;
+/** 普通读取直接成为展示输入；交付层只可补充下载地址与用户交互。 */
+export type AssetViewFacts = Omit<EffectiveSubjectRead, "locations"> & {
+  readonly locations: readonly (EffectiveSubjectRead["locations"][number] & {
     readonly downloadUrl?: string;
-  }[];
+  })[];
   readonly interactionStates?: readonly {
     readonly artifactRevisionId: string;
     readonly positionMilliseconds: number;
@@ -344,10 +284,161 @@ export type AssetViewFacts = {
   }[];
 };
 
+export function subjectMetadata(
+  input: Pick<EffectiveSubjectRead, "id" | "descriptions">,
+  subjectId = input.id,
+): readonly SelectedMetadataRead[] {
+  return (
+    input.descriptions
+      .find(
+        (description) =>
+          description.target.kind === "entity" &&
+          description.target.entityId === subjectId,
+      )
+      ?.metadata.flatMap((property) =>
+        property.result.status === "resolved" ? property.result.values : [],
+      ) ?? []
+  );
+}
+
+export function subjectArtwork(
+  input: Pick<EffectiveSubjectRead, "descriptions">,
+  subjectId: string,
+): string | undefined {
+  return input.descriptions
+    .find(
+      (description) =>
+        description.target.kind === "entity" &&
+        description.target.entityId === subjectId,
+    )
+    ?.artifactRoles.find((role) => role.role === "asset.primary-cover")
+    ?.address;
+}
+
 export type CatalogueViewModel = AssetViewModel | BangumiSeriesViewModel;
 
+export type TargetArtworkResult = {
+  readonly address?: string;
+  readonly problem?: ReturnType<typeof factProblems>[number];
+};
+
+/**
+ * 在同一明确实体目标上共同消费多份资料读取的主封面结果。协调依据是各读取实际选中的产物身份
+ * 与该角色的可用状态，而不是可选的地址：已选出但当前不可用的读取不会被跳过，也不会有另一读取
+ * 的另一张图替它补位。不同产物是资料事实冲突，抑制供图并保留稳定审计；同一产物在不同读取中的
+ * 可用位置差异只是可用性问题，不伪装成产物选择冲突。任一读取保留同级冲突时不供图（该冲突由
+ * `factProblems` 逐项呈现），读取之间绝不按先后取首个地址。
+ */
+export function targetArtwork(
+  inputs: readonly Pick<EffectiveSubjectRead, "descriptions">[],
+  subjectId: string,
+): TargetArtworkResult {
+  const role = "asset.primary-cover";
+  const problem = (
+    message: string,
+    conflicts: NonNullable<TargetArtworkResult["problem"]>["conflicts"],
+  ): NonNullable<TargetArtworkResult["problem"]> => ({
+    target: { kind: "entity", entityId: subjectId },
+    message,
+    conflicts,
+  });
+  const artifactIds = new Set<string>();
+  const associationIds = new Set<string>();
+  const addresses = new Set<string>();
+  let selected = 0;
+  let unusable = 0;
+  let conflicted = false;
+  for (const input of inputs) {
+    const description = input.descriptions.find(
+      (candidate) =>
+        candidate.target.kind === "entity" &&
+        candidate.target.entityId === subjectId,
+    );
+    if (description === undefined) continue;
+    if (description.conflicts.some((conflict) => conflict.role === role))
+      conflicted = true;
+    const chosen = description.artifactRoles.find(
+      (candidate) => candidate.role === role,
+    );
+    if (chosen === undefined) continue;
+    selected += 1;
+    artifactIds.add(chosen.artifactId);
+    for (const associationId of chosen.associationIds)
+      associationIds.add(associationId);
+    if (chosen.address === undefined) unusable += 1;
+    else addresses.add(chosen.address);
+  }
+  if (artifactIds.size > 1)
+    return {
+      problem: problem("这项内容有尚未解决的资料或图片选择", [
+        {
+          kind: "artifact-association-conflict",
+          role,
+          references: [...associationIds].toSorted().map((associationId) => ({
+            kind: "artifact-association" as const,
+            associationId,
+          })),
+          explanation: "同一图片目标在不同资料读取中选择了不同产物",
+        },
+      ]),
+    };
+  if (selected === 0 || conflicted || addresses.size === 0) return {};
+  const [address] = [...addresses].toSorted();
+  if (address === undefined) return {};
+  return {
+    address,
+    ...(unusable === 0
+      ? {}
+      : {
+          problem: problem("这项内容的封面有尚未确认的当前内容", []),
+        }),
+  };
+}
+
+export function factProblems(
+  input: AssetViewFacts,
+): NonNullable<AssetViewModel["factProblems"]> {
+  return input.descriptions.flatMap((description) =>
+    description.conflicts.length === 0
+      ? []
+      : [
+          {
+            target: description.target,
+            message: "这项内容有尚未解决的资料或图片选择",
+            conflicts: description.conflicts,
+          },
+        ],
+  );
+}
+
+/**
+ * 生效描述里被请求且必需、却确定为 missing 的坐标。只用于与冲突、履行状态区分展示，
+ * 可选坐标缺失或没有就绪信息时不制造缺失，绝不把未请求坐标计为缺失。
+ */
+export function descriptiveMissingFacts(
+  input: AssetViewFacts,
+): readonly string[] {
+  const required = new Set(
+    (input.informationReadiness?.inputs ?? [])
+      .filter((item) => item.necessity === "required")
+      .map((item) => item.coordinate),
+  );
+  if (required.size === 0) return [];
+  const description = input.descriptions.find(
+    (item) =>
+      item.target.kind === "entity" && item.target.entityId === input.id,
+  );
+  if (description === undefined) return [];
+  return [
+    ...description.metadata
+      .filter((property) => property.result.status === "missing")
+      .map((property) => property.property),
+    ...description.missingArtifactRoles,
+  ].filter((coordinate) => required.has(coordinate));
+}
+
 function singleMetadata(
-  metadata: AssetViewFacts["metadata"],
+  metadata: readonly SelectedMetadataRead[],
   property: string,
 ): string | undefined {
   const values = metadataValues(metadata, property);
@@ -355,7 +446,7 @@ function singleMetadata(
 }
 
 function metadataValues(
-  metadata: AssetViewFacts["metadata"],
+  metadata: readonly SelectedMetadataRead[],
   property: string,
 ): readonly string[] {
   return metadata
@@ -370,26 +461,29 @@ function metadataValues(
 export function assetViewComponent(
   input: Pick<
     AssetViewFacts,
-    "sourceAssociations" | "sourceAssociation" | "metadata"
+    | "id"
+    | "sourceAssociations"
+    | "recognitionSourceAssociation"
+    | "descriptions"
   >,
 ): AssetViewComponent {
   const identities = [
     ...(input.sourceAssociations ?? []).map(
       (association) => association.sourceIdentity,
     ),
-    input.sourceAssociation?.sourceIdentity,
+    input.recognitionSourceAssociation?.sourceIdentity,
   ];
   if (identities.includes("fanbox")) return "fanbox";
   if (identities.includes("dlsite")) return "dlsite";
   if (identities.includes("tmdb")) return "film";
   if (identities.includes("bangumi")) return "bangumi";
   if (
-    input.metadata.some(
+    subjectMetadata(input).some(
       (item) =>
         item.property === "asset.content-classification" &&
         item.value === "book",
     ) ||
-    input.metadata.some((item) =>
+    subjectMetadata(input).some((item) =>
       ["book.isbn-13", "book.contributor", "book.publisher"].includes(
         item.property,
       ),
@@ -406,7 +500,10 @@ export function assetViewComponent(
 export function informationRequirementForAssetView(
   input: Pick<
     AssetViewFacts,
-    "sourceAssociations" | "sourceAssociation" | "metadata"
+    | "id"
+    | "sourceAssociations"
+    | "recognitionSourceAssociation"
+    | "descriptions"
   >,
 ): InformationRequirement {
   switch (assetViewComponent(input)) {
@@ -441,25 +538,29 @@ function relationshipLabels(
   role: string,
 ): readonly string[] {
   const entities = new Map(
-    (input.currentRelatedEntities ?? []).map((entity) => [
-      entity.id,
-      entity.label,
-    ]),
+    (input.relatedEntities ?? []).map((entity) => [entity.id, entity.label]),
   );
-  return (input.relationships ?? []).flatMap((relationship) => {
-    return relationship.participants.flatMap((participant) => {
-      if (participant.role !== role) return [];
-      const label = entities.get(participant.entityId);
-      return label === undefined ? [] : [label];
+  return (input.relationships ?? [])
+    .filter((relationship) =>
+      relationship.participants.some(
+        (participant) => participant.entityId === input.id,
+      ),
+    )
+    .flatMap((relationship) => {
+      return relationship.participants.flatMap((participant) => {
+        if (participant.role !== role) return [];
+        const label = entities.get(participant.entityId);
+        return label === undefined ? [] : [label];
+      });
     });
-  });
 }
 
-function firstRelationshipLabel(
+function joinedRelationshipLabels(
   input: AssetViewFacts,
   role: string,
 ): string | undefined {
-  return relationshipLabels(input, role)[0];
+  const labels = [...new Set(relationshipLabels(input, role))];
+  return labels.length === 0 ? undefined : labels.join("、");
 }
 
 function fileFormat(name: string): string {
@@ -467,19 +568,12 @@ function fileFormat(name: string): string {
 }
 
 function currentRevisionId(
-  input: AssetViewFacts,
+  _input: AssetViewFacts,
   location: AssetViewFacts["locations"][number],
 ): string | undefined {
-  if (location.kind === "managed") {
-    const revisions = (input.artifactRevisions ?? []).filter(
-      (revision) => revision.artifactId === location.artifactId,
-    );
-    return revisions.length === 1 ? revisions[0]?.id : undefined;
-  }
-  if (location.id === undefined) return undefined;
-  return input.currentLocationRevisions?.find(
-    (candidate) => candidate.locationId === location.id,
-  )?.revisionId;
+  return location.content.status === "confirmed"
+    ? location.content.target.revisionId
+    : undefined;
 }
 
 function interactionFor(
@@ -537,15 +631,8 @@ function observedFileTree(input: AssetViewFacts): readonly AssetFileTreeNode[] {
       children = node.children;
     }
     const revisionId = currentRevisionId(input, location);
-    const revision = (input.artifactRevisions ?? []).find(
-      (candidate) =>
-        candidate.id === revisionId &&
-        candidate.artifactId === location.artifactId,
-    );
-    const byteLength =
-      location.byteLength ??
-      input.blobs?.find((blob) => blob.digest === revision?.blobDigest)
-        ?.byteLength;
+    const byteLength = location.byteLength;
+
     children.set(name, {
       name,
       children: new Map(),
@@ -594,8 +681,49 @@ function observedFileTree(input: AssetViewFacts): readonly AssetFileTreeNode[] {
   return project(root);
 }
 
+/** 从观察材料投影消费者可见的文件；同集多技术与字幕都作为独立材料保留。 */
+export function observedArtifactFiles(
+  input: AssetViewFacts,
+): readonly ArtifactFileView[] {
+  return input.locations
+    .filter((location) => location.kind === "observed")
+    .map((location) => {
+      const name = location.address.split(/[\\/]/u).at(-1) ?? "文件";
+      const extension = /\.([^.]+)$/u.exec(name)?.[1]?.toUpperCase();
+      const revisionId = currentRevisionId(input, location);
+      const image =
+        location.content.status === "confirmed"
+          ? input.descriptions
+              .find(
+                (description) =>
+                  description.target.kind === "artifact-revision" &&
+                  description.target.artifactId === location.artifactId &&
+                  description.target.revisionId === revisionId,
+              )
+              ?.artifactRoles.find(
+                (role) => role.role === "asset.material-image",
+              )?.address
+          : undefined;
+      const byteLength = location.byteLength;
+
+      return {
+        name,
+        format: extension ?? "文件",
+        ...(revisionId === undefined ? {} : { revisionId }),
+        ...(image === undefined ? {} : { image }),
+        ...(byteLength === undefined ? {} : { byteLength }),
+        ...(location.downloadUrl === undefined
+          ? {}
+          : { downloadUrl: location.downloadUrl }),
+        ...(interactionFor(input, revisionId) === undefined
+          ? {}
+          : { interaction: interactionFor(input, revisionId)! }),
+      };
+    });
+}
+
 function fanboxAttachments(
-  candidates: AssetViewFacts["sourceArtifactCandidates"],
+  candidates: AssetViewFacts["sourceArtifacts"],
 ): readonly {
   readonly name?: string;
   readonly byteLength?: string;
@@ -639,77 +767,108 @@ function dlsiteCredits(
  */
 export function projectAssetView(input: AssetViewFacts): AssetViewModel {
   const component = assetViewComponent(input);
-  const cover = input.locations.find(
-    (location) =>
-      location.artifactId === input.primaryCoverArtifactId &&
-      location.kind === "managed",
-  )?.address;
+  const cover = subjectArtwork(input, input.id);
+
   const entities = new Map(
-    (input.currentRelatedEntities ?? []).map((entity) => [
-      entity.id,
-      entity.label,
-    ]),
+    (input.relatedEntities ?? []).map((entity) => [entity.id, entity.label]),
   );
-  const relationships = (input.relationships ?? []).flatMap((relationship) => {
-    return relationship.participants.flatMap((participant) => {
-      if (participant.role === "asset") return [];
-      const label = entities.get(participant.entityId);
-      return label === undefined
-        ? []
-        : [
-            {
-              heading:
-                relationship.type === "asset.contribution"
-                  ? "参与者"
-                  : "相关内容",
-              label,
-            } as const,
-          ];
+  const relationships = (input.relationships ?? [])
+    .filter((relationship) =>
+      relationship.participants.some(
+        (participant) => participant.entityId === input.id,
+      ),
+    )
+    .flatMap((relationship) => {
+      return relationship.participants.flatMap((participant) => {
+        if (participant.role === "asset") return [];
+        const label = entities.get(participant.entityId);
+        return label === undefined
+          ? []
+          : [
+              {
+                heading:
+                  relationship.type === "asset.contribution"
+                    ? "参与者"
+                    : "相关内容",
+                label,
+              } as const,
+            ];
+      });
     });
-  });
-  const title = singleMetadata(input.metadata, "asset.title") ?? "未命名";
-  const releaseDate = singleMetadata(input.metadata, "asset.release-date");
+  const title =
+    singleMetadata(subjectMetadata(input), "asset.title") ?? "未命名";
+  const releaseDate = singleMetadata(
+    subjectMetadata(input),
+    "asset.release-date",
+  );
   const publicationDateTime = singleMetadata(
-    input.metadata,
+    subjectMetadata(input),
     "asset.publication-datetime",
   );
-  const introduction = singleMetadata(input.metadata, "asset.introduction");
-  const summary = singleMetadata(input.metadata, "asset.summary");
-  const body = singleMetadata(input.metadata, "asset.body");
-  const language = singleMetadata(input.metadata, "asset.declared-language");
+  const introduction = singleMetadata(
+    subjectMetadata(input),
+    "asset.introduction",
+  );
+  const summary = singleMetadata(subjectMetadata(input), "asset.summary");
+  const body = singleMetadata(subjectMetadata(input), "asset.body");
+  const language = singleMetadata(
+    subjectMetadata(input),
+    "asset.declared-language",
+  );
   const classifications = metadataValues(
-    input.metadata,
+    subjectMetadata(input),
     "asset.content-classification",
   );
   const fanboxEntitlement = singleMetadata(
-    input.metadata,
+    subjectMetadata(input),
     "fanbox.post.entitlement",
   );
-  const fanboxCreator = firstRelationshipLabel(input, "fanbox.post.creator");
+  const fanboxCreator = joinedRelationshipLabels(input, "fanbox.post.creator");
   const fanboxLikeCount = singleMetadata(
-    input.metadata,
+    subjectMetadata(input),
     "fanbox.post.like-count",
   );
   const fanboxCommentCount = singleMetadata(
-    input.metadata,
+    subjectMetadata(input),
     "fanbox.post.comment-count",
   );
-  const dlsiteCircle = firstRelationshipLabel(input, "circle");
+  const dlsiteCircle = joinedRelationshipLabels(input, "circle");
   const dlsitePriceJpy = singleMetadata(
-    input.metadata,
+    subjectMetadata(input),
     "dlsite.product.price-jpy",
   );
-  const seriesName = firstRelationshipLabel(input, "dlsite.series.member");
-  const seriesPosition = relationshipQualifier(
-    input,
-    "dlsite.series.member",
-    "asset.membership.position",
-  );
+  const series = (input.relationships ?? [])
+    .filter(
+      (relationship) =>
+        relationship.type === "asset.membership" &&
+        relationship.participants.some(
+          (participant) => participant.entityId === input.id,
+        ),
+    )
+    .flatMap((relationship) =>
+      relationship.participants.flatMap((participant) => {
+        if (participant.role !== "dlsite.series.member") return [];
+        const name = entities.get(participant.entityId);
+        if (name === undefined) return [];
+        const position = relationship.qualifiers?.find(
+          (qualifier) => qualifier.key === "asset.membership.position",
+        )?.value;
+        return [
+          {
+            id: participant.entityId,
+            relationshipId: relationship.id,
+            name,
+            ...(position === undefined ? {} : { position }),
+          },
+        ];
+      }),
+    );
+
   const runtimeMinutes = singleMetadata(
-    input.metadata,
+    subjectMetadata(input),
     "asset.runtime-minutes",
   );
-  const filmGenres = metadataValues(input.metadata, "asset.genre");
+  const filmGenres = metadataValues(subjectMetadata(input), "asset.genre");
   const filmDirectors = relationshipLabels(input, "director");
   const filmCast = relationshipLabels(input, "cast");
   const filmRatings = [
@@ -717,13 +876,16 @@ export function projectAssetView(input: AssetViewFacts): AssetViewModel {
     { property: "rating.rotten-tomatoes", label: "烂番茄" },
     { property: "rating.metacritic", label: "Metacritic" },
   ].flatMap(({ property, label }) =>
-    metadataValues(input.metadata, property).map((value) => ({ label, value })),
+    metadataValues(subjectMetadata(input), property).map((value) => ({
+      label,
+      value,
+    })),
   );
   const filmSources = [
     ...(input.sourceAssociations ?? []),
     ...(input.sourceAssociations === undefined &&
-    input.sourceAssociation !== undefined
-      ? [input.sourceAssociation]
+    input.recognitionSourceAssociation !== undefined
+      ? [input.recognitionSourceAssociation]
       : []),
   ].flatMap((association) => {
     const label = sourceLabel(association.sourceIdentity);
@@ -738,67 +900,25 @@ export function projectAssetView(input: AssetViewFacts): AssetViewModel {
           },
         ];
   });
-  const observedFiles = input.locations
-    .filter((location) => location.kind === "observed")
-    .map((location) => {
-      const name = location.address.split(/[\\/]/u).at(-1) ?? "文件";
-      const extension = /\.([^.]+)$/u.exec(name)?.[1]?.toUpperCase();
-      const revisionId = currentRevisionId(input, location);
-      const imageAssociation = input.artifactAssociations.find(
-        (association) =>
-          association.target.kind === "artifact-revision" &&
-          association.role === "asset.material-image" &&
-          association.observedArtifactPart?.artifactId ===
-            location.artifactId &&
-          association.target.artifactId === location.artifactId &&
-          association.target.revisionId ===
-            association.observedArtifactPart.revisionId &&
-          input.artifactRevisions?.some(
-            (revision) =>
-              revision.id === association.observedArtifactPart?.revisionId &&
-              revision.artifactId === location.artifactId,
-          ),
-      );
-      const image = input.locations.find(
-        (candidate) =>
-          candidate.kind === "managed" &&
-          candidate.artifactId === imageAssociation?.artifactId,
-      )?.address;
-      const artifactRevisions = (input.artifactRevisions ?? []).filter(
-        (revision) => revision.artifactId === location.artifactId,
-      );
-      const revision = artifactRevisions.find(
-        (candidate) => candidate.id === revisionId,
-      );
-      const byteLength =
-        location.byteLength ??
-        input.blobs?.find((blob) => blob.digest === revision?.blobDigest)
-          ?.byteLength;
-      return {
-        name,
-        format: extension ?? "文件",
-        ...(revision === undefined ? {} : { revisionId: revision.id }),
-        ...(image === undefined ? {} : { image }),
-        ...(byteLength === undefined ? {} : { byteLength }),
-        ...(location.downloadUrl === undefined
-          ? {}
-          : { downloadUrl: location.downloadUrl }),
-        ...(interactionFor(input, revisionId) === undefined
-          ? {}
-          : { interaction: interactionFor(input, revisionId)! }),
-      };
-    });
-  const bookIsbn13 = singleMetadata(input.metadata, "book.isbn-13");
-  const bookPublisher = singleMetadata(input.metadata, "book.publisher");
+  const observedFiles = observedArtifactFiles(input);
+  const bookIsbn13 = singleMetadata(subjectMetadata(input), "book.isbn-13");
+  const bookPublisher = singleMetadata(
+    subjectMetadata(input),
+    "book.publisher",
+  );
   const bookPublicationDate = singleMetadata(
-    input.metadata,
+    subjectMetadata(input),
     "book.publication-date",
   );
-  const filmAwards = singleMetadata(input.metadata, "asset.awards");
-  const filmBoxOffice = singleMetadata(input.metadata, "asset.box-office");
+  const filmAwards = singleMetadata(subjectMetadata(input), "asset.awards");
+  const filmBoxOffice = singleMetadata(
+    subjectMetadata(input),
+    "asset.box-office",
+  );
   const firstObservedFile = observedFiles[0];
+  const missingFacts = descriptiveMissingFacts(input);
   const primarySourceLabel = sourceLabel(
-    input.sourceAssociation?.sourceIdentity,
+    input.recognitionSourceAssociation?.sourceIdentity,
   );
   const sources = (input.sourceAssociations ?? []).flatMap((association) =>
     association.sourceIdentity === undefined
@@ -821,6 +941,11 @@ export function projectAssetView(input: AssetViewFacts): AssetViewModel {
     cardComponent: component,
     detailComponent: component,
     title,
+    factProblems: factProblems(input),
+    ...(missingFacts.length === 0 ? {} : { missingFacts }),
+    ...(input.informationReadiness === undefined
+      ? {}
+      : { informationReadiness: input.informationReadiness }),
     ...(introduction === undefined ? {} : { introduction }),
     ...(summary === undefined ? {} : { summary }),
     ...(body === undefined ? {} : { body }),
@@ -833,10 +958,10 @@ export function projectAssetView(input: AssetViewFacts): AssetViewModel {
     ...(cover === undefined ? {} : { cover }),
     available: input.locations.some((location) => location.kind === "observed"),
     sources,
-    ...(input.sourceAssociation === undefined
+    ...(input.recognitionSourceAssociation === undefined
       ? {}
       : {
-          officialPage: input.sourceAssociation.nativeAddress,
+          officialPage: input.recognitionSourceAssociation.nativeAddress,
           ...(primarySourceLabel === undefined
             ? {}
             : { sourceLabel: primarySourceLabel }),
@@ -865,7 +990,7 @@ export function projectAssetView(input: AssetViewFacts): AssetViewModel {
             ...(fanboxCommentCount === undefined
               ? {}
               : { commentCount: fanboxCommentCount }),
-            attachments: fanboxAttachments(input.sourceArtifactCandidates),
+            attachments: fanboxAttachments(input.sourceArtifacts),
           },
         }),
     ...(component !== "dlsite"
@@ -881,22 +1006,26 @@ export function projectAssetView(input: AssetViewFacts): AssetViewModel {
               ? {}
               : { priceJpy: dlsitePriceJpy }),
             languages: metadataValues(
-              input.metadata,
+              subjectMetadata(input),
               "asset.declared-language",
             ),
             classifications,
+            genres: subjectMetadata(input)
+              .filter((value) => value.property === "dlsite.product.genre")
+              .flatMap((value) => {
+                const vocabulary = value.qualifiers?.find(
+                  (qualifier) => qualifier.key === "classification.vocabulary",
+                )?.value;
+                const termId = value.qualifiers?.find(
+                  (qualifier) => qualifier.key === "classification.term-id",
+                )?.value;
+                return vocabulary === undefined || termId === undefined
+                  ? []
+                  : [{ vocabulary, termId, label: value.value }];
+              }),
             credits: dlsiteCredits(input),
             fileTree: observedFileTree(input),
-            ...(seriesName === undefined
-              ? {}
-              : {
-                  series: {
-                    name: seriesName,
-                    ...(seriesPosition === undefined
-                      ? {}
-                      : { position: seriesPosition }),
-                  },
-                }),
+            series,
           },
         }),
     ...(component !== "book"
@@ -905,7 +1034,7 @@ export function projectAssetView(input: AssetViewFacts): AssetViewModel {
           book: {
             title,
             ...(cover === undefined ? {} : { cover }),
-            contributors: metadataValues(input.metadata, "book.contributor"),
+            contributors: contributionLabels(input),
             ...(bookIsbn13 === undefined ? {} : { isbn13: bookIsbn13 }),
             ...(bookPublisher === undefined
               ? {}
@@ -946,18 +1075,31 @@ export function projectAssetView(input: AssetViewFacts): AssetViewModel {
   };
 }
 
-function relationshipQualifier(
-  input: AssetViewFacts,
-  role: string,
-  key: string,
-): string | undefined {
-  return input.relationships
-    ?.find((relationship) =>
-      relationship.participants.some(
-        (participant) => participant.role === role,
-      ),
-    )
-    ?.qualifiers?.find((qualifier) => qualifier.key === key)?.value;
+function contributionLabels(input: AssetViewFacts): readonly string[] {
+  const entities = new Map(
+    input.relatedEntities.map((entity) => [entity.id, entity.label]),
+  );
+  return [
+    ...new Set(
+      input.relationships
+        .filter(
+          (relationship) =>
+            relationship.type === "asset.contribution" &&
+            relationship.participants.some(
+              (participant) =>
+                participant.entityId === input.id &&
+                participant.role === "asset",
+            ),
+        )
+        .flatMap((relationship) =>
+          relationship.participants.flatMap((participant) => {
+            if (participant.role === "asset") return [];
+            const label = entities.get(participant.entityId);
+            return label === undefined ? [] : [label];
+          }),
+        ),
+    ),
+  ];
 }
 
 /**
@@ -973,16 +1115,14 @@ export function projectCatalogue(
     currentBySubject.set(fact.id, fact);
   }
   const current = [...currentBySubject.values()];
-  const bangumi: AssetViewFacts[] = [];
-  const ordinary: AssetViewFacts[] = [];
-  for (const fact of current) {
-    (fact.sourceAssociation?.sourceIdentity === "bangumi"
-      ? bangumi
-      : ordinary
-    ).push(fact);
-  }
+  const groups = projectBangumiCatalogue(current);
+  const represented = new Set(
+    groups.flatMap((group) => group.episodes.map((episode) => episode.assetId)),
+  );
   return [
-    ...projectBangumiCatalogue(bangumi),
-    ...ordinary.map(projectAssetView),
+    ...groups,
+    ...current
+      .filter((fact) => !represented.has(fact.id))
+      .map(projectAssetView),
   ];
 }

@@ -7,11 +7,13 @@ import { computed } from "vue";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "#/components/ui/tabs";
+import { withLibraryContext } from "#/lib/library";
 
 const props = defineProps<{
   readonly asset: BangumiSeriesViewModel;
   readonly selectedEpisodeId?: string;
   readonly selectedWorkId?: string;
+  readonly library?: string;
   readonly showActions?: boolean;
 }>();
 
@@ -38,11 +40,14 @@ const nextEpisode = computed(() =>
 );
 
 function episodeHref(id: string) {
-  return `/assets/${encodeURIComponent(id)}`;
+  return withLibraryContext(`/assets/${encodeURIComponent(id)}`, props.library);
 }
 
 function workHref(id: string) {
-  return `/series/${encodeURIComponent(props.asset.id)}?season=${encodeURIComponent(id)}`;
+  return withLibraryContext(
+    `/series/${encodeURIComponent(props.asset.id)}?season=${encodeURIComponent(id)}`,
+    props.library,
+  );
 }
 
 function selectWork(id: string | number) {

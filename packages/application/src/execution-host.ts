@@ -22,6 +22,12 @@ export type OperationLease = {
   bindObservedRoot(input: {
     readonly registrationId: string;
     readonly registrationVersion: number;
+    /**
+     * 库目录工作时携带的库授权坐标；独立位置读取省略它，只沿物理根自身权威。
+     * 携带后该租约同时受库目录失效与根失效约束。
+     */
+    readonly assetLibraryId?: string;
+    readonly directoryAuthorityVersion?: number;
   }): { release(): void };
   release(): void;
 };
@@ -39,6 +45,18 @@ export type ExecutionInvocation = (
   control: ExecutionInvocationControl,
 ) => void | Promise<void>;
 
+/** 租约记录：顶层 reservation 及其后绑定的观察根与库目录授权坐标。 */
+type OperationLeaseEntry = {
+  registrationId?: string;
+  registrationVersion?: number;
+  assetLibraryId?: string;
+  directoryAuthorityVersion?: number;
+  generation: number;
+  bindingSerial: number;
+  directoryGeneration: number;
+  readonly cancel: (reason: "shutdown" | "observed-root-invalidated") => void;
+};
+
 /**
  * 对长时间运行的应用工作流调用提供进程级监督。耐久工作流状态仍由工作流及其
  * 端口持有。
@@ -49,14 +67,12 @@ export class ExecutionHost {
   private accepting = true;
   private readonly active = new Set<Promise<void>>();
   private closing: Promise<void> | undefined;
-  private readonly operationLeases = new Set<{
-    registrationId?: string;
-    registrationVersion?: number;
-    generation: number;
-    bindingSerial: number;
-    readonly cancel: (reason: "shutdown" | "observed-root-invalidated") => void;
-  }>();
+  private readonly operationLeases = new Set<OperationLeaseEntry>();
   private readonly observedRootGenerations = new Map<
+    string,
+    { readonly generation: number; readonly keepVersion: number | undefined }
+  >();
+  private readonly libraryDirectoryGenerations = new Map<
     string,
     { readonly generation: number; readonly keepVersion: number | undefined }
   >();
@@ -181,10 +197,11 @@ export class ExecutionHost {
     let cancelled = false;
     let cancellationReason: OperationCancellation["reason"];
     const listeners = new Set<() => void>();
-    const entry = {
+    const entry: OperationLeaseEntry = {
       ...input,
       generation: observedState?.generation ?? 0,
       bindingSerial: input.registrationId === undefined ? 0 : 1,
+      directoryGeneration: 0,
       cancel: (reason: "shutdown" | "observed-root-invalidated") => {
         if (cancelled) return;
         cancelled = true;
@@ -197,6 +214,8 @@ export class ExecutionHost {
     const bindObservedRoot = (coordinate: {
       readonly registrationId: string;
       readonly registrationVersion: number;
+      readonly assetLibraryId?: string;
+      readonly directoryAuthorityVersion?: number;
     }) => {
       if (released || cancelled) throw new OperationLeaseInvalidated();
       if (entry.registrationId !== undefined)
@@ -209,9 +228,36 @@ export class ExecutionHost {
         current.keepVersion !== coordinate.registrationVersion
       )
         throw new OperationLeaseInvalidated();
+      const directoryKey =
+        coordinate.assetLibraryId === undefined
+          ? undefined
+          : libraryDirectoryKey(
+              coordinate.assetLibraryId,
+              coordinate.registrationId,
+            );
+      const directoryState =
+        directoryKey === undefined
+          ? undefined
+          : this.libraryDirectoryGenerations.get(directoryKey);
+      if (
+        coordinate.assetLibraryId !== undefined &&
+        (coordinate.directoryAuthorityVersion === undefined ||
+          (directoryState !== undefined &&
+            directoryState.keepVersion !==
+              coordinate.directoryAuthorityVersion))
+      )
+        throw new OperationLeaseInvalidated();
       entry.registrationId = coordinate.registrationId;
       entry.registrationVersion = coordinate.registrationVersion;
       entry.generation = current?.generation ?? 0;
+      if (coordinate.assetLibraryId !== undefined) {
+        entry.assetLibraryId = coordinate.assetLibraryId;
+        entry.directoryGeneration = directoryState?.generation ?? 0;
+        // 上面的失效判定已保证带库坐标时授权代次必然存在，这里只做类型收窄。
+        if (coordinate.directoryAuthorityVersion !== undefined)
+          entry.directoryAuthorityVersion =
+            coordinate.directoryAuthorityVersion;
+      }
       entry.bindingSerial += 1;
       const bindingSerial = entry.bindingSerial;
       let bindingReleased = false;
@@ -222,7 +268,10 @@ export class ExecutionHost {
           if (entry.bindingSerial !== bindingSerial) return;
           delete entry.registrationId;
           delete entry.registrationVersion;
+          delete entry.assetLibraryId;
+          delete entry.directoryAuthorityVersion;
           entry.generation = 0;
+          entry.directoryGeneration = 0;
         },
       };
     };
@@ -272,6 +321,36 @@ export class ExecutionHost {
     }
   }
 
+  /**
+   * 一个库对该目录的授权被明确撤销、重连或链接配置改变时，只失效绑定同一库与该根
+   * 坐标的在进程操作；其他库共享同一物理根的租约不受影响。物理根最终被末引用撤销
+   * 仍走 invalidateObservedRoot，届时全部绑定者一并失效。
+   */
+  invalidateLibraryDirectory(input: {
+    readonly assetLibraryId: string;
+    readonly registrationId: string;
+    readonly keepVersion?: number;
+  }): void {
+    const key = libraryDirectoryKey(input.assetLibraryId, input.registrationId);
+    const previous = this.libraryDirectoryGenerations.get(key);
+    const generation = (previous?.generation ?? 0) + 1;
+    this.libraryDirectoryGenerations.set(key, {
+      generation,
+      keepVersion: input.keepVersion,
+    });
+    for (const lease of this.operationLeases) {
+      if (lease.registrationId !== input.registrationId) continue;
+      if (lease.assetLibraryId !== input.assetLibraryId) continue;
+      if (lease.directoryGeneration >= generation) continue;
+      if (
+        input.keepVersion !== undefined &&
+        lease.directoryAuthorityVersion === input.keepVersion
+      )
+        continue;
+      lease.cancel("observed-root-invalidated");
+    }
+  }
+
   private reserveActive(): { readonly release: () => void } {
     let resolve!: () => void;
     const settlement = new Promise<void>((settled) => {
@@ -308,4 +387,8 @@ export class ExecutionHost {
   private async drain(): Promise<void> {
     while (this.active.size > 0) await Promise.all(this.active);
   }
+}
+
+function libraryDirectoryKey(assetLibraryId: string, registrationId: string) {
+  return `${assetLibraryId}\u0000${registrationId}`;
 }

@@ -11,17 +11,22 @@ import {
   decodeSourcedEntity,
   decodeWorkflowExecutionInput,
   isExactLegacySourceEnrichmentExecutionAuthority,
+  isObservedRootAutomationScope,
   type WorkflowExecution,
   validateSourceAssociationDecisionEnvelope,
   validateSourceAssociationDecisionPriorExecution,
 } from "@digital/application";
+import {
+  type DescriptionTarget,
+  artifactRoleDecisionKey,
+} from "@digital/domain";
 
 import { matchesReviewedCatalogueSchema } from "./schema-contract.ts";
 import { workflowExecutionAuditVersion } from "./schema.ts";
 import { canonicalJson } from "./workflow-execution-persistence.ts";
 
 export const productionCatalogueMigrationHead =
-  "20261003010000_ordinary_people_and_personas";
+  "20261007030000_library_scan_fulfillment";
 export const productionCatalogueMigrationPlan = [
   {
     id: "20260820000000_v1_catalogue_baseline",
@@ -124,9 +129,49 @@ export const productionCatalogueMigrationPlan = [
       "2cec585f48aac97ed78c2d4a3b825754c279ac05290ce53ef170d460a95cc45e",
   },
   {
-    id: productionCatalogueMigrationHead,
+    id: "20261003010000_ordinary_people_and_personas",
     checksum:
       "497ace5c5beefc14c1a4255990e1e7c52ea9e05d4e14ae45d1a7c8b033a3eb9a",
+  },
+  {
+    id: "20261006000000_persistent_asset_boundaries",
+    checksum:
+      "19cc3920013cfc9ad398cc7059862e172953f79e0e608a4e1a35c435d421a815",
+  },
+  {
+    id: "20261006010000_asset_libraries",
+    checksum:
+      "7315e59bc5c6de089e46186c1bbec2da20649e564869d251c0b5d74af3a4df37",
+  },
+  {
+    id: "20261006020000_local_observation_support_evidence",
+    checksum:
+      "920997c4c702276cd244a898eb0f8ddfc3928f6eb125b1dac303945762b09d65",
+  },
+  {
+    id: "20261007000000_artifact_role_decisions",
+    checksum:
+      "ac68c0fa5aa1b1ff9cfe22a0dbfa57aa32ef30ad4450f6c61dfea82857c1fbf0",
+  },
+  {
+    id: "20261007000000_library_scan_directory_control",
+    checksum:
+      "a836eec944a7437357888a09ce9db8643af31b20b16327bed8fffa26fe306b69",
+  },
+  {
+    id: "20261007010000_library_directory_grants",
+    checksum:
+      "45fa0681764fd4e19edd7d26850016fc1d6155f2229adabc2bf26b2cc9b007ce",
+  },
+  {
+    id: "20261007020000_library_grant_awaiting_observation",
+    checksum:
+      "a87461eb27f3d80ca84855149e8156e1927fafe94b1fed49fc1c80044e14cecc",
+  },
+  {
+    id: productionCatalogueMigrationHead,
+    checksum:
+      "02051a927ee19bfae68b095bb3bb8a8c4fac0e75a879f644143a55dd9b9d36e0",
   },
 ] as const;
 
@@ -249,6 +294,13 @@ export async function inspectProductionCatalogueReadiness(options: {
           "Catalogue 本地用户身份不完整或冲突；重新运行匹配版本的部署工具或从离线备份恢复",
       };
     }
+    if (!hasValidAssetLibraryConfiguration(database)) {
+      return {
+        state: "catalogue-integrity-failed",
+        message:
+          "Catalogue 资产库配置或目录引用不完整或相互矛盾；从离线备份恢复或联系部署维护者",
+      };
+    }
     if (
       !hasValidObservedMaterialCheckpoints(database) ||
       !hasValidObservedMaterialSupports(database) ||
@@ -261,6 +313,13 @@ export async function inspectProductionCatalogueReadiness(options: {
           "Catalogue 观察材料决定支持链损坏；从离线备份恢复或联系部署维护者",
       };
     }
+    if (!hasValidArtifactRoleDecisionHeads(database)) {
+      return {
+        state: "catalogue-integrity-failed",
+        message:
+          "Catalogue 人工产物角色决定头损坏或同一坐标存在多个当前头；从离线备份恢复或联系部署维护者",
+      };
+    }
     return { state: "ready" };
   } catch {
     return {
@@ -270,6 +329,166 @@ export async function inspectProductionCatalogueReadiness(options: {
   } finally {
     database?.close();
   }
+}
+
+function hasValidArtifactRoleDecisionHeads(database: DatabaseSync): boolean {
+  const rows = database
+    .prepare(
+      `SELECT head.target_key AS target_key, head.decision_id AS decision_id,
+              decision.role AS role, decision.target_kind AS target_kind,
+              decision.target_entity_id AS target_entity_id,
+              decision.target_artifact_id AS target_artifact_id,
+              decision.target_revision_id AS target_revision_id,
+              (SELECT COUNT(*) FROM artifact_role_decision_heads AS other
+                WHERE other.decision_id = head.decision_id) AS head_count
+       FROM artifact_role_decision_heads AS head
+       LEFT JOIN artifact_role_decisions AS decision
+         ON decision.id = head.decision_id`,
+    )
+    .all() as Array<{
+    readonly target_key: string;
+    readonly decision_id: string;
+    readonly role: string | null;
+    readonly target_kind: string | null;
+    readonly target_entity_id: string | null;
+    readonly target_artifact_id: string | null;
+    readonly target_revision_id: string | null;
+    readonly head_count: number;
+  }>;
+  return rows.every((row) => {
+    if (row.role === null || row.head_count !== 1) return false;
+    let target: DescriptionTarget | undefined;
+    if (
+      row.target_kind === "entity" &&
+      row.target_entity_id !== null &&
+      row.target_artifact_id === null &&
+      row.target_revision_id === null
+    )
+      target = { kind: "entity", entityId: row.target_entity_id };
+    else if (
+      row.target_kind === "artifact-revision" &&
+      row.target_entity_id === null &&
+      row.target_artifact_id !== null &&
+      row.target_revision_id !== null
+    )
+      target = {
+        kind: "artifact-revision",
+        artifactId: row.target_artifact_id,
+        revisionId: row.target_revision_id,
+      };
+    return (
+      target !== undefined &&
+      artifactRoleDecisionKey(target, row.role) === row.target_key
+    );
+  });
+}
+
+function hasValidAssetLibraryConfiguration(database: DatabaseSync): boolean {
+  const rootStatuses = new Map(
+    (
+      database
+        .prepare("SELECT id, status FROM observed_root_registrations")
+        .all() as Array<{ readonly id: string; readonly status: string }>
+    ).map((row) => [row.id, row.status]),
+  );
+  const libraries = database
+    .prepare(
+      `SELECT id, display_name AS displayName, config_version AS configVersion, status,
+              root_ids_json AS rootIdsJson, recognition_profile_ids_json AS recognitionProfileIdsJson,
+              source_identities_json AS sourceIdentitiesJson
+       FROM asset_libraries`,
+    )
+    .all() as Array<{
+    readonly id: string;
+    readonly displayName: string;
+    readonly configVersion: number;
+    readonly status: string;
+    readonly rootIdsJson: string;
+    readonly recognitionProfileIdsJson: string;
+    readonly sourceIdentitiesJson: string;
+  }>;
+  const rootIdsByLibrary = new Map<string, readonly string[]>();
+  for (const library of libraries) {
+    if (
+      library.displayName.trim().length === 0 ||
+      !Number.isSafeInteger(library.configVersion) ||
+      library.configVersion < 1 ||
+      (library.status !== "active" && library.status !== "removed")
+    )
+      return false;
+    const lists = [
+      library.rootIdsJson,
+      library.recognitionProfileIdsJson,
+      library.sourceIdentitiesJson,
+    ].map((value) => JSON.parse(value) as unknown);
+    if (
+      lists.some(
+        (list) =>
+          !Array.isArray(list) ||
+          list.some(
+            (item: unknown) => typeof item !== "string" || item.length === 0,
+          ) ||
+          new Set(list).size !== list.length,
+      )
+    )
+      return false;
+    const rootIds = lists[0] as readonly string[];
+    rootIdsByLibrary.set(library.id, rootIds);
+    if (library.status === "active") {
+      if (
+        rootIds.length === 0 ||
+        rootIds.some((id) => rootStatuses.get(id) !== "active")
+      )
+        return false;
+      continue;
+    }
+    if (rootIds.some((id) => !rootStatuses.has(id))) return false;
+  }
+  const intents = database
+    .prepare(
+      "SELECT scope_json AS scopeJson, enabled AS enabled, disabled_reason AS disabledReason FROM automation_intents",
+    )
+    .all() as Array<{
+    readonly scopeJson: string;
+    readonly enabled: number;
+    readonly disabledReason: string | null;
+  }>;
+  const grants = new Set(
+    (
+      database
+        .prepare(
+          "SELECT library_id AS libraryId, observed_root_id AS observedRootId FROM library_directory_grants",
+        )
+        .all() as Array<{
+        readonly libraryId: string;
+        readonly observedRootId: string;
+      }>
+    ).map((grant) => `${grant.libraryId}\u0000${grant.observedRootId}`),
+  );
+  for (const intent of intents) {
+    let scope: unknown;
+    try {
+      scope = JSON.parse(intent.scopeJson) as unknown;
+    } catch {
+      return false;
+    }
+    // 沿运行时解码使用的同一观察根 scope 契约校验，缺字段或非法拼写都不算有效归属。
+    if (!isObservedRootAutomationScope(scope)) return false;
+    if (scope.assetLibraryId === undefined) return false;
+    const rootIds = rootIdsByLibrary.get(scope.assetLibraryId);
+    if (rootIds === undefined) return false;
+    const inCurrentLibrary = rootIds.includes(scope.observedRootId);
+    // 仍可触发的计划必须落在本库今日授权的目录集合内，否则它会在触发时才暴露归属缺失。
+    if (intent.enabled === 1 && !inCurrentLibrary) return false;
+    if (inCurrentLibrary) continue;
+    // 已停用且目录已移出本库的计划只是历史：它不能再运行，但必须继续耐久保留并给出停用原因，
+    // 因此这里只要求它指向本库确有记录的目录授权，而不是今日仍在观察的那批目录。
+    if (intent.disabledReason === null || intent.disabledReason.trim() === "")
+      return false;
+    if (!grants.has(`${scope.assetLibraryId}\u0000${scope.observedRootId}`))
+      return false;
+  }
+  return true;
 }
 
 function hasValidDefaultLocalUser(database: DatabaseSync): boolean {
@@ -789,7 +1008,7 @@ function hasValidCurrentObservedMaterialRecords(
                  AND preview.status = 'applied'
                  AND preview.asset_id IS acceptance.asset_id
                  AND json_extract(preview.preview_json, '$.change.kind')
-                       = 'recognition-supersession'
+                       IN ('recognition-supersession', 'recognition-scope-amendment')
                  AND json_extract(preview.preview_json, '$.change.proposal.id')
                        IS acceptance.proposal_id
                  AND EXISTS (
@@ -912,6 +1131,63 @@ function hasValidObservedMaterialCheckpoints(database: DatabaseSync): boolean {
   });
 }
 
+/**
+ * 带精确观察证据的本地关联支持的当前资格，就绪检查里的 SQL 形式。它与 SQLite 读写
+ * 路径共用的 `isCurrentLocalObservationEvidence` 表达同一条规则：关联必须属于该决定
+ * 的资产产物图，记录的位置仍是当前观察成员，且文件（含 part 的载体）修订仍与当前
+ * 确认修订相交。过期证据在这里只是否定当前资格，绝不使已经完整落库的历史失效；
+ * 就绪的其他分支继续按原执行、快照与载体回查历史结构完整性。
+ * 引用的表别名固定为 `support`、`association`、`decision`。
+ */
+export const currentLocalObservationSupportSql = `
+  support.observation_location_id IS NOT NULL
+  AND support.observation_execution_id IS NOT NULL
+  AND support.observation_snapshot_id IS NOT NULL
+  AND support.observation_material_kind IN ('file', 'directory')
+  AND association.subject_id = decision.asset_id
+  AND EXISTS (
+    SELECT 1 FROM locations AS material_location
+    WHERE material_location.id = support.observation_location_id
+      AND material_location.kind = 'observed'
+      AND material_location.artifact_id = COALESCE(
+        json_extract(association.observed_artifact_part_json, '$.artifactId'),
+        association.artifact_id
+      )
+      AND (
+        (
+          support.observation_material_kind = 'directory'
+          AND support.observation_revision_id IS NULL
+          AND EXISTS (
+            SELECT 1 FROM current_observed_material_supports AS positive
+            WHERE positive.location_id = material_location.id
+          )
+        )
+        OR (
+          support.observation_material_kind = 'file'
+          AND support.observation_revision_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1
+            FROM current_file_observations AS current
+            JOIN observed_revision_confirmations AS confirmed
+              ON confirmed.location_id = current.location_id
+             AND confirmed.snapshot_id = current.snapshot_id
+             AND confirmed.observed_at = current.observed_at
+             AND confirmed.size = current.size
+             AND confirmed.modified_at = current.modified_at
+             AND confirmed.conditional_baseline = current.conditional_baseline
+            WHERE current.location_id = material_location.id
+              AND confirmed.revision_id = support.observation_revision_id
+          )
+          AND (
+            association.observed_artifact_part_json IS NULL
+            OR json_extract(association.observed_artifact_part_json, '$.revisionId') =
+               support.observation_revision_id
+          )
+        )
+      )
+  )
+`;
+
 function hasValidObservedMaterialSupports(database: DatabaseSync): boolean {
   const invalid = database
     .prepare(`
@@ -926,10 +1202,12 @@ function hasValidObservedMaterialSupports(database: DatabaseSync): boolean {
       LEFT JOIN workflow_executions AS execution
         ON execution.id = proposal.execution_id
       WHERE association.id IS NULL OR decision.id IS NULL OR proposal.id IS NULL
-        OR association.target_kind <> 'entity'
-        OR association.target_entity_id <> decision.asset_id
+        OR (support.observation_location_id IS NULL AND (
+              association.target_kind <> 'entity'
+              OR association.target_entity_id <> decision.asset_id))
         OR NOT (
-          (json_extract(execution.material_association_json, '$.version') =
+          (${currentLocalObservationSupportSql})
+          OR (json_extract(execution.material_association_json, '$.version') =
              'observed-material-association-checkpoint/1'
            AND json_extract(execution.material_association_json, '$.submission.proposal.id') = proposal.id
            AND json_extract(execution.material_association_json, '$.submission.recognitionDecision.id') = decision.id
@@ -1054,6 +1332,151 @@ function hasValidObservedMaterialSupports(database: DatabaseSync): boolean {
                  ))
               )
           )))
+          -- 边界内材料刷新沿用同一份决定，新支持的权威来自本次 a-work-item 收录的交付载体：
+          -- 每个角色关联不会各自拥有接受行，接受行只属于同执行、同快照、同位置、同产物、
+          -- 同 reference 的 asset.material-delivered 载体关联。因此按支持自己的观察坐标精确
+          -- 回查该载体接受，再要求原提案在同一 reference 上明确声明待验证角色与该修订 blob，
+          -- 修订被替换后旧关联虽不再 current，其历史结构仍然合法。
+          OR EXISTS (
+            SELECT 1
+            FROM observed_material_acceptances AS accepted
+            JOIN workflow_executions AS accepted_execution
+              ON accepted_execution.id = accepted.execution_id
+            JOIN recognition_proposals AS accepted_proposal
+              ON accepted_proposal.id = accepted.proposal_id
+            JOIN artifact_associations AS accepted_carrier
+              ON accepted_carrier.id = accepted.association_id
+            JOIN locations AS accepted_location
+              ON accepted_location.id = support.observation_location_id
+            JOIN artifact_revisions AS accepted_revision
+              ON accepted_revision.id = support.observation_revision_id
+            JOIN blobs AS accepted_blob
+              ON accepted_blob.digest = accepted_revision.blob_digest
+            WHERE accepted.acceptance_kind = 'a-work-item'
+              AND accepted.work_item_key <> ''
+              AND support.observation_execution_id IS NOT NULL
+              AND support.observation_snapshot_id IS NOT NULL
+              AND support.observation_location_id IS NOT NULL
+              AND support.observation_revision_id IS NOT NULL
+              AND support.observation_material_kind = 'file'
+              AND accepted_carrier.role = 'asset.material-delivered'
+              AND accepted_carrier.subject_id = accepted.asset_id
+              AND accepted_carrier.artifact_id = accepted.artifact_id
+              AND association.subject_id = decision.asset_id
+              AND accepted.asset_id = decision.asset_id
+              AND accepted.execution_id = support.observation_execution_id
+              AND accepted.snapshot_id = support.observation_snapshot_id
+              AND accepted.location_id = support.observation_location_id
+              AND accepted.artifact_id = association.artifact_id
+              AND accepted_revision.artifact_id = association.artifact_id
+              AND accepted_location.kind = 'observed'
+              AND accepted_location.artifact_id = association.artifact_id
+              AND accepted_location.address =
+                json_extract(accepted_execution.snapshot_json, '$.root') || '/' ||
+                accepted.observed_reference
+              AND json_extract(accepted_execution.snapshot_json, '$.id') =
+                support.observation_snapshot_id
+              AND EXISTS (
+                SELECT 1
+                FROM json_each(COALESCE(accepted_execution.work_items_json, '[]')) AS work_item
+                WHERE json_extract(work_item.value, '$.key') = accepted.work_item_key
+                  AND json_extract(work_item.value, '$.proposalId') = accepted.proposal_id
+                  AND json_extract(work_item.value, '$.acceptedAssetId') = accepted.asset_id
+              )
+              AND EXISTS (
+                SELECT 1
+                FROM json_each(json_extract(accepted_proposal.observed_material_interpretation_json,
+                  '$.observedArtifactAssociations')) AS candidate
+                WHERE json_extract(candidate.value, '$.observedArtifactReference') =
+                    accepted.observed_reference
+                  AND json_extract(candidate.value, '$.role') = association.role
+              )
+              AND EXISTS (
+                SELECT 1
+                FROM json_each(json_extract(accepted_proposal.observed_material_interpretation_json,
+                  '$.observedArtifactRevisions')) AS proposed_revision
+                WHERE json_extract(proposed_revision.value, '$.observedArtifactReference') =
+                    accepted.observed_reference
+                  AND json_extract(proposed_revision.value, '$.blob.digest') =
+                      accepted_revision.blob_digest
+                  AND json_extract(proposed_revision.value, '$.blob.mediaType') =
+                      accepted_blob.media_type
+                  AND json_extract(proposed_revision.value, '$.blob.byteLength') =
+                      accepted_blob.byte_length
+              )
+          )
+          -- 有界本地部分（例如 PDF 首页图）自己没有载体交付接受行：它的权威来自同一执行里
+          -- 交付其载体那份 a-work-item 接受，载体产物/修订与部分坐标必须逐字相符，且该次
+          -- 观察的提案确实以相同 reference、角色与 locator 声明过这个部分。
+          OR EXISTS (
+            SELECT 1
+            FROM observed_material_acceptances AS accepted
+            JOIN workflow_executions AS accepted_execution
+              ON accepted_execution.id = accepted.execution_id
+            JOIN recognition_proposals AS accepted_proposal
+              ON accepted_proposal.id = accepted.proposal_id
+            JOIN locations AS accepted_location
+              ON accepted_location.id = support.observation_location_id
+            JOIN artifact_revisions AS accepted_revision
+              ON accepted_revision.id = support.observation_revision_id
+            JOIN blobs AS accepted_blob
+              ON accepted_blob.digest = accepted_revision.blob_digest
+            WHERE accepted.acceptance_kind = 'a-work-item'
+              AND accepted.work_item_key <> ''
+              AND support.observation_execution_id IS NOT NULL
+              AND support.observation_snapshot_id IS NOT NULL
+              AND support.observation_location_id IS NOT NULL
+              AND support.observation_revision_id IS NOT NULL
+              AND support.observation_material_kind = 'file'
+              AND association.observed_artifact_part_json IS NOT NULL
+              AND association.subject_id = decision.asset_id
+              AND json_extract(association.observed_artifact_part_json, '$.artifactId') =
+                  accepted.artifact_id
+              AND json_extract(association.observed_artifact_part_json, '$.revisionId') =
+                  support.observation_revision_id
+              AND accepted.asset_id = decision.asset_id
+              AND accepted.execution_id = support.observation_execution_id
+              AND accepted.snapshot_id = support.observation_snapshot_id
+              AND accepted.location_id = support.observation_location_id
+              AND accepted.artifact_id = accepted_revision.artifact_id
+              AND accepted_location.kind = 'observed'
+              AND accepted_location.artifact_id = accepted.artifact_id
+              AND accepted_location.address =
+                json_extract(accepted_execution.snapshot_json, '$.root') || '/' ||
+                accepted.observed_reference
+              AND json_extract(accepted_execution.snapshot_json, '$.id') =
+                  support.observation_snapshot_id
+              AND EXISTS (
+                SELECT 1
+                FROM json_each(COALESCE(accepted_execution.work_items_json, '[]')) AS work_item
+                WHERE json_extract(work_item.value, '$.key') = accepted.work_item_key
+                  AND json_extract(work_item.value, '$.proposalId') = accepted.proposal_id
+                  AND json_extract(work_item.value, '$.acceptedAssetId') = accepted.asset_id
+              )
+              AND EXISTS (
+                SELECT 1
+                FROM json_each(json_extract(accepted_proposal.observed_material_interpretation_json,
+                  '$.observedArtifactParts')) AS part
+                WHERE json_extract(part.value, '$.observedArtifactReference') =
+                    accepted.observed_reference
+                  AND json_extract(part.value, '$.role') = association.role
+                  AND json_extract(part.value, '$.locator') =
+                      json_extract(association.observed_artifact_part_json, '$.locator')
+              )
+              AND EXISTS (
+                SELECT 1
+                FROM json_each(json_extract(accepted_proposal.observed_material_interpretation_json,
+                  '$.observedArtifactRevisions')) AS proposed_revision
+                WHERE json_extract(proposed_revision.value, '$.observedArtifactReference') =
+                    accepted.observed_reference
+                  AND json_extract(proposed_revision.value, '$.blob.digest') =
+                      accepted_revision.blob_digest
+                  AND json_extract(proposed_revision.value, '$.blob.mediaType') =
+                      accepted_blob.media_type
+                  AND json_extract(proposed_revision.value, '$.blob.byteLength') =
+                      accepted_blob.byte_length
+              )
+          )
         )
       LIMIT 1
     `)
@@ -1061,11 +1484,11 @@ function hasValidObservedMaterialSupports(database: DatabaseSync): boolean {
   if (invalid !== undefined) return false;
   const missing = database
     .prepare(`
-      WITH expected(asset_id, decision_id, proposal_id, execution_id, reference, digest, root, association_id, location_id, revision_id) AS (
+      WITH expected(asset_id, decision_id, proposal_id, execution_id, reference, digest, root, association_id, location_id, revision_id, role) AS (
         SELECT head.subject_id, decision.id, proposal.id, execution.id,
                json_extract(revision.value, '$.observedArtifactReference'),
                json_extract(revision.value, '$.blob.digest'),
-               json_extract(execution.snapshot_json, '$.root'), NULL, NULL, NULL
+               json_extract(execution.snapshot_json, '$.root'), NULL, NULL, NULL, NULL
         FROM recognition_heads AS head
         JOIN recognition_decisions AS decision ON decision.id = head.recognition_decision_id
         JOIN recognition_proposals AS proposal ON proposal.id = decision.proposal_id
@@ -1081,7 +1504,7 @@ function hasValidObservedMaterialSupports(database: DatabaseSync): boolean {
         SELECT head.subject_id, decision.id, proposal.id, execution.id,
                json_extract(revision.value, '$.observedArtifactReference'),
                json_extract(revision.value, '$.blob.digest'),
-               json_extract(execution.snapshot_json, '$.root'), NULL, NULL, NULL
+               json_extract(execution.snapshot_json, '$.root'), NULL, NULL, NULL, NULL
         FROM recognition_heads AS head
         JOIN recognition_decisions AS decision ON decision.id = head.recognition_decision_id
         JOIN recognition_proposals AS proposal ON proposal.id = decision.proposal_id
@@ -1096,7 +1519,7 @@ function hasValidObservedMaterialSupports(database: DatabaseSync): boolean {
         UNION
         SELECT head.subject_id, decision.id, proposal.id, execution.id, material.value,
                json_extract(evidence.value, '$.inspection.revision.digest'),
-               json_extract(execution.snapshot_json, '$.root'), NULL, NULL, NULL
+               json_extract(execution.snapshot_json, '$.root'), NULL, NULL, NULL, NULL
         FROM recognition_heads AS head
         JOIN recognition_decisions AS decision ON decision.id = head.recognition_decision_id
         JOIN recognition_proposals AS proposal ON proposal.id = decision.proposal_id
@@ -1115,11 +1538,14 @@ function hasValidObservedMaterialSupports(database: DatabaseSync): boolean {
                revision.blob_digest, json_extract(execution.snapshot_json, '$.root'),
                json_extract(projection.value, '$.associationId'),
                json_extract(projection.value, '$.locationId'),
-               json_extract(projection.value, '$.revisionId')
+               json_extract(projection.value, '$.revisionId'),
+               submitted.role
         FROM recognition_decisions AS decision
         JOIN recognition_proposals AS proposal ON proposal.id = decision.proposal_id
         JOIN workflow_executions AS execution ON execution.id = proposal.execution_id
         JOIN json_each(json_extract(execution.material_association_json, '$.submission.projections')) AS projection
+        JOIN artifact_associations AS submitted
+          ON submitted.id = json_extract(projection.value, '$.associationId')
         JOIN artifact_revisions AS revision
           ON revision.id = json_extract(projection.value, '$.revisionId')
         WHERE json_extract(execution.material_association_json, '$.version') =
@@ -1138,7 +1564,7 @@ function hasValidObservedMaterialSupports(database: DatabaseSync): boolean {
       JOIN artifact_associations AS association
         ON association.artifact_id = location.artifact_id
        AND association.subject_id = expected.asset_id
-       AND association.role = 'asset.material-delivered'
+       AND association.role = COALESCE(expected.role, 'asset.material-delivered')
        AND association.source_record_ids_json = '[]'
        AND association.source_association_id IS NULL
        AND (expected.association_id IS NULL OR association.id = expected.association_id)
@@ -1318,7 +1744,10 @@ function assertChangeImpactPreviewCarrier(
   const change = value.change;
   if (!isRetiredRecord(change))
     throw new Error("持久变更预演的 change 必须是对象");
-  if (change.kind === "recognition-supersession") {
+  if (
+    change.kind === "recognition-supersession" ||
+    change.kind === "recognition-scope-amendment"
+  ) {
     if (value.proposal !== undefined)
       assertPreviewRecognitionProposalBasis(
         value.proposal,
@@ -1332,17 +1761,37 @@ function assertChangeImpactPreviewCarrier(
     );
     return;
   }
-  // 只有识别取代预演携带识别提议与其兼容视图；来源关联的提议是
-  // SourceAssociationChangeProposal，撤回只携带 intent。正式 SQL 仍只看
-  // `$.proposal.basis`／`$.change.proposal` 路径是否存在，因此这两个分支必须证明
-  // 该不相容成员确实不存在，未知 change kind 同样拒绝。
+  // 识别取代与范围修订预演携带识别提议与其兼容视图；来源关联的提议是
+  // SourceAssociationChangeProposal，撤回只携带 intent，人工角色决定只携带冻结的
+  // 三元组与期望头。正式 SQL 仍只看 `$.proposal.basis`／`$.change.proposal` 路径是否
+  // 存在，因此这些分支必须证明该不相容成员确实不存在，未知 change kind 同样拒绝。
   if (
     change.kind !== "source-association" &&
-    change.kind !== "recognition-retraction"
+    change.kind !== "recognition-retraction" &&
+    change.kind !== "artifact-role-decision"
   )
     throw new Error("持久预演 change kind 未知，无法证明不含识别 basis");
   if (Object.hasOwn(value, "proposal"))
     throw new Error("持久变更预演的非识别取代分支携带识别提议兼容视图");
+  if (change.kind === "artifact-role-decision") {
+    if (Object.hasOwn(change, "proposal"))
+      throw new Error("持久变更预演的角色决定分支携带识别提议");
+    const decision = change.decision;
+    if (
+      !isRetiredRecord(decision) ||
+      (decision.kind !== "select" && decision.kind !== "clear") ||
+      typeof decision.role !== "string" ||
+      decision.role.length === 0 ||
+      !isRetiredRecord(decision.target) ||
+      !(
+        change.expectedHeadDecisionId === null ||
+        typeof change.expectedHeadDecisionId === "string"
+      ) ||
+      Object.hasOwn(decision, "selected") !== (decision.kind === "select")
+    )
+      throw new Error("持久预演的角色决定缺少冻结坐标或期望头");
+    return;
+  }
   if (change.kind === "recognition-retraction") {
     if (Object.hasOwn(change, "proposal"))
       throw new Error("持久变更预演的撤回分支携带识别提议");

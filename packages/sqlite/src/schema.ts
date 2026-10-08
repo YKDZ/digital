@@ -157,6 +157,8 @@ export const recognitionProposals = sqliteTable(
     observedMaterialInterpretationJson: text(
       "observed_material_interpretation_json",
     ),
+    // 迁移用 ALTER TABLE 追加该列，物理顺序必须与已冻结的 SQL 保持一致。
+    boundariesJson: text("boundaries_json").notNull().default("[]"),
   },
   (table) => [
     primaryKey({ name: "recognition_proposals_pk", columns: [table.id] }),
@@ -272,6 +274,7 @@ export const recognitionDecisions = sqliteTable(
     proposalId: text("proposal_id").notNull(),
     assetId: text("asset_id").notNull(),
     acceptedRuleResultsJson: text("accepted_rule_results_json").notNull(),
+    boundariesJson: text("boundaries_json").notNull().default("[]"),
   },
   (table) => [
     primaryKey({ name: "recognition_decisions_pk", columns: [table.id] }),
@@ -789,11 +792,21 @@ export const artifactAssociations = sqliteTable(
   ],
 );
 
+/**
+ * 一个决定对一条本地产物关联的支持：既保留该决定的范围授权，也保留建立它的那次
+ * 精确观察（执行、快照、位置、材料形态、修订）。证据整体为空的历史行只按旧提案
+ * 载体回查，不能被当成当前观察。
+ */
 export const artifactAssociationRecognitionSupports = sqliteTable(
   "artifact_association_recognition_supports",
   {
     associationId: text("association_id").notNull(),
     recognitionDecisionId: text("recognition_decision_id").notNull(),
+    observationExecutionId: text("observation_execution_id"),
+    observationSnapshotId: text("observation_snapshot_id"),
+    observationLocationId: text("observation_location_id"),
+    observationMaterialKind: text("observation_material_kind"),
+    observationRevisionId: text("observation_revision_id"),
   },
   (table) => [
     primaryKey({
@@ -802,6 +815,9 @@ export const artifactAssociationRecognitionSupports = sqliteTable(
     }),
     index("artifact_association_recognition_supports_decision").on(
       table.recognitionDecisionId,
+    ),
+    index("artifact_association_recognition_supports_location").on(
+      table.observationLocationId,
     ),
   ],
 );
@@ -940,6 +956,61 @@ export const relationshipManualSupports = sqliteTable(
       columns: [table.relationshipId],
     }),
     index("relationship_manual_supports_decision").on(table.decisionId),
+  ],
+);
+
+/**
+ * 仅追加的人工产物角色决定：中立目标加角色，绝不含资产库、页面或使用语境。
+ * `select` 必须同时冻结所选关联、Artifact 与当时精确修订，三者不能只凭路径重建。
+ */
+export const artifactRoleDecisions = sqliteTable(
+  "artifact_role_decisions",
+  {
+    id: text().notNull(),
+    targetKind: text("target_kind").notNull(),
+    targetEntityId: text("target_entity_id"),
+    targetArtifactId: text("target_artifact_id"),
+    targetRevisionId: text("target_revision_id"),
+    role: text().notNull(),
+    kind: text().notNull(),
+    selectedAssociationId: text("selected_association_id"),
+    selectedArtifactId: text("selected_artifact_id"),
+    selectedRevisionId: text("selected_revision_id"),
+    predecessorDecisionId: text("predecessor_decision_id"),
+    initiatedBy: text("initiated_by").notNull(),
+  },
+  (table) => [
+    primaryKey({ name: "artifact_role_decisions_pk", columns: [table.id] }),
+    check(
+      "artifact_role_decisions_target",
+      sql.raw(
+        "(target_kind = 'entity' AND target_entity_id IS NOT NULL AND target_artifact_id IS NULL AND target_revision_id IS NULL) OR (target_kind = 'artifact-revision' AND target_entity_id IS NULL AND target_artifact_id IS NOT NULL AND target_revision_id IS NOT NULL)",
+      ),
+    ),
+    check(
+      "artifact_role_decisions_selection",
+      sql.raw(
+        "(kind = 'select' AND selected_association_id IS NOT NULL AND selected_artifact_id IS NOT NULL AND selected_revision_id IS NOT NULL) OR (kind = 'clear' AND selected_association_id IS NULL AND selected_artifact_id IS NULL AND selected_revision_id IS NULL)",
+      ),
+    ),
+    index("artifact_role_decisions_predecessor").on(
+      table.predecessorDecisionId,
+    ),
+  ],
+);
+
+/** 一个规范化目标加角色坐标最多一个当前人工决定；头只随追加的决定前进。 */
+export const artifactRoleDecisionHeads = sqliteTable(
+  "artifact_role_decision_heads",
+  {
+    targetKey: text("target_key").notNull(),
+    decisionId: text("decision_id").notNull(),
+  },
+  (table) => [
+    primaryKey({
+      name: "artifact_role_decision_heads_pk",
+      columns: [table.targetKey],
+    }),
   ],
 );
 
@@ -1280,6 +1351,192 @@ export const observedRootRegistrations = sqliteTable(
     index("observed_root_registrations_container_path").on(table.containerPath),
     index("observed_root_registrations_canonical_path").on(table.canonicalPath),
     index("observed_root_registrations_status").on(table.status),
+  ],
+);
+
+/** 资产库拥有识别设置及内部只读目录引用。 */
+export const assetLibraries = sqliteTable(
+  "asset_libraries",
+  {
+    id: text().notNull(),
+    displayName: text("display_name").notNull(),
+    configVersion: integer("config_version").notNull(),
+    status: text().notNull(),
+    rootIdsJson: text("root_ids_json").notNull(),
+    recognitionProfileIdsJson: text("recognition_profile_ids_json").notNull(),
+    sourceIdentitiesJson: text("source_identities_json").notNull(),
+  },
+  (table) => [primaryKey({ name: "asset_libraries_pk", columns: [table.id] })],
+);
+
+/**
+ * 一个活动库对一个稳定物理根的最小耐久 I/O 授权。removed 行保留以支持点名重连与历史
+ * 连续性；authority_version 只随明确 I/O 撤销、重连或本库链接配置改变而推进。
+ */
+export const libraryDirectoryGrants = sqliteTable(
+  "library_directory_grants",
+  {
+    id: text().notNull(),
+    libraryId: text("library_id").notNull(),
+    observedRootId: text("observed_root_id").notNull(),
+    status: text().notNull(),
+    authorityVersion: integer("authority_version").notNull(),
+    symlinkMode: text("symlink_mode").notNull(),
+    allowedTargetGrantIdsJson: text("allowed_target_grant_ids_json").notNull(),
+    /**
+     * 显式重连只恢复本库对该物理根的 I/O 通路，不证明对象连续。置位期间该库经此根的历史
+     * Location 暂不进入本库 current 投影，直到一次完整授权观察把它清零。共享同一物理根的
+     * 其他库用自己的授权代次独立判定，绝不受本库重连影响。
+     */
+    awaitingObservation: integer("awaiting_observation").notNull().default(0),
+  },
+  (table) => [
+    primaryKey({ name: "library_directory_grants_pk", columns: [table.id] }),
+    uniqueIndex("library_directory_grants_library_root").on(
+      table.libraryId,
+      table.observedRootId,
+    ),
+    index("library_directory_grants_library").on(table.libraryId),
+    index("library_directory_grants_root").on(table.observedRootId),
+  ],
+);
+
+/**
+ * 一次耐久库扫描父执行的目录条目：与子执行在同一条窄事务里登记，崩溃不留孤儿。
+ * 这里只有目录归属、阶段与净化结果，领域事实与完整工作项仍由子执行权威保存。
+ */
+export const libraryScanDirectories = sqliteTable(
+  "library_scan_directories",
+  {
+    parentExecutionId: text("parent_execution_id").notNull(),
+    directoryKey: text("directory_key").notNull(),
+    scopeReference: text("scope_reference").notNull(),
+    rootVersion: integer("root_version").notNull(),
+    relativeScope: text("relative_scope").notNull(),
+    mode: text().notNull(),
+    executedByKey: text("executed_by_key"),
+    coveredPrefix: text("covered_prefix"),
+    childExecutionId: text("child_execution_id"),
+    stage: text().notNull(),
+    outcome: text(),
+    reason: text(),
+    workItemCount: integer("work_item_count").notNull(),
+    unresolvedCount: integer("unresolved_count").notNull(),
+    failedCount: integer("failed_count").notNull(),
+    position: integer().notNull(),
+  },
+  (table) => [
+    primaryKey({
+      name: "library_scan_directories_pk",
+      columns: [table.parentExecutionId, table.directoryKey],
+    }),
+    index("library_scan_directories_parent").on(table.parentExecutionId),
+    index("library_scan_directories_child").on(table.childExecutionId),
+  ],
+);
+
+/**
+ * 用户明确请求停止一次库扫描的耐久意图。父执行此时仍可能带着仍在运行的目录子保持
+ * running，因此意图与终态归因刻意分开：终态仍写在执行行上。
+ */
+export const libraryScanCancellations = sqliteTable(
+  "library_scan_cancellations",
+  {
+    parentExecutionId: text("parent_execution_id").notNull(),
+    requestedBy: text("requested_by").notNull(),
+    requestedAt: text("requested_at").notNull(),
+    reason: text(),
+  },
+  (table) => [
+    primaryKey({
+      name: "library_scan_cancellations_pk",
+      columns: [table.parentExecutionId],
+    }),
+  ],
+);
+
+/**
+ * 一次自动化库扫描父的父后信息履行处置账本。批次壳与父执行、目录账本同事务建立，是现代父
+ * 与历史无规划父的耐久分界；父仍 running 时规划出的完整处置再与父终态同事务收口。这里只保存
+ * 计划与归属，child 的实际运行结果仍以 `workflow_executions` 为权威，绝不复制第二份终态。
+ */
+export const libraryScanFulfillmentBatches = sqliteTable(
+  "library_scan_fulfillment_batches",
+  {
+    parentExecutionId: text("parent_execution_id").notNull(),
+    version: text().notNull(),
+    /** 父创建时冻结的解析规则坐标；无解析需求时是明确的 none 坐标。 */
+    plannerCoordinate: text("planner_coordinate").notNull(),
+    stage: text().notNull(),
+    reason: text(),
+    plannedAt: text("planned_at"),
+  },
+  (table) => [
+    primaryKey({
+      name: "library_scan_fulfillment_batches_pk",
+      columns: [table.parentExecutionId],
+    }),
+  ],
+);
+
+/**
+ * 批次内一个耐久接受主体的处置。`no-work` 证明该主体已用原 planner/basis 完成规划且没有
+ * child 计划，因此与「从未规划」和「缺原计划而中断」都是可查询区分的正确性状态。
+ */
+export const libraryScanFulfillmentSubjects = sqliteTable(
+  "library_scan_fulfillment_subjects",
+  {
+    parentExecutionId: text("parent_execution_id").notNull(),
+    subjectId: text("subject_id").notNull(),
+    disposition: text().notNull(),
+    /** 版本化完整中立 requirement；无法安全解析时为 NULL。 */
+    requirementJson: text("requirement_json"),
+    reason: text(),
+    position: integer().notNull(),
+  },
+  (table) => [
+    primaryKey({
+      name: "library_scan_fulfillment_subjects_pk",
+      columns: [table.parentExecutionId, table.subjectId],
+    }),
+    index("library_scan_fulfillment_subjects_parent").on(
+      table.parentExecutionId,
+    ),
+  ],
+);
+
+/**
+ * 父内一个具体履行计划的稳定身份。子执行的插入与这里的绑定共用同一条窄事务，因此半登记
+ * 不会丢失，一个 operation 的存在也绝不表示同主体其他 operation 已完成。
+ */
+export const libraryScanFulfillmentOperations = sqliteTable(
+  "library_scan_fulfillment_operations",
+  {
+    parentExecutionId: text("parent_execution_id").notNull(),
+    operationId: text("operation_id").notNull(),
+    subjectId: text("subject_id").notNull(),
+    /** 版本化完整 plan；只有导入历史 `/1` child 的只读引用才可缺原计划。 */
+    planJson: text("plan_json"),
+    childExecutionId: text("child_execution_id"),
+    disposition: text().notNull(),
+    reason: text(),
+    position: integer().notNull(),
+  },
+  (table) => [
+    primaryKey({
+      name: "library_scan_fulfillment_operations_pk",
+      columns: [table.parentExecutionId, table.operationId],
+    }),
+    uniqueIndex("library_scan_fulfillment_operations_child").on(
+      table.childExecutionId,
+    ),
+    index("library_scan_fulfillment_operations_parent_subject").on(
+      table.parentExecutionId,
+      table.subjectId,
+    ),
+    index("library_scan_fulfillment_operations_disposition").on(
+      table.disposition,
+    ),
   ],
 );
 
@@ -1643,6 +1900,8 @@ export const catalogueSchema = {
   relationshipDecisions,
   relationshipDecisionHeads,
   relationshipManualSupports,
+  artifactRoleDecisions,
+  artifactRoleDecisionHeads,
   entityIdentityMerges,
   entityIdentityMergeRetractions,
   entityMentions,
@@ -1659,6 +1918,13 @@ export const catalogueSchema = {
   automationIntents,
   automationRuntime,
   observedRootRegistrations,
+  assetLibraries,
+  libraryDirectoryGrants,
+  libraryScanDirectories,
+  libraryScanCancellations,
+  libraryScanFulfillmentBatches,
+  libraryScanFulfillmentSubjects,
+  libraryScanFulfillmentOperations,
   recognitionHeads,
   recognitionDecisionSupersessions,
   metadataAssertionSources,

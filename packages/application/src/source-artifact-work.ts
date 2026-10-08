@@ -13,6 +13,8 @@ import {
   recognitionSourceInterpretation,
 } from "@digital/domain";
 
+import { assetLibraryCapabilityToken } from "./asset-libraries.ts";
+
 export type SourceArtifactAcquisitionCheckpoint = {
   readonly candidateId: string;
   readonly sourceRecordId: string;
@@ -84,6 +86,13 @@ type ManagedArtifactStore = {
 type CheckpointedSourceArtifactWorkPorts = {
   readonly acquirers: readonly SourceArtifactAcquirer[];
   readonly managedStore: ManagedArtifactStore;
+  /**
+   * 冻结库配置为某个来源身份允许的获取器能力坐标拼写（ID@实现版/契约版）。未提供该端口
+   * 时沿用调用方给出的完整集合；提供空数组表示该来源在本次执行内不得越过任何外部获取效果。
+   */
+  readonly acquirerCapabilityTokensForSourceIdentity?: (
+    sourceIdentity: string,
+  ) => readonly string[];
 };
 
 /** 只标记真正越过 Source Artifact Acquirer seam 的外部获取效果失败。 */
@@ -196,6 +205,12 @@ export class CheckpointedSourceArtifactWork {
     readonly beforeAcquire?: (
       capability: CapabilityCoordinate,
     ) => void | Promise<void>;
+    /**
+     * 同一目录租约的最终效果门：异步冻结完成后、真正发起不可中止的外部获取前，以及获取
+     * 返回后、写托管 stage 或返回易失 checkpoint 前各复核一次。省略时（managed / 无目录
+     * 中立调用）语义完全不变。
+     */
+    readonly assertEffectLive?: () => void | Promise<void>;
   }): Promise<{
     readonly checkpoint: SourceArtifactAcquisitionCheckpoint;
     readonly staged?: AcquiredSourceArtifact;
@@ -206,8 +221,12 @@ export class CheckpointedSourceArtifactWork {
       interpretationSourceRecordIds(input),
       input.sourceRecords,
       input.beforeAcquire,
+      input.assertEffectLive,
     );
 
+    // 获取是不可中止的外部请求：撤销只发生在这段 await 期间时，返回后仍不得进入任何托管效果
+    // （stage 或易失 checkpoint 交回后由调用方落盘），故在 digest/stage 之前复核同一目录租约。
+    await input.assertEffectLive?.();
     const digest = sha256(staged.bytes);
     if (this.ports.managedStore.stage === undefined) {
       if (input.requireCheckpointStore)
@@ -366,22 +385,39 @@ export class CheckpointedSourceArtifactWork {
     interpretationRecordIds: readonly string[],
     sourceRecords: readonly SourceRecord[],
     beforeAcquire?: (capability: CapabilityCoordinate) => void | Promise<void>,
+    assertEffectLive?: () => void | Promise<void>,
   ): Promise<AcquiredSourceArtifact> {
     if (!interpretationRecordIds.includes(candidate.sourceRecordId))
       throw new Error(
         "Source Artifact Candidate lacks interpretation provenance",
       );
-    if (!sourceRecords.some((record) => record.id === candidate.sourceRecordId))
+    const sourceRecord = sourceRecords.find(
+      (record) => record.id === candidate.sourceRecordId,
+    );
+    if (sourceRecord === undefined)
       throw new Error(
         "Source Artifact Candidate references an unavailable Source Record",
       );
-    const acquirer = this.ports.acquirers.find((current) =>
-      current.canAcquire(candidate),
+    // 来源资格在效果前判定：候选引用哪个来源，就只能使用该来源冻结允许的获取器坐标。
+    const allowed = this.ports.acquirerCapabilityTokensForSourceIdentity?.(
+      sourceRecord.sourceIdentity,
+    );
+    const acquirer = this.ports.acquirers.find(
+      (current) =>
+        (allowed === undefined ||
+          (current.capability !== undefined &&
+            allowed.includes(
+              assetLibraryCapabilityToken(current.capability),
+            ))) &&
+        current.canAcquire(candidate),
     );
     if (acquirer === undefined)
       throw new Error("No Source Artifact Acquirer accepted the candidate");
     if (acquirer.capability !== undefined)
       await beforeAcquire?.(acquirer.capability);
+    // 冻结是可 await 的前置效果：撤销落在冻结期间时不得再发起不可中止的外部获取，
+    // 故在真正 request 之前复核同一目录租约（前置 await 前的检查不是最终效果门）。
+    await assertEffectLive?.();
     let staged: AcquiredSourceArtifact;
     try {
       staged = await acquirer.acquire(candidate);

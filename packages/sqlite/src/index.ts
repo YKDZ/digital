@@ -4,7 +4,16 @@ import { DatabaseSync } from "node:sqlite";
 
 import type {
   AcceptedAssetState,
+  AssetLibrary,
+  AssetLibraryDirectoryReconnect,
+  AssetLibrarySave,
+  AssetLibrarySaveReceipt,
+  LibraryDirectoryGrant,
+  LibraryDirectoryInvalidation,
+  RelationshipReadBasis,
   AssetRefreshReuseQueries,
+  EffectiveRecognitionMaterialBoundary,
+  MaterialScopeDeclaration,
   AutomationCommands,
   AutomationIntent,
   AutomationIntentCreationResult,
@@ -14,6 +23,7 @@ import type {
   ChangeImpactCommands,
   ChangeImpactPreview,
   RecognitionSupersessionPlan,
+  RecognitionScopeAmendmentPlan,
   ChangeImpactQueries,
   CommitSourceRefreshCollectionFailureInput,
   CurrentAttentionItem,
@@ -29,11 +39,29 @@ import type {
   WorkflowHistoryPersistencePage,
   WorkflowHistoryQueries,
   InformationSubjectFactsQueries,
+  CurrentInformationSubjectFacts,
   CurrentSourceArtifactQueries,
   CurrentUserInteractionPersistence,
   CreateSourceRefreshRunInputForExecution,
   ExecutionStartDisposition,
   ExecutionInspection,
+  AssetRefreshOutcome,
+  AssetRefreshWorkItem,
+  LibraryScanDirectoryRecord,
+  LibraryScanDirectoryStage,
+  LibraryScanInspection,
+  InformationFulfillmentChildRegistration,
+  LibraryScanFulfillmentBatchStage,
+  LibraryScanFulfillmentBatchWrite,
+  LibraryScanFulfillmentCommands,
+  LibraryScanFulfillmentInspection,
+  LibraryScanFulfillmentOperationDisposition,
+  LibraryScanFulfillmentOperationRecord,
+  LibraryScanFulfillmentQueries,
+  LibraryScanFulfillmentSubjectDisposition,
+  LibraryScanFulfillmentSubjectRecord,
+  LegacyLibraryScanFulfillmentClosure,
+  UnrecognizedLibraryScanObservation,
   MetadataRefreshPersistence,
   MetadataRefreshSubmission,
   ManagedSourceArtifactPersistence,
@@ -80,12 +108,29 @@ import {
   observedRootIdsDependingOn,
   workflowCompatibilityCanReuse,
   artifactProofConditionalBaseline,
+  materialBoundaryIncludesAddress,
+  recognitionMaterialBoundaryIntersectsScope,
+  recognitionBoundaryBaseline,
+  groupMaterialScopeDeclarations,
+  materialScopeDeclarationsIntersect,
+  materialScopeDeclarationBaseline,
+  RecognitionBoundaryBaselineStale,
+  isUnrecognizedObservationWorkItem,
+  coveredWorkItems,
+  stableRootCoverages,
+  automatedInformationPlannerNoneCoordinate,
+  decodeInformationFulfillmentPlan,
+  decodeLibraryScanFulfillmentRequirement,
+  encodeInformationFulfillmentPlan,
+  encodeLibraryScanFulfillmentRequirement,
+  libraryScanFulfillmentVersion,
 } from "@digital/application";
 import type {
   AcceptedRecognition,
   Artifact,
   ArtifactAssociation,
   ArtifactAssociationRetraction,
+  ArtifactRoleDecision,
   ArtifactRevision,
   Blob,
   CapabilityCoordinate,
@@ -139,12 +184,15 @@ import {
   canonicalRelationshipDraft,
   deriveEffectiveRelationships,
   relationshipTargetKey,
+  artifactRoleDecisionKey,
+  validateArtifactRoleDecision,
 } from "@digital/domain";
 import {
   and,
   asc,
   desc,
   eq,
+  exists,
   gt,
   inArray,
   isNull,
@@ -209,6 +257,13 @@ import {
   metadataAssertionSources,
   metadataAssertions,
   observedRootRegistrations,
+  assetLibraries,
+  libraryDirectoryGrants,
+  libraryScanCancellations,
+  libraryScanDirectories,
+  libraryScanFulfillmentBatches,
+  libraryScanFulfillmentOperations,
+  libraryScanFulfillmentSubjects,
   observedRevisionConfirmations,
   recognitionDecisions,
   recognitionDecisionSupersessions,
@@ -220,6 +275,8 @@ import {
   relationshipDecisions,
   relationshipDecisionHeads,
   relationshipManualSupports,
+  artifactRoleDecisions,
+  artifactRoleDecisionHeads,
   entityIdentityMerges,
   entityIdentityMergeRetractions,
   recognitionHeads,
@@ -398,6 +455,57 @@ function currentConfirmedLocationRevisions(
   });
 }
 
+/**
+ * 带精确观察证据的本地关联支持的当前资格唯一判定：运行时逐关联读取与正式当前投影
+ * 共用。关联必须属于授权决定的资产，记录的位置仍是该载体产物的观察位置，目录形态
+ * 靠该位置的正向根支持，文件形态靠该修订仍是位置当前确认的修订。
+ */
+type LocalObservationEvidenceCandidate = {
+  readonly locationId: string;
+  readonly materialKind: string;
+  readonly revisionId: string | null;
+  /** 授权这条支持的 Recognition Decision 所属资产。 */
+  readonly decisionAssetId: string;
+  /** 被支持关联的主体。 */
+  readonly subjectId: string;
+};
+
+function isCurrentLocalObservationEvidence(input: {
+  readonly materialArtifactId: string;
+  readonly partRevisionId?: string | undefined;
+  readonly evidence: readonly LocalObservationEvidenceCandidate[];
+  readonly locationOf: (
+    locationId: string,
+  ) => { readonly kind: string; readonly artifactId: string } | undefined;
+  readonly positiveSupportLocationIds: ReadonlySet<string>;
+  readonly currentLocationRevisionKeys: ReadonlySet<string>;
+}): boolean {
+  return input.evidence.some((row) => {
+    if (row.subjectId !== row.decisionAssetId) return false;
+    const location = input.locationOf(row.locationId);
+    if (
+      location === undefined ||
+      location.kind !== "observed" ||
+      location.artifactId !== input.materialArtifactId
+    )
+      return false;
+    if (row.materialKind === "directory")
+      return (
+        row.revisionId === null &&
+        input.positiveSupportLocationIds.has(row.locationId)
+      );
+    if (row.materialKind !== "file" || row.revisionId === null) return false;
+    if (
+      input.partRevisionId !== undefined &&
+      input.partRevisionId !== row.revisionId
+    )
+      return false;
+    return input.currentLocationRevisionKeys.has(
+      `${row.locationId}\u0000${row.revisionId}`,
+    );
+  });
+}
+
 function proofMetadataMatchesBlob(
   proof: ArtifactContentProofMetadata,
   blobDigest: string,
@@ -433,6 +541,23 @@ function sha256Text(value: string): string {
 
 /** Drizzle 数据库与事务共用的只读结构子集。 */
 type DrizzleReadQuery = Pick<ReturnType<typeof drizzle>, "select">;
+
+/** 一次观察的载体：所属执行、快照与实际注册根路径。 */
+type ObservationCarrier = {
+  readonly executionId: string;
+  readonly snapshotId: string;
+  readonly snapshotRoot: string;
+};
+
+/**
+ * 本地关联支持携带的精确观察证据。目录形态没有单一文件修订；文件 part 的证据
+ * 绑定载体修订，因此载体换修订后旧图不再作为当前。
+ */
+type LocalObservationEvidence = ObservationCarrier & {
+  readonly locationId: string;
+  readonly materialKind: "file" | "directory";
+  readonly revisionId?: string | undefined;
+};
 
 type RelationshipLifecycleRow = typeof relationshipLifecycles.$inferSelect;
 
@@ -512,6 +637,140 @@ function supportedRelationshipCount(
   ).length;
 }
 
+/** 一个根资产的生效关系及其真实端点。 */
+type EffectiveRelationshipSubjects = {
+  readonly relationships: readonly (typeof entityRelationships.$inferSelect)[];
+  readonly endpointIds: ReadonlySet<string>;
+  readonly factSubjectIds: ReadonlySet<string>;
+};
+
+/**
+ * 生效关系（生命周期支持、人工与观察决定）及其端点共同决定资料装载与裁剪。
+ * 批量装载与单主体投影必须共用此求值，已排除或替换的目标才不会残留在资料里。
+ */
+function selectEffectiveRelationshipSubjects(input: {
+  readonly assetId: string;
+  /** 提案实体只作关系查找种子，本身不直接进入资料主体集合。 */
+  readonly seedSubjectIds: ReadonlySet<string>;
+  readonly relationships: readonly (typeof entityRelationships.$inferSelect)[];
+  readonly supports: RelationshipSupportState;
+  readonly decisions: readonly RelationshipDecision[];
+  readonly participantResolutions: ReadonlyMap<string, string>;
+  readonly identityRepresentatives: ReadonlyMap<string, string>;
+  readonly factLineages: ReadonlySet<string>;
+}): EffectiveRelationshipSubjects {
+  const candidates = input.relationships.filter((row) => {
+    if (
+      input.supports.supersededRelationshipIds.has(row.id) ||
+      input.supports.retractedRelationshipIds.has(row.id)
+    )
+      return false;
+    const lifecycle = input.supports.lifecyclesByRelationshipId.get(row.id);
+    if (
+      !(
+        (lifecycle !== undefined &&
+          input.factLineages.has(
+            sourceLineageKey(lifecycle.sourceIdentity, lifecycle.nativeAddress),
+          )) ||
+        input.supports.manualRelationshipIds.has(row.id) ||
+        input.supports.observedSourceSlotsByRelationshipId.has(row.id)
+      )
+    )
+      return false;
+    if (!input.supports.targetsByRelationshipId.has(row.id)) return false;
+    return (
+      relationshipParticipantsFromJson(row.participantsJson).some(
+        (participant) => input.seedSubjectIds.has(participant.entityId),
+      ) ||
+      (() => {
+        const target = input.supports.targetsByRelationshipId.get(row.id);
+        return target?.kind === "source"
+          ? input.seedSubjectIds.has(target.sourceSubjectId)
+          : target?.kind === "observed" && target.assetId === input.assetId;
+      })()
+    );
+  });
+  /** 生命周期筛选后仍要按决定头求值：排除或替换的目标不再是生效端点。 */
+  const effectiveIds = new Set(
+    deriveEffectiveRelationships({
+      relationships: candidates.map(
+        (row): EntityRelationship => ({
+          id: row.id,
+          type: row.type,
+          participants: relationshipParticipantsFromJson(row.participantsJson),
+          sourceSlot:
+            input.supports.lifecyclesByRelationshipId.get(row.id)?.sourceSlot ??
+            input.supports.observedSourceSlotsByRelationshipId.get(row.id) ??
+            "manual",
+          sourceRecordIds: jsonStringArray(
+            row.sourceRecordIdsJson,
+            "relationship source records",
+          ),
+          qualifiers: JSON.parse(row.qualifiersJson) as NonNullable<
+            EntityRelationship["qualifiers"]
+          >,
+          ...(row.producerJson === null
+            ? {}
+            : { producer: producerFromJson(row.producerJson) }),
+        }),
+      ),
+      targets: input.supports.targetsByRelationshipId,
+      decisions: input.decisions,
+      manualRelationshipIds: input.supports.manualRelationshipIds,
+    }).map(({ id }) => id),
+  );
+  const relationships = candidates.filter((row) => effectiveIds.has(row.id));
+  const endpointIds = new Set<string>();
+  for (const row of relationships)
+    for (const participant of relationshipParticipantsFromJson(
+      row.participantsJson,
+    )) {
+      endpointIds.add(participant.entityId);
+      for (const mentionId of participant.mentionIds ?? []) {
+        const resolved = input.participantResolutions.get(mentionId);
+        if (resolved !== undefined) endpointIds.add(resolved);
+      }
+    }
+  for (const endpointId of Array.from(endpointIds))
+    endpointIds.add(
+      input.identityRepresentatives.get(endpointId) ?? endpointId,
+    );
+  return {
+    relationships,
+    endpointIds,
+    factSubjectIds: new Set([...endpointIds, input.assetId]),
+  };
+}
+
+/** 资产自身的当前来源坐标：识别解释记录与仍为当前的关联。 */
+function selectAssetFactLineageKeys(input: {
+  readonly hasRecognitionSourceAssociation: boolean;
+  readonly interpretationSourceRecordIds: readonly string[];
+  readonly sourceRecords: ReadonlyMap<
+    string,
+    { readonly sourceIdentity: string; readonly nativeAddress: string }
+  >;
+  readonly currentAssociations: readonly {
+    readonly sourceIdentity: string;
+    readonly nativeAddress: string;
+  }[];
+}): Set<string> {
+  return new Set([
+    ...(input.hasRecognitionSourceAssociation
+      ? input.interpretationSourceRecordIds
+      : []
+    ).flatMap((id) => {
+      const record = input.sourceRecords.get(id);
+      return record === undefined
+        ? []
+        : [sourceLineageKey(record.sourceIdentity, record.nativeAddress)];
+    }),
+    ...input.currentAssociations.map((association) =>
+      sourceLineageKey(association.sourceIdentity, association.nativeAddress),
+    ),
+  ]);
+}
+
 type MetadataRefreshInput = {
   readonly expectedExecution: WorkflowExecution;
   readonly execution: WorkflowExecution;
@@ -527,10 +786,44 @@ type MetadataRefreshPreflight = {
 };
 
 type CurrentCatalogueHydrationRows = {
+  readonly relationshipSupports: RelationshipSupportState;
+  readonly relationshipDecisions: readonly RelationshipDecision[];
+  /** 当前生效的人工产物角色决定头，按同一坐标唯一。 */
+  readonly artifactRoleDecisions: readonly ArtifactRoleDecision[];
+  readonly participantResolutions: ReadonlyMap<string, string>;
+  readonly identityRepresentatives: ReadonlyMap<string, string>;
+  readonly localNames: readonly (typeof localEntityNames.$inferSelect)[];
   readonly entities: readonly (typeof entities.$inferSelect)[];
   readonly heads: readonly (typeof recognitionHeads.$inferSelect)[];
+  /**
+   * 主头为空时点名的生效决定：只提供这一次读取的事实依据，投影会明确标记身份未解决。
+   */
+  readonly namedBasisDecisionId?: string | undefined;
+  /** 身份基线读取：忽略主头，强制以点名前驱决定为事实依据。 */
+  readonly pinNamedBasisDecision?: boolean | undefined;
   readonly associations: readonly (typeof sourceAssociations.$inferSelect)[];
   readonly currentAssociations: readonly (typeof currentSourceAssociations.$inferSelect)[];
+  /** 候选事实 provenance 记录所属的真实来源 owner。 */
+  readonly sourceOwnerByRecordId: ReadonlyMap<string, string>;
+  /** 产物事实直接引用的来源关联及其 owner 坐标。 */
+  readonly sourceAssociationOwnerById: ReadonlyMap<
+    string,
+    {
+      readonly subjectId: string;
+      readonly sourceIdentity: string;
+      readonly nativeAddress: string;
+    }
+  >;
+  readonly currentSourceOwnerCoordinates: ReadonlySet<string>;
+  /** owner 仍为当前的精确来源关联 ID，用于产物资格，不外泄到读取契约。 */
+  readonly currentSourceOwnerAssociationIds: ReadonlyMap<
+    string,
+    ReadonlySet<string>
+  >;
+  /** owner 仍占据的精确覆盖头，用于相关目标的元数据资格。 */
+  readonly currentSourceOwnerCoverageHeads: ReadonlySet<string>;
+  /** owner 仍占据的来源记录头，用于相关目标的产物资格。 */
+  readonly currentSourceOwnerRecordHeads: ReadonlySet<string>;
   readonly decisions: readonly (typeof recognitionDecisions.$inferSelect)[];
   readonly proposals: readonly (typeof recognitionProposals.$inferSelect)[];
   readonly artifactAssociations: readonly (typeof artifactAssociations.$inferSelect)[];
@@ -542,8 +835,6 @@ type CurrentCatalogueHydrationRows = {
   readonly metadataLifecycles: readonly (typeof metadataAssertionLifecycles.$inferSelect)[];
   readonly metadataRetractions: readonly (typeof metadataAssertionRetractions.$inferSelect)[];
   readonly relationships: readonly (typeof entityRelationships.$inferSelect)[];
-  readonly relationshipLifecycles: readonly (typeof relationshipLifecycles.$inferSelect)[];
-  readonly relationshipRetractions: readonly (typeof relationshipRetractions.$inferSelect)[];
   readonly sourceRecords: readonly Pick<
     typeof sourceRecords.$inferSelect,
     "id" | "sourceIdentity" | "nativeAddress"
@@ -554,6 +845,15 @@ type CurrentCatalogueHydrationRows = {
     readonly locationId: string;
     readonly revisionId: string;
   }[];
+  /**
+   * 支持证据判定要看到自己记录的那些观察位置，包括已经不再当前的位置，因此与
+   * `locations`（只保留当前成员）分开预载。
+   */
+  readonly evidenceLocations: readonly (typeof locations.$inferSelect)[];
+  /** 证据位置里仍是当前确认修订的 `${locationId}\u0000${revisionId}` 组合。 */
+  readonly evidenceCurrentLocationRevisionKeys: readonly string[];
+  /** 拥有正向根支持（当前成员资格）的证据位置。 */
+  readonly positiveMaterialSupportLocationIds: readonly string[];
   readonly revisions: readonly (typeof artifactRevisions.$inferSelect)[];
   readonly blobs: readonly (typeof blobs.$inferSelect)[];
   readonly sourcedEntities: readonly (typeof sourcedEntities.$inferSelect)[];
@@ -632,9 +932,12 @@ type ChangeImpactAttentionRow = {
  * 覆盖历史本身不证明材料存在；封面等描述／展示产物也不提供成员资格。
  * 没有观察覆盖历史的资产沿用既有来源型／托管型进入规则。
  */
-function currentObservedMaterialPredicate(): SQL {
+function currentObservedMaterialPredicate(
+  observedRootIds?: readonly string[],
+  assetLibraryId?: string,
+): SQL {
   return sql`(
-    NOT EXISTS (
+    (${observedRootIds === undefined ? 1 : 0} = 1 AND NOT EXISTS (
       SELECT 1
       FROM ${artifactAssociations}
       INNER JOIN ${locations}
@@ -655,7 +958,7 @@ function currentObservedMaterialPredicate(): SQL {
           FROM ${artifactAssociationRetractions}
           WHERE ${artifactAssociationRetractions.associationId} = ${artifactAssociations.id}
         )
-    )
+    ))
     OR EXISTS (
     SELECT 1
     FROM ${artifactAssociations}
@@ -680,6 +983,19 @@ function currentObservedMaterialPredicate(): SQL {
     )
       AND ${artifactAssociations.subjectId} = ${recognitionHeads.subjectId}
       AND ${locations.kind} = 'observed'
+      AND ${observedRootIds === undefined ? sql`1 = 1` : inArray(currentObservedMaterialSupports.observedRootId, sqliteTextSet(observedRootIds))}
+      ${
+        assetLibraryId === undefined
+          ? sql``
+          : sql`AND EXISTS (
+        SELECT 1
+        FROM ${libraryDirectoryGrants}
+        WHERE ${libraryDirectoryGrants.libraryId} = ${assetLibraryId}
+          AND ${libraryDirectoryGrants.observedRootId} = ${currentObservedMaterialSupports.observedRootId}
+          AND ${libraryDirectoryGrants.status} = 'active'
+          AND ${libraryDirectoryGrants.awaitingObservation} = 0
+      )`
+      }
       AND NOT EXISTS (
         SELECT 1
         FROM ${artifactAssociationSupersessions}
@@ -913,11 +1229,29 @@ const systemSqliteCatalogueClock: SqliteCatalogueClock = {
   now: () => new Date(),
 };
 
+/** 父执行耐久输入里那一份冻结库快照；缺失或损坏时视为无可核对的父归属。 */
+function frozenSnapshotOfParentInput(
+  input: string | null,
+): Readonly<Record<string, unknown>> | undefined {
+  if (input === null) return undefined;
+  try {
+    const parsed = JSON.parse(input) as { assetLibrary?: unknown };
+    return typeof parsed.assetLibrary === "object" &&
+      parsed.assetLibrary !== null
+      ? (parsed.assetLibrary as Readonly<Record<string, unknown>>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** 由各个窄化资产刷新持久化端口共用的 SQLite 实现。 */
 export class SqliteCatalogue
   implements
     WorkflowExecutionCommands,
     WorkflowExecutionQueries,
+    LibraryScanFulfillmentCommands,
+    LibraryScanFulfillmentQueries,
     WorkflowRecoveryLease,
     AssetRefreshReuseQueries,
     RecognitionAcceptancePersistence,
@@ -1500,6 +1834,21 @@ export class SqliteCatalogue
     };
   }
 
+  /** 人工产物角色决定的当前头：一个目标加角色坐标最多一条，装载整个小表。 */
+  private artifactRoleDecisionsWithDrizzle(
+    query: DrizzleReadQuery,
+  ): readonly ArtifactRoleDecision[] {
+    return query
+      .select({ decision: artifactRoleDecisions })
+      .from(artifactRoleDecisionHeads)
+      .innerJoin(
+        artifactRoleDecisions,
+        eq(artifactRoleDecisionHeads.decisionId, artifactRoleDecisions.id),
+      )
+      .all()
+      .map(({ decision }) => artifactRoleDecisionFromRow(decision));
+  }
+
   /** 每个决定目标只有一个当前头；种类与目标共同决定该目标的生效事实。 */
   private relationshipHeadDecisionsWithDrizzle(
     query: DrizzleReadQuery,
@@ -1520,6 +1869,45 @@ export class SqliteCatalogue
           ? {}
           : { manualRelationshipId: decision.manualRelationshipId }),
       }));
+  }
+
+  /** 批量解析当前关系出现；列表、详情和关系浏览共同使用同一规则。 */
+  private relationshipMentionEntitiesWithDrizzle(
+    query: DrizzleReadQuery,
+    mentionIds: readonly string[],
+  ): ReadonlyMap<string, string> {
+    if (mentionIds.length === 0) return new Map();
+    const observed = query
+      .select()
+      .from(observedEntityResolutions)
+      .where(
+        inArray(observedEntityResolutions.mentionId, sqliteTextSet(mentionIds)),
+      )
+      .all();
+    const decisions = query
+      .select()
+      .from(entityResolutionDecisions)
+      .where(
+        inArray(entityResolutionDecisions.mentionId, sqliteTextSet(mentionIds)),
+      )
+      .orderBy(desc(sql<number>`${entityResolutionDecisions}.rowid`))
+      .all();
+    const result = new Map(
+      observed.map((row) => [row.mentionId, row.entityId]),
+    );
+    for (const mentionId of mentionIds) {
+      if (result.has(mentionId)) continue;
+      const candidates = decisions.filter((row) => row.mentionId === mentionId);
+      const manual = candidates.find((row) => row.basis === "manual");
+      const selected =
+        manual?.operation === "select"
+          ? manual
+          : candidates.find(
+              (row) => row.basis === "source" && row.operation === "select",
+            );
+      if (selected !== undefined) result.set(mentionId, selected.entityId);
+    }
+    return result;
   }
 
   async createLocalRelatedEntity(input: {
@@ -1822,6 +2210,77 @@ export class SqliteCatalogue
           commitmentId: retraction.commitmentId,
         })),
     });
+  }
+
+  /**
+   * 只沿给定实体反复读取端点触及的合并与其撤回，得到本批所需的代表映射；
+   * 身份求值仍由领域森林负责，但装载不再遍历全部实体。
+   */
+  private identityRepresentativesWithinWithDrizzle(
+    query: DrizzleReadQuery,
+    entityIds: readonly string[],
+  ): ReadonlyMap<string, string> {
+    const closure = new Set(entityIds);
+    const merges: (typeof entityIdentityMerges.$inferSelect)[] = [];
+    const retractions: (typeof entityIdentityMergeRetractions.$inferSelect)[] =
+      [];
+    let frontier = [...closure];
+    while (frontier.length > 0) {
+      const reached = query
+        .select()
+        .from(entityIdentityMerges)
+        .where(
+          or(
+            inArray(
+              entityIdentityMerges.retainedEntityId,
+              sqliteTextSet(frontier),
+            ),
+            inArray(
+              entityIdentityMerges.mergedEntityId,
+              sqliteTextSet(frontier),
+            ),
+          ),
+        )
+        .all();
+      /** 先按本轮候选桥 ID 有界取撤回，再决定扩张：已撤回的桥不会把闭包带到对面。 */
+      const reachedMergeIds = uniqueStrings(reached.map((merge) => merge.id));
+      const retractionRows =
+        reachedMergeIds.length === 0
+          ? []
+          : query
+              .select()
+              .from(entityIdentityMergeRetractions)
+              .where(
+                inArray(
+                  entityIdentityMergeRetractions.mergeId,
+                  sqliteTextSet(reachedMergeIds),
+                ),
+              )
+              .all();
+      for (const row of retractionRows)
+        if (!retractions.some((item) => item.id === row.id))
+          retractions.push(row);
+      const retractedMergeIds = new Set(
+        retractionRows.map((row) => row.mergeId),
+      );
+      const active = reached.filter(
+        (merge) => !retractedMergeIds.has(merge.id),
+      );
+      for (const merge of active)
+        if (!merges.some((item) => item.id === merge.id)) merges.push(merge);
+      frontier = uniqueStrings(
+        active
+          .flatMap((merge) => [merge.retainedEntityId, merge.mergedEntityId])
+          .filter((entityId) => !closure.has(entityId)),
+      );
+      for (const entityId of frontier) closure.add(entityId);
+    }
+    if (merges.length === 0) return new Map();
+    return deriveEffectiveEntityIdentity({
+      entityIds: [...closure],
+      merges,
+      retractions,
+    }).representativeByEntity;
   }
 
   private entityIdentityMergePreviewWithDrizzle(
@@ -2770,6 +3229,8 @@ export class SqliteCatalogue
     readonly observedAuthority: {
       readonly registrationId: string;
       readonly registrationVersion: number;
+      readonly assetLibraryId?: string;
+      readonly directoryAuthorityVersion?: number;
     };
     readonly blob: {
       readonly digest: string;
@@ -2813,6 +3274,33 @@ export class SqliteCatalogue
               input.observedAuthority.registrationVersion
           )
             return "stale" as const;
+          // 库语境确认还须在写入 proof/revision/confirmation 的同一 immediate 事务内核该库
+          // 对该物理根的目录授权仍 active 且代次相同：明确撤销先提交则整笔 stale、零耐久效果；
+          // 确认先提交则后来的 remove 无法回滚既有成果。物理根因共享库仍 active 不能替授权背书。
+          if (input.observedAuthority.assetLibraryId !== undefined) {
+            const grant = transaction
+              .select()
+              .from(libraryDirectoryGrants)
+              .where(
+                and(
+                  eq(
+                    libraryDirectoryGrants.libraryId,
+                    input.observedAuthority.assetLibraryId,
+                  ),
+                  eq(
+                    libraryDirectoryGrants.observedRootId,
+                    input.observedAuthority.registrationId,
+                  ),
+                ),
+              )
+              .get();
+            if (
+              grant?.status !== "active" ||
+              grant.authorityVersion !==
+                input.observedAuthority.directoryAuthorityVersion
+            )
+              return "stale" as const;
+          }
           const current = observedSelectionFacts(
             transaction,
             input.expected.location.locationId,
@@ -2859,18 +3347,19 @@ export class SqliteCatalogue
               (proof !== undefined && !proofRowEquals(proof, input.proof))
             )
               return "stale" as const;
-            if (confirmation !== undefined)
-              return confirmation.snapshotId ===
+            if (
+              confirmation !== undefined &&
+              confirmation.snapshotId ===
                 input.expected.observation.snapshotId &&
-                confirmation.observedAt ===
-                  input.expected.observation.observedAt &&
-                confirmation.size === input.expected.observation.size &&
-                confirmation.modifiedAt ===
-                  input.expected.observation.modifiedAt &&
-                confirmation.conditionalBaseline ===
-                  input.expected.conditionalBaseline
-                ? ("already-committed" as const)
-                : ("stale" as const);
+              confirmation.observedAt ===
+                input.expected.observation.observedAt &&
+              confirmation.size === input.expected.observation.size &&
+              confirmation.modifiedAt ===
+                input.expected.observation.modifiedAt &&
+              confirmation.conditionalBaseline ===
+                input.expected.conditionalBaseline
+            )
+              return "already-committed" as const;
             if (
               current.conditionalBaseline !==
               currentObservationConditionalBaseline(transaction, {
@@ -2888,18 +3377,47 @@ export class SqliteCatalogue
                 .insert(artifactContentProofs)
                 .values(input.proof)
                 .run();
-            transaction
-              .insert(observedRevisionConfirmations)
-              .values({
-                revisionId: input.revision.id,
-                locationId: current.location.locationId,
-                snapshotId: current.observation.snapshotId,
-                observedAt: current.observation.observedAt,
-                size: current.observation.size,
-                modifiedAt: current.observation.modifiedAt,
-                conditionalBaseline: current.conditionalBaseline,
-              })
-              .run();
+            if (confirmation === undefined)
+              transaction
+                .insert(observedRevisionConfirmations)
+                .values({
+                  revisionId: input.revision.id,
+                  locationId: current.location.locationId,
+                  snapshotId: current.observation.snapshotId,
+                  observedAt: current.observation.observedAt,
+                  size: current.observation.size,
+                  modifiedAt: current.observation.modifiedAt,
+                  conditionalBaseline: current.conditionalBaseline,
+                })
+                .run();
+            // 同一不可变修订被重新观察到新快照：公开确认已在此事务内通过观察根权限、
+            // 当前 selection／conditionalBaseline CAS、Artifact／digest／proof／长度一致性
+            // 校验，并重新读取真实字节建立 proof。把该修订在该位置的当前确认投影推进到
+            // 本次观察坐标，使同一修订在新快照下正常延续；绝不为快照制造新修订、从他处
+            // 补确认或放宽上述校验。真正过期的旧 selection 已由前序 CAS 与观察基线判定拒绝。
+            else
+              transaction
+                .update(observedRevisionConfirmations)
+                .set({
+                  snapshotId: current.observation.snapshotId,
+                  observedAt: current.observation.observedAt,
+                  size: current.observation.size,
+                  modifiedAt: current.observation.modifiedAt,
+                  conditionalBaseline: current.conditionalBaseline,
+                })
+                .where(
+                  and(
+                    eq(
+                      observedRevisionConfirmations.revisionId,
+                      input.revision.id,
+                    ),
+                    eq(
+                      observedRevisionConfirmations.locationId,
+                      current.location.locationId,
+                    ),
+                  ),
+                )
+                .run();
             return "committed" as const;
           }
           if (
@@ -3573,6 +4091,8 @@ export class SqliteCatalogue
       const query = drizzle({ client: database });
       query.transaction(
         (transaction) => {
+          this.assertAssetLibraryFrozen(transaction, execution);
+          this.assertDirectoryAuthorizationsCurrent(transaction, execution);
           this.workflowExecutionPersistence.insertExecutionWithDrizzle(
             transaction,
             execution,
@@ -3585,88 +4105,211 @@ export class SqliteCatalogue
     const query = drizzle({ client: database });
     query.transaction(
       (transaction) => {
-        const trigger = execution.workflowInput?.trigger ?? execution.trigger;
-        if (
-          trigger !== "initial" &&
-          trigger !== "interval" &&
-          trigger !== "scan-now"
-        ) {
-          throw new Error("Automation execution requires its trigger");
-        }
-        const intent = transaction
-          .select()
-          .from(automationIntents)
-          .where(eq(automationIntents.id, automationIntentId))
-          .get();
-        if (
-          intent === undefined ||
-          (trigger !== "scan-now" && intent.enabled === 0)
-        ) {
-          outcome = "disabled";
+        const admission = this.admitAutomationTrigger(
+          transaction,
+          automationIntentId,
+          execution.workflowInput?.trigger ?? execution.trigger,
+          requestedAt,
+        );
+        if (admission !== "admitted") {
+          outcome = admission;
           return;
         }
-        const runtime = transaction
-          .select()
-          .from(automationRuntime)
-          .where(eq(automationRuntime.intentId, automationIntentId))
-          .get();
-        if (runtime === undefined) {
-          throw new Error("Automation intent lacks runtime state");
-        }
-        if (runtime.activeExecutionId !== null) {
-          const active = transaction
-            .select({ status: workflowExecutions.status })
-            .from(workflowExecutions)
-            .where(eq(workflowExecutions.id, runtime.activeExecutionId))
-            .get();
-          if (active?.status === "running") {
-            outcome = "skipped";
-            return;
-          }
-          transaction
-            .update(automationRuntime)
-            .set({ activeExecutionId: null })
-            .where(
-              and(
-                eq(automationRuntime.intentId, automationIntentId),
-                eq(
-                  automationRuntime.activeExecutionId,
-                  runtime.activeExecutionId,
-                ),
-              ),
-            )
-            .run();
-        }
-        if (
-          trigger === "interval" &&
-          runtime.lastAutomaticTriggerAt !== null &&
-          Date.parse(requestedAt) - Date.parse(runtime.lastAutomaticTriggerAt) <
-            intent.intervalMilliseconds
-        ) {
-          outcome = "skipped";
-          return;
-        }
+        this.assertAssetLibraryFrozen(transaction, execution);
+        this.assertDirectoryAuthorizationsCurrent(transaction, execution);
         this.workflowExecutionPersistence.insertExecutionWithDrizzle(
           transaction,
           execution,
         );
-        const claimed = transaction
-          .update(automationRuntime)
-          .set({ activeExecutionId: execution.id })
-          .where(
-            and(
-              eq(automationRuntime.intentId, automationIntentId),
-              isNull(automationRuntime.activeExecutionId),
-            ),
-          )
-          .run();
-        if (claimed.changes !== 1) {
-          throw new Error("Automation execution could not acquire its claim");
-        }
+        this.claimAutomationRuntime(
+          transaction,
+          automationIntentId,
+          execution.id,
+        );
       },
       { behavior: "immediate" },
     );
     return outcome;
+  }
+
+  /**
+   * 周期触发在同一条即时事务内核对启用、到期与运行时独占：停用只挡住之后的触发，已经在
+   * 进行的执行照常持有其 I/O；`scan-now` 是操作方明确点名，不受开关与到期限制。一个意图
+   * 的等待或忙碌绝不牵连同库或其他库的任何意图。
+   */
+  private admitAutomationTrigger(
+    transaction: DrizzleWriteTransaction,
+    automationIntentId: string,
+    trigger: string | undefined,
+    requestedAt: string,
+  ): "admitted" | "disabled" | "skipped" {
+    if (
+      trigger !== "initial" &&
+      trigger !== "interval" &&
+      trigger !== "scan-now"
+    )
+      throw new Error("Automation execution requires its trigger");
+    const intent = transaction
+      .select()
+      .from(automationIntents)
+      .where(eq(automationIntents.id, automationIntentId))
+      .get();
+    if (
+      intent === undefined ||
+      (trigger !== "scan-now" && intent.enabled === 0)
+    )
+      return "disabled";
+    const runtime = transaction
+      .select()
+      .from(automationRuntime)
+      .where(eq(automationRuntime.intentId, automationIntentId))
+      .get();
+    if (runtime === undefined)
+      throw new Error("Automation intent lacks runtime state");
+    if (runtime.activeExecutionId !== null) {
+      const active = transaction
+        .select({ status: workflowExecutions.status })
+        .from(workflowExecutions)
+        .where(eq(workflowExecutions.id, runtime.activeExecutionId))
+        .get();
+      if (active?.status === "running") return "skipped";
+      transaction
+        .update(automationRuntime)
+        .set({ activeExecutionId: null })
+        .where(
+          and(
+            eq(automationRuntime.intentId, automationIntentId),
+            eq(automationRuntime.activeExecutionId, runtime.activeExecutionId),
+          ),
+        )
+        .run();
+    }
+    if (
+      trigger === "interval" &&
+      runtime.lastAutomaticTriggerAt !== null &&
+      Date.parse(requestedAt) - Date.parse(runtime.lastAutomaticTriggerAt) <
+        intent.intervalMilliseconds
+    )
+      return "skipped";
+    return "admitted";
+  }
+
+  private claimAutomationRuntime(
+    transaction: DrizzleWriteTransaction,
+    automationIntentId: string,
+    executionId: string,
+  ): void {
+    const claimed = transaction
+      .update(automationRuntime)
+      .set({ activeExecutionId: executionId })
+      .where(
+        and(
+          eq(automationRuntime.intentId, automationIntentId),
+          isNull(automationRuntime.activeExecutionId),
+        ),
+      )
+      .run();
+    if (claimed.changes !== 1)
+      throw new Error("Automation execution could not acquire its claim");
+  }
+
+  /**
+   * 库范围的耐久工作只能在配置仍是解析时那一份时创建。读取活动性与版本和插入执行处在同一
+   * 事务，因此并发保存不会让新执行携带过期的冻结值。版本已不是当前值时，只有与父执行冻结输入
+   * 逐字一致的派生工作仍可创建：那是同一份旧工作的延续，创建后的编辑不能剥夺它（ADR-0068）。
+   */
+  private assertAssetLibraryFrozen(
+    query: DrizzleReadQuery,
+    execution: WorkflowExecution,
+  ): void {
+    if (this.assetLibraryFrozenStale(query, execution))
+      throw new Error("资产库配置已变更或移除，请重新扫描");
+  }
+
+  /**
+   * 与 assertAssetLibraryFrozen 相同的判据，但把明确的库移除或配置漂移作为布尔值返回，让
+   * child 登记事务能在同一事务里耐久中断这份计划而不是回滚重投。数据库读取失败仍在查询处
+   * 抛出并回滚，绝不会被当成撤权吞下。
+   */
+  private assetLibraryFrozenStale(
+    query: DrizzleReadQuery,
+    execution: WorkflowExecution,
+  ): boolean {
+    const snapshot = execution.workflowInput?.assetLibrary;
+    if (snapshot === undefined) return false;
+    const library = query
+      .select({
+        status: assetLibraries.status,
+        configVersion: assetLibraries.configVersion,
+      })
+      .from(assetLibraries)
+      .where(eq(assetLibraries.id, snapshot.id))
+      .get();
+    if (library === undefined || library.status !== "active") return true;
+    if (library.configVersion === snapshot.configVersion) return false;
+    const parentExecutionId = execution.workflowInput?.parentExecutionId;
+    let parentInput: string | null = null;
+    if (parentExecutionId !== undefined)
+      parentInput =
+        query
+          .select({ input: workflowExecutions.workflowInputJson })
+          .from(workflowExecutions)
+          .where(eq(workflowExecutions.id, parentExecutionId))
+          .get()?.input ?? null;
+    const parentSnapshot = frozenSnapshotOfParentInput(parentInput);
+    return (
+      parentSnapshot === undefined ||
+      JSON.stringify(parentSnapshot) !== JSON.stringify(snapshot)
+    );
+  }
+
+  /**
+   * 冻结的库目录授权在同一个 immediate 事务里核对：目录或整库移除、链接授权改变、显式重连
+   * 都推进 authorityVersion，携带版本对不上就说明本次工作的 I/O 权威已被收回，新效果与提交
+   * 因此持久被拒绝。这里绝不比较库配置版本——普通改名或能力、来源配置编辑不剥夺已授权的工作。
+   */
+  private directoryAuthorizationsStale(
+    query: DrizzleReadQuery,
+    execution: WorkflowExecution,
+  ): boolean {
+    const input = execution.workflowInput;
+    const libraryId = input?.assetLibrary?.id;
+    if (libraryId === undefined) return false;
+    const current = new Map(
+      query
+        .select({
+          observedRootId: libraryDirectoryGrants.observedRootId,
+          authorityVersion: libraryDirectoryGrants.authorityVersion,
+        })
+        .from(libraryDirectoryGrants)
+        .where(
+          and(
+            eq(libraryDirectoryGrants.libraryId, libraryId),
+            eq(libraryDirectoryGrants.status, "active"),
+          ),
+        )
+        .all()
+        .map((row) => [row.observedRootId, row.authorityVersion]),
+    );
+    const authorizations = input?.directoryAuthorizations;
+    if (authorizations !== undefined)
+      return authorizations.some(
+        ({ observedRootId, authorityVersion }) =>
+          current.get(observedRootId) !== authorityVersion,
+      );
+    // 本票之前的旧耐久载体若携带库目录工作（冻结了 observedRoots）却没有可证明的授权代次，
+    // 绝不以「今日该 root 仍 active」或重连后的新权威补齐——它从未冻结过任何版本，无从核对。
+    // 诚实判定过期，让恢复给出 interrupted/failed 终态并保留已提交历史；不带 observedRoots 的
+    // 中立旧执行没有目录工作，不进入此分支，继续沿既有兼容边界运行。
+    return (input?.observedRoots ?? []).length > 0;
+  }
+
+  private assertDirectoryAuthorizationsCurrent(
+    query: DrizzleReadQuery,
+    execution: WorkflowExecution,
+  ): void {
+    if (this.directoryAuthorizationsStale(query, execution))
+      throw new Error("此目录已从资产库移除或重新连接，本次工作不能继续");
   }
 
   async retainSourceRecords(input: {
@@ -3702,6 +4345,12 @@ export class SqliteCatalogue
           transaction,
           input.execution.id,
           input.resumeClaim,
+        );
+        // 来源 collector 返回后的阶段提交同样以 expected execution 冻结的目录授权复核：
+        // 移除先提交时新来源记录与阶段被整笔拒绝，结果先提交时既有成果保留。
+        this.assertDirectoryAuthorizationsCurrent(
+          transaction,
+          input.expectedExecution,
         );
         this.insertSourceRecordsWithDrizzle(
           transaction,
@@ -4052,6 +4701,1002 @@ export class SqliteCatalogue
     );
   }
 
+  /**
+   * 现代自动化父的规划结果与原父终态在同一条 immediate／CAS 事务里落下：CAS 失败或恢复声明
+   * 过期时，批次、主体、计划与终态一起保持原样，绝不留下一份比父更「新」的处置。
+   */
+  async finishLibraryScanWithFulfillmentPlan(input: {
+    readonly expectedParent: WorkflowExecution;
+    readonly finishedParent: WorkflowExecution;
+    readonly batch: LibraryScanFulfillmentBatchWrite;
+    readonly resumeClaim?: { readonly token: string; readonly now: string };
+  }): Promise<void> {
+    if (
+      input.batch.parentExecutionId !== input.expectedParent.id ||
+      input.finishedParent.id !== input.expectedParent.id
+    )
+      throw new Error("信息履行批次与其库扫描父不一致");
+    const dispositions = new Map(
+      input.batch.subjects.map((subject) => [
+        subject.subjectId,
+        subject.disposition,
+      ]),
+    );
+    if (dispositions.size !== input.batch.subjects.length)
+      throw new Error("信息履行批次重复登记同一主体");
+    for (const operation of input.batch.operations) {
+      if (dispositions.get(operation.subjectId) !== "planned")
+        throw new Error("信息履行计划缺少已规划的主体处置");
+      if (operation.plan.subjectId !== operation.subjectId)
+        throw new Error("信息履行计划与所属主体不一致");
+    }
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    const plannedAt = new Date().toISOString();
+    query.transaction(
+      (transaction) => {
+        const baseline =
+          this.workflowExecutionPersistence.runningExecutionBaseline(
+            transaction,
+            input.expectedParent,
+            input.finishedParent,
+          );
+        this.assertResumeMutationClaim(
+          transaction,
+          input.finishedParent.id,
+          input.resumeClaim,
+        );
+        const batch = transaction
+          .select({ stage: libraryScanFulfillmentBatches.stage })
+          .from(libraryScanFulfillmentBatches)
+          .where(
+            eq(
+              libraryScanFulfillmentBatches.parentExecutionId,
+              input.batch.parentExecutionId,
+            ),
+          )
+          .get();
+        if (batch === undefined) throw new Error("库扫描父缺少信息履行批次");
+        if (batch.stage !== "awaiting-results")
+          throw new Error("库扫描父的信息履行处置已经耐久写下");
+        for (const [position, subject] of input.batch.subjects.entries())
+          transaction
+            .insert(libraryScanFulfillmentSubjects)
+            .values({
+              parentExecutionId: input.batch.parentExecutionId,
+              subjectId: subject.subjectId,
+              disposition: subject.disposition,
+              requirementJson:
+                subject.requirement === undefined
+                  ? null
+                  : encodeLibraryScanFulfillmentRequirement(
+                      subject.requirement,
+                    ),
+              reason: subject.reason ?? null,
+              position,
+            })
+            .run();
+        for (const [position, operation] of input.batch.operations.entries())
+          transaction
+            .insert(libraryScanFulfillmentOperations)
+            .values({
+              parentExecutionId: input.batch.parentExecutionId,
+              operationId: operation.operationId,
+              subjectId: operation.subjectId,
+              planJson: encodeInformationFulfillmentPlan(operation.plan),
+              childExecutionId: null,
+              disposition: "planned",
+              reason: null,
+              position,
+            })
+            .run();
+        transaction
+          .update(libraryScanFulfillmentBatches)
+          .set({
+            stage: input.batch.operations.length === 0 ? "closed" : "planned",
+            plannedAt,
+          })
+          .where(
+            eq(
+              libraryScanFulfillmentBatches.parentExecutionId,
+              input.batch.parentExecutionId,
+            ),
+          )
+          .run();
+        this.workflowExecutionPersistence.replaceExecutionWithDrizzle(
+          transaction,
+          input.finishedParent,
+          {
+            auditJson: baseline.auditJson,
+          },
+        );
+        this.projectCompletedFilesystemScanWithDrizzle(
+          transaction,
+          input.finishedParent,
+        );
+      },
+      { behavior: "immediate" },
+    );
+  }
+
+  /** 只从耐久载体读取一个父的处置；损坏载荷如实失败，绝不按今日规则补齐。 */
+  async inspectLibraryScanFulfillment(
+    parentExecutionId: string,
+  ): Promise<LibraryScanFulfillmentInspection | undefined> {
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    const batch = query
+      .select()
+      .from(libraryScanFulfillmentBatches)
+      .where(
+        eq(libraryScanFulfillmentBatches.parentExecutionId, parentExecutionId),
+      )
+      .get();
+    if (batch === undefined) return undefined;
+    const operations = query
+      .select({
+        operationId: libraryScanFulfillmentOperations.operationId,
+        subjectId: libraryScanFulfillmentOperations.subjectId,
+        disposition: libraryScanFulfillmentOperations.disposition,
+        planJson: libraryScanFulfillmentOperations.planJson,
+        childExecutionId: libraryScanFulfillmentOperations.childExecutionId,
+        childStatus: workflowExecutions.status,
+        reason: libraryScanFulfillmentOperations.reason,
+      })
+      .from(libraryScanFulfillmentOperations)
+      .leftJoin(
+        workflowExecutions,
+        eq(
+          workflowExecutions.id,
+          libraryScanFulfillmentOperations.childExecutionId,
+        ),
+      )
+      .where(
+        eq(
+          libraryScanFulfillmentOperations.parentExecutionId,
+          parentExecutionId,
+        ),
+      )
+      .orderBy(asc(libraryScanFulfillmentOperations.position))
+      .all();
+    const operationRecords = operations.map(
+      (operation): LibraryScanFulfillmentOperationRecord => ({
+        operationId: operation.operationId,
+        subjectId: operation.subjectId,
+        disposition:
+          operation.disposition as LibraryScanFulfillmentOperationDisposition,
+        ...(operation.planJson === null
+          ? {}
+          : { plan: decodeInformationFulfillmentPlan(operation.planJson) }),
+        ...(operation.childExecutionId === null
+          ? {}
+          : { childExecutionId: operation.childExecutionId }),
+        ...(operation.childStatus === null
+          ? {}
+          : {
+              childStatus: operation.childStatus as WorkflowExecution["status"],
+            }),
+        ...(operation.reason === null ? {} : { reason: operation.reason }),
+      }),
+    );
+    const subjects = query
+      .select()
+      .from(libraryScanFulfillmentSubjects)
+      .where(
+        eq(libraryScanFulfillmentSubjects.parentExecutionId, parentExecutionId),
+      )
+      .orderBy(asc(libraryScanFulfillmentSubjects.position))
+      .all();
+    return {
+      parentExecutionId,
+      stage: batch.stage as LibraryScanFulfillmentBatchStage,
+      plannerCoordinate: batch.plannerCoordinate,
+      ...(batch.reason === null ? {} : { reason: batch.reason }),
+      ...(batch.plannedAt === null ? {} : { plannedAt: batch.plannedAt }),
+      subjects: subjects.map(
+        (subject): LibraryScanFulfillmentSubjectRecord => ({
+          subjectId: subject.subjectId,
+          disposition:
+            subject.disposition as LibraryScanFulfillmentSubjectDisposition,
+          ...(subject.requirementJson === null
+            ? {}
+            : {
+                requirement: decodeLibraryScanFulfillmentRequirement(
+                  subject.requirementJson,
+                ),
+              }),
+          ...(subject.reason === null ? {} : { reason: subject.reason }),
+          operations: operationRecords.filter(
+            (operation) => operation.subjectId === subject.subjectId,
+          ),
+        }),
+      ),
+    };
+  }
+
+  /**
+   * 欠账只由耐久载体决定：仍 awaiting-results 的现代父、还留着未绑定计划的 operation，以及
+   * 从未有批次的历史自动化父扫描。按创建顺序返回，因此接续从最早欠账的父开始，新父不能遮蔽它。
+   */
+  async listTerminalLibraryScanFulfillmentDebt(): Promise<readonly string[]> {
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    const rows = query
+      .select({ id: workflowExecutions.id })
+      .from(workflowExecutions)
+      .leftJoin(
+        libraryScanFulfillmentBatches,
+        eq(
+          libraryScanFulfillmentBatches.parentExecutionId,
+          workflowExecutions.id,
+        ),
+      )
+      .where(
+        and(
+          isNotNull(workflowExecutions.automationIntentId),
+          eq(workflowExecutions.operationKind, "scan-asset-library"),
+          ne(workflowExecutions.status, "running"),
+          or(
+            isNull(libraryScanFulfillmentBatches.parentExecutionId),
+            eq(libraryScanFulfillmentBatches.stage, "awaiting-results"),
+            exists(
+              query
+                .select({ one: sql`1` })
+                .from(libraryScanFulfillmentOperations)
+                .where(
+                  and(
+                    eq(
+                      libraryScanFulfillmentOperations.parentExecutionId,
+                      workflowExecutions.id,
+                    ),
+                    eq(libraryScanFulfillmentOperations.disposition, "planned"),
+                  ),
+                ),
+            ),
+          ),
+        ),
+      )
+      .orderBy(asc(sql<number>`${workflowExecutions}.rowid`))
+      .all();
+    return rows.map((row) => row.id);
+  }
+
+  /**
+   * 一个稳定 operation 与唯一 child 的绑定在同一条事务里完成：重复进入返回原执行 ID 而不写
+   * 第二份效果，缺原计划或父已不可归属时把该 operation 记为耐久中断。
+   */
+  async registerInformationFulfillmentChild(input: {
+    readonly parentExecutionId: string;
+    readonly operationId: string;
+    readonly execution: WorkflowExecution;
+  }): Promise<InformationFulfillmentChildRegistration> {
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    let outcome: InformationFulfillmentChildRegistration = {
+      status: "interrupted",
+      reason: "信息履行所属的库扫描父已不存在",
+    };
+    query.transaction(
+      (transaction) => {
+        const operation = transaction
+          .select()
+          .from(libraryScanFulfillmentOperations)
+          .where(
+            and(
+              eq(
+                libraryScanFulfillmentOperations.parentExecutionId,
+                input.parentExecutionId,
+              ),
+              eq(
+                libraryScanFulfillmentOperations.operationId,
+                input.operationId,
+              ),
+            ),
+          )
+          .get();
+        if (operation === undefined) {
+          outcome = {
+            status: "interrupted",
+            reason: "信息履行计划不在耐久账本中",
+          };
+          return;
+        }
+        if (operation.disposition === "registered") {
+          if (operation.childExecutionId === null)
+            throw new Error("已登记的信息履行计划缺少 child");
+          outcome = {
+            status: "existing",
+            executionId: operation.childExecutionId,
+          };
+          return;
+        }
+        if (operation.disposition === "interrupted") {
+          outcome = {
+            status: "interrupted",
+            reason: operation.reason ?? "该信息履行计划已明确中断",
+          };
+          return;
+        }
+        if (operation.planJson === null) {
+          transaction
+            .update(libraryScanFulfillmentOperations)
+            .set({
+              disposition: "interrupted",
+              reason: "耐久账本缺少该计划的原版本",
+            })
+            .where(
+              and(
+                eq(
+                  libraryScanFulfillmentOperations.parentExecutionId,
+                  input.parentExecutionId,
+                ),
+                eq(
+                  libraryScanFulfillmentOperations.operationId,
+                  input.operationId,
+                ),
+              ),
+            )
+            .run();
+          outcome = {
+            status: "interrupted",
+            reason: "耐久账本缺少该计划的原版本",
+          };
+          return;
+        }
+        const planned = decodeInformationFulfillmentPlan(operation.planJson);
+        const coordinates = input.execution.workflowInput?.operation;
+        if (
+          input.execution.workflowInput?.parentExecutionId !==
+            input.parentExecutionId ||
+          coordinates === undefined ||
+          coordinates.operationId !== input.operationId ||
+          coordinates.subjectId !== operation.subjectId ||
+          coordinates.subjectId !== planned.subjectId ||
+          coordinates.kind !== planned.operation ||
+          coordinates.sourceIdentity !== planned.sourceIdentity ||
+          (coordinates.sourceAssociationId ?? undefined) !==
+            (planned.sourceAssociationId ?? undefined)
+        ) {
+          transaction
+            .update(libraryScanFulfillmentOperations)
+            .set({
+              disposition: "interrupted",
+              reason: "child 与耐久计划坐标不一致，未登记这份效果",
+            })
+            .where(
+              and(
+                eq(
+                  libraryScanFulfillmentOperations.parentExecutionId,
+                  input.parentExecutionId,
+                ),
+                eq(
+                  libraryScanFulfillmentOperations.operationId,
+                  input.operationId,
+                ),
+              ),
+            )
+            .run();
+          outcome = {
+            status: "interrupted",
+            reason: "child 与耐久计划坐标不一致，未登记这份效果",
+          };
+          return;
+        }
+        // 与 createExecution 相同的冻结依据复核：派生 child 沿用父的库快照与目录授权，
+        // 已结束的父不遮蔽它欠下的计划，但今日配置漂移不能替它续权。明确的库移除、目录撤权
+        // 或重连、缺冻结授权都在这同一事务里把该计划耐久中断（不插 child、不启动效果、不借
+        // 今日授权），避免每次启动重复登记尝试；结构损坏与数据库故障仍在下方抛出并回滚。
+        const revocationReason = this.assetLibraryFrozenStale(
+          transaction,
+          input.execution,
+        )
+          ? "资产库配置已变更或移除，请重新扫描"
+          : this.directoryAuthorizationsStale(transaction, input.execution)
+            ? "此目录已从资产库移除或重新连接，本次工作不能继续"
+            : undefined;
+        if (revocationReason !== undefined) {
+          transaction
+            .update(libraryScanFulfillmentOperations)
+            .set({ disposition: "interrupted", reason: revocationReason })
+            .where(
+              and(
+                eq(
+                  libraryScanFulfillmentOperations.parentExecutionId,
+                  input.parentExecutionId,
+                ),
+                eq(
+                  libraryScanFulfillmentOperations.operationId,
+                  input.operationId,
+                ),
+              ),
+            )
+            .run();
+          outcome = { status: "interrupted", reason: revocationReason };
+          return;
+        }
+        this.workflowExecutionPersistence.insertExecutionWithDrizzle(
+          transaction,
+          input.execution,
+        );
+        transaction
+          .update(libraryScanFulfillmentOperations)
+          .set({
+            disposition: "registered",
+            childExecutionId: input.execution.id,
+          })
+          .where(
+            and(
+              eq(
+                libraryScanFulfillmentOperations.parentExecutionId,
+                input.parentExecutionId,
+              ),
+              eq(
+                libraryScanFulfillmentOperations.operationId,
+                input.operationId,
+              ),
+            ),
+          )
+          .run();
+        outcome = { status: "registered", executionId: input.execution.id };
+      },
+      { behavior: "immediate" },
+    );
+    return outcome;
+  }
+
+  /**
+   * 未规划收口只适用于迁移前就没有批次的终态自动化父：能定位的接受主体逐条耐久记为中断，
+   * 读不到冻结依据时只写批次级原因。这里不调用今日解析器，不回填 no-work 或计划，也不新建 child。
+   */
+  async closeLegacyLibraryScanFulfillment(
+    input: LegacyLibraryScanFulfillmentClosure,
+  ): Promise<void> {
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    const reason = "该父扫描没有留下可复验的信息履行规划依据";
+    query.transaction(
+      (transaction) => {
+        const existing = transaction
+          .select({ stage: libraryScanFulfillmentBatches.stage })
+          .from(libraryScanFulfillmentBatches)
+          .where(
+            eq(
+              libraryScanFulfillmentBatches.parentExecutionId,
+              input.parentExecutionId,
+            ),
+          )
+          .get();
+        if (existing !== undefined)
+          throw new Error("该库扫描父已有耐久信息履行批次");
+        const parent = transaction
+          .select({
+            automationIntentId: workflowExecutions.automationIntentId,
+            status: workflowExecutions.status,
+          })
+          .from(workflowExecutions)
+          .where(eq(workflowExecutions.id, input.parentExecutionId))
+          .get();
+        if (
+          parent === undefined ||
+          parent.automationIntentId === undefined ||
+          parent.status === "running"
+        )
+          throw new Error("未规划的收口只适用于已结束的自动化库扫描父");
+        transaction
+          .insert(libraryScanFulfillmentBatches)
+          .values({
+            parentExecutionId: input.parentExecutionId,
+            version: libraryScanFulfillmentVersion,
+            plannerCoordinate: automatedInformationPlannerNoneCoordinate,
+            stage:
+              input.unreadableReason === undefined ? "closed" : "interrupted",
+            reason: input.unreadableReason ?? null,
+            plannedAt: null,
+          })
+          .run();
+        if (input.unreadableReason !== undefined) return;
+        let position = 0;
+        for (const subjectId of input.acceptedSubjectIds) {
+          transaction
+            .insert(libraryScanFulfillmentSubjects)
+            .values({
+              parentExecutionId: input.parentExecutionId,
+              subjectId,
+              disposition: "interrupted",
+              requirementJson: null,
+              reason,
+              position,
+            })
+            .run();
+          position += 1;
+        }
+      },
+      { behavior: "immediate" },
+    );
+  }
+
+  /**
+   * 父执行与全部目录条目在同一条事务里落下：目录子登记之前，归属一定已经耐久存在，
+   * 崩溃因此不会留下没有父的孤儿观察。周期触发携带意图时，同一事务还核对启用、到期与
+   * 运行时独占，没被接纳就不留下任何行。
+   */
+  async createLibraryScan(input: {
+    readonly execution: WorkflowExecution;
+    readonly directories: readonly LibraryScanDirectoryRecord[];
+    readonly requestedAt?: string;
+    readonly fulfillmentPlannerCoordinate?: string;
+  }): Promise<ExecutionStartDisposition> {
+    const plan = input.execution.workflowInput?.libraryScan;
+    if (
+      input.execution.operationKind !== "scan-asset-library" ||
+      plan === undefined
+    )
+      throw new Error("库扫描父执行缺少冻结的目录计划");
+    if (
+      input.directories.length === 0 ||
+      input.directories.some((directory) => directory.stage !== "queued") ||
+      JSON.stringify(
+        input.directories.map((directory) => directory.directoryKey).toSorted(),
+      ) !==
+        JSON.stringify(
+          plan.directories
+            .map((directory) => directory.directoryKey)
+            .toSorted(),
+        )
+    )
+      throw new Error("库扫描目录条目与冻结的目录计划不一致");
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    let outcome: ExecutionStartDisposition = "started";
+    query.transaction(
+      (transaction) => {
+        const automationIntentId = input.execution.automationIntentId;
+        if (automationIntentId !== undefined) {
+          const admission = this.admitAutomationTrigger(
+            transaction,
+            automationIntentId,
+            input.execution.workflowInput?.trigger,
+            input.requestedAt ?? new Date().toISOString(),
+          );
+          if (admission !== "admitted") {
+            outcome = admission;
+            return;
+          }
+          // 周期新工作必须与此刻的库配置核对；人工父执行沿用 08/09 已接受的创建语义。
+          this.assertAssetLibraryFrozen(transaction, input.execution);
+        }
+        this.assertDirectoryAuthorizationsCurrent(transaction, input.execution);
+        this.workflowExecutionPersistence.insertExecutionWithDrizzle(
+          transaction,
+          input.execution,
+        );
+        if (automationIntentId !== undefined)
+          this.claimAutomationRuntime(
+            transaction,
+            automationIntentId,
+            input.execution.id,
+          );
+        for (const [position, directory] of input.directories.entries())
+          transaction
+            .insert(libraryScanDirectories)
+            .values({
+              parentExecutionId: input.execution.id,
+              directoryKey: directory.directoryKey,
+              scopeReference: directory.scopeReference,
+              rootVersion: directory.rootVersion,
+              relativeScope: directory.relativeScope,
+              mode: directory.mode,
+              executedByKey: directory.executedByDirectoryKey ?? null,
+              coveredPrefix: directory.coveredPrefix ?? null,
+              childExecutionId: directory.childExecutionId ?? null,
+              stage: directory.stage,
+              outcome: directory.outcome ?? null,
+              reason: directory.reason ?? null,
+              workItemCount: directory.workItemCount,
+              unresolvedCount: directory.unresolvedCount,
+              failedCount: directory.failedCount,
+              position,
+            })
+            .run();
+        // 批次壳与父同时落下：它的存在与否就是现代父与历史无规划父的耐久分界。
+        if (input.fulfillmentPlannerCoordinate !== undefined)
+          transaction
+            .insert(libraryScanFulfillmentBatches)
+            .values({
+              parentExecutionId: input.execution.id,
+              version: libraryScanFulfillmentVersion,
+              plannerCoordinate: input.fulfillmentPlannerCoordinate,
+              stage: "awaiting-results",
+              reason: null,
+              plannedAt: null,
+            })
+            .run();
+      },
+      { behavior: "immediate" },
+    );
+    return outcome;
+  }
+
+  /**
+   * 原子登记目录子：比较父仍运行且没有被明确取消，插入子执行并把其 ID 盖到代表条目与
+   * 该代表的 covered 条目上。取消与登记的竞争因此只会有一个赢家。
+   */
+  async registerLibraryScanChild(input: {
+    readonly parentExecutionId: string;
+    readonly directoryKey: string;
+    readonly execution: WorkflowExecution;
+    readonly requestedAt?: string;
+  }): Promise<"registered" | "cancelled" | "already-registered"> {
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    let disposition: "registered" | "cancelled" | "already-registered" =
+      "cancelled";
+    query.transaction(
+      (transaction) => {
+        const parent = transaction
+          .select({ status: workflowExecutions.status })
+          .from(workflowExecutions)
+          .where(eq(workflowExecutions.id, input.parentExecutionId))
+          .get();
+        if (parent === undefined)
+          throw new Error("库扫描父执行不存在，不能登记目录子");
+        const entry = transaction
+          .select()
+          .from(libraryScanDirectories)
+          .where(
+            and(
+              eq(
+                libraryScanDirectories.parentExecutionId,
+                input.parentExecutionId,
+              ),
+              eq(libraryScanDirectories.directoryKey, input.directoryKey),
+            ),
+          )
+          .get();
+        if (entry === undefined)
+          throw new Error("库扫描目录条目不属于该父执行");
+        if (
+          parent.status !== "running" ||
+          transaction
+            .select({ id: libraryScanCancellations.parentExecutionId })
+            .from(libraryScanCancellations)
+            .where(
+              eq(
+                libraryScanCancellations.parentExecutionId,
+                input.parentExecutionId,
+              ),
+            )
+            .get() !== undefined
+        ) {
+          disposition = "cancelled";
+          return;
+        }
+        if (entry.childExecutionId !== null) {
+          disposition = "already-registered";
+          return;
+        }
+        if (
+          entry.mode !== "execute" ||
+          input.execution.workflowInput?.parentExecutionId !==
+            input.parentExecutionId ||
+          input.execution.workflowInput?.parentDirectoryKey !==
+            input.directoryKey
+        )
+          throw new Error("目录子执行的父归属与登记请求不一致");
+        this.assertDirectoryAuthorizationsCurrent(transaction, input.execution);
+        this.workflowExecutionPersistence.insertExecutionWithDrizzle(
+          transaction,
+          input.execution,
+        );
+        const claimed = transaction
+          .update(libraryScanDirectories)
+          .set({ childExecutionId: input.execution.id, stage: "running" })
+          .where(
+            and(
+              eq(
+                libraryScanDirectories.parentExecutionId,
+                input.parentExecutionId,
+              ),
+              eq(libraryScanDirectories.directoryKey, input.directoryKey),
+              isNull(libraryScanDirectories.childExecutionId),
+            ),
+          )
+          .run();
+        if (claimed.changes !== 1) throw new Error("库扫描目录条目登记竞争");
+        transaction
+          .update(libraryScanDirectories)
+          .set({ childExecutionId: input.execution.id, stage: "running" })
+          .where(
+            and(
+              eq(
+                libraryScanDirectories.parentExecutionId,
+                input.parentExecutionId,
+              ),
+              eq(libraryScanDirectories.executedByKey, input.directoryKey),
+              eq(libraryScanDirectories.mode, "covered"),
+              isNull(libraryScanDirectories.childExecutionId),
+            ),
+          )
+          .run();
+        disposition = "registered";
+      },
+      { behavior: "immediate" },
+    );
+    return disposition;
+  }
+
+  async recordLibraryScanDirectoryResult(input: {
+    readonly parentExecutionId: string;
+    readonly directoryKey: string;
+    readonly stage: LibraryScanDirectoryStage;
+    readonly outcome?: AssetRefreshOutcome;
+    readonly reason?: string;
+    readonly workItemCount: number;
+    readonly unresolvedCount: number;
+    readonly failedCount: number;
+  }): Promise<void> {
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    query.transaction(
+      (transaction) => {
+        const written = transaction
+          .update(libraryScanDirectories)
+          .set({
+            stage: input.stage,
+            outcome: input.outcome ?? null,
+            reason: input.reason ?? null,
+            workItemCount: input.workItemCount,
+            unresolvedCount: input.unresolvedCount,
+            failedCount: input.failedCount,
+          })
+          .where(
+            and(
+              eq(
+                libraryScanDirectories.parentExecutionId,
+                input.parentExecutionId,
+              ),
+              eq(libraryScanDirectories.directoryKey, input.directoryKey),
+            ),
+          )
+          .run();
+        if (written.changes !== 1) throw new Error("库扫描目录条目不存在");
+      },
+      { behavior: "immediate" },
+    );
+  }
+
+  async inspectLibraryScan(
+    parentExecutionId: string,
+  ): Promise<LibraryScanInspection | undefined> {
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    return query.transaction((transaction) => {
+      const row = transaction
+        .select()
+        .from(workflowExecutions)
+        .where(eq(workflowExecutions.id, parentExecutionId))
+        .get();
+      if (row === undefined) return undefined;
+      const execution =
+        this.workflowExecutionPersistence.executionFromDrizzle(row);
+      const plan = execution.workflowInput?.libraryScan;
+      if (
+        execution.operationKind !== "scan-asset-library" ||
+        plan === undefined
+      )
+        return undefined;
+      const cancellation = transaction
+        .select()
+        .from(libraryScanCancellations)
+        .where(
+          eq(libraryScanCancellations.parentExecutionId, parentExecutionId),
+        )
+        .get();
+      return {
+        parentExecutionId,
+        assetLibraryId: plan.assetLibraryId,
+        configVersion: plan.configVersion,
+        status: execution.status,
+        ...(execution.outcome === undefined
+          ? {}
+          : { outcome: execution.outcome }),
+        ...(cancellation === undefined
+          ? {}
+          : {
+              cancellationRequested: {
+                requestedBy: cancellation.requestedBy,
+                requestedAt: cancellation.requestedAt,
+                ...(cancellation.reason === null
+                  ? {}
+                  : { reason: cancellation.reason }),
+              },
+            }),
+        directories: transaction
+          .select()
+          .from(libraryScanDirectories)
+          .where(
+            eq(libraryScanDirectories.parentExecutionId, parentExecutionId),
+          )
+          .orderBy(asc(libraryScanDirectories.position))
+          .all()
+          .map(libraryScanDirectoryRecordFromRow),
+      } satisfies LibraryScanInspection;
+    });
+  }
+
+  /**
+   * 取消意图先CAS写下：此后任何目录子登记都会失败。仍未开始的目录与 covered 条目由
+   * 调用方记为取消，已经提交的结果保持不动。
+   */
+  async requestLibraryScanCancellation(input: {
+    readonly parentExecutionId: string;
+    readonly requestedBy: string;
+    readonly requestedAt: string;
+    readonly reason?: string;
+  }): Promise<
+    | {
+        readonly status: "recorded" | "already-requested";
+        readonly childExecutionIds: readonly string[];
+      }
+    | { readonly status: "absent" | "terminal" }
+  > {
+    if (
+      input.requestedBy.trim().length === 0 ||
+      !Number.isFinite(Date.parse(input.requestedAt))
+    )
+      throw new Error("库扫描取消必须明确发起者与时间");
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    return query.transaction(
+      (transaction) => {
+        const parent = transaction
+          .select({ status: workflowExecutions.status })
+          .from(workflowExecutions)
+          .where(eq(workflowExecutions.id, input.parentExecutionId))
+          .get();
+        if (parent === undefined) return { status: "absent" } as const;
+        if (parent.status !== "running") return { status: "terminal" } as const;
+        const inserted = transaction
+          .insert(libraryScanCancellations)
+          .values({
+            parentExecutionId: input.parentExecutionId,
+            requestedBy: input.requestedBy,
+            requestedAt: input.requestedAt,
+            reason: input.reason ?? null,
+          })
+          .onConflictDoNothing()
+          .run();
+        transaction
+          .update(libraryScanDirectories)
+          .set({ stage: "cancelled", outcome: "cancelled" })
+          .where(
+            and(
+              eq(
+                libraryScanDirectories.parentExecutionId,
+                input.parentExecutionId,
+              ),
+              eq(libraryScanDirectories.stage, "queued"),
+            ),
+          )
+          .run();
+        return {
+          status:
+            inserted.changes === 1
+              ? ("recorded" as const)
+              : ("already-requested" as const),
+          childExecutionIds: [
+            ...new Set(
+              transaction
+                .select({
+                  childExecutionId: libraryScanDirectories.childExecutionId,
+                })
+                .from(libraryScanDirectories)
+                .where(
+                  and(
+                    eq(
+                      libraryScanDirectories.parentExecutionId,
+                      input.parentExecutionId,
+                    ),
+                    isNotNull(libraryScanDirectories.childExecutionId),
+                  ),
+                )
+                .all()
+                .map((row) => row.childExecutionId as string),
+            ),
+          ],
+        };
+      },
+      { behavior: "immediate" },
+    );
+  }
+
+  /**
+   * 未识别观察的有界查询：按父、库或目录范围展开子执行的耐久工作项，归属精确到形成
+   * 该观察的冻结根与相对范围，供既有人工确认、关联或定向入口使用。
+   */
+  async listUnrecognizedLibraryScanObservations(input: {
+    readonly parentExecutionId?: string;
+    readonly assetLibraryId?: string;
+    readonly directoryKey?: string;
+    readonly limit: number;
+  }): Promise<readonly UnrecognizedLibraryScanObservation[]> {
+    if (!Number.isSafeInteger(input.limit) || input.limit <= 0)
+      throw new Error("未识别观察查询必须有界");
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    return query.transaction((transaction) => {
+      const parents = transaction
+        .select({
+          id: workflowExecutions.id,
+          workflowInputJson: workflowExecutions.workflowInputJson,
+        })
+        .from(workflowExecutions)
+        .where(eq(workflowExecutions.operationKind, "scan-asset-library"))
+        .all()
+        .filter((row) => {
+          if (input.parentExecutionId !== undefined)
+            return row.id === input.parentExecutionId;
+          if (input.assetLibraryId === undefined) return true;
+          return (
+            parseLibraryScanPlanAssetLibraryId(row.workflowInputJson) ===
+            input.assetLibraryId
+          );
+        });
+      const observations: UnrecognizedLibraryScanObservation[] = [];
+      for (const parent of parents) {
+        const entries = transaction
+          .select()
+          .from(libraryScanDirectories)
+          .where(
+            and(
+              eq(libraryScanDirectories.parentExecutionId, parent.id),
+              ...(input.directoryKey === undefined
+                ? []
+                : [
+                    eq(libraryScanDirectories.directoryKey, input.directoryKey),
+                  ]),
+            ),
+          )
+          .orderBy(asc(libraryScanDirectories.position))
+          .all();
+        for (const entry of entries) {
+          if (entry.childExecutionId === null) continue;
+          const child = transaction
+            .select()
+            .from(workflowExecutions)
+            .where(eq(workflowExecutions.id, entry.childExecutionId))
+            .get();
+          if (child === undefined) continue;
+          const workItems = JSON.parse(
+            child.workItemsJson,
+          ) as readonly AssetRefreshWorkItem[];
+          // 被覆盖目录只报告属于自身前缀的观察，绝不复制代表目录的全部结果。
+          const scopedWorkItems = coveredWorkItems(
+            workItems,
+            entry.coveredPrefix ?? ".",
+          );
+          const observedRootId =
+            parseLibraryScanObservedRootId(child.workflowInputJson) ??
+            entry.scopeReference;
+          for (const item of scopedWorkItems) {
+            if (!isUnrecognizedObservationWorkItem(item)) continue;
+            observations.push({
+              parentExecutionId: parent.id,
+              directoryKey: entry.directoryKey,
+              childExecutionId: entry.childExecutionId,
+              workItemKey: item.key,
+              observedRootId,
+              relativeScope: entry.relativeScope,
+              relativePaths: [...item.relativePaths],
+            });
+            if (observations.length >= input.limit) return observations;
+          }
+        }
+      }
+      return observations;
+    });
+  }
+
   async transitionExecution(
     expected: WorkflowExecution,
     next: WorkflowExecution,
@@ -4281,6 +5926,64 @@ export class SqliteCatalogue
     );
   }
 
+  async finishExecutionWithRecognitionScopeAmendmentPreview(input: {
+    readonly expectedExecution: WorkflowExecution;
+    readonly execution: WorkflowExecution;
+    readonly proposal: RecognitionProposal;
+    readonly preview: ChangeImpactPreview;
+  }): Promise<void> {
+    if (
+      input.preview.version !== "change-impact-preview/2" ||
+      input.preview.change?.kind !== "recognition-scope-amendment" ||
+      input.preview.change.proposal.id !== input.proposal.id ||
+      input.preview.executionId !== input.execution.id
+    )
+      throw new Error(
+        "Recognition scope amendment requires an exact V2 preview",
+      );
+    const database = await this.ensure();
+    try {
+      drizzle({ client: database }).transaction(
+        (transaction) => {
+          const baseline =
+            this.workflowExecutionPersistence.runningExecutionBaseline(
+              transaction,
+              input.expectedExecution,
+              input.execution,
+            );
+          // 那次观察的裁剪快照随执行落库，是这份明确决定的证据载体。
+          this.insertProposalWithDrizzle(
+            transaction,
+            input.execution.id,
+            input.proposal,
+          );
+          this.workflowExecutionPersistence.replaceExecutionWithDrizzle(
+            transaction,
+            input.execution,
+            { auditJson: baseline.auditJson },
+          );
+          transaction
+            .insert(changeImpactPreviews)
+            .values({
+              id: input.preview.id,
+              executionId: input.preview.executionId,
+              assetId: input.preview.assetId,
+              previewJson: JSON.stringify(
+                this.withOtherLegacyArtifactDeltaBlocked(
+                  transaction,
+                  input.preview,
+                ),
+              ),
+            })
+            .run();
+        },
+        { behavior: "immediate" },
+      );
+    } catch (error) {
+      throw originalPersistenceError(error);
+    }
+  }
+
   async acceptRecognition(input: {
     readonly expectedExecution: WorkflowExecution;
     readonly execution: WorkflowExecution;
@@ -4312,6 +6015,10 @@ export class SqliteCatalogue
             transaction,
             input.execution.id,
             input.resumeClaim,
+          );
+          this.assertDirectoryAuthorizationsCurrent(
+            transaction,
+            input.execution,
           );
           const unassigned = input.expectedUnassignedMaterials;
           if (unassigned !== undefined && unassigned.length > 0) {
@@ -4379,6 +6086,10 @@ export class SqliteCatalogue
             transaction,
             input.execution,
             input.observedMaterialAcceptances ?? [],
+          );
+          this.writeLocalAssociationSupportsWithDrizzle(
+            transaction,
+            input.accepted,
           );
           this.invalidateStaleChangeImpactPreviewsWithDrizzle(transaction, [
             input.accepted.entity.id,
@@ -4478,10 +6189,17 @@ export class SqliteCatalogue
               transaction,
               input.submission,
             );
+          // 目录授权在提交时已不再等于本次工作冻结的那一份：与观察根版本失效一样按
+          // 「过期」落下，不抛错、不剥夺同库其他目录已经完成的成果。
+          const directoryStale = this.directoryAuthorizationsStale(
+            transaction,
+            input.expectedExecution,
+          );
           let outcome: "accepted" | "no-change" | "stale";
           if (
             identityBaseline !== input.expectedIdentityBaseline ||
             authority?.status !== "active" ||
+            directoryStale ||
             authority.configVersion !==
               input.observedAuthority.registrationVersion
           ) {
@@ -4504,6 +6222,9 @@ export class SqliteCatalogue
                 assetId: input.submission.recognitionDecision.assetId,
                 acceptedRuleResultsJson: JSON.stringify(
                   input.submission.recognitionDecision.acceptedRuleResults,
+                ),
+                boundariesJson: JSON.stringify(
+                  input.submission.recognitionDecision.boundaries,
                 ),
               })
               .run();
@@ -4833,6 +6554,9 @@ export class SqliteCatalogue
             support,
             decision: {
               id: decisionRow.id,
+              boundaries: JSON.parse(
+                decisionRow.boundariesJson,
+              ) as RecognitionDecision["boundaries"],
               proposalId: decisionRow.proposalId,
               assetId: decisionRow.assetId,
               acceptedRuleResults: JSON.parse(
@@ -5095,6 +6819,9 @@ export class SqliteCatalogue
         row.id,
         {
           id: row.id,
+          boundaries: JSON.parse(
+            row.boundariesJson,
+          ) as RecognitionProposal["boundaries"],
           basis: JSON.parse(row.basisJson) as RecognitionProposal["basis"],
           ruleResults: JSON.parse(
             row.ruleResultsJson,
@@ -5569,7 +7296,7 @@ export class SqliteCatalogue
       .from(recognitionHeads)
       .where(
         and(
-          currentObservedMaterialPredicate(),
+          currentObservedMaterialPredicate(undefined, input.assetLibraryId),
           sql`EXISTS (
             SELECT 1 FROM entity_kind_assertions assertion
             WHERE assertion.entity_id = ${recognitionHeads.subjectId}
@@ -5608,6 +7335,8 @@ export class SqliteCatalogue
 
   async listCurrentCatalogueIndex(
     metadataProperties: readonly string[],
+    observedRootIds?: readonly string[],
+    assetLibraryId?: string,
   ): Promise<readonly CurrentCatalogueIndexFacts[]> {
     const query = drizzle({ client: await this.ensure() });
     const heads = await query
@@ -5616,7 +7345,7 @@ export class SqliteCatalogue
         additionOrder: sql<number>`${recognitionHeads}.rowid`,
       })
       .from(recognitionHeads)
-      .where(currentObservedMaterialPredicate())
+      .where(currentObservedMaterialPredicate(observedRootIds, assetLibraryId))
       .orderBy(asc(recognitionHeads.subjectId));
     const result: CurrentCatalogueIndexFacts[] = [];
     // 只投影轻量检索事实；完整文件图仍只为最终选中的页面装配。
@@ -5648,6 +7377,9 @@ export class SqliteCatalogue
               }),
           currentRelatedEntities: item.currentRelatedEntities ?? [],
           relationships: item.relationships ?? [],
+          ...(item.relationshipReadBasis === undefined
+            ? {}
+            : { relationshipReadBasis: item.relationshipReadBasis }),
         });
     }
     return result;
@@ -5766,6 +7498,163 @@ export class SqliteCatalogue
     return undefined;
   }
 
+  async listEffectiveMaterialBoundaries(
+    input: Parameters<
+      AssetRefreshReuseQueries["listEffectiveMaterialBoundaries"]
+    >[0],
+  ): Promise<readonly EffectiveRecognitionMaterialBoundary[]> {
+    const database = await this.ensure();
+    const address = path.resolve(
+      input.scope.containerPath,
+      input.relativeScope,
+    );
+    // 所有仍生效的支持决定都参与，包括未推进主 head 的人工补充材料。
+    const rows = database
+      .prepare(`
+      SELECT d.asset_id AS assetId, d.id AS decisionId,
+             b.value AS boundaryJson,
+             COALESCE(r.container_path, json_extract(e.snapshot_json, '$.root'), json_extract(e.material_association_json, '$.snapshot.root')) AS rootPath
+      FROM recognition_decisions d, json_each(d.boundaries_json) b
+      LEFT JOIN observed_root_registrations r
+        ON r.id = json_extract(b.value, '$.scopeReference')
+      LEFT JOIN workflow_executions e
+        ON 'legacy-execution:' || e.id = json_extract(b.value, '$.scopeReference')
+      WHERE COALESCE(r.container_path, json_extract(e.snapshot_json, '$.root'), json_extract(e.material_association_json, '$.snapshot.root')) IS NOT NULL
+      AND (
+        COALESCE(r.container_path, json_extract(e.snapshot_json, '$.root'), json_extract(e.material_association_json, '$.snapshot.root')) = ?
+        OR substr(?, 1, length(rtrim(COALESCE(r.container_path, json_extract(e.snapshot_json, '$.root'), json_extract(e.material_association_json, '$.snapshot.root')), '/')) + 1)
+             = rtrim(COALESCE(r.container_path, json_extract(e.snapshot_json, '$.root'), json_extract(e.material_association_json, '$.snapshot.root')), '/') || '/'
+        OR substr(COALESCE(r.container_path, json_extract(e.snapshot_json, '$.root'), json_extract(e.material_association_json, '$.snapshot.root')), 1, length(rtrim(?, '/')) + 1) = rtrim(?, '/') || '/'
+      ) AND NOT EXISTS (
+        SELECT 1 FROM recognition_decision_supersessions s
+        WHERE s.predecessor_decision_id = d.id
+      ) AND NOT EXISTS (
+        SELECT 1 FROM recognition_decision_retractions t
+        WHERE t.predecessor_decision_id = d.id
+      )
+    `)
+      .all(address, address, address, address) as unknown as readonly {
+      assetId: string;
+      decisionId: string;
+      boundaryJson: string;
+      rootPath: string;
+    }[];
+    return rows.flatMap(({ boundaryJson, ...row }) => {
+      const item: EffectiveRecognitionMaterialBoundary = {
+        ...row,
+        boundary: JSON.parse(
+          boundaryJson,
+        ) as EffectiveRecognitionMaterialBoundary["boundary"],
+      };
+      const overlaps = recognitionMaterialBoundaryIntersectsScope(
+        item,
+        address,
+      );
+      return overlaps ? [item] : [];
+    });
+  }
+
+  async listEffectiveMaterialBoundariesForSubject(input: {
+    readonly assetId: string;
+  }): Promise<readonly EffectiveRecognitionMaterialBoundary[]> {
+    const database = await this.ensure();
+    return this.effectiveMaterialBoundariesWithDrizzle(
+      drizzle({ client: database }),
+      input.assetId,
+    );
+  }
+
+  async listMaterialScopeDeclarations(input: {
+    readonly scopeAddress: string;
+  }): Promise<readonly MaterialScopeDeclaration[]> {
+    const database = await this.ensure();
+    return this.materialScopeDeclarationsWithDrizzle(
+      drizzle({ client: database }),
+      input.scopeAddress,
+    );
+  }
+
+  /**
+   * 与该范围相交的完整声明：被点名时纳入该决定的全部声明成员（不是只纳入相交的那
+   * 几个），并带上主头标识与已经结束的历史决定。Application 冻结范围基线与确认事务内
+   * 的重算比较共用这一份推导，绝不各自解释根坐标。
+   */
+  private materialScopeDeclarationsWithDrizzle(
+    query: DrizzleReadQuery,
+    scopeAddress: string,
+  ): readonly MaterialScopeDeclaration[] {
+    const heads = new Set(
+      query
+        .select({ decisionId: recognitionHeads.recognitionDecisionId })
+        .from(recognitionHeads)
+        .all()
+        .flatMap((head) => (head.decisionId === null ? [] : [head.decisionId])),
+    );
+    const members: EffectiveRecognitionMaterialBoundary[] = [];
+    const ended: {
+      readonly assetId: string;
+      readonly decisionId: string;
+      readonly endedAs: "superseded" | "retracted";
+    }[] = [];
+    const decisions = query
+      .select({
+        assetId: recognitionDecisions.assetId,
+        decisionId: recognitionDecisions.id,
+        boundariesJson: recognitionDecisions.boundariesJson,
+      })
+      .from(recognitionDecisions)
+      .all();
+    const declared = new Map<string, EffectiveRecognitionMaterialBoundary[]>();
+    const rootPaths = this.recognitionMaterialBoundaryRootPathsWithDrizzle(
+      query,
+      decisions.flatMap((decision) =>
+        (
+          JSON.parse(
+            decision.boundariesJson,
+          ) as RecognitionDecision["boundaries"]
+        ).map((boundary) => boundary.scopeReference),
+      ),
+    );
+    for (const decision of decisions) {
+      const items = (
+        JSON.parse(decision.boundariesJson) as RecognitionDecision["boundaries"]
+      )
+        .map((boundary) => {
+          const rootPath = rootPaths.get(boundary.scopeReference);
+          return rootPath === undefined
+            ? undefined
+            : ({
+                assetId: decision.assetId,
+                decisionId: decision.decisionId,
+                boundary,
+                rootPath,
+              } satisfies EffectiveRecognitionMaterialBoundary);
+        })
+        .filter((member) => member !== undefined);
+      if (items.length !== 0) declared.set(decision.decisionId, items);
+    }
+    const endedAs = this.recognitionDecisionEndingsWithDrizzle(
+      query,
+      decisions.map((decision) => decision.decisionId),
+    );
+    for (const [decisionId, items] of declared) {
+      const reason = endedAs.get(decisionId);
+      if (reason !== undefined)
+        ended.push({ assetId: items[0]!.assetId, decisionId, endedAs: reason });
+      // 任一成员与该范围相交就带上整份声明，绝不只带相交的那几个成员。
+      if (
+        items.some((member) =>
+          recognitionMaterialBoundaryIntersectsScope(member, scopeAddress),
+        )
+      )
+        members.push(...items);
+    }
+    return groupMaterialScopeDeclarations(members, {
+      ended,
+      headDecisionIds: [...heads],
+    });
+  }
+
   async findAcceptedForDirectory(directory: string): Promise<
     | {
         readonly accepted: AcceptedRecognition;
@@ -5868,6 +7757,59 @@ export class SqliteCatalogue
       });
     }
     return found;
+  }
+
+  /**
+   * 逐决定复用的读取入口：按被点名的决定返回它自己的提案、形成该决定的观察执行与快照，
+   * 以及该主体当前仍有效的已接受投影。主头执行不能替代追加范围的比较基线。
+   */
+  async findAcceptedForDecision(input: {
+    readonly decisionId: string;
+  }): Promise<
+    | {
+        readonly accepted: AcceptedRecognition;
+        readonly proposal: RecognitionProposal;
+        readonly execution: WorkflowExecution;
+      }
+    | undefined
+  > {
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    const decision = query
+      .select({
+        assetId: recognitionDecisions.assetId,
+        proposalId: recognitionDecisions.proposalId,
+      })
+      .from(recognitionDecisions)
+      .where(eq(recognitionDecisions.id, input.decisionId))
+      .get();
+    if (decision === undefined) return undefined;
+    const proposalRow = query
+      .select({ executionId: recognitionProposals.executionId })
+      .from(recognitionProposals)
+      .where(eq(recognitionProposals.id, decision.proposalId))
+      .get();
+    if (proposalRow === undefined) return undefined;
+    const proposal = this.readProposalWithDrizzle(query, decision.proposalId);
+    if (proposal === undefined) return undefined;
+    const executionRow = query
+      .select()
+      .from(workflowExecutions)
+      .where(eq(workflowExecutions.id, proposalRow.executionId))
+      .get();
+    if (executionRow === undefined) return undefined;
+    const accepted = await this.readCurrentAcceptedWithDrizzle(
+      query,
+      decision.assetId,
+      input.decisionId,
+    );
+    if (accepted === undefined) return undefined;
+    return {
+      accepted,
+      proposal,
+      execution:
+        this.workflowExecutionPersistence.executionFromDrizzle(executionRow),
+    };
   }
 
   /**
@@ -6049,15 +7991,18 @@ export class SqliteCatalogue
     const lifecycleByRelationshipId = supports.lifecyclesByRelationshipId;
     const observedCurrentRelationshipSourceSlots =
       supports.observedSourceSlotsByRelationshipId;
-    const resolvedRelationshipMentionEntityId = (
-      mentionId: string,
-    ): string | undefined =>
-      query
-        .select({ entityId: observedEntityResolutions.entityId })
-        .from(observedEntityResolutions)
-        .where(eq(observedEntityResolutions.mentionId, mentionId))
-        .get()?.entityId ??
-      this.entityMentionResolutionWithDrizzle(query, mentionId).entityId;
+    const resolvedMentions = this.relationshipMentionEntitiesWithDrizzle(
+      query,
+      uniqueStrings(
+        relationshipRows.flatMap((row) =>
+          relationshipParticipantsFromJson(row.participantsJson).flatMap(
+            (participant) => participant.mentionIds ?? [],
+          ),
+        ),
+      ),
+    );
+    const resolvedRelationshipMentionEntityId = (mentionId: string) =>
+      resolvedMentions.get(mentionId);
     const currentRelationshipRows = relationshipRows.filter(
       (relationship) =>
         (((lifecycleByRelationshipId.has(relationship.id) ||
@@ -6536,86 +8481,122 @@ export class SqliteCatalogue
   }
 
   /**
-   * 只投影各个已选当前主体拥有的事实。`readAccepted` 会刻意为目录用途装配一个
-   * 有界的相关实体图；该履约端口会在它跨越应用层之前剥离此图。
+   * 只供应各个已选当前主体拥有的完整事实依据及真实来源头部当前性。生效描述、关系与
+   * 图片角色的裁决由应用层共同读取完成，持久层不再投影存在性。
    */
   async readCurrentInformationSubjectFacts(input: {
     readonly subjectIds: readonly string[];
-  }) {
+  }): Promise<readonly CurrentInformationSubjectFacts[]> {
     const database = await this.ensure();
     const query = drizzle({ client: database });
-    const facts = [];
+    const facts: CurrentInformationSubjectFacts[] = [];
     for (const subjectId of input.subjectIds) {
       const accepted = await this.readCurrentAcceptedWithDrizzle(
         query,
         subjectId,
       );
       if (accepted === undefined) continue;
-      const sourceAssociations = accepted.sourceAssociations
-        .filter((association) => association.subjectId === subjectId)
-        .map(({ id, sourceIdentity }) => ({ id, sourceIdentity }));
+      // 只有绑定来源的托管关联需要来源头部当前性；观察与本地关联交由位置可用性判定。
+      const sourceArtifactCurrency: {
+        readonly associationId: string;
+        readonly current: boolean;
+      }[] = [];
+      for (const association of accepted.artifactAssociations) {
+        const sourceAssociationId = association.sourceAssociationId;
+        if (sourceAssociationId === undefined) continue;
+        if (entityTargetId(association) !== subjectId) continue;
+        sourceArtifactCurrency.push({
+          associationId: association.id,
+          current: this.isCurrentSourceArtifactAssociation(query, {
+            subjectId,
+            sourceAssociationId,
+            sourceRecordIds: association.sourceRecordIds,
+          }),
+        });
+      }
       facts.push({
         subjectId,
-        sourceAssociations,
-        metadata: accepted.metadata
-          .filter((fact) => entityTargetId(fact) === subjectId)
-          .map(({ property }) => ({
-            subjectId,
-            property,
-          })),
-        relationships: (accepted.relationships ?? [])
-          .filter((fact) =>
-            fact.participants.some(
-              (participant) => participant.entityId === subjectId,
-            ),
-          )
-          .map(({ type }) => ({
-            subjectId,
-            type,
-          })),
-        artifactAssociations: accepted.artifactAssociations
-          .filter((association) => entityTargetId(association) === subjectId)
-          .map(
-            ({
-              id,
-              target,
-              artifactId,
-              role,
-              sourceAssociationId,
-              sourceRecordIds,
-            }) => ({
-              id,
-              subjectId: target.kind === "entity" ? target.entityId : subjectId,
-              artifactId,
-              role,
-              ...(sourceAssociationId === undefined
-                ? {}
-                : { sourceAssociationId }),
-              ...(sourceAssociationId === undefined
-                ? {}
-                : {
-                    currentSourceArtifact:
-                      this.isCurrentSourceArtifactAssociation(query, {
-                        subjectId:
-                          target.kind === "entity"
-                            ? target.entityId
-                            : subjectId,
-                        sourceAssociationId,
-                        sourceRecordIds,
-                      }),
-                  }),
-              managedLocations: accepted.locations
-                .filter(
-                  (location) =>
-                    location.artifactId === artifactId &&
-                    location.kind === "managed",
-                )
-                .map(({ address }) => ({ address })),
-            }),
-          ),
+        basis: { ...accepted, id: subjectId },
+        sourceArtifactCurrency,
       });
     }
     return facts;
+  }
+
+  /**
+   * 主体当前观察材料引用的活动观察根。库语境解析只读这一事实，绝不据此建立「资产属于库」
+   * 的耐久结论；被取代或撤回的关联不再提供成员资格。
+   */
+  async readCurrentObservedMaterialRootIds(input: {
+    readonly subjectIds: readonly string[];
+  }): Promise<
+    readonly {
+      readonly subjectId: string;
+      readonly observedRootIds: readonly string[];
+    }[]
+  > {
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    if (input.subjectIds.length === 0) return [];
+    const rows = query
+      .select({
+        subjectId: artifactAssociations.subjectId,
+        observedRootId: currentObservedMaterialSupports.observedRootId,
+      })
+      .from(artifactAssociations)
+      .innerJoin(
+        locations,
+        eq(locations.artifactId, artifactAssociations.artifactId),
+      )
+      .innerJoin(
+        currentObservedMaterialSupports,
+        eq(currentObservedMaterialSupports.locationId, locations.id),
+      )
+      .innerJoin(
+        observedRootRegistrations,
+        and(
+          eq(
+            observedRootRegistrations.id,
+            currentObservedMaterialSupports.observedRootId,
+          ),
+          eq(
+            observedRootRegistrations.configVersion,
+            currentObservedMaterialSupports.observedRootVersion,
+          ),
+          eq(observedRootRegistrations.status, "active"),
+        ),
+      )
+      .where(
+        and(
+          eq(locations.kind, "observed"),
+          inArray(artifactAssociations.subjectId, input.subjectIds),
+          sql`NOT EXISTS (
+            SELECT 1 FROM ${artifactAssociationSupersessions}
+            WHERE ${artifactAssociationSupersessions.predecessorAssociationId} = ${artifactAssociations.id}
+          )`,
+          sql`NOT EXISTS (
+            SELECT 1 FROM ${artifactAssociationRetractions}
+            WHERE ${artifactAssociationRetractions.associationId} = ${artifactAssociations.id}
+          )`,
+        ),
+      )
+      .groupBy(
+        artifactAssociations.subjectId,
+        currentObservedMaterialSupports.observedRootId,
+      )
+      .all();
+    const rootIdsBySubject = new Map<string, string[]>();
+    for (const row of rows) {
+      const roots = rootIdsBySubject.get(row.subjectId) ?? [];
+      roots.push(row.observedRootId);
+      rootIdsBySubject.set(row.subjectId, roots);
+    }
+    return input.subjectIds
+      .map((subjectId) => ({
+        subjectId,
+        observedRootIds: rootIdsBySubject.get(subjectId) ?? [],
+      }))
+      .filter((entry) => entry.observedRootIds.length > 0);
   }
 
   /**
@@ -6943,6 +8924,10 @@ export class SqliteCatalogue
             transaction,
             input.execution.id,
             input.resumeClaim,
+          );
+          this.assertDirectoryAuthorizationsCurrent(
+            transaction,
+            input.execution,
           );
           this.assertManagedSourceArtifactCommitInputs(transaction, input);
           this.insertOrVerifyArtifactFactsWithDrizzle(
@@ -7536,6 +9521,62 @@ export class SqliteCatalogue
     return undefined;
   }
 
+  /**
+   * 沿既有 supersession 前驱链，读取建立当前来源身份的不可变决定，供身份保持刷新在事务
+   * 前校验。范围修订把主头推进为 manual successor 后，`current` 携带的是新范围头而非来源
+   * 身份起点；这里只把两者分开读取，绝不改变范围头／accepted-boundary 引用／CAS 判定。
+   * 找不到可精确匹配现有来源关联的前驱身份依据时诚实拒绝，不据 manual／observed 提案伪造来源。
+   */
+  private async identityBaselineForRefresh(
+    query: DrizzleReadQuery,
+    current: AcceptedRecognition,
+  ): Promise<AcceptedRecognition> {
+    if (
+      recognitionSourceInterpretation(current.proposal) !== undefined ||
+      current.recognitionSourceAssociation === undefined
+    )
+      return current;
+    const sourceAssociation = current.recognitionSourceAssociation;
+    let decisionId: string | undefined = current.recognitionDecision.id;
+    const visited = new Set<string>();
+    while (decisionId !== undefined && !visited.has(decisionId)) {
+      visited.add(decisionId);
+      const predecessor = query
+        .select({
+          decisionId: recognitionDecisionSupersessions.predecessorDecisionId,
+        })
+        .from(recognitionDecisionSupersessions)
+        .where(
+          eq(recognitionDecisionSupersessions.successorDecisionId, decisionId),
+        )
+        .get();
+      if (predecessor === undefined) break;
+      decisionId = predecessor.decisionId;
+      const baseline = await this.readCurrentAcceptedWithDrizzle(
+        query,
+        current.entity.id,
+        decisionId,
+        true,
+      );
+      if (baseline === undefined) continue;
+      const interpretation = recognitionSourceInterpretation(baseline.proposal);
+      if (interpretation === undefined) continue;
+      if (
+        interpretation.sourceIdentity !== sourceAssociation.sourceIdentity ||
+        interpretation.sourceAddress !== sourceAssociation.nativeAddress ||
+        canonicalJson(baseline.recognitionSourceAssociation ?? null) !==
+          canonicalJson(sourceAssociation)
+      )
+        throw new Error(
+          "Identity-preserving refresh found a supersession baseline that contradicts the retained Source Association",
+        );
+      return baseline;
+    }
+    throw new Error(
+      "Identity-preserving refresh cannot resolve the durable Source Association baseline",
+    );
+  }
+
   async refreshAcceptedRecognition(input: {
     readonly expectedExecution: WorkflowExecution;
     readonly execution: WorkflowExecution;
@@ -7546,16 +9587,29 @@ export class SqliteCatalogue
       | undefined;
     readonly sourceRecords: readonly SourceRecord[];
     readonly expectedLineageHeads: MetadataRefreshSubmission["expectedLineageHeads"];
+    /**
+     * 冻结时与本次刷新范围相交的全部有效边界基线，连同冻结它时使用的相交范围地址；
+     * 提交前在事务内按同一规则重算比较，不一致则本次刷新不产生任何写入。
+     */
+    readonly expectedBoundary?:
+      | { readonly keys: readonly string[]; readonly scopeAddress: string }
+      | undefined;
     readonly resumeClaim?: { readonly token: string; readonly now: string };
   }): Promise<void> {
     // 刷新会追加来自新提案的事实，但保留建立当前身份的不可变关联和决定。
-    // 对直接调用方，在任何事务开始前再次执行领域边界检查。
-    validateReevaluatedRecognition({
-      current: input.current,
-      accepted: input.accepted,
-    });
+    // 范围修订后 manual 范围头与耐久来源身份基线分离：身份校验作用于真实基线，
+    // 事务内的范围／accepted-boundary 引用与 CAS 仍作用于当前范围头。
     const database = await this.ensure();
     const query = drizzle({ client: database });
+    const identityBaseline = await this.identityBaselineForRefresh(
+      query,
+      input.current,
+    );
+    validateReevaluatedRecognition({
+      current: input.current,
+      identityBaseline,
+      accepted: input.accepted,
+    });
     try {
       query.transaction(
         (transaction) => {
@@ -7597,6 +9651,28 @@ export class SqliteCatalogue
             throw new Error(
               "Recognition reevaluation lost its Recognition Decision baseline",
             );
+          if (input.expectedBoundary !== undefined) {
+            const frozen = input.expectedBoundary;
+            // 只比较与本次刷新相交的那一份有效边界集合：其他根上的决定不参与这次
+            // 刷新，既不能把成功刷新的合法资产判成过期，也仍然检测相交集合内的
+            // 新增、取代与撤回。
+            const currentBaseline = recognitionBoundaryBaseline(
+              this.effectiveMaterialBoundariesWithDrizzle(
+                transaction,
+                input.current.entity.id,
+              ).filter((item) =>
+                recognitionMaterialBoundaryIntersectsScope(
+                  item,
+                  frozen.scopeAddress,
+                ),
+              ),
+            );
+            if (
+              JSON.stringify(currentBaseline) !==
+              JSON.stringify([...frozen.keys].toSorted())
+            )
+              throw new RecognitionBoundaryBaselineStale();
+          }
           const interpretation = recognitionSourceInterpretation(
             input.accepted.proposal,
           );
@@ -7660,6 +9736,11 @@ export class SqliteCatalogue
             transaction,
             input.execution,
             input.observedMaterialAcceptances ?? [],
+          );
+          // 证据要读本次刚落库的材料形态边界，因此支持写入排在其之后。
+          this.writeLocalAssociationSupportsWithDrizzle(
+            transaction,
+            input.accepted,
           );
           this.invalidateStaleChangeImpactPreviewsWithDrizzle(transaction, [
             input.current.entity.id,
@@ -8624,6 +10705,7 @@ export class SqliteCatalogue
     readonly assetId: string;
     readonly recognitionSourceAssociationId?: string;
     readonly recognitionDecisionId: string;
+    readonly scopeDecisionIds?: readonly string[];
   }): Promise<string> {
     const database = await this.ensure();
     const query = drizzle({ client: database });
@@ -8636,11 +10718,17 @@ export class SqliteCatalogue
       head === undefined ||
       (head.recognitionSourceAssociationId ?? undefined) !==
         input.recognitionSourceAssociationId ||
-      head.recognitionDecisionId !== input.recognitionDecisionId
+      // 主头为空时点名的决定只是读取依据，基线钉住的就是那份决定。
+      (head.recognitionDecisionId !== null &&
+        head.recognitionDecisionId !== input.recognitionDecisionId)
     ) {
       throw new Error("Change Impact Preview lost its identity baseline");
     }
-    return this.currentChangeImpactBaselineWithDrizzle(query, input.assetId);
+    return this.currentChangeImpactBaselineWithDrizzle(
+      query,
+      input.assetId,
+      input.scopeDecisionIds,
+    );
   }
 
   async rejectChangeImpactPreview(input: {
@@ -8770,6 +10858,7 @@ export class SqliteCatalogue
             : transaction
                 .select({
                   proposalId: recognitionDecisions.proposalId,
+                  boundariesJson: recognitionDecisions.boundariesJson,
                   acceptedRuleResultsJson:
                     recognitionDecisions.acceptedRuleResultsJson,
                 })
@@ -8920,6 +11009,7 @@ export class SqliteCatalogue
             acceptedRuleResultsJson: JSON.stringify(
               plan.successorDecision.acceptedRuleResults,
             ),
+            boundariesJson: JSON.stringify(plan.successorDecision.boundaries),
           })
           .run();
         transaction
@@ -9044,6 +11134,9 @@ export class SqliteCatalogue
             supersession: plan.supersession,
             predecessorDecision: {
               id: currentHead.recognitionDecisionId,
+              boundaries: JSON.parse(
+                currentDecision!.boundariesJson,
+              ) as RecognitionDecision["boundaries"],
               proposalId: currentDecision!.proposalId,
               assetId: currentPreview.assetId,
               acceptedRuleResults: JSON.parse(
@@ -9115,6 +11208,9 @@ export class SqliteCatalogue
                 }),
             recognitionDecision: {
               id: currentHead.recognitionDecisionId,
+              boundaries: JSON.parse(
+                currentDecision.boundariesJson,
+              ) as RecognitionDecision["boundaries"],
               proposalId: currentDecision.proposalId,
               assetId: currentPreview.assetId,
               acceptedRuleResults: JSON.parse(
@@ -9165,6 +11261,10 @@ export class SqliteCatalogue
             transaction,
             waitingExecution,
             { ...currentPreview, status: "applied" },
+          );
+          this.writeLocalAssociationSupportsWithDrizzle(
+            transaction,
+            nextAccepted,
           );
           this.invalidateStaleChangeImpactPreviewsWithDrizzle(transaction, [
             currentPreview.assetId,
@@ -9662,6 +11762,74 @@ export class SqliteCatalogue
     }
   }
 
+  /**
+   * 点名决定撤回后失去最后一个有效支持的本地关联：还有其他生效决定授权的关联保持
+   * 当前，绝不因为一份范围结束就把整批材料撤回。
+   */
+  private retractAssociationsLosingDecisionSupportWithDrizzle(
+    transaction: DrizzleWriteTransaction,
+    decisionId: string,
+    proposalId: string,
+  ): void {
+    const associations = transaction
+      .select({
+        id: artifactAssociations.id,
+        sourceRecordIdsJson: artifactAssociations.sourceRecordIdsJson,
+      })
+      .from(artifactAssociations)
+      .innerJoin(
+        artifactAssociationRecognitionSupports,
+        eq(
+          artifactAssociationRecognitionSupports.associationId,
+          artifactAssociations.id,
+        ),
+      )
+      .where(
+        eq(
+          artifactAssociationRecognitionSupports.recognitionDecisionId,
+          decisionId,
+        ),
+      )
+      .all();
+    for (const association of associations) {
+      const otherSupports = transaction
+        .select({
+          decisionId:
+            artifactAssociationRecognitionSupports.recognitionDecisionId,
+        })
+        .from(artifactAssociationRecognitionSupports)
+        .where(
+          and(
+            eq(
+              artifactAssociationRecognitionSupports.associationId,
+              association.id,
+            ),
+            ne(
+              artifactAssociationRecognitionSupports.recognitionDecisionId,
+              decisionId,
+            ),
+          ),
+        )
+        .all()
+        .flatMap(({ decisionId: other }) => (other === null ? [] : [other]));
+      if (
+        this.recognitionDecisionEndingsWithDrizzle(transaction, otherSupports)
+          .size < otherSupports.length
+      )
+        continue;
+      transaction
+        .insert(artifactAssociationRetractions)
+        .values({
+          id: `artifact-association-retraction:${proposalId}:${association.id}`,
+          associationId: association.id,
+          proposalId,
+          sourceRecordIdsJson: association.sourceRecordIdsJson,
+        })
+        .onConflictDoNothing()
+        .run();
+    }
+  }
+
   async applyRecognitionRetractionPreview(input: {
     readonly preview: ChangeImpactPreview;
     readonly confirmedBy: string;
@@ -9693,18 +11861,65 @@ export class SqliteCatalogue
         const expectedProjection = preview.baselines.find(
           ({ key }) => key === "complete-current-projection",
         )?.value;
+        const expectedScope = preview.baselines.find(
+          ({ key }) => key === "recognition-scope-declarations",
+        )?.value;
+        const expectedScopeDecisions = preview.baselines.find(
+          ({ key }) => key === "recognition-scope-decision-ids",
+        )?.value;
+        const scopeDecisionIds =
+          expectedScopeDecisions === undefined
+            ? undefined
+            : (JSON.parse(expectedScopeDecisions) as readonly string[]);
         const head = transaction
           .select()
           .from(recognitionHeads)
           .where(eq(recognitionHeads.subjectId, preview.assetId))
           .get();
+        // 点名任一有效决定都能撤回：主决定撤回清空头，追加撤回只结束自身范围。
+        const withdrawsHead =
+          head?.recognitionDecisionId === intent.predecessorDecisionId;
+        const declarations = groupMaterialScopeDeclarations(
+          this.effectiveMaterialBoundariesWithDrizzle(
+            transaction,
+            preview.assetId,
+          ),
+          {
+            headDecisionIds:
+              head?.recognitionDecisionId === null ||
+              head === undefined ||
+              head.recognitionDecisionId === undefined
+                ? []
+                : [head.recognitionDecisionId],
+          },
+        );
+        const namedDeclaration = declarations.find(
+          (declaration) =>
+            declaration.decisionId === intent.predecessorDecisionId,
+        );
+        const scopeBaseline =
+          namedDeclaration === undefined
+            ? undefined
+            : JSON.stringify(
+                materialScopeDeclarationBaseline(
+                  declarations.filter((declaration) =>
+                    materialScopeDeclarationsIntersect(
+                      declaration,
+                      namedDeclaration,
+                    ),
+                  ),
+                ),
+              );
         if (
-          head?.recognitionDecisionId !== intent.predecessorDecisionId ||
+          head === undefined ||
+          namedDeclaration === undefined ||
           expectedProjection === undefined ||
           this.currentChangeImpactBaselineWithDrizzle(
             transaction,
             preview.assetId,
-          ) !== expectedProjection
+            scopeDecisionIds,
+          ) !== expectedProjection ||
+          (expectedScope !== undefined && expectedScope !== scopeBaseline)
         ) {
           if (waitingExecution?.status === "running")
             this.finishChangeImpactExecutionWithDrizzle(
@@ -9732,7 +11947,7 @@ export class SqliteCatalogue
             reason: intent.reason,
           })
           .run();
-        if (head.recognitionSourceAssociationId !== null) {
+        if (withdrawsHead && head.recognitionSourceAssociationId !== null) {
           const established = transaction
             .select()
             .from(sourceAssociationEstablishmentSupports)
@@ -9777,20 +11992,492 @@ export class SqliteCatalogue
             );
           }
         }
-        transaction
-          .update(recognitionHeads)
-          .set({
-            recognitionDecisionId: null,
-            recognitionSourceAssociationId: null,
-          })
-          .where(eq(recognitionHeads.subjectId, preview.assetId))
-          .run();
+        if (withdrawsHead)
+          transaction
+            .update(recognitionHeads)
+            .set({
+              recognitionDecisionId: null,
+              recognitionSourceAssociationId: null,
+            })
+            .where(eq(recognitionHeads.subjectId, preview.assetId))
+            .run();
+        // 结束被点名决定的支持：只有因此失去最后一个有效支持的关联才退出。
+        this.retractAssociationsLosingDecisionSupportWithDrizzle(
+          transaction,
+          intent.predecessorDecisionId,
+          retractionId,
+        );
         if (waitingExecution?.status === "running")
           this.finishChangeImpactExecutionWithDrizzle(
             transaction,
             waitingExecution,
             "applied",
           );
+        transaction
+          .update(changeImpactPreviews)
+          .set({
+            previewJson: JSON.stringify({ ...preview, status: "applied" }),
+          })
+          .where(eq(changeImpactPreviews.id, preview.id))
+          .run();
+        result = "applied";
+      },
+      { behavior: "immediate" },
+    );
+    return result;
+  }
+
+  /**
+   * 确认一次明确范围决定：先按冻结的完整范围声明基线、当前投影与点名决定的生效状态
+   * 做范围局部比较，任何变化都只让预演过期；通过后才原子写入新决定、取代与支持。
+   */
+  async applyRecognitionScopeAmendmentPreview(input: {
+    readonly preview: ChangeImpactPreview;
+    readonly plan: RecognitionScopeAmendmentPlan;
+  }): Promise<"applied" | "stale"> {
+    const database = await this.ensure();
+    let result: "applied" | "stale" = "stale";
+    drizzle({ client: database }).transaction(
+      (transaction) => {
+        const row = transaction
+          .select({ previewJson: changeImpactPreviews.previewJson })
+          .from(changeImpactPreviews)
+          .where(eq(changeImpactPreviews.id, input.preview.id))
+          .get();
+        if (row === undefined) return;
+        const preview = JSON.parse(row.previewJson) as ChangeImpactPreview;
+        if (preview.status !== "awaiting-confirmation") return;
+        if (
+          preview.version !== "change-impact-preview/2" ||
+          preview.change?.kind !== "recognition-scope-amendment" ||
+          preview.blockingConditions.length > 0
+        )
+          throw new Error(
+            "Recognition scope amendment preview is not applicable",
+          );
+        const change = preview.change;
+        const plan = input.plan;
+        const predecessorDecisionId = preview.baselines.find(
+          ({ key }) => key === "recognition-decision",
+        )?.value;
+        if (
+          predecessorDecisionId === undefined ||
+          plan.successorDecision.id !== change.successorDecisionId ||
+          plan.successorDecision.proposalId !== change.proposal.id ||
+          plan.successorDecision.assetId !== preview.assetId ||
+          JSON.stringify(plan.successorDecision.boundaries) !==
+            JSON.stringify(change.proposal.boundaries) ||
+          JSON.stringify(plan.successorDecision.acceptedRuleResults) !==
+            JSON.stringify(change.proposal.ruleResults) ||
+          plan.supersession.successorDecisionId !== plan.successorDecision.id ||
+          plan.supersession.predecessorDecisionId !==
+            change.predecessorDecisionId
+        )
+          throw new Error("Recognition scope amendment plan is inconsistent");
+        const waitingExecution =
+          this.workflowExecutionPersistence.readExecutionWithDrizzle(
+            transaction,
+            preview.executionId,
+          );
+        const head = transaction
+          .select()
+          .from(recognitionHeads)
+          .where(eq(recognitionHeads.subjectId, preview.assetId))
+          .get();
+        // 同一完整范围重查：被点名决定必须仍然生效，相交集合必须逐字一致。
+        const declarations = this.materialScopeDeclarationsWithDrizzle(
+          transaction,
+          plan.scopeAddress,
+        );
+        const namedDeclaration = declarations.find(
+          (declaration) => declaration.decisionId === predecessorDecisionId,
+        );
+        const scopeBaseline =
+          namedDeclaration === undefined
+            ? undefined
+            : JSON.stringify(
+                materialScopeDeclarationBaseline(
+                  declarations.filter((declaration) =>
+                    materialScopeDeclarationsIntersect(
+                      declaration,
+                      namedDeclaration,
+                    ),
+                  ),
+                ),
+              );
+        const expectedProjection = preview.baselines.find(
+          ({ key }) => key === "complete-current-projection",
+        )?.value;
+        const expectedScope = preview.baselines.find(
+          ({ key }) => key === "recognition-scope-declarations",
+        )?.value;
+        const expectedScopeDecisions = preview.baselines.find(
+          ({ key }) => key === "recognition-scope-decision-ids",
+        )?.value;
+        const scopeDecisionIds =
+          expectedScopeDecisions === undefined
+            ? undefined
+            : (JSON.parse(expectedScopeDecisions) as readonly string[]);
+        if (
+          head === undefined ||
+          namedDeclaration?.status !== "effective" ||
+          expectedProjection === undefined ||
+          this.currentChangeImpactBaselineWithDrizzle(
+            transaction,
+            preview.assetId,
+            scopeDecisionIds,
+          ) !== expectedProjection ||
+          (expectedScope !== undefined && expectedScope !== scopeBaseline)
+        ) {
+          if (waitingExecution?.status === "running")
+            this.finishChangeImpactExecutionWithDrizzle(
+              transaction,
+              waitingExecution,
+              "stale",
+            );
+          transaction
+            .update(changeImpactPreviews)
+            .set({
+              previewJson: JSON.stringify({ ...preview, status: "stale" }),
+            })
+            .where(eq(changeImpactPreviews.id, preview.id))
+            .run();
+          return;
+        }
+        result = this.writeRecognitionScopeAmendmentWithDrizzle(transaction, {
+          preview,
+          plan,
+          predecessorDecisionId,
+          amendsHead: head.recognitionDecisionId === predecessorDecisionId,
+          headDecisionId: head.recognitionDecisionId,
+          headAssociationId: head.recognitionSourceAssociationId,
+          ...(waitingExecution === undefined ? {} : { waitingExecution }),
+        });
+      },
+      { behavior: "immediate" },
+    );
+    return result;
+  }
+
+  /**
+   * 范围修订的原子写入：新决定带着自己的完整边界落库并取代被点名的决定，主头只在被点名的就是主头时
+   * 前进；追加不另造身份，只把自身授权与那次观察的证据加到关联支持上。
+   */
+  private writeRecognitionScopeAmendmentWithDrizzle(
+    transaction: DrizzleWriteTransaction,
+    input: {
+      readonly preview: ChangeImpactPreview;
+      readonly plan: RecognitionScopeAmendmentPlan;
+      readonly predecessorDecisionId: string;
+      readonly amendsHead: boolean;
+      readonly headDecisionId: string | null;
+      readonly headAssociationId: string | null;
+      readonly waitingExecution?: WorkflowExecution;
+    },
+  ): "applied" | "stale" {
+    const { preview, plan } = input;
+    if (preview.change?.kind !== "recognition-scope-amendment")
+      throw new Error("Recognition scope amendment preview is not applicable");
+    // 主头为空时，被点名的生效决定本身就是这次写入的事实依据；头保持为空。
+    const headDecision = transaction
+      .select()
+      .from(recognitionDecisions)
+      .where(
+        eq(
+          recognitionDecisions.id,
+          input.headDecisionId ?? input.predecessorDecisionId,
+        ),
+      )
+      .get();
+    if (headDecision === undefined)
+      throw new Error("Recognition scope amendment lacks a durable head");
+    transaction
+      .insert(recognitionDecisions)
+      .values({
+        id: plan.successorDecision.id,
+        proposalId: plan.successorDecision.proposalId,
+        assetId: plan.successorDecision.assetId,
+        acceptedRuleResultsJson: JSON.stringify(
+          plan.successorDecision.acceptedRuleResults,
+        ),
+        boundariesJson: JSON.stringify(plan.successorDecision.boundaries),
+      })
+      .run();
+    transaction
+      .insert(recognitionDecisionSupersessions)
+      .values({ ...plan.supersession })
+      .run();
+    if (input.amendsHead) {
+      const advanced = transaction
+        .update(recognitionHeads)
+        .set({ recognitionDecisionId: plan.successorDecision.id })
+        .where(
+          and(
+            eq(recognitionHeads.subjectId, preview.assetId),
+            // amendsHead 为真即主头正是被点名的前驱决定，比较前驱 ID 等价且非空。
+            eq(
+              recognitionHeads.recognitionDecisionId,
+              input.predecessorDecisionId,
+            ),
+            input.headAssociationId === null
+              ? isNull(recognitionHeads.recognitionSourceAssociationId)
+              : eq(
+                  recognitionHeads.recognitionSourceAssociationId,
+                  input.headAssociationId,
+                ),
+          ),
+        )
+        .run();
+      // 立即事务已串行化写入者；条件不成立说明身份被并发改动，回滚不留半个决定。
+      if (advanced.changes !== 1)
+        throw new Error("识别范围修订确认时当前身份已经变化");
+    }
+    const headProposal = this.readProposalWithDrizzle(
+      transaction,
+      headDecision.proposalId,
+    );
+    if (headProposal === undefined)
+      throw new Error(
+        "Recognition scope amendment predecessor lacks a durable proposal",
+      );
+    const association =
+      input.headAssociationId === null
+        ? undefined
+        : transaction
+            .select({
+              id: sourceAssociations.id,
+              subjectId: sourceAssociations.subjectId,
+              sourceIdentity: sourceAssociations.sourceIdentity,
+              nativeAddress: sourceAssociations.nativeAddress,
+            })
+            .from(sourceAssociations)
+            .where(eq(sourceAssociations.id, input.headAssociationId))
+            .get();
+    const recognitionDecision = (
+      id: string,
+      proposalId: string,
+      boundariesJson: string,
+      acceptedRuleResultsJson: string,
+    ): RecognitionDecision => ({
+      id,
+      proposalId,
+      assetId: preview.assetId,
+      boundaries: JSON.parse(
+        boundariesJson,
+      ) as RecognitionDecision["boundaries"],
+      acceptedRuleResults: JSON.parse(
+        acceptedRuleResultsJson,
+      ) as RecognitionDecision["acceptedRuleResults"],
+    });
+    const currentAccepted: AcceptedRecognition = {
+      proposal: headProposal,
+      entity: { id: preview.assetId, kind: "digital-asset" },
+      sourceAssociations: association === undefined ? [] : [association],
+      ...(association === undefined
+        ? {}
+        : { recognitionSourceAssociation: association }),
+      recognitionDecision: recognitionDecision(
+        headDecision.id,
+        headDecision.proposalId,
+        headDecision.boundariesJson,
+        headDecision.acceptedRuleResultsJson,
+      ),
+      metadata: preview.current.metadata,
+      entities: preview.current.entities,
+      entityMentions: preview.current.entityMentions,
+      entityResolutionDecisions: preview.current.entityResolutionDecisions,
+      relationships: preview.current.relationships,
+      artifacts: preview.current.artifacts,
+      locations: preview.current.locations,
+      blobs: preview.current.blobs,
+      artifactRevisions: preview.current.artifactRevisions,
+      artifactAssociations: preview.current.artifactAssociations,
+    };
+    const nextAccepted: AcceptedRecognition = {
+      proposal: preview.change.proposal,
+      entity: { id: preview.assetId, kind: "digital-asset" },
+      sourceAssociations: association === undefined ? [] : [association],
+      ...(association === undefined
+        ? {}
+        : { recognitionSourceAssociation: association }),
+      recognitionDecision: plan.successorDecision,
+      metadata: preview.projected.metadata,
+      entities: preview.projected.entities,
+      entityMentions: preview.projected.entityMentions,
+      entityResolutionDecisions: preview.projected.entityResolutionDecisions,
+      relationships: preview.projected.relationships,
+      artifacts: preview.projected.artifacts,
+      locations: preview.projected.locations,
+      blobs: preview.projected.blobs,
+      artifactRevisions: preview.projected.artifactRevisions,
+      artifactAssociations: preview.projected.artifactAssociations,
+      ...(preview.projectedObservedEntityGraphs === undefined
+        ? {}
+        : { observedEntityGraphs: preview.projectedObservedEntityGraphs }),
+    };
+    this.insertReevaluatedArtifactFactsWithDrizzle(
+      transaction,
+      currentAccepted,
+      nextAccepted,
+    );
+    if (input.waitingExecution !== undefined)
+      this.applyAppliedPreviewMaterialBindingsWithDrizzle(
+        transaction,
+        input.waitingExecution,
+        {
+          ...preview,
+          status: "applied",
+        },
+      );
+    this.writeLocalAssociationSupportsWithDrizzle(transaction, nextAccepted);
+    this.invalidateStaleChangeImpactPreviewsWithDrizzle(transaction, [
+      preview.assetId,
+    ]);
+    if (input.waitingExecution?.status === "running")
+      this.finishChangeImpactExecutionWithDrizzle(
+        transaction,
+        input.waitingExecution,
+        "applied",
+      );
+    transaction
+      .update(changeImpactPreviews)
+      .set({
+        previewJson: JSON.stringify({ ...preview, status: "applied" }),
+      })
+      .where(eq(changeImpactPreviews.id, preview.id))
+      .run();
+    return "applied";
+  }
+
+  /**
+   * 人工封面决定不属于任何工作流执行：这份预演自身就是它的耐久因果记录。
+   */
+  async saveArtifactRoleDecisionPreview(
+    preview: ChangeImpactPreview,
+  ): Promise<void> {
+    if (
+      preview.version !== "change-impact-preview/2" ||
+      preview.change?.kind !== "artifact-role-decision"
+    )
+      throw new Error("人工封面决定需要一份精确的 V2 预演");
+    const decision = preview.change.decision;
+    validateArtifactRoleDecision(decision);
+    if (
+      decision.target.kind === "entity" &&
+      decision.target.entityId !== preview.assetId
+    )
+      throw new Error("人工封面决定的目标实体与预演主体不一致");
+    if (
+      decision.predecessorDecisionId !==
+      (preview.change.expectedHeadDecisionId ?? undefined)
+    )
+      throw new Error("人工封面决定缺少指向当前头的后继链");
+    const database = await this.ensure();
+    drizzle({ client: database })
+      .insert(changeImpactPreviews)
+      .values({
+        id: preview.id,
+        executionId: preview.executionId,
+        assetId: preview.assetId,
+        previewJson: JSON.stringify(preview),
+      })
+      .run();
+  }
+
+  /**
+   * 在同一事务内比较冻结候选、政策版本、资产完整事实基线与坐标当前头，全部成立才
+   * 追加决定并以前进头 CAS 落地；任何一项变化只把预演置为过期，零决定副作用。
+   */
+  async applyArtifactRoleDecisionPreview(input: {
+    readonly preview: ChangeImpactPreview;
+    readonly confirmedBy: string;
+    readonly currentCandidateBaseline: string | null;
+    readonly policyVersion: string;
+  }): Promise<"applied" | "stale"> {
+    const database = await this.ensure();
+    let result: "applied" | "stale" = "stale";
+    drizzle({ client: database }).transaction(
+      (transaction) => {
+        const row = transaction
+          .select({ previewJson: changeImpactPreviews.previewJson })
+          .from(changeImpactPreviews)
+          .where(eq(changeImpactPreviews.id, input.preview.id))
+          .get();
+        if (row === undefined) return;
+        const preview = JSON.parse(row.previewJson) as ChangeImpactPreview;
+        // 已 applied 或已 stale 的预演重放只返回既有结果，绝不重复追加决定。
+        if (preview.status !== "awaiting-confirmation") return;
+        if (
+          preview.version !== "change-impact-preview/2" ||
+          preview.change?.kind !== "artifact-role-decision" ||
+          preview.blockingConditions.length > 0
+        )
+          throw new Error("Artifact role decision preview is not applicable");
+        const decision = preview.change.decision;
+        const targetKey = artifactRoleDecisionKey(
+          decision.target,
+          decision.role,
+        );
+        const baseline = (key: string) =>
+          preview.baselines.find((item) => item.key === key)?.value;
+        const head = transaction
+          .select({ decisionId: artifactRoleDecisionHeads.decisionId })
+          .from(artifactRoleDecisionHeads)
+          .where(eq(artifactRoleDecisionHeads.targetKey, targetKey))
+          .get();
+        const currentHeadDecisionId = head?.decisionId ?? null;
+        if (
+          baseline("complete-current-projection") === undefined ||
+          this.currentChangeImpactBaselineWithDrizzle(
+            transaction,
+            preview.assetId,
+          ) !== baseline("complete-current-projection") ||
+          currentHeadDecisionId !== preview.change.expectedHeadDecisionId ||
+          baseline("artifact-role-decision-head") !==
+            (currentHeadDecisionId ?? "none") ||
+          input.currentCandidateBaseline !==
+            baseline("artifact-role-candidates") ||
+          input.policyVersion !== baseline("artifact-role-policy-version")
+        ) {
+          transaction
+            .update(changeImpactPreviews)
+            .set({
+              previewJson: JSON.stringify({ ...preview, status: "stale" }),
+            })
+            .where(eq(changeImpactPreviews.id, preview.id))
+            .run();
+          return;
+        }
+        transaction
+          .insert(artifactRoleDecisions)
+          .values(artifactRoleDecisionRow(decision))
+          .run();
+        const moved =
+          preview.change.expectedHeadDecisionId === null
+            ? transaction
+                .insert(artifactRoleDecisionHeads)
+                .values({ targetKey, decisionId: decision.id })
+                .onConflictDoNothing()
+                .run()
+            : transaction
+                .update(artifactRoleDecisionHeads)
+                .set({ decisionId: decision.id })
+                .where(
+                  and(
+                    eq(artifactRoleDecisionHeads.targetKey, targetKey),
+                    eq(
+                      artifactRoleDecisionHeads.decisionId,
+                      preview.change.expectedHeadDecisionId,
+                    ),
+                  ),
+                )
+                .run();
+        // 头被他人抢先推进时整体回滚：这一坐标至多一个预演能成功。
+        if (moved.changes !== 1)
+          throw new Error("Artifact role decision head moved concurrently");
+        this.invalidateStaleChangeImpactPreviewsWithDrizzle(transaction, [
+          preview.assetId,
+        ]);
         transaction
           .update(changeImpactPreviews)
           .set({
@@ -9874,6 +12561,31 @@ export class SqliteCatalogue
         ) {
           return;
         }
+        // 周期计划必须有本库目录授权账目支撑：全局根仍 active 不足以证明本库允许该目录
+        // 参与自动观察，共享同一物理根的其他库也不能替它续权。
+        const library = transaction
+          .select({ status: assetLibraries.status })
+          .from(assetLibraries)
+          .where(eq(assetLibraries.id, input.intent.scope.assetLibraryId))
+          .get();
+        const grant = transaction
+          .select({ id: libraryDirectoryGrants.id })
+          .from(libraryDirectoryGrants)
+          .where(
+            and(
+              eq(
+                libraryDirectoryGrants.libraryId,
+                input.intent.scope.assetLibraryId,
+              ),
+              eq(
+                libraryDirectoryGrants.observedRootId,
+                input.intent.scope.observedRootId,
+              ),
+              eq(libraryDirectoryGrants.status, "active"),
+            ),
+          )
+          .get();
+        if (library?.status !== "active" || grant === undefined) return;
         transaction
           .insert(automationIntents)
           .values({
@@ -9913,6 +12625,522 @@ export class SqliteCatalogue
       .run();
   }
 
+  async listAssetLibraries(): Promise<readonly AssetLibrary[]> {
+    const database = await this.ensure();
+    return drizzle({ client: database })
+      .select()
+      .from(assetLibraries)
+      .orderBy(asc(assetLibraries.id))
+      .all()
+      .map(assetLibraryFromDrizzle);
+  }
+
+  async getAssetLibrary(id: string): Promise<AssetLibrary | undefined> {
+    const database = await this.ensure();
+    const row = drizzle({ client: database })
+      .select()
+      .from(assetLibraries)
+      .where(eq(assetLibraries.id, id))
+      .get();
+    return row === undefined ? undefined : assetLibraryFromDrizzle(row);
+  }
+
+  async saveAssetLibrary(
+    save: AssetLibrarySave,
+  ): Promise<AssetLibrarySaveReceipt | undefined> {
+    const database = await this.ensure();
+    return drizzle({ client: database }).transaction(
+      (transaction) => {
+        const previous = transaction
+          .select()
+          .from(assetLibraries)
+          .where(eq(assetLibraries.id, save.id))
+          .get();
+        if (save.expectedVersion === undefined) {
+          if (previous !== undefined) return undefined;
+        } else if (previous?.configVersion !== save.expectedVersion)
+          return undefined;
+        const previousRootIds =
+          previous === undefined
+            ? []
+            : (JSON.parse(previous.rootIdsJson) as readonly string[]);
+        const previousGrants = transaction
+          .select()
+          .from(libraryDirectoryGrants)
+          .where(eq(libraryDirectoryGrants.libraryId, save.id))
+          .all()
+          .map(libraryDirectoryGrantFromDrizzle);
+        // 失效坐标只描述本库授权的变化；共享同一物理根的其他库不出现在这里。
+        const invalidations = new Map<string, LibraryDirectoryInvalidation>();
+        const invalidate = (observedRootId: string): void => {
+          invalidations.set(observedRootId, {
+            assetLibraryId: save.id,
+            observedRootId,
+          });
+        };
+        let rootIds = previousRootIds;
+        if (save.directories !== undefined) {
+          const registrations = transaction
+            .select()
+            .from(observedRootRegistrations)
+            .all()
+            .map(observedRootRegistrationFromDrizzle);
+          const registrationById = new Map(
+            registrations.map((item) => [item.id, item]),
+          );
+          for (const directory of save.directories) {
+            const retained = previousGrants.find(
+              (grant) =>
+                grant.status === "removed" &&
+                registrationById.get(grant.observedRootId)?.canonicalPath ===
+                  directory.canonicalPath,
+            );
+            // 保留的 removed 关系只能由点名它的显式重连接管：重复添加同一路径不能把旧
+            // 授权或旧执行悄悄救活。
+            if (retained !== undefined)
+              throw new Error(
+                "该目录此前已从本资产库移除，请使用重新连接而不是重复添加",
+              );
+          }
+          const activeRoots = registrations
+            .filter((item) => item.status === "active")
+            .map((item) => ({
+              id: item.id,
+              canonicalPath: item.canonicalPath,
+            }));
+          const grantByRootId = new Map(
+            previousGrants.map((grant) => [grant.observedRootId, grant]),
+          );
+          // R7/F3 依赖闭包失效：本次被移除或链接授权改变的 grant 是失效种子，新增 grant 不参与
+          // 复核（它没有先前执行可冻结）。种子之下所有本库活动 grant 的传递跟随闭包都要一并失效。
+          const closureSeeds = new Set<string>();
+          const insertedGrantIds = new Set<string>();
+          const pending = save.directories.map((directory) => {
+            const reused = activeRoots.find(
+              (root) => root.canonicalPath === directory.canonicalPath,
+            );
+            if (reused !== undefined) return { directory, rootId: reused.id };
+            const registration: ObservedRootRegistration = {
+              id: `observed_root_${randomUUID()}`,
+              displayName: directory.displayName,
+              containerPath: directory.containerPath,
+              canonicalPath: directory.canonicalPath,
+              status: "active",
+              configVersion: 1,
+              readOnly: true,
+              symlinkMode: directory.symlinkMode,
+              allowedTargetRootIds: [],
+            };
+            transaction
+              .insert(observedRootRegistrations)
+              .values(observedRootRegistrationToDrizzle(registration))
+              .run();
+            activeRoots.push({
+              id: registration.id,
+              canonicalPath: registration.canonicalPath,
+            });
+            return { directory, rootId: registration.id };
+          });
+          const entries = pending.map((entry) => ({
+            ...entry,
+            grantId:
+              grantByRootId.get(entry.rootId)?.id ??
+              `library_directory_grant_${randomUUID()}`,
+          }));
+          const grantIdByCanonicalPath = new Map(
+            entries.map((entry) => [
+              entry.directory.canonicalPath,
+              entry.grantId,
+            ]),
+          );
+          for (const entry of entries) {
+            const directory = entry.directory;
+            const targetGrantIds = directory.allowedTargetCanonicalPaths
+              .map((canonicalPath) => grantIdByCanonicalPath.get(canonicalPath))
+              .filter((grantId): grantId is string => grantId !== undefined)
+              .toSorted();
+            const existing = grantByRootId.get(entry.rootId);
+            if (existing === undefined) {
+              transaction
+                .insert(libraryDirectoryGrants)
+                .values({
+                  id: entry.grantId,
+                  libraryId: save.id,
+                  observedRootId: entry.rootId,
+                  status: "active",
+                  authorityVersion: 1,
+                  symlinkMode: directory.symlinkMode,
+                  allowedTargetGrantIdsJson: JSON.stringify(targetGrantIds),
+                })
+                .run();
+              insertedGrantIds.add(entry.grantId);
+              continue;
+            }
+            const unchanged =
+              existing.symlinkMode === directory.symlinkMode &&
+              JSON.stringify(existing.allowedTargetGrantIds) ===
+                JSON.stringify(targetGrantIds);
+            if (unchanged) continue;
+            // 链接授权改变是明确的 I/O 撤销：权威版本推进，旧执行与打开的流被拒绝或关闭。
+            const bumped = transaction
+              .update(libraryDirectoryGrants)
+              .set({
+                symlinkMode: directory.symlinkMode,
+                allowedTargetGrantIdsJson: JSON.stringify(targetGrantIds),
+                authorityVersion: existing.authorityVersion + 1,
+              })
+              .where(
+                and(
+                  eq(libraryDirectoryGrants.id, existing.id),
+                  eq(
+                    libraryDirectoryGrants.authorityVersion,
+                    existing.authorityVersion,
+                  ),
+                ),
+              )
+              .run();
+            if (bumped.changes !== 1)
+              throw new Error("该目录的授权已变更，请刷新后重试");
+            closureSeeds.add(existing.id);
+            invalidate(entry.rootId);
+          }
+          rootIds = [
+            ...new Set(pending.map((entry) => entry.rootId)),
+          ].toSorted();
+          for (const grant of previousGrants) {
+            if (grant.status !== "active") continue;
+            if (rootIds.includes(grant.observedRootId)) continue;
+            // 目录移除只停本库授权并推进权威版本；物理根与历史一律保留到最后引用。
+            const removed = transaction
+              .update(libraryDirectoryGrants)
+              .set({
+                status: "removed",
+                authorityVersion: grant.authorityVersion + 1,
+              })
+              .where(
+                and(
+                  eq(libraryDirectoryGrants.id, grant.id),
+                  eq(
+                    libraryDirectoryGrants.authorityVersion,
+                    grant.authorityVersion,
+                  ),
+                ),
+              )
+              .run();
+            if (removed.changes !== 1)
+              throw new Error("该目录的授权已变更，请刷新后重试");
+            closureSeeds.add(grant.id);
+            invalidate(grant.observedRootId);
+          }
+          // 从失效种子出发求本库依赖闭包的传递不动点：任一活动授权把某个失效授权列入自己的跟随
+          // 目标（直接或间接），其旧闭包就不再成立，必须与种子同样推进权威版本并登记失效坐标，
+          // 令沿旧 S→T 闭包冻结的目录子在下一效果或提交时被持久拒绝。其他库的授权不在本库集合中，
+          // 其独立授权不因此失效；本次新增 grant 没有先前执行可冻结，不参与推进。
+          if (closureSeeds.size > 0) {
+            const libraryGrants = transaction
+              .select()
+              .from(libraryDirectoryGrants)
+              .where(eq(libraryDirectoryGrants.libraryId, save.id))
+              .all()
+              .map(libraryDirectoryGrantFromDrizzle);
+            const byId = new Map(
+              libraryGrants.map((grant) => [grant.id, grant]),
+            );
+            const dirty = new Set(closureSeeds);
+            let grew = true;
+            while (grew) {
+              grew = false;
+              for (const grant of libraryGrants) {
+                if (grant.status !== "active" || dirty.has(grant.id)) continue;
+                if (
+                  grant.allowedTargetGrantIds.some((target) =>
+                    dirty.has(target),
+                  )
+                ) {
+                  dirty.add(grant.id);
+                  grew = true;
+                }
+              }
+            }
+            for (const grantId of dirty) {
+              if (closureSeeds.has(grantId)) continue;
+              const grant = byId.get(grantId);
+              if (
+                grant === undefined ||
+                grant.status !== "active" ||
+                insertedGrantIds.has(grantId)
+              )
+                continue;
+              const cascaded = transaction
+                .update(libraryDirectoryGrants)
+                .set({ authorityVersion: grant.authorityVersion + 1 })
+                .where(
+                  and(
+                    eq(libraryDirectoryGrants.id, grant.id),
+                    eq(
+                      libraryDirectoryGrants.authorityVersion,
+                      grant.authorityVersion,
+                    ),
+                  ),
+                )
+                .run();
+              if (cascaded.changes !== 1)
+                throw new Error("该目录的授权已变更，请刷新后重试");
+              invalidate(grant.observedRootId);
+            }
+          }
+        }
+        const row = {
+          id: save.id,
+          displayName: save.displayName,
+          configVersion: save.configVersion,
+          status: save.status,
+          rootIdsJson: JSON.stringify(rootIds),
+          recognitionProfileIdsJson: JSON.stringify(save.recognitionProfileIds),
+          sourceIdentitiesJson: JSON.stringify(save.sourceIdentities),
+        };
+        const saved =
+          save.expectedVersion === undefined
+            ? transaction
+                .insert(assetLibraries)
+                .values(row)
+                .onConflictDoNothing()
+                .run().changes === 1
+            : transaction
+                .update(assetLibraries)
+                .set(row)
+                .where(
+                  and(
+                    eq(assetLibraries.id, row.id),
+                    eq(assetLibraries.configVersion, save.expectedVersion),
+                  ),
+                )
+                .run().changes === 1;
+        if (!saved) return undefined;
+        if (save.status !== "active")
+          for (const grant of previousGrants) {
+            if (grant.status !== "active") continue;
+            const removed = transaction
+              .update(libraryDirectoryGrants)
+              .set({
+                status: "removed",
+                authorityVersion: grant.authorityVersion + 1,
+              })
+              .where(
+                and(
+                  eq(libraryDirectoryGrants.id, grant.id),
+                  eq(
+                    libraryDirectoryGrants.authorityVersion,
+                    grant.authorityVersion,
+                  ),
+                ),
+              )
+              .run();
+            if (removed.changes === 1) invalidate(grant.observedRootId);
+          }
+        // 同一物理目录仍可服务其他库；这里只停止已撤销的这个库的计划，并按真实原因分类：
+        // 目录仍在、只是不再属于本库（或整库移除）是授权被撤销，范围本身读不出目录才是配置失效。
+        const discontinued = new Map<
+          "invalid-configuration" | "observed-root-revoked",
+          string[]
+        >();
+        for (const intent of transaction
+          .select({
+            id: automationIntents.id,
+            scopeJson: automationIntents.scopeJson,
+          })
+          .from(automationIntents)
+          .where(
+            sql`json_extract(${automationIntents.scopeJson}, '$.assetLibraryId') = ${save.id}`,
+          )
+          .all()) {
+          const rootId = observedRootIdFromAutomationScope(intent.scopeJson);
+          if (
+            save.status === "active" &&
+            rootId !== undefined &&
+            rootIds.includes(rootId)
+          )
+            continue;
+          const reason =
+            rootId === undefined
+              ? "invalid-configuration"
+              : "observed-root-revoked";
+          discontinued.set(reason, [
+            ...(discontinued.get(reason) ?? []),
+            intent.id,
+          ]);
+        }
+        for (const [reason, intentIds] of discontinued)
+          if (intentIds.length > 0)
+            transaction
+              .update(automationIntents)
+              .set({ enabled: 0, disabledReason: reason })
+              .where(inArray(automationIntents.id, sqliteTextSet(intentIds)))
+              .run();
+        for (const rootId of previousRootIds) {
+          if (save.status === "active" && rootIds.includes(rootId)) continue;
+          const rootRow = transaction
+            .select()
+            .from(observedRootRegistrations)
+            .where(eq(observedRootRegistrations.id, rootId))
+            .get();
+          if (rootRow === undefined || rootRow.status !== "active") continue;
+          const root = observedRootRegistrationFromDrizzle(rootRow);
+          this.revokeObservedRootRegistrationWithDrizzle(transaction, {
+            expectedVersion: root.configVersion,
+            registration: {
+              ...root,
+              status: "revoked",
+              configVersion: root.configVersion + 1,
+            },
+          });
+        }
+        return {
+          library: {
+            id: row.id,
+            displayName: row.displayName,
+            configVersion: row.configVersion,
+            status: row.status,
+            rootIds: [...rootIds],
+            recognitionProfileIds: [...save.recognitionProfileIds],
+            sourceIdentities: [...save.sourceIdentities],
+          } satisfies AssetLibrary,
+          invalidations: [...invalidations.values()],
+        };
+      },
+      { behavior: "immediate" },
+    );
+  }
+
+  async reconnectAssetLibraryDirectory(
+    input: AssetLibraryDirectoryReconnect,
+  ): Promise<AssetLibrarySaveReceipt | undefined> {
+    const database = await this.ensure();
+    return drizzle({ client: database }).transaction(
+      (transaction) => {
+        const library = transaction
+          .select()
+          .from(assetLibraries)
+          .where(
+            and(
+              eq(assetLibraries.id, input.libraryId),
+              eq(assetLibraries.status, "active"),
+              eq(assetLibraries.configVersion, input.expectedConfigVersion),
+            ),
+          )
+          .get();
+        if (library === undefined) return undefined;
+        const grant = transaction
+          .select()
+          .from(libraryDirectoryGrants)
+          .where(eq(libraryDirectoryGrants.id, input.directoryId))
+          .get();
+        if (
+          grant === undefined ||
+          grant.libraryId !== input.libraryId ||
+          grant.status !== "removed" ||
+          grant.authorityVersion !== input.expectedAuthorityVersion
+        )
+          return undefined;
+        const activated = transaction
+          .update(libraryDirectoryGrants)
+          .set({
+            status: "active",
+            authorityVersion: grant.authorityVersion + 1,
+            awaitingObservation: 1,
+          })
+          .where(
+            and(
+              eq(libraryDirectoryGrants.id, grant.id),
+              eq(
+                libraryDirectoryGrants.authorityVersion,
+                input.expectedAuthorityVersion,
+              ),
+              eq(libraryDirectoryGrants.status, "removed"),
+            ),
+          )
+          .run();
+        if (activated.changes !== 1) return undefined;
+        // 末引用撤销的物理根与 grant 激活、库引用附接同属这一笔 immediate 事务：以 expected
+        // 版本 + revoked 状态做 CAS 把根恢复为 active。规范路径在校验时已确认不变，这里只推进
+        // 状态与版本；CAS 落空即整笔回滚，grant 保持 removed、库不附接、根保持 revoked，绝不
+        // 留下「根已 active 但库/grant 未跟上」的半恢复。
+        if (input.reactivateRegistration !== undefined) {
+          const reactivated = transaction
+            .update(observedRootRegistrations)
+            .set({
+              status: "active",
+              configVersion: input.reactivateRegistration.expectedVersion + 1,
+            })
+            .where(
+              and(
+                eq(
+                  observedRootRegistrations.id,
+                  input.reactivateRegistration.observedRootId,
+                ),
+                eq(
+                  observedRootRegistrations.configVersion,
+                  input.reactivateRegistration.expectedVersion,
+                ),
+                eq(observedRootRegistrations.status, "revoked"),
+              ),
+            )
+            .run();
+          if (reactivated.changes !== 1) return undefined;
+        }
+        const rootIds = JSON.parse(library.rootIdsJson) as readonly string[];
+        const replaced = transaction
+          .update(assetLibraries)
+          .set({
+            rootIdsJson: JSON.stringify(
+              [...new Set([...rootIds, grant.observedRootId])].toSorted(),
+            ),
+            configVersion: library.configVersion + 1,
+          })
+          .where(
+            and(
+              eq(assetLibraries.id, library.id),
+              eq(assetLibraries.configVersion, input.expectedConfigVersion),
+            ),
+          )
+          .run();
+        if (replaced.changes !== 1) return undefined;
+        // 重连给出新的权威版本：它不会让旧执行或已打开的来源复活，反而把它们的后续
+        // 效果与提交持久拒绝。置位的 awaitingObservation 让本库经此根的历史 Location 在下
+        // 一次完整授权观察前不进入本库 current 投影；同一物理根的其他库用自己的授权独立判定。
+        return {
+          library: assetLibraryFromDrizzle({
+            ...library,
+            configVersion: library.configVersion + 1,
+            rootIdsJson: JSON.stringify(
+              [...new Set([...rootIds, grant.observedRootId])].toSorted(),
+            ),
+          }),
+          invalidations: [
+            {
+              assetLibraryId: input.libraryId,
+              observedRootId: grant.observedRootId,
+            },
+          ],
+        };
+      },
+      { behavior: "immediate" },
+    );
+  }
+
+  async listLibraryDirectoryGrants(
+    libraryId: string,
+  ): Promise<readonly LibraryDirectoryGrant[]> {
+    const database = await this.ensure();
+    return drizzle({ client: database })
+      .select()
+      .from(libraryDirectoryGrants)
+      .where(eq(libraryDirectoryGrants.libraryId, libraryId))
+      .orderBy(asc(libraryDirectoryGrants.observedRootId))
+      .all()
+      .map(libraryDirectoryGrantFromDrizzle);
+  }
+
   async getObservedRootRegistration(
     id: string,
   ): Promise<ObservedRootRegistration | undefined> {
@@ -9935,6 +13163,23 @@ export class SqliteCatalogue
       .select()
       .from(observedRootRegistrations)
       .orderBy(asc(sql<number>`${observedRootRegistrations}.rowid`))
+      .all()
+      .map(observedRootRegistrationFromDrizzle);
+  }
+
+  async listAuthorizedObservedRootRegistrations(): Promise<
+    readonly ObservedRootRegistration[]
+  > {
+    const database = await this.ensure();
+    return drizzle({ client: database })
+      .select()
+      .from(observedRootRegistrations)
+      .where(
+        and(
+          eq(observedRootRegistrations.status, "active"),
+          sql`EXISTS (SELECT 1 FROM ${assetLibraries}, json_each(${assetLibraries.rootIdsJson}) root WHERE ${assetLibraries.status} = 'active' AND root.value = ${observedRootRegistrations.id})`,
+        ),
+      )
       .all()
       .map(observedRootRegistrationFromDrizzle);
   }
@@ -9962,116 +13207,131 @@ export class SqliteCatalogue
     readonly registration: ObservedRootRegistration;
   }): Promise<boolean> {
     const database = await this.ensure();
-    let revoked = false;
-    drizzle({ client: database }).transaction(
-      (transaction) => {
-        const replaced = transaction
-          .update(observedRootRegistrations)
-          .set(observedRootRegistrationToDrizzle(input.registration))
-          .where(
-            and(
-              eq(observedRootRegistrations.id, input.registration.id),
-              eq(
-                observedRootRegistrations.configVersion,
-                input.expectedVersion,
-              ),
-            ),
-          )
-          .run();
-        if (replaced.changes !== 1) return;
-
-        const activeSupportLocationIds = new Set(
-          transaction
-            .select({ locationId: currentFileObservationSupports.locationId })
-            .from(currentFileObservationSupports)
-            .innerJoin(
-              observedRootRegistrations,
-              and(
-                eq(
-                  observedRootRegistrations.id,
-                  currentFileObservationSupports.observedRootId,
-                ),
-                eq(
-                  observedRootRegistrations.configVersion,
-                  currentFileObservationSupports.observedRootVersion,
-                ),
-                eq(observedRootRegistrations.status, "active"),
-              ),
-            )
-            .all()
-            .map(({ locationId }) => locationId),
-        );
-        // 最终投影只依据持久化的成功扫描支持撤销当前位置。
-        const unavailableLocationIds = transaction
-          .select({ locationId: currentFileObservationSupports.locationId })
-          .from(currentFileObservationSupports)
-          .where(
-            and(
-              eq(
-                currentFileObservationSupports.observedRootId,
-                input.registration.id,
-              ),
-              eq(
-                currentFileObservationSupports.observedRootVersion,
-                input.expectedVersion,
-              ),
-            ),
-          )
-          .all()
-          .flatMap(({ locationId }) =>
-            activeSupportLocationIds.has(locationId) ? [] : [locationId],
-          );
-        if (unavailableLocationIds.length > 0)
-          transaction
-            .delete(currentFileObservations)
-            .where(
-              inArray(
-                currentFileObservations.locationId,
-                sqliteTextSet(unavailableLocationIds),
-              ),
-            )
-            .run();
-
-        const authorityIndex = createObservedRootAuthorityIndex(
-          transaction
-            .select()
-            .from(observedRootRegistrations)
-            .all()
-            .map(observedRootRegistrationFromDrizzle),
-        );
-        const affectedRootIds = observedRootIdsDependingOn(
-          authorityIndex,
-          input.registration.id,
-        );
-        const dependentIntentIds = transaction
-          .select({
-            id: automationIntents.id,
-            scopeJson: automationIntents.scopeJson,
-          })
-          .from(automationIntents)
-          .all()
-          .flatMap((intent) =>
-            affectedRootIds.has(
-              observedRootIdFromAutomationScope(intent.scopeJson) ?? "",
-            )
-              ? [intent.id]
-              : [],
-          );
-        if (dependentIntentIds.length > 0) {
-          transaction
-            .update(automationIntents)
-            .set({
-              enabled: 0,
-              disabledReason: "observed-root-revoked",
-            })
-            .where(inArray(automationIntents.id, dependentIntentIds))
-            .run();
-        }
-        revoked = true;
-      },
+    return drizzle({ client: database }).transaction(
+      (transaction) =>
+        this.revokeObservedRootRegistrationWithDrizzle(transaction, input),
       { behavior: "immediate" },
     );
-    return revoked;
+  }
+
+  private revokeObservedRootRegistrationWithDrizzle(
+    transaction: DrizzleWriteTransaction,
+    input: {
+      readonly expectedVersion: number;
+      readonly registration: ObservedRootRegistration;
+    },
+  ): boolean {
+    const retained = transaction
+      .select({ id: assetLibraries.id })
+      .from(assetLibraries)
+      .where(
+        and(
+          eq(assetLibraries.status, "active"),
+          sql`EXISTS (SELECT 1 FROM json_each(${assetLibraries.rootIdsJson}) WHERE value = ${input.registration.id})`,
+        ),
+      )
+      .get();
+    if (retained !== undefined) return false;
+    const replaced = transaction
+      .update(observedRootRegistrations)
+      .set(observedRootRegistrationToDrizzle(input.registration))
+      .where(
+        and(
+          eq(observedRootRegistrations.id, input.registration.id),
+          eq(observedRootRegistrations.configVersion, input.expectedVersion),
+        ),
+      )
+      .run();
+    if (replaced.changes !== 1) return false;
+
+    const activeSupportLocationIds = new Set(
+      transaction
+        .select({ locationId: currentFileObservationSupports.locationId })
+        .from(currentFileObservationSupports)
+        .innerJoin(
+          observedRootRegistrations,
+          and(
+            eq(
+              observedRootRegistrations.id,
+              currentFileObservationSupports.observedRootId,
+            ),
+            eq(
+              observedRootRegistrations.configVersion,
+              currentFileObservationSupports.observedRootVersion,
+            ),
+            eq(observedRootRegistrations.status, "active"),
+          ),
+        )
+        .all()
+        .map(({ locationId }) => locationId),
+    );
+    // 最终投影只依据持久化的成功扫描支持撤销当前位置。
+    const unavailableLocationIds = transaction
+      .select({ locationId: currentFileObservationSupports.locationId })
+      .from(currentFileObservationSupports)
+      .where(
+        and(
+          eq(
+            currentFileObservationSupports.observedRootId,
+            input.registration.id,
+          ),
+          eq(
+            currentFileObservationSupports.observedRootVersion,
+            input.expectedVersion,
+          ),
+        ),
+      )
+      .all()
+      .flatMap(({ locationId }) =>
+        activeSupportLocationIds.has(locationId) ? [] : [locationId],
+      );
+    if (unavailableLocationIds.length > 0)
+      transaction
+        .delete(currentFileObservations)
+        .where(
+          inArray(
+            currentFileObservations.locationId,
+            sqliteTextSet(unavailableLocationIds),
+          ),
+        )
+        .run();
+
+    const authorityIndex = createObservedRootAuthorityIndex(
+      transaction
+        .select()
+        .from(observedRootRegistrations)
+        .all()
+        .map(observedRootRegistrationFromDrizzle),
+    );
+    const affectedRootIds = observedRootIdsDependingOn(
+      authorityIndex,
+      input.registration.id,
+    );
+    const dependentIntentIds = transaction
+      .select({
+        id: automationIntents.id,
+        scopeJson: automationIntents.scopeJson,
+      })
+      .from(automationIntents)
+      .all()
+      .flatMap((intent) =>
+        affectedRootIds.has(
+          observedRootIdFromAutomationScope(intent.scopeJson) ?? "",
+        )
+          ? [intent.id]
+          : [],
+      );
+    if (dependentIntentIds.length > 0) {
+      transaction
+        .update(automationIntents)
+        .set({
+          enabled: 0,
+          disabledReason: "observed-root-revoked",
+        })
+        .where(inArray(automationIntents.id, dependentIntentIds))
+        .run();
+    }
+    return true;
   }
 
   async inspectAutomationIntent(
@@ -11031,6 +14291,7 @@ export class SqliteCatalogue
             .select({
               id: recognitionProposals.id,
               basisJson: recognitionProposals.basisJson,
+              boundariesJson: recognitionProposals.boundariesJson,
             })
             .from(recognitionProposals)
             .where(inArray(recognitionProposals.id, sqliteTextSet(proposalIds)))
@@ -11213,6 +14474,9 @@ export class SqliteCatalogue
           : (
               recognitionSourceInterpretation({
                 id: proposal.id,
+                boundaries: JSON.parse(
+                  proposal.boundariesJson,
+                ) as RecognitionProposal["boundaries"],
                 basis: JSON.parse(
                   proposal.basisJson,
                 ) as RecognitionProposal["basis"],
@@ -11223,6 +14487,52 @@ export class SqliteCatalogue
               .join(",");
       const baseline = (key: string) =>
         preview.baselines.find((item) => item.key === key)?.value;
+      // 封面决定预演只对冻结的角色头哨兵与整资产完整事实负责：候选资格与适用政策
+      // 版本在确认事务内以同一规则重算，读取路径不因识别主头为空被误判 stale。
+      if (preview.change.kind === "artifact-role-decision") {
+        const sentinel = baseline("artifact-role-decision-head");
+        const currentHeadDecisionId =
+          query
+            .select({ decisionId: artifactRoleDecisionHeads.decisionId })
+            .from(artifactRoleDecisionHeads)
+            .where(
+              eq(
+                artifactRoleDecisionHeads.targetKey,
+                artifactRoleDecisionKey(
+                  preview.change.decision.target,
+                  preview.change.decision.role,
+                ),
+              ),
+            )
+            .all()[0]?.decisionId ?? null;
+        if (
+          sentinel !== undefined &&
+          sentinel === (currentHeadDecisionId ?? "none") &&
+          fingerprintByAsset.get(preview.assetId) ===
+            baseline("complete-current-projection")
+        )
+          valid.add(previewId);
+        continue;
+      }
+      // 范围预演只对自己冻结的相交完整声明负责：以被点名决定的存续与按
+      // scopeDecisionIds 精确重算的支持指纹判定有效性，绝不因主头为空或全资产
+      // 关联指纹（不相交主体新增）被误判 stale。其余预演沿用整资产共同基线规则。
+      const scopeDecisionIdsValue = baseline("recognition-scope-decision-ids");
+      if (scopeDecisionIdsValue !== undefined) {
+        const namedDecisionId = baseline("recognition-decision");
+        if (
+          head !== undefined &&
+          namedDecisionId !== undefined &&
+          !endedRecognitionDecisions.has(namedDecisionId) &&
+          this.currentChangeImpactBaselineWithDrizzle(
+            query,
+            preview.assetId,
+            JSON.parse(scopeDecisionIdsValue) as readonly string[],
+          ) === baseline("complete-current-projection")
+        )
+          valid.add(previewId);
+        continue;
+      }
       if (
         head !== undefined &&
         (head.recognitionSourceAssociationId ?? "") ===
@@ -11286,9 +14596,14 @@ export class SqliteCatalogue
       .run();
   }
 
+  /**
+   * 完整投影基线。给出范围决定集合时，产物部分只覆盖这些决定仍生效的精确观察支持
+   * （执行、快照、位置、材料种类、修订版）；不相交决定的新增或结束不会改动这份基线。
+   */
   private currentChangeImpactBaselineWithDrizzle(
     query: DrizzleReadQuery,
     assetId: string,
+    scopeDecisionIds?: readonly string[],
   ): string {
     const lineage = query
       .select({
@@ -11419,6 +14734,64 @@ export class SqliteCatalogue
         .all()
         .map(({ id: associationId }) => associationId),
     );
+    if (scopeDecisionIds !== undefined) {
+      const scopedSupports =
+        scopeDecisionIds.length === 0
+          ? []
+          : query
+              .select({
+                associationId:
+                  artifactAssociationRecognitionSupports.associationId,
+                recognitionDecisionId:
+                  artifactAssociationRecognitionSupports.recognitionDecisionId,
+                observationExecutionId:
+                  artifactAssociationRecognitionSupports.observationExecutionId,
+                observationSnapshotId:
+                  artifactAssociationRecognitionSupports.observationSnapshotId,
+                observationLocationId:
+                  artifactAssociationRecognitionSupports.observationLocationId,
+                observationMaterialKind:
+                  artifactAssociationRecognitionSupports.observationMaterialKind,
+                observationRevisionId:
+                  artifactAssociationRecognitionSupports.observationRevisionId,
+              })
+              .from(artifactAssociationRecognitionSupports)
+              .where(
+                inArray(
+                  artifactAssociationRecognitionSupports.recognitionDecisionId,
+                  sqliteTextSet(scopeDecisionIds),
+                ),
+              )
+              .all();
+      const supportsByAssociation = new Map<string, string[]>();
+      for (const support of scopedSupports) {
+        if (endedRecognitionDecisions.has(support.recognitionDecisionId))
+          continue;
+        (
+          supportsByAssociation.get(support.associationId) ??
+          supportsByAssociation
+            .set(support.associationId, [])
+            .get(support.associationId)!
+        ).push(JSON.stringify(support));
+      }
+      const scopedArtifacts = artifactRows
+        .filter(
+          (row) =>
+            !supersededArtifacts.has(row.id) &&
+            !retractedArtifacts.has(row.id) &&
+            supportsByAssociation.has(row.id),
+        )
+        .map((row) => ({
+          id: row.id,
+          supports: supportsByAssociation.get(row.id)!.toSorted(),
+        }));
+      return JSON.stringify({
+        lineage,
+        metadata,
+        relationships,
+        artifacts: scopedArtifacts,
+      });
+    }
     const artifacts = artifactRows
       .filter(
         (row) =>
@@ -11446,7 +14819,6 @@ export class SqliteCatalogue
       }));
     return JSON.stringify({ lineage, metadata, relationships, artifacts });
   }
-
   /**
    * 02B 无法证明支持的存量关联只能原样保留。只有本次叠加投影改变其
    * 精确 ID/内容/当前性时才阻塞；仅与它同处一个完整投影不构成触及。
@@ -11540,6 +14912,7 @@ export class SqliteCatalogue
       proposal,
     );
     const basis = JSON.stringify(proposal.basis);
+    const boundaries = JSON.stringify(proposal.boundaries);
     const ruleResults = JSON.stringify(proposal.ruleResults);
     const observedMaterialInterpretation =
       proposal.observedArtifactAssociations === undefined &&
@@ -11574,6 +14947,7 @@ export class SqliteCatalogue
       .select({
         executionId: recognitionProposals.executionId,
         basisJson: recognitionProposals.basisJson,
+        boundariesJson: recognitionProposals.boundariesJson,
         ruleResultsJson: recognitionProposals.ruleResultsJson,
         observedMaterialInterpretationJson:
           recognitionProposals.observedMaterialInterpretationJson,
@@ -11585,6 +14959,7 @@ export class SqliteCatalogue
       if (
         existing.executionId !== executionId ||
         existing.basisJson !== basis ||
+        existing.boundariesJson !== boundaries ||
         existing.ruleResultsJson !== ruleResults ||
         existing.observedMaterialInterpretationJson !==
           observedMaterialInterpretation
@@ -11601,6 +14976,7 @@ export class SqliteCatalogue
         id: proposal.id,
         executionId,
         basisJson: basis,
+        boundariesJson: boundaries,
         ruleResultsJson: ruleResults,
         observedMaterialInterpretationJson: observedMaterialInterpretation,
       })
@@ -11652,6 +15028,9 @@ export class SqliteCatalogue
       ? undefined
       : {
           id: row.id,
+          boundaries: JSON.parse(
+            row.boundariesJson,
+          ) as RecognitionProposal["boundaries"],
           basis: JSON.parse(row.basisJson) as RecognitionProposal["basis"],
           ruleResults: JSON.parse(
             row.ruleResultsJson,
@@ -11960,6 +15339,7 @@ export class SqliteCatalogue
         acceptedRuleResultsJson: JSON.stringify(
           accepted.recognitionDecision.acceptedRuleResults,
         ),
+        boundariesJson: JSON.stringify(accepted.recognitionDecision.boundaries),
       })
       .run();
     if (recognitionSourceAssociation !== undefined)
@@ -12043,89 +15423,6 @@ export class SqliteCatalogue
       accepted,
       accepted.entity.id,
     );
-    if ((accepted.proposal.observedArtifactAssociations?.length ?? 0) > 0) {
-      const proposalRow = transaction
-        .select({ executionId: recognitionProposals.executionId })
-        .from(recognitionProposals)
-        .where(eq(recognitionProposals.id, accepted.proposal.id))
-        .get();
-      const execution =
-        proposalRow === undefined
-          ? undefined
-          : this.workflowExecutionPersistence.readExecutionWithDrizzle(
-              transaction,
-              proposalRow.executionId,
-            );
-      const declaredRevisions = [
-        ...(accepted.proposal.observedArtifactRevisions ?? []),
-        ...(accepted.proposal.basis.kind === "observed-evidence"
-          ? accepted.proposal.basis.artifactRevisions
-          : []),
-        ...(accepted.proposal.basis.kind === "manual-boundary"
-          ? accepted.proposal.basis.evidence.flatMap((evidence) =>
-              evidence.inspection === undefined
-                ? []
-                : [
-                    {
-                      observedArtifactReference:
-                        evidence.inspection.observedArtifactReference,
-                      blob: evidence.inspection.revision,
-                    },
-                  ],
-            )
-          : []),
-      ];
-      for (const association of accepted.artifactAssociations) {
-        if (
-          (association.sourceRecordIds?.length ?? 0) > 0 ||
-          association.sourceAssociationId !== undefined ||
-          association.role !== "asset.material-delivered"
-        )
-          continue;
-        const projections = (
-          accepted.proposal.observedArtifactAssociations ?? []
-        ).flatMap((candidate) => {
-          if (candidate.role !== association.role) return [];
-          const digests = [
-            ...new Set(
-              declaredRevisions
-                .filter(
-                  (revision) =>
-                    revision.observedArtifactReference ===
-                    candidate.observedArtifactReference,
-                )
-                .map((revision) => revision.blob.digest),
-            ),
-          ];
-          if (digests.length !== 1 || execution?.snapshot === undefined)
-            return [];
-          const location = accepted.locations.find(
-            (item) =>
-              item.artifactId === association.artifactId &&
-              item.kind === "observed" &&
-              item.address ===
-                `${execution.snapshot!.root}/${candidate.observedArtifactReference}`,
-          );
-          const revision = accepted.artifactRevisions.find(
-            (item) =>
-              item.artifactId === association.artifactId &&
-              item.blobDigest === digests[0],
-          );
-          return location === undefined || revision === undefined
-            ? []
-            : [{ location, revision }];
-        });
-        if (projections.length === 0) continue;
-        transaction
-          .insert(artifactAssociationRecognitionSupports)
-          .values({
-            associationId: association.id,
-            recognitionDecisionId: accepted.recognitionDecision.id,
-          })
-          .onConflictDoNothing()
-          .run();
-      }
-    }
     this.attachAcceptedSourceArtifactAssociationProvenanceWithDrizzle(
       transaction,
       accepted,
@@ -12569,7 +15866,8 @@ export class SqliteCatalogue
           transaction,
           association,
         ) &&
-        (ownedBy(association, currentSourceRecordIds) ||
+        ((accepted.proposal.basis.kind !== "accepted-boundary" &&
+          ownedBy(association, currentSourceRecordIds)) ||
           association.observedArtifactPart !== undefined ||
           (current.proposal.basis.kind === "manual-boundary" &&
             accepted.proposal.basis.kind === "manual-boundary" &&
@@ -12695,10 +15993,582 @@ export class SqliteCatalogue
     }
   }
 
+  /**
+   * 资产每个决定声明的完整范围成员，并标注该决定是否已被取代／撤回结束。有效范围推导、
+   * 相交声明查询与提交基线比较共用这一份根坐标解析。
+   */
+  private recognitionMaterialBoundaryMembersWithDrizzle(
+    query: DrizzleReadQuery,
+    assetId: string,
+  ): {
+    readonly member: EffectiveRecognitionMaterialBoundary;
+    readonly endedAs?: "superseded" | "retracted";
+  }[] {
+    const rows: {
+      readonly member: EffectiveRecognitionMaterialBoundary;
+      readonly endedAs?: "superseded" | "retracted";
+    }[] = [];
+    const decisions = query
+      .select()
+      .from(recognitionDecisions)
+      .where(eq(recognitionDecisions.assetId, assetId))
+      .all();
+    const endedAs = this.recognitionDecisionEndingsWithDrizzle(
+      query,
+      decisions.map((decision) => decision.id),
+    );
+    const boundaries = decisions.flatMap((decision) =>
+      (
+        JSON.parse(decision.boundariesJson) as RecognitionDecision["boundaries"]
+      ).map((boundary) => ({ decisionId: decision.id, boundary })),
+    );
+    const rootPaths = this.recognitionMaterialBoundaryRootPathsWithDrizzle(
+      query,
+      boundaries.map(({ boundary }) => boundary.scopeReference),
+    );
+    for (const { decisionId, boundary } of boundaries) {
+      const rootPath = rootPaths.get(boundary.scopeReference);
+      if (rootPath === undefined) continue;
+      const reason = endedAs.get(decisionId);
+      rows.push({
+        member: { assetId, decisionId, boundary, rootPath },
+        ...(reason === undefined ? {} : { endedAs: reason }),
+      });
+    }
+    return rows;
+  }
+
+  /**
+   * 边界 scopeReference 到实际观察根坐标的唯一解析：注册根优先，其次已知历史执行
+   * 快照。逐资产有效范围与相交声明查询共用，绝不各自解释根坐标。
+   */
+  private recognitionMaterialBoundaryRootPathsWithDrizzle(
+    query: DrizzleReadQuery,
+    scopeReferences: readonly string[],
+  ): Map<string, string> {
+    const paths = new Map<string, string>();
+    const registered = [
+      ...new Set(
+        scopeReferences.filter(
+          (reference) => !reference.startsWith("legacy-execution:"),
+        ),
+      ),
+    ];
+    if (registered.length !== 0)
+      for (const row of query
+        .select({
+          id: observedRootRegistrations.id,
+          containerPath: observedRootRegistrations.containerPath,
+        })
+        .from(observedRootRegistrations)
+        .where(inArray(observedRootRegistrations.id, registered))
+        .all())
+        paths.set(row.id, row.containerPath);
+    const legacy = [
+      ...new Set(
+        scopeReferences
+          .filter((reference) => reference.startsWith("legacy-execution:"))
+          .map((reference) => reference.slice("legacy-execution:".length)),
+      ),
+    ];
+    if (legacy.length !== 0)
+      for (const row of query
+        .select({
+          id: workflowExecutions.id,
+          snapshotJson: workflowExecutions.snapshotJson,
+          materialAssociationJson: workflowExecutions.materialAssociationJson,
+        })
+        .from(workflowExecutions)
+        .where(inArray(workflowExecutions.id, legacy))
+        .all()) {
+        const root =
+          (row.snapshotJson == null
+            ? undefined
+            : (JSON.parse(row.snapshotJson) as FilesystemPackageSnapshot)
+                .root) ??
+          (row.materialAssociationJson == null
+            ? undefined
+            : (
+                JSON.parse(row.materialAssociationJson) as {
+                  snapshot?: FilesystemPackageSnapshot;
+                }
+              ).snapshot?.root);
+        if (root !== undefined) paths.set(`legacy-execution:${row.id}`, root);
+      }
+    return paths;
+  }
+
+  /** 决定的结束原因：被取代优先，其次被撤回；没有结束的不在结果里。 */
+  private recognitionDecisionEndingsWithDrizzle(
+    query: DrizzleReadQuery,
+    decisionIds: readonly string[],
+  ): Map<string, "superseded" | "retracted"> {
+    const endedAs = new Map<string, "superseded" | "retracted">();
+    const ids = [...new Set(decisionIds)];
+    if (ids.length === 0) return endedAs;
+    for (const row of query
+      .select({
+        decisionId: recognitionDecisionSupersessions.predecessorDecisionId,
+      })
+      .from(recognitionDecisionSupersessions)
+      .where(
+        inArray(recognitionDecisionSupersessions.predecessorDecisionId, ids),
+      )
+      .all())
+      endedAs.set(row.decisionId, "superseded");
+    for (const row of query
+      .select({
+        decisionId: recognitionDecisionRetractions.predecessorDecisionId,
+      })
+      .from(recognitionDecisionRetractions)
+      .where(inArray(recognitionDecisionRetractions.predecessorDecisionId, ids))
+      .all())
+      if (!endedAs.has(row.decisionId))
+        endedAs.set(row.decisionId, "retracted");
+    return endedAs;
+  }
+
+  /** 资产当前仍生效的规范范围：排除被取代与被撤回的决定。 */
+  private effectiveMaterialBoundariesWithDrizzle(
+    query: DrizzleReadQuery,
+    assetId: string,
+  ): EffectiveRecognitionMaterialBoundary[] {
+    return this.recognitionMaterialBoundaryMembersWithDrizzle(query, assetId)
+      .filter((row) => row.endedAs === undefined)
+      .map((row) => row.member);
+  }
+
+  /**
+   * 本地关联支持的唯一写入接缝：必须在材料形态边界与本次观察都已落库之后运行，
+   * 因为证据以形态边界为权威。首次准入按本次决定写一条；范围刷新按每条仍生效的
+   * 决定授权各写一条。
+   */
+  private writeLocalAssociationSupportsWithDrizzle(
+    transaction: DrizzleWriteTransaction,
+    accepted: AcceptedRecognition,
+  ): void {
+    if (accepted.proposal.basis.kind === "accepted-boundary") {
+      this.attachCurrentBoundarySupportsWithDrizzle(transaction, accepted);
+      return;
+    }
+    if (
+      (accepted.proposal.observedArtifactAssociations?.length ?? 0) === 0 &&
+      (accepted.proposal.observedArtifactParts?.length ?? 0) === 0
+    )
+      return;
+    const declaredRevisions = [
+      ...(accepted.proposal.observedArtifactRevisions ?? []),
+      ...(accepted.proposal.basis.kind === "observed-evidence"
+        ? accepted.proposal.basis.artifactRevisions
+        : []),
+      ...(accepted.proposal.basis.kind === "manual-boundary"
+        ? accepted.proposal.basis.evidence.flatMap((evidence) =>
+            evidence.inspection === undefined
+              ? []
+              : [
+                  {
+                    observedArtifactReference:
+                      evidence.inspection.observedArtifactReference,
+                    blob: evidence.inspection.revision,
+                  },
+                ],
+          )
+        : []),
+    ];
+    // 所有无外部来源的本地关联共用同一条支持路径：直接文件、part、实体与
+    // revision 目标都按本次观察写精确证据。
+    const carrier = this.proposalObservationCarrierWithDrizzle(
+      transaction,
+      accepted.proposal.id,
+    );
+    for (const association of accepted.artifactAssociations) {
+      if (
+        (association.sourceRecordIds?.length ?? 0) > 0 ||
+        association.sourceAssociationId !== undefined
+      )
+        continue;
+      // 同一角色在这次清单里可能有多个文件：先用关联自身（或 part 的载体）唯一的
+      // 观察位置反推它对应的那份材料，绝不能把第一个同角色候选当成所有关联的证据。
+      const materialArtifactId =
+        association.observedArtifactPart?.artifactId ?? association.artifactId;
+      const ownAddresses = accepted.locations
+        .filter(
+          (item) =>
+            item.kind === "observed" && item.artifactId === materialArtifactId,
+        )
+        .map((item) => path.resolve(item.address));
+      const sameRoleCandidates = (
+        accepted.proposal.observedArtifactAssociations ?? []
+      ).filter((item) => item.role === association.role);
+      const pinnedCandidates =
+        carrier === undefined || ownAddresses.length !== 1
+          ? []
+          : sameRoleCandidates.filter((item) =>
+              ownAddresses.includes(
+                path.resolve(
+                  carrier.snapshotRoot,
+                  item.observedArtifactReference,
+                ),
+              ),
+            );
+      const candidate =
+        pinnedCandidates.length === 1
+          ? pinnedCandidates[0]
+          : ownAddresses.length === 0 && sameRoleCandidates.length === 1
+            ? sameRoleCandidates[0]
+            : undefined;
+      const digests =
+        candidate === undefined
+          ? []
+          : [
+              ...new Set(
+                declaredRevisions
+                  .filter(
+                    (revision) =>
+                      revision.observedArtifactReference ===
+                      candidate.observedArtifactReference,
+                  )
+                  .map((revision) => revision.blob.digest),
+              ),
+            ];
+      const observation = this.localObservationEvidenceWithDrizzle(
+        transaction,
+        {
+          association,
+          accepted,
+          carrier,
+          ...(candidate === undefined
+            ? {}
+            : {
+                observedArtifactReference: candidate.observedArtifactReference,
+              }),
+          ...(digests.length === 1 ? { revisionDigest: digests[0] } : {}),
+        },
+      );
+      if (observation === undefined) continue;
+      this.upsertLocalAssociationSupportWithDrizzle(transaction, {
+        associationId: association.id,
+        decisionId: accepted.recognitionDecision.id,
+        observation,
+      });
+    }
+  }
+
+  /**
+   * 本地关联支持的唯一写入形状：一个决定的范围授权，加上建立它那次观察的精确证据。
+   * 已存在同一授权对时只推进证据，因此新材料或新修订不会被旧行挡住。
+   */
+  private upsertLocalAssociationSupportWithDrizzle(
+    query: DrizzleWriteTransaction,
+    input: {
+      readonly associationId: string;
+      readonly decisionId: string;
+      readonly observation: LocalObservationEvidence;
+    },
+  ): void {
+    const values = {
+      observationExecutionId: input.observation.executionId,
+      observationSnapshotId: input.observation.snapshotId,
+      observationLocationId: input.observation.locationId,
+      observationMaterialKind: input.observation.materialKind,
+      observationRevisionId: input.observation.revisionId ?? null,
+    };
+    query
+      .insert(artifactAssociationRecognitionSupports)
+      .values({
+        associationId: input.associationId,
+        recognitionDecisionId: input.decisionId,
+        ...values,
+      })
+      .onConflictDoUpdate({
+        target: [
+          artifactAssociationRecognitionSupports.associationId,
+          artifactAssociationRecognitionSupports.recognitionDecisionId,
+        ],
+        set: values,
+      })
+      .run();
+  }
+
+  /**
+   * 一条本地产物关联在这次观察里的精确证据。材料位置按关联自身或 part 的载体定位；
+   * part 绑定载体修订，目录形态没有单一文件修订。任何一处不能唯一证明时返回
+   * `undefined`，由调用方保留只带授权的历史语义。
+   */
+  private localObservationEvidenceWithDrizzle(
+    query: DrizzleReadQuery,
+    input: {
+      readonly association: ArtifactAssociation;
+      readonly accepted: AcceptedRecognition;
+      readonly carrier: ObservationCarrier | undefined;
+      readonly observedArtifactReference?: string | undefined;
+      readonly revisionDigest?: string | undefined;
+      /** 重叠根下同一材料可能有多个位置：只承认授权该范围的那个根的观察位置。 */
+      readonly within?: EffectiveRecognitionMaterialBoundary | undefined;
+    },
+  ): LocalObservationEvidence | undefined {
+    if (input.carrier === undefined) return undefined;
+    const association = input.association;
+    const materialArtifactId =
+      association.observedArtifactPart?.artifactId ?? association.artifactId;
+    // 材料引用按生产坐标解释：离散文件是快照根内的相对路径，整包目录形态是 "."，
+    // 其观察位置地址就是快照根本身。
+    const pinnedAddress =
+      input.observedArtifactReference === undefined
+        ? undefined
+        : path.resolve(
+            input.carrier.snapshotRoot,
+            input.observedArtifactReference,
+          );
+    const locations = input.accepted.locations.filter(
+      (item) =>
+        item.kind === "observed" &&
+        item.artifactId === materialArtifactId &&
+        (input.within === undefined ||
+          materialBoundaryIncludesAddress(input.within, item.address)) &&
+        (pinnedAddress === undefined ||
+          path.resolve(item.address) === pinnedAddress),
+    );
+    if (locations.length !== 1) return undefined;
+    const location = locations[0]!;
+    const materialKind = query
+      .select({
+        materialKind: observedMaterialBoundaries.materialKind,
+      })
+      .from(observedMaterialBoundaries)
+      .where(eq(observedMaterialBoundaries.locationId, location.id))
+      .get()?.materialKind;
+    if (materialKind !== "file" && materialKind !== "directory")
+      return undefined;
+    if (materialKind === "directory")
+      return { ...input.carrier, locationId: location.id, materialKind };
+    const revisions = input.accepted.artifactRevisions.filter((item) => {
+      if (item.artifactId !== materialArtifactId) return false;
+      if (association.observedArtifactPart !== undefined)
+        return item.id === association.observedArtifactPart.revisionId;
+      return (
+        input.revisionDigest === undefined ||
+        item.blobDigest === input.revisionDigest
+      );
+    });
+    if (revisions.length !== 1) return undefined;
+    return {
+      ...input.carrier,
+      locationId: location.id,
+      materialKind,
+      revisionId: revisions[0]!.id,
+    };
+  }
+
+  /** 提案所属执行与快照：支持证据只承认这次观察自己的载体。 */
+  private proposalObservationCarrierWithDrizzle(
+    query: DrizzleReadQuery,
+    proposalId: string,
+  ):
+    | {
+        readonly executionId: string;
+        readonly snapshotId: string;
+        readonly snapshotRoot: string;
+      }
+    | undefined {
+    const row = query
+      .select({ executionId: recognitionProposals.executionId })
+      .from(recognitionProposals)
+      .where(eq(recognitionProposals.id, proposalId))
+      .get();
+    if (row === undefined) return undefined;
+    const execution =
+      this.workflowExecutionPersistence.readExecutionWithDrizzle(
+        query,
+        row.executionId,
+      );
+    if (execution?.snapshot === undefined) return undefined;
+    return {
+      executionId: row.executionId,
+      snapshotId: execution.snapshot.id,
+      snapshotRoot: execution.snapshot.root,
+    };
+  }
+
+  /** 材料刷新使用所有仍生效的决定支持，不能把补充范围改挂到主 head。 */
+  private attachCurrentBoundarySupportsWithDrizzle(
+    query: DrizzleWriteTransaction,
+    accepted: AcceptedRecognition,
+  ): void {
+    if (accepted.proposal.basis.kind !== "accepted-boundary") return;
+    const effective = this.effectiveMaterialBoundariesWithDrizzle(
+      query,
+      accepted.entity.id,
+    );
+    for (const location of accepted.locations.filter(
+      (item) => item.kind === "observed",
+    ))
+      if (
+        !effective.some((item) =>
+          materialBoundaryIncludesAddress(item, location.address),
+        )
+      )
+        throw new Error("材料刷新超出仍生效的资产范围，请先确认范围变更");
+    const carrier = this.proposalObservationCarrierWithDrizzle(
+      query,
+      accepted.proposal.id,
+    );
+    for (const association of accepted.artifactAssociations) {
+      if (
+        (association.sourceRecordIds?.length ?? 0) > 0 ||
+        association.sourceAssociationId !== undefined
+      )
+        continue;
+      const materialArtifactId =
+        association.observedArtifactPart?.artifactId ?? association.artifactId;
+      const locations = accepted.locations.filter(
+        (item) =>
+          item.kind === "observed" && item.artifactId === materialArtifactId,
+      );
+      // 逐条仍生效的范围授权各写一行，证据落在该范围自己的根观察位置上。
+      for (const boundary of effective.filter((item) =>
+        locations.some((location) =>
+          materialBoundaryIncludesAddress(item, location.address),
+        ),
+      )) {
+        const observation = this.localObservationEvidenceWithDrizzle(query, {
+          association,
+          accepted,
+          carrier,
+          within: boundary,
+        });
+        if (observation === undefined) continue;
+        this.upsertLocalAssociationSupportWithDrizzle(query, {
+          associationId: association.id,
+          decisionId: boundary.decisionId,
+          observation,
+        });
+      }
+    }
+  }
+
+  /**
+   * 当前读取：主体即决定资产的本地关联带精确观察证据时，只按 `isCurrentLocalObservationEvidence`
+   * 判定，与正式当前投影共用同一份规则；其余关联仍由历史载体回查决定。
+   */
+  private hasCurrentLocalObservationSupportWithDrizzle(
+    query: DrizzleReadQuery,
+    association: ArtifactAssociation,
+  ): boolean {
+    const rows = query
+      .select({
+        locationId:
+          artifactAssociationRecognitionSupports.observationLocationId,
+        materialKind:
+          artifactAssociationRecognitionSupports.observationMaterialKind,
+        revisionId:
+          artifactAssociationRecognitionSupports.observationRevisionId,
+        decisionAssetId: recognitionDecisions.assetId,
+        subjectId: artifactAssociations.subjectId,
+      })
+      .from(artifactAssociationRecognitionSupports)
+      .innerJoin(
+        recognitionDecisions,
+        eq(
+          recognitionDecisions.id,
+          artifactAssociationRecognitionSupports.recognitionDecisionId,
+        ),
+      )
+      .innerJoin(
+        artifactAssociations,
+        eq(
+          artifactAssociations.id,
+          artifactAssociationRecognitionSupports.associationId,
+        ),
+      )
+      .where(
+        and(
+          eq(
+            artifactAssociationRecognitionSupports.associationId,
+            association.id,
+          ),
+          isNotNull(
+            artifactAssociationRecognitionSupports.observationLocationId,
+          ),
+          eq(artifactAssociations.subjectId, recognitionDecisions.assetId),
+          sql`NOT EXISTS (
+            SELECT 1 FROM recognition_decision_supersessions AS ended
+            WHERE ended.predecessor_decision_id = ${recognitionDecisions.id}
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM recognition_decision_retractions AS ended
+            WHERE ended.predecessor_decision_id = ${recognitionDecisions.id}
+          )`,
+        ),
+      )
+      .all();
+    const evidence = rows.flatMap((row) =>
+      row.locationId === null || row.materialKind === null
+        ? []
+        : [
+            {
+              locationId: row.locationId,
+              materialKind: row.materialKind,
+              revisionId: row.revisionId,
+              decisionAssetId: row.decisionAssetId,
+              subjectId: row.subjectId,
+            },
+          ],
+    );
+    if (evidence.length === 0) return false;
+    const evidenceLocationIds = [
+      ...new Set(evidence.map((row) => row.locationId)),
+    ];
+    const evidenceLocations = query
+      .select()
+      .from(locations)
+      .where(inArray(locations.id, sqliteTextSet(evidenceLocationIds)))
+      .all();
+    return isCurrentLocalObservationEvidence({
+      materialArtifactId:
+        association.observedArtifactPart?.artifactId ?? association.artifactId,
+      ...(association.observedArtifactPart === undefined
+        ? {}
+        : { partRevisionId: association.observedArtifactPart.revisionId }),
+      evidence,
+      locationOf: (locationId) =>
+        evidenceLocations.find((item) => item.id === locationId),
+      positiveSupportLocationIds: new Set(
+        evidenceLocations.length === 0
+          ? []
+          : query
+              .select({
+                locationId: currentObservedMaterialSupports.locationId,
+              })
+              .from(currentObservedMaterialSupports)
+              .where(
+                inArray(
+                  currentObservedMaterialSupports.locationId,
+                  sqliteTextSet(evidenceLocations.map((item) => item.id)),
+                ),
+              )
+              .all()
+              .map((item) => item.locationId),
+      ),
+      currentLocationRevisionKeys: new Set(
+        currentConfirmedLocationRevisions(query, evidenceLocations).map(
+          (item) => `${item.locationId}\u0000${item.revisionId}`,
+        ),
+      ),
+    });
+  }
+
+  /**
+   * 关联仍被承认的支持：带精确观察证据且主体即决定资产的支持只按当前资格成立，过期
+   * 证据不能靠历史结构回查重新冒充当前；没有证据列的合法旧行与 c-association 检查点
+   * 仍按原载体回查。
+   */
   private hasValidObservedMaterialSupportWithDrizzle(
     query: DrizzleReadQuery,
     association: ArtifactAssociation,
   ): boolean {
+    if (this.hasCurrentLocalObservationSupportWithDrizzle(query, association))
+      return true;
     const result =
       query
         .select({ id: artifactAssociationRecognitionSupports.associationId })
@@ -12723,6 +16593,9 @@ export class SqliteCatalogue
             eq(
               artifactAssociationRecognitionSupports.associationId,
               association.id,
+            ),
+            isNull(
+              artifactAssociationRecognitionSupports.observationLocationId,
             ),
             eq(recognitionDecisions.assetId, entityTargetId(association) ?? ""),
             sql`(
@@ -13097,6 +16970,19 @@ export class SqliteCatalogue
   }
 
   /**
+   * 唯一的覆盖判断：只有本次执行的完整 snapshot 精确覆盖该地址，缺失才证明它已不在。
+   * 接受材料投影与完成扫描投影共用这一条规则。
+   */
+  private scanPreciselyCoversAddress(
+    snapshots: readonly FilesystemPackageSnapshot[],
+    address: string,
+  ): boolean {
+    return snapshots.some(
+      (snapshot) => snapshot.complete && pathIsWithin(snapshot.root, address),
+    );
+  }
+
+  /**
    * 普通刷新把本次有界 snapshot 规范化到 Location 键控的当前观察投影。热消费查询
    * 只读该投影，不扫描保留的 WorkflowExecution JSON。
    */
@@ -13134,17 +17020,7 @@ export class SqliteCatalogue
         .all();
       for (const previous of previousLocations) {
         if (acceptedObservedLocationIds.has(previous.id)) continue;
-        const explicitlyUnavailable = snapshots.some(
-          (snapshot) =>
-            snapshot.complete &&
-            path
-              .relative(
-                path.resolve(snapshot.root),
-                path.resolve(previous.address),
-              )
-              .split(path.sep)[0] !== "..",
-        );
-        if (explicitlyUnavailable) {
+        if (this.scanPreciselyCoversAddress(snapshots, previous.address)) {
           transaction
             .delete(currentFileObservations)
             .where(eq(currentFileObservations.locationId, previous.id))
@@ -13153,6 +17029,7 @@ export class SqliteCatalogue
             transaction,
             execution,
             previous.id,
+            previous.address,
           );
         }
       }
@@ -13179,17 +17056,7 @@ export class SqliteCatalogue
         right.snapshot.observedAt.localeCompare(left.snapshot.observedAt),
       )[0];
       if (current === undefined) {
-        const explicitlyUnavailable = snapshots.some(
-          (snapshot) =>
-            snapshot.complete &&
-            path
-              .relative(
-                path.resolve(snapshot.root),
-                path.resolve(location.address),
-              )
-              .split(path.sep)[0] !== "..",
-        );
-        if (explicitlyUnavailable)
+        if (this.scanPreciselyCoversAddress(snapshots, location.address))
           transaction
             .delete(currentFileObservations)
             .where(eq(currentFileObservations.locationId, location.id))
@@ -13358,6 +17225,41 @@ export class SqliteCatalogue
   }
 
   /**
+   * 一次完整授权观察把本库经这些冻结根的 awaitingObservation 清零：只有携带当前权威版本的
+   * 活动授权提交才能重开本库经该根的 current 投影；旧执行、未携带授权的流程与共享同一物理根
+   * 的其他库都不会被这里改写。
+   */
+  private clearLibraryGrantAwaitingObservationWithDrizzle(
+    transaction: DrizzleWriteTransaction,
+    execution: WorkflowExecution,
+  ): void {
+    const assetLibraryId = execution.workflowInput?.assetLibrary?.id;
+    const authorizations = execution.workflowInput?.directoryAuthorizations;
+    if (assetLibraryId === undefined || authorizations === undefined) return;
+    for (const authorization of authorizations) {
+      transaction
+        .update(libraryDirectoryGrants)
+        .set({ awaitingObservation: 0 })
+        .where(
+          and(
+            eq(libraryDirectoryGrants.libraryId, assetLibraryId),
+            eq(
+              libraryDirectoryGrants.observedRootId,
+              authorization.observedRootId,
+            ),
+            eq(
+              libraryDirectoryGrants.authorityVersion,
+              authorization.authorityVersion,
+            ),
+            eq(libraryDirectoryGrants.status, "active"),
+            eq(libraryDirectoryGrants.awaitingObservation, 1),
+          ),
+        )
+        .run();
+    }
+  }
+
+  /**
    * 只有 Application 已把正式文件系统扫描写成完成终态后，才以其完整快照更新当前
    * 观察投影。失败、取消及不完整覆盖绝不触碰先前成员资格。
    */
@@ -13430,11 +17332,7 @@ export class SqliteCatalogue
         right.snapshot.observedAt.localeCompare(left.snapshot.observedAt),
       )[0];
       if (current === undefined) {
-        if (
-          snapshots.some((snapshot) =>
-            pathIsWithin(snapshot.root, location.address),
-          )
-        ) {
+        if (this.scanPreciselyCoversAddress(snapshots, location.address)) {
           this.recordCurrentFileObservationSupportsWithDrizzle(
             transaction,
             execution,
@@ -13488,6 +17386,12 @@ export class SqliteCatalogue
       );
     }
     this.projectCurrentFileObservationsWithDrizzle(transaction, execution, []);
+    // awaitingObservation 只由一次完整授权观察（scan-filesystem 完成终态 + complete 快照）清零；
+    // 单资产定向接受或部分投影即便携带冻结授权也不得据此重开本库历史 current。
+    this.clearLibraryGrantAwaitingObservationWithDrizzle(
+      transaction,
+      execution,
+    );
   }
 
   /** 本次执行冻结的观察根坐标；覆盖历史与正向支持共用。 */
@@ -13681,7 +17585,7 @@ export class SqliteCatalogue
   }
 
   /**
-   * 已确认应用的识别取代 preview 只把 `projected - current` 的精确新增观察
+   * 已确认应用的识别取代／范围修订 preview 只把 `projected - current` 的精确新增观察
    * Location／关联算作本次接受；preview 自身的 execution／proposal 是坐标来源。
    */
   private observedMaterialPreviewBindings(
@@ -13691,7 +17595,8 @@ export class SqliteCatalogue
     if (
       execution === undefined ||
       preview.status !== "applied" ||
-      preview.change.kind !== "recognition-supersession"
+      (preview.change.kind !== "recognition-supersession" &&
+        preview.change.kind !== "recognition-scope-amendment")
     )
       return [];
     const snapshots = (
@@ -13780,6 +17685,21 @@ export class SqliteCatalogue
         binding.materialKind,
       );
     }
+    // 本次交付的 observed Location 需建立当前文件观察投影，之后才能经公开字节确认
+    // 入口形成 selection 并被普通读取接纳。apply 只声明“该完整观察在此地址看到此
+    // 大小/mtime 的文件”，不插入观察修订确认，也不把冻结摘要当作今天仍可消费的字节。
+    // 只投影本次 binding 对应的位置，不把范围修订或取代扩大成整库重投影。
+    const bindingLocationIds = new Set(
+      bindings.map((binding) => binding.locationId),
+    );
+    this.projectCurrentFileObservationsWithDrizzle(
+      transaction,
+      execution,
+      preview.projected.locations.filter(
+        (location) =>
+          location.kind === "observed" && bindingLocationIds.has(location.id),
+      ),
+    );
   }
 
   /**
@@ -13825,13 +17745,23 @@ export class SqliteCatalogue
     }
   }
 
-  /** 完整精确覆盖内消失的位置只撤销本次冻结根版本的正向支持。 */
+  /**
+   * 完整精确覆盖内消失的位置只撤销本次冻结根版本的正向支持。库扫描代表子额外携带
+   * 同父其他目录的只读覆盖坐标：只有该前缀被精确完整覆盖（子树无排除与诊断缺口）才
+   * 撤销该目录原坐标的正向支持，缺口一律保守保留；绝不写正向支持，也不改写决定自身的
+   * scopeReference。
+   */
   private removeCurrentObservedMaterialSupportsWithDrizzle(
     transaction: DrizzleWriteTransaction,
     execution: WorkflowExecution,
     locationId: string,
+    address: string,
   ): void {
-    for (const root of this.observedSupportRootsFor(execution)) {
+    const supportRoots = [
+      ...this.observedSupportRootsFor(execution),
+      ...this.coveredLibraryScanSupportRootsFor(execution, address),
+    ];
+    for (const root of supportRoots) {
       transaction
         .delete(currentObservedMaterialSupports)
         .where(
@@ -13846,6 +17776,40 @@ export class SqliteCatalogue
         )
         .run();
     }
+  }
+
+  /**
+   * 本次快照对同父 covered 目录的精确覆盖坐标。它是缺失结束的只读证据，不是新的
+   * I/O 授权，也不参与正向支持。
+   */
+  private coveredLibraryScanSupportRootsFor(
+    execution: WorkflowExecution,
+    address: string,
+  ): Array<{ readonly id: string; readonly version: number }> {
+    const coverage = execution.workflowInput?.directoryCoverage;
+    if (coverage === undefined || coverage.length === 0) return [];
+    const representative = (execution.workflowInput?.observedRoots ?? []).find(
+      (root) => root.id === execution.workflowInput?.parentDirectoryKey,
+    );
+    if (representative === undefined) return [];
+    const snapshots = (
+      execution.filesystemSnapshots ??
+      (execution.snapshot === undefined ? [] : [execution.snapshot])
+    ).filter((snapshot) => snapshot.complete);
+    return stableRootCoverages({
+      snapshots,
+      representativeRootPath: representative.containerPath,
+      covered: coverage,
+    })
+      .filter(
+        (entry) =>
+          entry.preciselyComplete &&
+          pathIsWithin(entry.coveredAddress, address),
+      )
+      .map((entry) => ({
+        id: entry.scopeReference,
+        version: entry.rootVersion,
+      }));
   }
 
   /**
@@ -13905,11 +17869,12 @@ export class SqliteCatalogue
         );
       return;
     }
-    if (snapshots.some((snapshot) => pathIsWithin(snapshot.root, address)))
+    if (this.scanPreciselyCoversAddress(snapshots, address))
       this.removeCurrentObservedMaterialSupportsWithDrizzle(
         transaction,
         execution,
         locationId,
+        address,
       );
   }
 
@@ -14804,27 +18769,24 @@ export class SqliteCatalogue
       ) ||
       preview.projected.artifactAssociations.some(
         (association) =>
-          entityTargetId(association) !== preview.assetId ||
-          !artifactIds.has(association.artifactId),
+          (association.target.kind === "entity"
+            ? association.target.entityId !== preview.assetId &&
+              !preview.projected.entities.some(
+                (entity) =>
+                  association.target.kind === "entity" &&
+                  entity.id === association.target.entityId,
+              )
+            : !preview.projected.artifactRevisions.some(
+                (revision) =>
+                  association.target.kind === "artifact-revision" &&
+                  revision.artifactId === association.target.artifactId &&
+                  revision.id === association.target.revisionId,
+              )) || !artifactIds.has(association.artifactId),
       )
     ) {
       throw new Error("Projected artifact graph is inconsistent");
     }
-    const projectedCover = preview.projected.artifactAssociations.filter(
-      (association) => association.role === "asset.primary-cover",
-    );
-    if (
-      (preview.projected.primaryCoverArtifactId === undefined &&
-        projectedCover.length !== 0) ||
-      (preview.projected.primaryCoverArtifactId !== undefined &&
-        (projectedCover.length !== 1 ||
-          projectedCover[0]?.artifactId !==
-            preview.projected.primaryCoverArtifactId))
-    ) {
-      throw new Error(
-        "Projected primary-cover Information Requirement is unmet",
-      );
-    }
+    // 多个图片候选属于合法事实图；显示选择及冲突由共同生效角色求值持有。
     const allAssociations = transaction
       .select()
       .from(artifactAssociations)
@@ -15014,6 +18976,13 @@ export class SqliteCatalogue
     assetIds: readonly string[],
     indexMetadataProperties?: readonly string[],
     selection: "filter-current" | "already-effective" = "filter-current",
+    namedBasisDecisionId?: string,
+    /**
+     * 只为身份基线读取开启：强制以点名决定为事实依据，即便主头已前进到 successor、该决定
+     * 已被 supersede。用途是把范围修订后的 manual 范围头与建立来源身份的不可变前驱决定分
+     * 开读取；不改变任何当前范围/CAS 判定。
+     */
+    pinNamedBasisDecision = false,
   ): Promise<readonly AcceptedAssetState[]> {
     const effectiveAssetIds =
       selection === "already-effective"
@@ -15107,13 +19076,16 @@ export class SqliteCatalogue
       row,
       proposal: {
         id: row.id,
+        boundaries: JSON.parse(
+          row.boundariesJson,
+        ) as RecognitionProposal["boundaries"],
         basis: JSON.parse(row.basisJson) as RecognitionProposal["basis"],
         ruleResults: JSON.parse(
           row.ruleResultsJson,
         ) as RecognitionProposal["ruleResults"],
       } satisfies RecognitionProposal,
     }));
-    const factSubjectIds = uniqueStrings([
+    const relationshipSeedSubjectIds = uniqueStrings([
       ...assetIds,
       ...parsedProposals.flatMap(
         ({ proposal }) =>
@@ -15122,11 +19094,206 @@ export class SqliteCatalogue
           ) ?? [],
       ),
     ]);
-    const [
-      artifactAssociationRows,
-      metadataRows,
-      relationshipRowsWithParticipants,
-    ] = await Promise.all([
+    const relationshipRowsWithParticipants = await query
+      .select({ relationship: entityRelationships })
+      .from(entityRelationshipParticipants)
+      .innerJoin(
+        entityRelationships,
+        eq(
+          entityRelationships.id,
+          entityRelationshipParticipants.relationshipId,
+        ),
+      )
+      .where(
+        inArray(
+          entityRelationshipParticipants.entityId,
+          sqliteTextSet(relationshipSeedSubjectIds),
+        ),
+      )
+      .orderBy(asc(sql<number>`${entityRelationships}.rowid`));
+    const relationshipRows = [
+      ...new Map(
+        relationshipRowsWithParticipants.map(({ relationship }) => [
+          relationship.id,
+          relationship,
+        ]),
+      ).values(),
+    ];
+    const initialRelationshipSupports = this.relationshipSupportsWithDrizzle(
+      query,
+      relationshipRows.map(({ id }) => id),
+    );
+    const relationshipDecisionRows =
+      this.relationshipHeadDecisionsWithDrizzle(query);
+    const artifactRoleDecisionRows =
+      this.artifactRoleDecisionsWithDrizzle(query);
+    const selectedTargetKeys = new Set(
+      [...initialRelationshipSupports.targetsByRelationshipId.values()].map(
+        relationshipTargetKey,
+      ),
+    );
+    const additionalManualIds = relationshipDecisionRows.flatMap((decision) =>
+      decision.manualRelationshipId !== undefined &&
+      selectedTargetKeys.has(relationshipTargetKey(decision.target)) &&
+      !relationshipRows.some(({ id }) => id === decision.manualRelationshipId)
+        ? [decision.manualRelationshipId]
+        : [],
+    );
+    if (additionalManualIds.length > 0)
+      relationshipRows.push(
+        ...query
+          .select()
+          .from(entityRelationships)
+          .where(
+            inArray(entityRelationships.id, sqliteTextSet(additionalManualIds)),
+          )
+          .all(),
+      );
+    const relationshipSupports = this.relationshipSupportsWithDrizzle(
+      query,
+      relationshipRows.map(({ id }) => id),
+    );
+    /** 装载前先求每个根的生效关系，资料查询主体只取真实生效端点。 */
+    const relationshipMentionIds = uniqueStrings(
+      relationshipRows.flatMap((row) =>
+        relationshipParticipantsFromJson(row.participantsJson).flatMap(
+          (participant) => participant.mentionIds ?? [],
+        ),
+      ),
+    );
+    const participantResolutions = this.relationshipMentionEntitiesWithDrizzle(
+      query,
+      relationshipMentionIds,
+    );
+    const interpretationRecordIds = uniqueStrings(
+      parsedProposals.flatMap(
+        ({ proposal }) =>
+          recognitionSourceInterpretation(proposal)?.sourceRecordIds ?? [],
+      ),
+    );
+    const interpretationRecords =
+      interpretationRecordIds.length === 0
+        ? []
+        : await query
+            .select({
+              id: sourceRecords.id,
+              sourceIdentity: sourceRecords.sourceIdentity,
+              nativeAddress: sourceRecords.nativeAddress,
+            })
+            .from(sourceRecords)
+            .where(
+              inArray(sourceRecords.id, sqliteTextSet(interpretationRecordIds)),
+            );
+    const interpretationRecordById = new Map(
+      interpretationRecords.map((record) => [record.id, record]),
+    );
+    const currentAssociationIdsBySubject = new Map<string, Set<string>>();
+    for (const row of currentAssociationsRows) {
+      const ids =
+        currentAssociationIdsBySubject.get(row.subjectId) ?? new Set<string>();
+      ids.add(row.associationId);
+      currentAssociationIdsBySubject.set(row.subjectId, ids);
+    }
+    /**
+     * 主头为空时，点名且未结束的决定只提供本次事实读取依据，绝不充当当前身份头。
+     */
+    const readBasisDecisionId = (headDecisionId?: string | null) =>
+      pinNamedBasisDecision && namedBasisDecisionId !== undefined
+        ? namedBasisDecisionId
+        : (headDecisionId ??
+          (namedBasisDecisionId === undefined ||
+          endedRecognitionDecisionIds.has(namedBasisDecisionId)
+            ? undefined
+            : namedBasisDecisionId));
+    const selectRootRelationshipSubjects = (
+      identityRepresentatives: ReadonlyMap<string, string>,
+    ) =>
+      effectiveAssetIds.map((assetId) => {
+        const head = heads.find((item) => item.subjectId === assetId);
+        const decision = decisions.find(
+          (item) =>
+            item.id === readBasisDecisionId(head?.recognitionDecisionId) &&
+            item.assetId === assetId,
+        );
+        const proposal =
+          decision === undefined
+            ? undefined
+            : parsedProposals.find(({ row }) => row.id === decision.proposalId)
+                ?.proposal;
+        const interpretation =
+          proposal === undefined
+            ? undefined
+            : recognitionSourceInterpretation(proposal);
+        const currentAssociationIds =
+          currentAssociationIdsBySubject.get(assetId);
+        const currentAssociations = associations.filter(
+          (association) =>
+            association.subjectId === assetId &&
+            currentAssociationIds?.has(association.id) === true,
+        );
+        const recognitionSourceAssociationCurrent =
+          head?.recognitionSourceAssociationId !== undefined &&
+          head?.recognitionSourceAssociationId !== null &&
+          currentAssociationIds?.has(head.recognitionSourceAssociationId) ===
+            true &&
+          associations.some(
+            (association) =>
+              association.id === head?.recognitionSourceAssociationId &&
+              association.subjectId === assetId,
+          );
+        return selectEffectiveRelationshipSubjects({
+          assetId,
+          seedSubjectIds: new Set([
+            assetId,
+            ...(interpretation?.entities ?? []).map((entity) => entity.id),
+          ]),
+          relationships: relationshipRows,
+          supports: relationshipSupports,
+          decisions: relationshipDecisionRows,
+          participantResolutions,
+          identityRepresentatives,
+          factLineages: selectAssetFactLineageKeys({
+            hasRecognitionSourceAssociation:
+              recognitionSourceAssociationCurrent,
+            interpretationSourceRecordIds:
+              interpretation?.sourceRecordIds ?? [],
+            sourceRecords: interpretationRecordById,
+            currentAssociations,
+          }),
+        });
+      });
+    /** 身份代表只沿本批生效端点闭包读取，不遍历全图合并森林。 */
+    const provisionalSubjectSets = selectRootRelationshipSubjects(new Map());
+    const identityRepresentatives =
+      this.identityRepresentativesWithinWithDrizzle(
+        query,
+        uniqueStrings([
+          ...effectiveAssetIds,
+          ...provisionalSubjectSets.flatMap((subjects) => [
+            ...subjects.endpointIds,
+          ]),
+        ]),
+      );
+    const rootSubjectSets = selectRootRelationshipSubjects(
+      identityRepresentatives,
+    );
+    const participantIds = uniqueStrings(
+      rootSubjectSets.flatMap((subjects) => [...subjects.endpointIds]),
+    );
+    const factSubjectIds = uniqueStrings(
+      rootSubjectSets.flatMap((subjects) => [...subjects.factSubjectIds]),
+    );
+    const localNames =
+      participantIds.length === 0
+        ? []
+        : query
+            .select()
+            .from(localEntityNames)
+            .where(
+              inArray(localEntityNames.entityId, sqliteTextSet(participantIds)),
+            )
+            .all();
+    const [artifactAssociationRows, metadataRows] = await Promise.all([
       indexMetadataProperties !== undefined
         ? Promise.resolve([])
         : query
@@ -15156,35 +19323,9 @@ export class SqliteCatalogue
                 ),
           ),
         ),
-      query
-        .select({ relationship: entityRelationships })
-        .from(entityRelationshipParticipants)
-        .innerJoin(
-          entityRelationships,
-          eq(
-            entityRelationships.id,
-            entityRelationshipParticipants.relationshipId,
-          ),
-        )
-        .where(
-          inArray(
-            entityRelationshipParticipants.entityId,
-            sqliteTextSet(factSubjectIds),
-          ),
-        )
-        .orderBy(asc(sql<number>`${entityRelationships}.rowid`)),
     ]);
-    const relationshipRows = [
-      ...new Map(
-        relationshipRowsWithParticipants.map(({ relationship }) => [
-          relationship.id,
-          relationship,
-        ]),
-      ).values(),
-    ];
     const artifactAssociationIds = artifactAssociationRows.map((row) => row.id);
     const metadataIds = metadataRows.map((row) => row.id);
-    const relationshipIds = relationshipRows.map((row) => row.id);
     const sourceRecordIds = uniqueStrings([
       ...currentLineageHeads.map((row) => row.sourceRecordId),
       ...parsedProposals.flatMap(
@@ -15213,8 +19354,6 @@ export class SqliteCatalogue
       artifactRetractionsRows,
       metadataLifecyclesRows,
       metadataRetractionsRows,
-      relationshipLifecyclesRows,
-      relationshipRetractionsRows,
       sourceRecordRows,
     ] = await Promise.all([
       artifactAssociationIds.length === 0
@@ -15272,33 +19411,12 @@ export class SqliteCatalogue
                 sqliteTextSet(metadataIds),
               ),
             ),
-      relationshipIds.length === 0
-        ? Promise.resolve([])
-        : query
-            .select()
-            .from(relationshipLifecycles)
-            .where(
-              inArray(
-                relationshipLifecycles.relationshipId,
-                sqliteTextSet(relationshipIds),
-              ),
-            ),
-      relationshipIds.length === 0
-        ? Promise.resolve([])
-        : query
-            .select()
-            .from(relationshipRetractions)
-            .where(
-              inArray(
-                relationshipRetractions.relationshipId,
-                sqliteTextSet(relationshipIds),
-              ),
-            ),
       sourceRecordIds.length === 0
         ? Promise.resolve([])
         : query
             .select({
               id: sourceRecords.id,
+              executionId: sourceRecords.executionId,
               sourceIdentity: sourceRecords.sourceIdentity,
               nativeAddress: sourceRecords.nativeAddress,
             })
@@ -15306,6 +19424,213 @@ export class SqliteCatalogue
             .where(inArray(sourceRecords.id, sqliteTextSet(sourceRecordIds)))
             .orderBy(asc(sql<number>`${sourceRecords}.rowid`)),
     ]);
+    /**
+     * 相关目标的资料只由其 provenance 所属来源 owner 确认资格：owner 必须仍在该精确坐标持有
+     * 当前关联，并在该精确覆盖（元数据）或该来源记录（产物）上保留谱系头。owner 的关联被撤回
+     * 或替换后，旧谱系头仍在也不能把已撤回的资料重新带回，另一 owner 的同地址当前也不得复活。
+     */
+    const provenanceRecordById = new Map(
+      sourceRecordRows.map((row) => [row.id, row]),
+    );
+    const unloadedOriginRecordIds = uniqueStrings(
+      metadataLifecyclesRows
+        .map((row) => row.sourceRecordId)
+        .filter((recordId) => !provenanceRecordById.has(recordId)),
+    );
+    if (unloadedOriginRecordIds.length > 0)
+      for (const row of await query
+        .select({
+          id: sourceRecords.id,
+          executionId: sourceRecords.executionId,
+          sourceIdentity: sourceRecords.sourceIdentity,
+          nativeAddress: sourceRecords.nativeAddress,
+        })
+        .from(sourceRecords)
+        .where(
+          inArray(sourceRecords.id, sqliteTextSet(unloadedOriginRecordIds)),
+        ))
+        provenanceRecordById.set(row.id, row);
+    const originExecutionIds = uniqueStrings(
+      [...provenanceRecordById.values()].map((record) => record.executionId),
+    );
+    const acceptedOwnerByExecutionId = new Map(
+      originExecutionIds.length === 0
+        ? []
+        : query
+            .select({
+              id: workflowExecutions.id,
+              acceptedAssetId: workflowExecutions.acceptedAssetId,
+            })
+            .from(workflowExecutions)
+            .where(
+              inArray(workflowExecutions.id, sqliteTextSet(originExecutionIds)),
+            )
+            .all()
+            .flatMap((row) =>
+              row.acceptedAssetId === null
+                ? []
+                : ([[row.id, row.acceptedAssetId]] as const),
+            ),
+    );
+    const sourceOwnerByRecordId = new Map<string, string>();
+    for (const [recordId, record] of provenanceRecordById) {
+      const owner = acceptedOwnerByExecutionId.get(record.executionId);
+      if (owner !== undefined) sourceOwnerByRecordId.set(recordId, owner);
+    }
+    /** 刷新执行不重新接受资产，其记录 owner 由该执行写入的来源刷新变化确定。 */
+    const ownerlessExecutionIds = uniqueStrings(
+      [...provenanceRecordById.values()]
+        .map((record) => record.executionId)
+        .filter((executionId) => !acceptedOwnerByExecutionId.has(executionId)),
+    );
+    if (ownerlessExecutionIds.length > 0)
+      for (const row of query
+        .select({
+          subjectId: sourceRefreshChanges.subjectId,
+          sourceRecordId: sourceRefreshChanges.sourceRecordId,
+        })
+        .from(sourceRefreshChanges)
+        .where(
+          and(
+            inArray(
+              sourceRefreshChanges.executionId,
+              sqliteTextSet(ownerlessExecutionIds),
+            ),
+            inArray(
+              sourceRefreshChanges.sourceRecordId,
+              sqliteTextSet([...provenanceRecordById.keys()]),
+            ),
+          ),
+        )
+        .all())
+        sourceOwnerByRecordId.set(row.sourceRecordId, row.subjectId);
+    const artifactSourceAssociationIds = uniqueStrings(
+      artifactAssociationRows.flatMap((row) =>
+        row.sourceAssociationId === null ? [] : [row.sourceAssociationId],
+      ),
+    );
+    const sourceAssociationOwnerById = new Map(
+      artifactSourceAssociationIds.length === 0
+        ? []
+        : query
+            .select({
+              id: sourceAssociations.id,
+              subjectId: sourceAssociations.subjectId,
+              sourceIdentity: sourceAssociations.sourceIdentity,
+              nativeAddress: sourceAssociations.nativeAddress,
+            })
+            .from(sourceAssociations)
+            .where(
+              inArray(
+                sourceAssociations.id,
+                sqliteTextSet(artifactSourceAssociationIds),
+              ),
+            )
+            .all()
+            .map((row) => [
+              row.id,
+              {
+                subjectId: row.subjectId,
+                sourceIdentity: row.sourceIdentity,
+                nativeAddress: row.nativeAddress,
+              },
+            ]),
+    );
+    const sourceOwnerIds = uniqueStrings([
+      ...sourceOwnerByRecordId.values(),
+      ...Array.from(sourceAssociationOwnerById.values()).map(
+        (owner) => owner.subjectId,
+      ),
+    ]);
+    const ownerSourceAssociationRows =
+      sourceOwnerIds.length === 0
+        ? []
+        : query
+            .select({
+              id: sourceAssociations.id,
+              subjectId: sourceAssociations.subjectId,
+              sourceIdentity: sourceAssociations.sourceIdentity,
+              nativeAddress: sourceAssociations.nativeAddress,
+            })
+            .from(sourceAssociations)
+            .where(
+              inArray(
+                sourceAssociations.subjectId,
+                sqliteTextSet(sourceOwnerIds),
+              ),
+            )
+            .all();
+    const ownerCurrentAssociationIds = new Map<string, Set<string>>();
+    for (const row of sourceOwnerIds.length === 0
+      ? []
+      : query
+          .select()
+          .from(currentSourceAssociations)
+          .where(
+            inArray(
+              currentSourceAssociations.subjectId,
+              sqliteTextSet(sourceOwnerIds),
+            ),
+          )
+          .all()) {
+      const ids =
+        ownerCurrentAssociationIds.get(row.subjectId) ?? new Set<string>();
+      ids.add(row.associationId);
+      ownerCurrentAssociationIds.set(row.subjectId, ids);
+    }
+    const ownerLineageHeadRows =
+      sourceOwnerIds.length === 0
+        ? []
+        : query
+            .select({
+              subjectId: sourceLineageHeads.subjectId,
+              sourceIdentity: sourceLineageHeads.sourceIdentity,
+              nativeAddress: sourceLineageHeads.nativeAddress,
+              coverageId: sourceLineageHeads.coverageId,
+              sourceRecordId: sourceLineageHeads.sourceRecordId,
+            })
+            .from(sourceLineageHeads)
+            .where(
+              inArray(
+                sourceLineageHeads.subjectId,
+                sqliteTextSet(sourceOwnerIds),
+              ),
+            )
+            .all();
+    const currentSourceOwnerCoordinates = new Set(
+      ownerSourceAssociationRows
+        .filter(
+          (row) =>
+            ownerCurrentAssociationIds.get(row.subjectId)?.has(row.id) === true,
+        )
+        .map((row) =>
+          sourceOwnerCoordinateKey(
+            row.subjectId,
+            row.sourceIdentity,
+            row.nativeAddress,
+          ),
+        ),
+    );
+    const currentSourceOwnerCoverageHeads = new Set(
+      ownerLineageHeadRows.map((row) =>
+        sourceOwnerLineageKey(
+          row.subjectId,
+          row.sourceIdentity,
+          row.nativeAddress,
+          row.coverageId,
+        ),
+      ),
+    );
+    const currentSourceOwnerRecordHeads = new Set(
+      ownerLineageHeadRows.map((row) =>
+        sourceOwnerLineageKey(
+          row.subjectId,
+          row.sourceIdentity,
+          row.nativeAddress,
+          row.sourceRecordId,
+        ),
+      ),
+    );
     const observedArtifactIds = uniqueStrings([
       ...artifactAssociationRows.flatMap((row) =>
         row.observedArtifactPartJson === null
@@ -15385,6 +19710,38 @@ export class SqliteCatalogue
       query,
       currentLocationRows,
     );
+    // 证据的当前资格判定要看到支持自己记录的那些位置，包括已经退出当前成员的，
+    // 因此单独按证据列预载，不能复用只保留当前成员的 `locations`。
+    const evidenceLocationIds = uniqueStrings(
+      artifactRecognitionSupportRows.flatMap((support) =>
+        support.observationLocationId === null
+          ? []
+          : [support.observationLocationId],
+      ),
+    );
+    const evidenceLocationRows = locationRows.filter((row) =>
+      evidenceLocationIds.includes(row.id),
+    );
+    const evidenceCurrentLocationRevisionKeys =
+      currentConfirmedLocationRevisions(query, evidenceLocationRows).map(
+        ({ locationId, revisionId }) => `${locationId}\u0000${revisionId}`,
+      );
+    const positiveMaterialSupportLocationIds =
+      evidenceLocationRows.length === 0
+        ? []
+        : (
+            await query
+              .select({
+                locationId: currentObservedMaterialSupports.locationId,
+              })
+              .from(currentObservedMaterialSupports)
+              .where(
+                inArray(
+                  currentObservedMaterialSupports.locationId,
+                  sqliteTextSet(evidenceLocationRows.map((row) => row.id)),
+                ),
+              )
+          ).map((row) => row.locationId);
     const digests = uniqueStrings(revisionRows.map((row) => row.blobDigest));
     const blobRows =
       digests.length === 0
@@ -15394,13 +19751,6 @@ export class SqliteCatalogue
             .from(blobs)
             .where(inArray(blobs.digest, sqliteTextSet(digests)))
             .orderBy(asc(blobs.digest));
-    const participantIds = uniqueStrings(
-      relationshipRows.flatMap((row) =>
-        relationshipParticipantsFromJson(row.participantsJson).map(
-          (participant) => participant.entityId,
-        ),
-      ),
-    );
     const lifecycleSourcedEntityRows =
       sourceRecordIds.length === 0
         ? []
@@ -15533,10 +19883,24 @@ export class SqliteCatalogue
             );
     return effectiveAssetIds.flatMap((assetId) => {
       const accepted = this.projectCurrentAcceptedFromRows(assetId, {
+        namedBasisDecisionId,
+        pinNamedBasisDecision,
+        relationshipSupports,
+        relationshipDecisions: relationshipDecisionRows,
+        artifactRoleDecisions: artifactRoleDecisionRows,
+        participantResolutions,
+        identityRepresentatives,
+        localNames,
         entities: [...assetEntities, ...participantEntities],
         heads,
         associations,
         currentAssociations: currentAssociationsRows,
+        sourceOwnerByRecordId,
+        sourceAssociationOwnerById,
+        currentSourceOwnerCoordinates,
+        currentSourceOwnerAssociationIds: ownerCurrentAssociationIds,
+        currentSourceOwnerCoverageHeads,
+        currentSourceOwnerRecordHeads,
         decisions,
         proposals: proposalRows,
         artifactAssociations: artifactAssociationRows,
@@ -15548,12 +19912,13 @@ export class SqliteCatalogue
         metadataLifecycles: metadataLifecyclesRows,
         metadataRetractions: metadataRetractionsRows,
         relationships: relationshipRows,
-        relationshipLifecycles: relationshipLifecyclesRows,
-        relationshipRetractions: relationshipRetractionsRows,
         sourceRecords: sourceRecordRows,
         artifacts: artifactRows,
         locations: currentLocationRows,
         currentLocationRevisions,
+        evidenceLocations: evidenceLocationRows,
+        evidenceCurrentLocationRevisionKeys,
+        positiveMaterialSupportLocationIds,
         revisions: revisionRows,
         blobs: blobRows,
         sourcedEntities: sourcedEntityRows,
@@ -15583,14 +19948,20 @@ export class SqliteCatalogue
     const entity = rows.entities.find((item) => item.id === assetId);
     const head = rows.heads.find((item) => item.subjectId === assetId);
     if (entity === undefined || head === undefined) return undefined;
+    const basisDecisionId = rows.pinNamedBasisDecision
+      ? rows.namedBasisDecisionId
+      : (head.recognitionDecisionId ??
+        (rows.namedBasisDecisionId === undefined ||
+        rows.endedRecognitionDecisionIds.has(rows.namedBasisDecisionId)
+          ? undefined
+          : rows.namedBasisDecisionId));
     const recognitionSourceAssociationRow = rows.associations.find(
       (association) =>
         association.id === head.recognitionSourceAssociationId &&
         association.subjectId === assetId,
     );
     const decision = rows.decisions.find(
-      (item) =>
-        item.id === head.recognitionDecisionId && item.assetId === assetId,
+      (item) => item.id === basisDecisionId && item.assetId === assetId,
     );
     if (decision === undefined) return undefined;
     const proposalRow = rows.proposals.find(
@@ -15599,6 +19970,9 @@ export class SqliteCatalogue
     if (proposalRow === undefined) return undefined;
     const proposal: RecognitionProposal = {
       id: proposalRow.id,
+      boundaries: JSON.parse(
+        proposalRow.boundariesJson,
+      ) as RecognitionProposal["boundaries"],
       basis: JSON.parse(proposalRow.basisJson) as RecognitionProposal["basis"],
       ruleResults: JSON.parse(
         proposalRow.ruleResultsJson,
@@ -15644,43 +20018,57 @@ export class SqliteCatalogue
     ];
     const interpretation = recognitionSourceInterpretation(proposal);
     const relatedEntities = interpretation?.entities ?? [];
-    const factSubjectIds = new Set([
+    const sourceRecordsById = new Map(
+      rows.sourceRecords.map((record) => [record.id, record]),
+    );
+    const factLineages = selectAssetFactLineageKeys({
+      hasRecognitionSourceAssociation:
+        recognitionSourceAssociation !== undefined,
+      interpretationSourceRecordIds: interpretation?.sourceRecordIds ?? [],
+      sourceRecords: sourceRecordsById,
+      currentAssociations,
+    });
+    /** 单主体裁剪与批量装载共用同一生效关系求值，被排除或替换的目标不会残留资料。 */
+    const effectiveSubjects = selectEffectiveRelationshipSubjects({
       assetId,
-      ...relatedEntities.map((item) => item.id),
-    ]);
+      seedSubjectIds: new Set([
+        assetId,
+        ...relatedEntities.map((item) => item.id),
+      ]),
+      relationships: rows.relationships,
+      supports: rows.relationshipSupports,
+      decisions: rows.relationshipDecisions,
+      participantResolutions: rows.participantResolutions,
+      identityRepresentatives: rows.identityRepresentatives,
+      factLineages,
+    });
+    const relationshipRows = effectiveSubjects.relationships;
+    const factSubjectIds = effectiveSubjects.factSubjectIds;
     const artifactAssociationRows = rows.artifactAssociations.filter((row) =>
       factSubjectIds.has(row.subjectId),
     );
     const metadataRows = rows.metadata.filter((row) =>
       factSubjectIds.has(row.subjectId),
     );
-    const relationshipRows = rows.relationships.filter((row) =>
-      relationshipParticipantsFromJson(row.participantsJson).some(
-        (participant) => factSubjectIds.has(participant.entityId),
-      ),
-    );
-    const sourceRecordsById = new Map(
-      rows.sourceRecords.map((record) => [record.id, record]),
-    );
-    const factLineages = new Set([
-      ...(recognitionSourceAssociation === undefined
-        ? []
-        : (interpretation?.sourceRecordIds ?? [])
-      ).flatMap((id) => {
-        const record = sourceRecordsById.get(id);
-        return record === undefined
-          ? []
-          : [sourceLineageKey(record.sourceIdentity, record.nativeAddress)];
-      }),
-      ...currentAssociations.map((association) =>
-        sourceLineageKey(association.sourceIdentity, association.nativeAddress),
-      ),
-    ]);
     const supersededArtifactAssociationIds = new Set(
       rows.artifactSupersessions.map((item) => item.predecessorAssociationId),
     );
     const retractedArtifactAssociationIds = new Set(
       rows.artifactRetractions.map((item) => item.associationId),
+    );
+    // 带精确观察证据的支持按运行时同一份当前资格判定；只由未结束决定的存在来承认
+    // 当前性会把已经过期的旧观察当成当前。
+    const decisionAssetIdById = new Map(
+      rows.decisions.map((row) => [row.id, row.assetId]),
+    );
+    const evidenceLocationById = new Map(
+      rows.evidenceLocations.map((row) => [row.id, row]),
+    );
+    const currentEvidenceRevisionKeys = new Set(
+      rows.evidenceCurrentLocationRevisionKeys,
+    );
+    const positiveSupportLocationIds = new Set(
+      rows.positiveMaterialSupportLocationIds,
     );
     const currentArtifactAssociationRows = artifactAssociationRows.filter(
       (row) => {
@@ -15689,6 +20077,49 @@ export class SqliteCatalogue
           retractedArtifactAssociationIds.has(row.id)
         )
           return false;
+        const part =
+          row.observedArtifactPartJson === null
+            ? undefined
+            : (JSON.parse(row.observedArtifactPartJson) as NonNullable<
+                ArtifactAssociation["observedArtifactPart"]
+              >);
+        const evidence: LocalObservationEvidenceCandidate[] =
+          row.subjectId === assetId
+            ? rows.artifactRecognitionSupports.flatMap((support) => {
+                if (
+                  support.associationId !== row.id ||
+                  support.observationLocationId === null ||
+                  support.observationMaterialKind === null ||
+                  rows.endedRecognitionDecisionIds.has(
+                    support.recognitionDecisionId,
+                  )
+                )
+                  return [];
+                const decisionAssetId = decisionAssetIdById.get(
+                  support.recognitionDecisionId,
+                );
+                return decisionAssetId === undefined
+                  ? []
+                  : [
+                      {
+                        locationId: support.observationLocationId,
+                        materialKind: support.observationMaterialKind,
+                        revisionId: support.observationRevisionId,
+                        decisionAssetId,
+                        subjectId: row.subjectId,
+                      },
+                    ];
+              })
+            : [];
+        if (evidence.length > 0)
+          return isCurrentLocalObservationEvidence({
+            materialArtifactId: part?.artifactId ?? row.artifactId,
+            ...(part === undefined ? {} : { partRevisionId: part.revisionId }),
+            evidence,
+            locationOf: (locationId) => evidenceLocationById.get(locationId),
+            positiveSupportLocationIds,
+            currentLocationRevisionKeys: currentEvidenceRevisionKeys,
+          });
         const hasActiveRecognitionSupport =
           rows.artifactRecognitionSupports.some(
             (support) =>
@@ -15703,19 +20134,56 @@ export class SqliteCatalogue
           "artifact association source records",
         );
         if (recordIds.length === 0) return row.subjectId === assetId;
-        return recordIds.some((id) => {
-          const record = sourceRecordsById.get(id);
-          return (
-            record !== undefined &&
-            factLineages.has(
-              sourceLineageKey(record.sourceIdentity, record.nativeAddress),
-            )
-          );
-        });
+        /**
+         * 产物只按其直接引用的来源关联判定：该关联必须仍是所属 owner 的当前关联，
+         * 且 owner 在同一坐标仍占据这些来源记录头。同坐标被新关联取代后，引用旧关联
+         * 的产物不会因为坐标仍被同一 owner 持有而复活。
+         */
+        if (row.sourceAssociationId === null) return false;
+        const association = rows.sourceAssociationOwnerById.get(
+          row.sourceAssociationId,
+        );
+        if (association === undefined) return false;
+        const currentForOwner = rows.currentSourceOwnerAssociationIds.get(
+          association.subjectId,
+        );
+        if (currentForOwner?.has(row.sourceAssociationId) !== true)
+          return false;
+        return recordIds.some((id) =>
+          rows.currentSourceOwnerRecordHeads.has(
+            sourceOwnerLineageKey(
+              association.subjectId,
+              association.sourceIdentity,
+              association.nativeAddress,
+              id,
+            ),
+          ),
+        );
       },
     );
     const metadataLifecycleById = new Map(
       rows.metadataLifecycles.map((item) => [item.assertionId, item]),
+    );
+    // 代表正文的实体标题也是本地观察事实，其当前资格必须沿授权决定与该修订的精确观察
+    // 支持判定：只凭“无来源记录且带观察部件”放行，被替换、不可用或决定已结束后的旧正文
+    // 标题会永久留在共同读取里。授权决定只认主头自身的决定：主头为空时点名的决定只提供
+    // 那一次读取的事实依据，绝不充当当前身份头，因此也不能把实体标题带进共同读取。
+    const supportedObservedRevisionIds = new Set(
+      rows.artifactAssociations
+        .filter((association) => association.subjectId === assetId)
+        .flatMap((association) =>
+          rows.locations
+            .filter(
+              (location) =>
+                location.kind === "observed" &&
+                location.artifactId === association.artifactId,
+            )
+            .flatMap((location) =>
+              rows.currentLocationRevisions
+                .filter((selection) => selection.locationId === location.id)
+                .map((selection) => selection.revisionId),
+            ),
+        ),
     );
     const supersededMetadataIds = new Set(
       rows.metadataLifecycles.flatMap((item) =>
@@ -15735,13 +20203,57 @@ export class SqliteCatalogue
         row.sourceRecordIdsJson,
         "metadata assertion source records",
       );
+      /**
+       * 描述主体与来源 owner 可以不同：相关目标的资料由 provenance 记录所属 owner 是否仍
+       * 在当前关联与精确覆盖上决定，未撤回的断言不因后继记录推进谱系头而失效。
+       */
       const livesOnCurrentLineage =
         lifecycle !== undefined &&
-        factLineages.has(
-          sourceLineageKey(lifecycle.sourceIdentity, lifecycle.nativeAddress),
-        );
+        (row.subjectId === assetId
+          ? factLineages.has(
+              sourceLineageKey(
+                lifecycle.sourceIdentity,
+                lifecycle.nativeAddress,
+              ),
+            )
+          : (() => {
+              const owner = rows.sourceOwnerByRecordId.get(
+                lifecycle.sourceRecordId,
+              );
+              return (
+                owner !== undefined &&
+                rows.currentSourceOwnerCoordinates.has(
+                  sourceOwnerCoordinateKey(
+                    owner,
+                    lifecycle.sourceIdentity,
+                    lifecycle.nativeAddress,
+                  ),
+                ) &&
+                rows.currentSourceOwnerCoverageHeads.has(
+                  sourceOwnerLineageKey(
+                    owner,
+                    lifecycle.sourceIdentity,
+                    lifecycle.nativeAddress,
+                    lifecycle.coverageId,
+                  ),
+                )
+              );
+            })());
+      const observedPart =
+        row.observedArtifactPartJson === null
+          ? undefined
+          : (JSON.parse(row.observedArtifactPartJson) as NonNullable<
+              MetadataAssertion["observedArtifactPart"]
+            >);
       const isLocalObservedFact =
-        recordIds.length === 0 && row.observedArtifactPartJson !== null;
+        recordIds.length === 0 &&
+        observedPart !== undefined &&
+        (row.targetKind !== "entity" ||
+          (row.subjectId === assetId &&
+            row.recognitionDecisionId !== null &&
+            row.recognitionDecisionId === head.recognitionDecisionId &&
+            !rows.endedRecognitionDecisionIds.has(row.recognitionDecisionId) &&
+            supportedObservedRevisionIds.has(observedPart.revisionId)));
       const isUserFact = recordIds.length === 0 && row.authoredByJson !== null;
       if (!livesOnCurrentLineage && !isLocalObservedFact && !isUserFact)
         return [];
@@ -15766,13 +20278,9 @@ export class SqliteCatalogue
                   MetadataAssertion["qualifiers"]
                 >,
               }),
-          ...(row.observedArtifactPartJson === null
+          ...(observedPart === undefined
             ? {}
-            : {
-                observedArtifactPart: JSON.parse(
-                  row.observedArtifactPartJson,
-                ) as NonNullable<MetadataAssertion["observedArtifactPart"]>,
-              }),
+            : { observedArtifactPart: observedPart }),
           ...(row.producerJson === null
             ? {}
             : { producer: producerFromJson(row.producerJson) }),
@@ -15917,7 +20425,7 @@ export class SqliteCatalogue
       rows.observedEntityGraphSupports.filter(
         (support) =>
           support.assetId === assetId &&
-          support.recognitionDecisionId === head.recognitionDecisionId,
+          support.recognitionDecisionId === basisDecisionId,
       );
     const observedEntityGraphs = currentObservedGraphSupports.map((support) => {
       const graphEntityIds = new Set(
@@ -15996,40 +20504,9 @@ export class SqliteCatalogue
       observedEntityGraphs.length === 0
         ? candidateObservedEntityGraphs
         : observedEntityGraphs;
-    const relationshipLifecycleById = new Map(
-      rows.relationshipLifecycles.map((item) => [item.relationshipId, item]),
-    );
-    const supersededRelationshipIds = new Set(
-      rows.relationshipLifecycles.flatMap((item) =>
-        item.predecessorRelationshipId === null
-          ? []
-          : [item.predecessorRelationshipId],
-      ),
-    );
-    const retractedRelationshipIds = new Set(
-      rows.relationshipRetractions.map((item) => item.relationshipId),
-    );
-    const currentRelationshipRows = relationshipRows.filter((row) => {
-      if (
-        supersededRelationshipIds.has(row.id) ||
-        retractedRelationshipIds.has(row.id)
-      )
-        return false;
-      const lifecycle = relationshipLifecycleById.get(row.id);
-      return (
-        lifecycle !== undefined &&
-        factLineages.has(
-          sourceLineageKey(lifecycle.sourceIdentity, lifecycle.nativeAddress),
-        )
-      );
-    });
-    const participantIds = new Set(
-      currentRelationshipRows.flatMap((item) =>
-        relationshipParticipantsFromJson(item.participantsJson).map(
-          (participant) => participant.entityId,
-        ),
-      ),
-    );
+    /** 生效关系与端点已在资料装载前求值，此处不再重复生命周期筛选。 */
+    const currentRelationshipRows = relationshipRows;
+    const participantIds = effectiveSubjects.endpointIds;
     const entityById = new Map(rows.entities.map((item) => [item.id, item]));
     const sourcedEntityById = new Map(
       rows.sourcedEntities.map((item) => [item.id, item]),
@@ -16040,8 +20517,23 @@ export class SqliteCatalogue
       (participantId): import("@digital/domain").CurrentRelatedEntity[] => {
         const relatedEntity = entityById.get(participantId);
         const sourcedEntity = sourcedEntityById.get(participantId);
-        if (relatedEntity === undefined || sourcedEntity === undefined)
-          return [];
+        if (relatedEntity === undefined) return [];
+        if (sourcedEntity === undefined) {
+          const label =
+            rows.localNames.find((row) => row.entityId === participantId)
+              ?.label ??
+            rows.observedEntities.find((row) => row.id === participantId)
+              ?.label;
+          return label === undefined
+            ? []
+            : [
+                {
+                  id: participantId,
+                  kind: sourcedEntityKind(participantId),
+                  label,
+                } as import("@digital/domain").CurrentRelatedEntity,
+              ];
+        }
         return [
           {
             id: relatedEntity.id,
@@ -16126,14 +20618,18 @@ export class SqliteCatalogue
     ];
     const relationships = currentRelationshipRows.map(
       (row): EntityRelationship => {
-        const lifecycle = relationshipLifecycleById.get(row.id);
-        if (lifecycle === undefined)
-          throw new Error("Current relationship requires a lifecycle");
+        const lifecycle =
+          rows.relationshipSupports.lifecyclesByRelationshipId.get(row.id);
         return {
           id: row.id,
           participants: relationshipParticipantsFromJson(row.participantsJson),
           type: row.type,
-          sourceSlot: lifecycle.sourceSlot,
+          sourceSlot:
+            lifecycle?.sourceSlot ??
+            rows.relationshipSupports.observedSourceSlotsByRelationshipId.get(
+              row.id,
+            ) ??
+            "manual",
           sourceRecordIds: jsonStringArray(
             row.sourceRecordIdsJson,
             "relationship source records",
@@ -16178,6 +20674,10 @@ export class SqliteCatalogue
     return {
       proposal,
       entity: { id: entity.id, kind: "digital-asset" },
+      // 主头为空时读到的只是点名决定的事实依据，公开状态必须明确身份未解决。
+      ...(head.recognitionDecisionId === null
+        ? { recognitionHeadDecisionId: null }
+        : {}),
       sourceAssociations: currentAssociations,
       ...(recognitionSourceAssociation === undefined
         ? {}
@@ -16187,6 +20687,9 @@ export class SqliteCatalogue
         id: decision.id,
         proposalId: decision.proposalId,
         assetId: decision.assetId,
+        boundaries: JSON.parse(
+          decision.boundariesJson,
+        ) as RecognitionDecision["boundaries"],
         acceptedRuleResults: JSON.parse(
           decision.acceptedRuleResultsJson,
         ) as RecognitionDecision["acceptedRuleResults"],
@@ -16264,6 +20767,7 @@ export class SqliteCatalogue
                 },
               ],
         ),
+      artifactRoleDecisions: rows.artifactRoleDecisions,
       metadata,
       entities: currentEntities.map(({ kind: _kind, ...entity }) => entity),
       currentRelatedEntities: currentEntities,
@@ -16301,6 +20805,27 @@ export class SqliteCatalogue
         }),
       ),
       relationships,
+      relationshipReadBasis: {
+        participantResolutions: [...rows.participantResolutions].map(
+          ([mentionId, entityId]) => ({ mentionId, entityId }),
+        ),
+        identityRepresentatives: [...rows.identityRepresentatives].map(
+          ([entityId, representativeId]) => ({ entityId, representativeId }),
+        ),
+        targets: currentRelationshipRows.flatMap(({ id: relationshipId }) => {
+          const target =
+            rows.relationshipSupports.targetsByRelationshipId.get(
+              relationshipId,
+            );
+          if (target === undefined)
+            throw new Error("当前关系缺少稳定的决定目标");
+          return [{ relationshipId, target }];
+        }),
+        decisions: rows.relationshipDecisions,
+        manualRelationshipIds: [
+          ...rows.relationshipSupports.manualRelationshipIds,
+        ],
+      } satisfies RelationshipReadBasis,
       ...(hydratedObservedEntityGraphs.length === 0
         ? {}
         : { observedEntityGraphs: hydratedObservedEntityGraphs }),
@@ -16315,990 +20840,18 @@ export class SqliteCatalogue
   private async readCurrentAcceptedWithDrizzle(
     query: DrizzleReadQuery,
     assetId: string,
+    namedBasisDecisionId?: string,
+    pinNamedBasisDecision = false,
   ): Promise<AcceptedAssetState | undefined> {
-    if (
-      !this.currentEffectiveDigitalAssetIdsWithDrizzle(query, [
-        assetId,
-      ]).includes(assetId)
-    )
-      return undefined;
-    const [entity] = await query
-      .select()
-      .from(entities)
-      .where(eq(entities.id, assetId));
-    if (entity === undefined) return undefined;
-
-    const [head] = await query
-      .select()
-      .from(recognitionHeads)
-      .where(eq(recognitionHeads.subjectId, assetId));
-    if (head === undefined) return undefined;
-    if (head.recognitionDecisionId === null) return undefined;
-
-    const [storedRecognitionSourceAssociation] = await query
-      .select({
-        id: sourceAssociations.id,
-        subjectId: sourceAssociations.subjectId,
-        sourceIdentity: sourceAssociations.sourceIdentity,
-        nativeAddress: sourceAssociations.nativeAddress,
-      })
-      .from(sourceAssociations)
-      .where(
-        and(
-          eq(sourceAssociations.id, head.recognitionSourceAssociationId ?? ""),
-          eq(sourceAssociations.subjectId, assetId),
-        ),
-      );
-    const currentAssociationRows = await query
-      .select({
-        id: sourceAssociations.id,
-        subjectId: sourceAssociations.subjectId,
-        sourceIdentity: sourceAssociations.sourceIdentity,
-        nativeAddress: sourceAssociations.nativeAddress,
-      })
-      .from(currentSourceAssociations)
-      .innerJoin(
-        sourceAssociations,
-        eq(currentSourceAssociations.associationId, sourceAssociations.id),
-      )
-      .where(
-        and(
-          eq(currentSourceAssociations.subjectId, assetId),
-          eq(sourceAssociations.subjectId, assetId),
-        ),
-      )
-      .orderBy(asc(sql<number>`${sourceAssociations}.rowid`));
-    const currentAssociations = [
-      ...new Map(
-        currentAssociationRows.map((association) => [
-          association.id,
-          association,
-        ]),
-      ).values(),
-    ];
-    const currentAssociationIds = new Set(
-      currentAssociations.map(({ id: associationId }) => associationId),
-    );
-    const recognitionSourceAssociation =
-      storedRecognitionSourceAssociation !== undefined &&
-      currentAssociationIds.has(storedRecognitionSourceAssociation.id)
-        ? storedRecognitionSourceAssociation
-        : undefined;
-    const [decision] = await query
-      .select()
-      .from(recognitionDecisions)
-      .where(
-        and(
-          eq(recognitionDecisions.id, head.recognitionDecisionId),
-          eq(recognitionDecisions.assetId, assetId),
-        ),
-      );
-    if (decision === undefined) return undefined;
-    const [proposalRow] = await query
-      .select()
-      .from(recognitionProposals)
-      .where(eq(recognitionProposals.id, decision.proposalId));
-    if (proposalRow === undefined) return undefined;
-    const proposal: RecognitionProposal = {
-      id: proposalRow.id,
-      basis: JSON.parse(proposalRow.basisJson) as RecognitionProposal["basis"],
-      ruleResults: JSON.parse(
-        proposalRow.ruleResultsJson,
-      ) as RecognitionProposal["ruleResults"],
-    };
-
-    const interpretation = recognitionSourceInterpretation(proposal);
-    const artifactSubjectIds = uniqueStrings([
-      assetId,
-      ...(interpretation?.entities ?? []).map((item) => item.id),
-    ]);
-    const primaryRecordIds = interpretation?.sourceRecordIds ?? [];
-    const [
-      artifactAssociationRows,
-      metadataRows,
-      relationshipRowsWithParticipants,
-    ] = await Promise.all([
-      query
-        .select()
-        .from(artifactAssociations)
-        .where(inArray(artifactAssociations.subjectId, artifactSubjectIds))
-        .orderBy(asc(artifactAssociations.id)),
-      query
-        .select()
-        .from(metadataAssertions)
-        .where(inArray(metadataAssertions.subjectId, artifactSubjectIds)),
-      query
-        .select({ relationship: entityRelationships })
-        .from(entityRelationshipParticipants)
-        .innerJoin(
-          entityRelationships,
-          eq(
-            entityRelationships.id,
-            entityRelationshipParticipants.relationshipId,
-          ),
-        )
-        .where(
-          inArray(entityRelationshipParticipants.entityId, artifactSubjectIds),
-        )
-        .orderBy(asc(sql<number>`${entityRelationships}.rowid`)),
-    ]);
-
-    const relationshipRows = [
-      ...new Map(
-        relationshipRowsWithParticipants.map(({ relationship }) => [
-          relationship.id,
-          relationship,
-        ]),
-      ).values(),
-    ];
-
-    const artifactAssociationIds = artifactAssociationRows.map((row) => row.id);
-    const metadataAssertionIds = metadataRows.map((row) => row.id);
-    const relationshipIds = relationshipRows.map((row) => row.id);
-    const currentLineageRecordIds = (
-      await query
-        .select({ sourceRecordId: sourceLineageHeads.sourceRecordId })
-        .from(sourceLineageHeads)
-        .where(eq(sourceLineageHeads.subjectId, assetId))
-    ).map(({ sourceRecordId }) => sourceRecordId);
-    const sourceRecordIds = uniqueStrings([
-      ...primaryRecordIds,
-      ...currentLineageRecordIds,
-      ...artifactAssociationRows.flatMap((row) =>
-        jsonStringArray(
-          row.sourceRecordIdsJson,
-          "artifact association source records",
-        ),
-      ),
-      ...metadataRows.flatMap((row) =>
-        jsonStringArray(
-          row.sourceRecordIdsJson,
-          "metadata assertion source records",
-        ),
-      ),
-      ...relationshipRows.flatMap((row) =>
-        jsonStringArray(row.sourceRecordIdsJson, "relationship source records"),
-      ),
-    ]);
-    const [
-      artifactSupersessions,
-      artifactRetractions,
-      metadataLifecycles,
-      metadataRetractions,
-      relationshipLifecyclesRows,
-      relationshipRetractionRows,
-      sourceRecordRows,
-      recognitionSupportRows,
-      recognitionSupersessionRows,
-      recognitionRetractionRows,
-    ] = await Promise.all([
-      artifactAssociationIds.length === 0
-        ? Promise.resolve([])
-        : query
-            .select()
-            .from(artifactAssociationSupersessions)
-            .where(
-              inArray(
-                artifactAssociationSupersessions.predecessorAssociationId,
-                artifactAssociationIds,
-              ),
-            ),
-      artifactAssociationIds.length === 0
-        ? Promise.resolve([])
-        : query
-            .select()
-            .from(artifactAssociationRetractions)
-            .where(
-              inArray(
-                artifactAssociationRetractions.associationId,
-                artifactAssociationIds,
-              ),
-            ),
-      metadataAssertionIds.length === 0
-        ? Promise.resolve([])
-        : query
-            .select()
-            .from(metadataAssertionLifecycles)
-            .where(
-              inArray(
-                metadataAssertionLifecycles.assertionId,
-                metadataAssertionIds,
-              ),
-            ),
-      metadataAssertionIds.length === 0
-        ? Promise.resolve([])
-        : query
-            .select()
-            .from(metadataAssertionRetractions)
-            .where(
-              inArray(
-                metadataAssertionRetractions.assertionId,
-                metadataAssertionIds,
-              ),
-            ),
-      relationshipIds.length === 0
-        ? Promise.resolve([])
-        : query
-            .select()
-            .from(relationshipLifecycles)
-            .where(
-              inArray(relationshipLifecycles.relationshipId, relationshipIds),
-            ),
-      relationshipIds.length === 0
-        ? Promise.resolve([])
-        : query
-            .select()
-            .from(relationshipRetractions)
-            .where(
-              inArray(relationshipRetractions.relationshipId, relationshipIds),
-            ),
-      sourceRecordIds.length === 0
-        ? Promise.resolve([])
-        : query
-            .select()
-            .from(sourceRecords)
-            .where(inArray(sourceRecords.id, sourceRecordIds))
-            .orderBy(asc(sql<number>`${sourceRecords}.rowid`)),
-      artifactAssociationIds.length === 0
-        ? Promise.resolve([])
-        : query
-            .select({
-              associationId:
-                artifactAssociationRecognitionSupports.associationId,
-              recognitionDecisionId:
-                artifactAssociationRecognitionSupports.recognitionDecisionId,
-            })
-            .from(artifactAssociationRecognitionSupports)
-            .where(
-              inArray(
-                artifactAssociationRecognitionSupports.associationId,
-                artifactAssociationIds,
-              ),
-            ),
-      query
-        .select({
-          recognitionDecisionId:
-            recognitionDecisionSupersessions.predecessorDecisionId,
-        })
-        .from(recognitionDecisionSupersessions),
-      query
-        .select({
-          recognitionDecisionId:
-            recognitionDecisionRetractions.predecessorDecisionId,
-        })
-        .from(recognitionDecisionRetractions),
-    ]);
-
-    const sourceRecordsById = new Map(
-      sourceRecordRows.map((record) => [record.id, record]),
-    );
-    const factLineages = new Set([
-      ...(recognitionSourceAssociation === undefined
-        ? []
-        : primaryRecordIds
-      ).flatMap((id) => {
-        const record = sourceRecordsById.get(id);
-        return record === undefined
-          ? []
-          : [sourceLineageKey(record.sourceIdentity, record.nativeAddress)];
-      }),
-      ...currentAssociations.map((association) =>
-        sourceLineageKey(association.sourceIdentity, association.nativeAddress),
-      ),
-    ]);
-    const currentSourcedEntityRows = (
-      await query.select().from(sourcedEntities)
-    ).filter((row) => {
-      const ids = jsonStringArray(
-        row.sourceRecordIdsJson,
-        "sourced entity source records",
-      );
-      return ids.some((id) => {
-        const record = sourceRecordsById.get(id);
-        return (
-          record !== undefined &&
-          factLineages.has(
-            sourceLineageKey(record.sourceIdentity, record.nativeAddress),
-          )
-        );
-      });
-    });
-    const supersededArtifactAssociationIds = new Set(
-      artifactSupersessions.map((row) => row.predecessorAssociationId),
-    );
-    const retractedArtifactAssociationIds = new Set(
-      artifactRetractions.map((row) => row.associationId),
-    );
-    const endedRecognitionDecisionIds = new Set([
-      ...recognitionSupersessionRows.map(
-        ({ recognitionDecisionId }) => recognitionDecisionId,
-      ),
-      ...recognitionRetractionRows.map(
-        ({ recognitionDecisionId }) => recognitionDecisionId,
-      ),
-    ]);
-    const currentArtifactAssociationRows = artifactAssociationRows.filter(
-      (row) => {
-        if (
-          supersededArtifactAssociationIds.has(row.id) ||
-          retractedArtifactAssociationIds.has(row.id)
-        )
-          return false;
-        const associationRecordIds = jsonStringArray(
-          row.sourceRecordIdsJson,
-          "artifact association source records",
-        );
-        const hasCurrentRecognitionSupport = recognitionSupportRows.some(
-          (support) =>
-            support.associationId === row.id &&
-            !endedRecognitionDecisionIds.has(support.recognitionDecisionId),
-        );
-        if (hasCurrentRecognitionSupport) return true;
-        if (associationRecordIds.length === 0) return row.subjectId === assetId;
-        return associationRecordIds.some((id) => {
-          const record = sourceRecordsById.get(id);
-          return (
-            record !== undefined &&
-            factLineages.has(
-              sourceLineageKey(record.sourceIdentity, record.nativeAddress),
-            )
-          );
-        });
-      },
-    );
-
-    const metadataLifecycleByAssertionId = new Map(
-      metadataLifecycles.map((row) => [row.assertionId, row]),
-    );
-    const supersededMetadataAssertionIds = new Set(
-      metadataLifecycles.flatMap((row) =>
-        row.predecessorAssertionId === null ? [] : [row.predecessorAssertionId],
-      ),
-    );
-    const retractedMetadataAssertionIds = new Set(
-      metadataRetractions.map((row) => row.assertionId),
-    );
-    const metadata = metadataRows.flatMap((row): MetadataAssertion[] => {
-      if (
-        supersededMetadataAssertionIds.has(row.id) ||
-        retractedMetadataAssertionIds.has(row.id)
-      )
-        return [];
-      const lifecycle = metadataLifecycleByAssertionId.get(row.id);
-      const sourceRecordIdsForAssertion = jsonStringArray(
-        row.sourceRecordIdsJson,
-        "metadata assertion source records",
-      );
-      const livesOnCurrentLineage =
-        lifecycle !== undefined &&
-        factLineages.has(
-          sourceLineageKey(lifecycle.sourceIdentity, lifecycle.nativeAddress),
-        );
-      const isLocalObservedFact =
-        sourceRecordIdsForAssertion.length === 0 &&
-        row.observedArtifactPartJson !== null;
-      const isUserFact =
-        sourceRecordIdsForAssertion.length === 0 && row.authoredByJson !== null;
-      if (!livesOnCurrentLineage && !isLocalObservedFact && !isUserFact)
-        return [];
-      return [
-        {
-          target: descriptionTargetFromColumns(row),
-          property: row.property,
-          sourceSlot: lifecycle?.sourceSlot ?? row.sourceSlot ?? "",
-          value: row.value,
-          sourceRecordIds: sourceRecordIdsForAssertion,
-          ...(row.authoredByJson === null
-            ? {}
-            : {
-                authoredBy: JSON.parse(row.authoredByJson) as NonNullable<
-                  MetadataAssertion["authoredBy"]
-                >,
-              }),
-          ...(row.qualifiersJson === "[]"
-            ? {}
-            : {
-                qualifiers: JSON.parse(row.qualifiersJson) as NonNullable<
-                  MetadataAssertion["qualifiers"]
-                >,
-              }),
-          ...(row.observedArtifactPartJson === null
-            ? {}
-            : {
-                observedArtifactPart: JSON.parse(
-                  row.observedArtifactPartJson,
-                ) as NonNullable<MetadataAssertion["observedArtifactPart"]>,
-              }),
-          ...(row.producerJson === null
-            ? {}
-            : { producer: producerFromJson(row.producerJson) }),
-          ...(row.recognitionDecisionId === null
-            ? {}
-            : { recognitionDecisionId: row.recognitionDecisionId }),
-        },
-      ];
-    });
-    const metadataRecordIds = uniqueStrings(
-      metadata.flatMap((assertion) => assertion.sourceRecordIds),
-    );
-    const metadataRecordIdSet = new Set(metadataRecordIds);
-    const metadataSourceRecords = sourceRecordRows.flatMap((record) =>
-      metadataRecordIdSet.has(record.id)
-        ? [
-            {
-              id: record.id,
-              sourceIdentity: record.sourceIdentity,
-              nativeAddress: record.nativeAddress,
-            },
-          ]
-        : [],
-    );
-
-    const observedArtifactIds = uniqueStrings([
-      ...currentArtifactAssociationRows.flatMap((association) =>
-        association.observedArtifactPartJson === null
-          ? []
-          : [
-              (
-                JSON.parse(association.observedArtifactPartJson) as {
-                  readonly artifactId: string;
-                }
-              ).artifactId,
-            ],
-      ),
-      ...metadata.flatMap((assertion) =>
-        assertion.observedArtifactPart === undefined
-          ? []
-          : [assertion.observedArtifactPart.artifactId],
-      ),
-    ]);
-    const artifactIds = uniqueStrings([
-      ...currentArtifactAssociationRows.map(
-        (association) => association.artifactId,
-      ),
-      ...observedArtifactIds,
-    ]).toSorted();
-    const [artifactRows, locationRows, revisionRows] =
-      artifactIds.length === 0
-        ? [[], [], []]
-        : await Promise.all([
-            query
-              .select()
-              .from(artifacts)
-              .where(inArray(artifacts.id, artifactIds))
-              .orderBy(asc(artifacts.id)),
-            query
-              .select()
-              .from(locations)
-              .where(inArray(locations.artifactId, artifactIds))
-              .orderBy(asc(locations.id)),
-            query
-              .select()
-              .from(artifactRevisions)
-              .where(inArray(artifactRevisions.artifactId, artifactIds))
-              .orderBy(asc(artifactRevisions.id)),
-          ]);
-    const digests = uniqueStrings(
-      revisionRows.map((revision) => revision.blobDigest),
-    );
-    const currentLocationRevisions = currentConfirmedLocationRevisions(
+    const [accepted] = await this.readCurrentAcceptedPageWithDrizzle(
       query,
-      locationRows,
+      [assetId],
+      undefined,
+      "filter-current",
+      namedBasisDecisionId,
+      pinNamedBasisDecision,
     );
-    const blobRows =
-      digests.length === 0
-        ? []
-        : await query
-            .select()
-            .from(blobs)
-            .where(inArray(blobs.digest, digests))
-            .orderBy(asc(blobs.digest));
-
-    const relationshipLifecycleById = new Map(
-      relationshipLifecyclesRows.map((row) => [row.relationshipId, row]),
-    );
-    const supersededRelationshipIds = new Set(
-      relationshipLifecyclesRows.flatMap((row) =>
-        row.predecessorRelationshipId === null
-          ? []
-          : [row.predecessorRelationshipId],
-      ),
-    );
-    const retractedRelationshipIds = new Set(
-      relationshipRetractionRows.map((row) => row.relationshipId),
-    );
-    const currentRelationshipRows = relationshipRows.filter((row) => {
-      if (
-        supersededRelationshipIds.has(row.id) ||
-        retractedRelationshipIds.has(row.id)
-      )
-        return false;
-      const lifecycle = relationshipLifecycleById.get(row.id);
-      return (
-        lifecycle !== undefined &&
-        factLineages.has(
-          sourceLineageKey(lifecycle.sourceIdentity, lifecycle.nativeAddress),
-        )
-      );
-    });
-    const relationshipParticipantIds = uniqueStrings(
-      currentRelationshipRows.flatMap((row) =>
-        relationshipParticipantsFromJson(row.participantsJson).map(
-          (participant) => participant.entityId,
-        ),
-      ),
-    ).toSorted();
-    const [relatedEntityRows, sourcedEntityRows] =
-      relationshipParticipantIds.length === 0
-        ? [[], []]
-        : await Promise.all([
-            query
-              .select()
-              .from(entities)
-              .where(inArray(entities.id, relationshipParticipantIds))
-              .orderBy(asc(entities.id)),
-            query
-              .select()
-              .from(sourcedEntities)
-              .where(inArray(sourcedEntities.id, relationshipParticipantIds)),
-          ]);
-    const relatedEntityById = new Map(
-      relatedEntityRows.map((row) => [row.id, row]),
-    );
-    const sourcedEntityById = new Map(
-      sourcedEntityRows.map((row) => [row.id, row]),
-    );
-    const currentRelatedKinds = this.entityKindStatesWithDrizzle(
-      query,
-      uniqueStrings([
-        ...currentSourcedEntityRows.map(({ id }) => id),
-        ...relationshipParticipantIds,
-      ]),
-    );
-    const relationshipEntities = relationshipParticipantIds.flatMap(
-      (participantId): import("@digital/domain").CurrentRelatedEntity[] => {
-        const relatedEntity = relatedEntityById.get(participantId);
-        const sourcedEntity = sourcedEntityById.get(participantId);
-        if (relatedEntity === undefined || sourcedEntity === undefined)
-          return [];
-        return [
-          {
-            id: relatedEntity.id,
-            kind:
-              currentRelatedKinds.get(relatedEntity.id)?.effective ??
-              ({ status: "ordinary" } as const),
-            sourceIdentity: sourcedEntity.sourceIdentity,
-            sourceKey: sourcedEntity.sourceKey,
-            identityNamespace: sourcedEntity.identityNamespace,
-            label: sourcedEntity.label,
-            sourceRecordIds: jsonStringArray(
-              sourcedEntity.sourceRecordIdsJson,
-              "sourced entity source records",
-            ),
-            ...(sourcedEntity.producerJson === null
-              ? {}
-              : { producer: producerFromJson(sourcedEntity.producerJson) }),
-          },
-        ];
-      },
-    );
-    const lineageEntities = currentSourcedEntityRows.map(
-      (row): import("@digital/domain").CurrentRelatedEntity => ({
-        id: row.id,
-        kind:
-          currentRelatedKinds.get(row.id)?.effective ??
-          ({ status: "ordinary" } as const),
-        sourceIdentity: row.sourceIdentity,
-        sourceKey: row.sourceKey,
-        identityNamespace: row.identityNamespace,
-        label: row.label,
-        sourceRecordIds: jsonStringArray(
-          row.sourceRecordIdsJson,
-          "sourced entity source records",
-        ),
-        ...(row.producerJson === null
-          ? {}
-          : { producer: producerFromJson(row.producerJson) }),
-      }),
-    );
-    const currentEntities = [
-      ...new Map(
-        [...relationshipEntities, ...lineageEntities].map((item) => [
-          item.id,
-          item,
-        ]),
-      ).values(),
-    ];
-    const relationships = currentRelationshipRows.map(
-      (row): EntityRelationship => {
-        const lifecycle = relationshipLifecycleById.get(row.id);
-        if (lifecycle === undefined)
-          throw new Error("Current relationship requires a lifecycle");
-        return {
-          id: row.id,
-          participants: relationshipParticipantsFromJson(row.participantsJson),
-          type: row.type,
-          sourceSlot: lifecycle.sourceSlot,
-          sourceRecordIds: jsonStringArray(
-            row.sourceRecordIdsJson,
-            "relationship source records",
-          ),
-          qualifiers: JSON.parse(row.qualifiersJson) as NonNullable<
-            EntityRelationship["qualifiers"]
-          >,
-          ...(row.producerJson === null
-            ? {}
-            : { producer: producerFromJson(row.producerJson) }),
-        };
-      },
-    );
-
-    const activeAssetRelationshipRows = currentRelationshipRows.filter((row) =>
-      relationshipParticipantsFromJson(row.participantsJson).some(
-        (participant) => participant.entityId === assetId,
-      ),
-    );
-    const assetRelationshipParticipantIds = uniqueStrings(
-      activeAssetRelationshipRows.flatMap((row) =>
-        relationshipParticipantsFromJson(row.participantsJson).map(
-          (participant) => participant.entityId,
-        ),
-      ),
-    );
-    const resolutionRows =
-      assetRelationshipParticipantIds.length === 0
-        ? []
-        : await query
-            .select()
-            .from(entityResolutionDecisions)
-            .where(
-              inArray(
-                entityResolutionDecisions.entityId,
-                assetRelationshipParticipantIds,
-              ),
-            )
-            .orderBy(asc(sql<number>`${entityResolutionDecisions}.rowid`));
-    const eligibleResolutionRows = resolutionRows.filter((resolution) => {
-      const resolutionSourceRecordIds = jsonStringArray(
-        resolution.sourceRecordIdsJson,
-        "entity resolution source records",
-      );
-      return activeAssetRelationshipRows.some(
-        (relationship) =>
-          relationshipParticipantsFromJson(relationship.participantsJson).some(
-            (participant) => participant.entityId === resolution.entityId,
-          ) &&
-          jsonStringArray(
-            relationship.sourceRecordIdsJson,
-            "relationship source records",
-          ).some((id) => resolutionSourceRecordIds.includes(id)),
-      );
-    });
-    const mentionIds = uniqueStrings(
-      eligibleResolutionRows.map((resolution) => resolution.mentionId),
-    );
-    const mentionRows =
-      mentionIds.length === 0
-        ? []
-        : await query
-            .select()
-            .from(entityMentions)
-            .where(inArray(entityMentions.id, mentionIds))
-            .orderBy(asc(sql<number>`${entityMentions}.rowid`));
-    const entityMentionsForView = mentionRows.map(
-      (row): EntityMention => ({
-        id: row.id,
-        sourceIdentity: row.sourceIdentity,
-        field: row.field,
-        role: row.role,
-        label: row.label,
-        identityNamespace: row.identityNamespace,
-        sourceKey: row.sourceKey,
-        sourceRecordIds: jsonStringArray(
-          row.sourceRecordIdsJson,
-          "entity mention source records",
-        ),
-        ...(row.producerJson === null
-          ? {}
-          : { producer: producerFromJson(row.producerJson) }),
-      }),
-    );
-    const entityResolutionDecisionsForView = eligibleResolutionRows.map(
-      (row): EntityResolutionDecision => ({
-        id: row.id,
-        mentionId: row.mentionId,
-        entityId: row.entityId,
-        rule: row.rule as EntityResolutionDecision["rule"],
-        sourceRecordIds: jsonStringArray(
-          row.sourceRecordIdsJson,
-          "entity resolution source records",
-        ),
-        ...(row.producerJson === null
-          ? {}
-          : { producer: producerFromJson(row.producerJson) }),
-      }),
-    );
-    const observedEntityRows = await query
-      .select()
-      .from(observedEntities)
-      .where(eq(observedEntities.assetId, assetId));
-    const currentObservedGraphSupports = await query
-      .select()
-      .from(observedEntityGraphSupports)
-      .where(
-        and(
-          eq(observedEntityGraphSupports.assetId, assetId),
-          eq(observedEntityGraphSupports.recognitionDecisionId, decision.id),
-        ),
-      );
-    const observedGraphIds = currentObservedGraphSupports.map(
-      (item) => item.id,
-    );
-    const observedGraphEntities =
-      observedGraphIds.length === 0
-        ? []
-        : await query
-            .select()
-            .from(observedEntityGraphEntities)
-            .where(
-              inArray(
-                observedEntityGraphEntities.graphId,
-                sqliteTextSet(observedGraphIds),
-              ),
-            );
-    const observedGraphRelationships =
-      observedGraphIds.length === 0
-        ? []
-        : await query
-            .select()
-            .from(observedEntityGraphRelationships)
-            .where(
-              inArray(
-                observedEntityGraphRelationships.graphId,
-                sqliteTextSet(observedGraphIds),
-              ),
-            );
-    const observedRelationshipIds = observedGraphRelationships.map(
-      (item) => item.relationshipId,
-    );
-    const observedRelationshipRows =
-      observedRelationshipIds.length === 0
-        ? []
-        : await query
-            .select()
-            .from(entityRelationships)
-            .where(
-              inArray(
-                entityRelationships.id,
-                sqliteTextSet(observedRelationshipIds),
-              ),
-            );
-    const observedMentionRows =
-      observedEntityRows.length === 0
-        ? []
-        : await query
-            .select()
-            .from(observedEntityMentions)
-            .where(
-              inArray(
-                observedEntityMentions.entityId,
-                observedEntityRows.map((item) => item.id),
-              ),
-            );
-    const observedResolutionRows =
-      observedMentionRows.length === 0
-        ? []
-        : await query
-            .select()
-            .from(observedEntityResolutions)
-            .where(
-              inArray(
-                observedEntityResolutions.mentionId,
-                observedMentionRows.map((item) => item.id),
-              ),
-            );
-    const observedEntityGraphs = currentObservedGraphSupports.map((support) => {
-      const graphEntityIds = new Set(
-        observedGraphEntities
-          .filter((item) => item.graphId === support.id)
-          .map((item) => item.entityId),
-      );
-      const relationshipIds = new Set(
-        observedGraphRelationships
-          .filter((item) => item.graphId === support.id)
-          .map((item) => item.relationshipId),
-      );
-      const graphEntities = observedEntityRows.filter((entity) =>
-        graphEntityIds.has(entity.id),
-      );
-      const entityIds = new Set(graphEntities.map((entity) => entity.id));
-      const graphMentions = observedMentionRows.filter(
-        (mention) =>
-          entityIds.has(mention.entityId) &&
-          mention.revisionId === support.revisionId,
-      );
-      const mentionIds = new Set(graphMentions.map((mention) => mention.id));
-      return {
-        assetId: support.assetId,
-        artifactId: support.artifactId,
-        revisionId: support.revisionId,
-        producer: producerFromJson(support.producerJson),
-        coverageId: support.coverageId,
-        complete: true as const,
-        entities: graphEntities.map((entity) => ({
-          id: entity.id,
-          occurrenceSlot: entity.occurrenceSlot,
-          label: entity.label,
-          preservedValue: entity.preservedValue,
-          locator: entity.locator,
-        })),
-        mentions: graphMentions.map((mention) => ({
-          id: mention.id,
-          entityId: mention.entityId,
-          sourceSlot: mention.sourceSlot,
-          field: mention.field,
-          role: mention.role,
-          label: mention.label,
-          locator: mention.locator,
-        })),
-        resolutions: observedResolutionRows
-          .filter((resolution) => mentionIds.has(resolution.mentionId))
-          .map((resolution) => ({
-            mentionId: resolution.mentionId,
-            entityId: resolution.entityId,
-          })),
-        relationships: observedRelationshipRows
-          .filter((relationship) => relationshipIds.has(relationship.id))
-          .map((relationship) => ({
-            id: relationship.id,
-            participants: relationshipParticipantsFromJson(
-              relationship.participantsJson,
-            ),
-            type: relationship.type,
-            sourceSlot: observedGraphRelationships.find(
-              (item) =>
-                item.graphId === support.id &&
-                item.relationshipId === relationship.id,
-            )!.sourceSlot,
-            sourceRecordIds: [],
-            qualifiers: JSON.parse(relationship.qualifiersJson) as NonNullable<
-              EntityRelationship["qualifiers"]
-            >,
-            ...(relationship.producerJson === null
-              ? {}
-              : { producer: producerFromJson(relationship.producerJson) }),
-          })),
-      };
-    });
-    const observedCurrentEntities = this.currentObservedEntityRowsWithDrizzle(
-      query,
-    )
-      .filter((entity) => entity.assetId === assetId)
-      .map(
-        (entity) =>
-          ({
-            id: entity.id,
-            kind: { status: "ordinary" } as const,
-            label: entity.label,
-          }) as import("@digital/domain").CurrentRelatedEntity,
-      );
-
-    return {
-      proposal,
-      entity: { id: entity.id, kind: "digital-asset" },
-      sourceAssociations: currentAssociations,
-      ...(recognitionSourceAssociation === undefined
-        ? {}
-        : { recognitionSourceAssociation }),
-      metadataSourceRecords,
-      recognitionDecision: {
-        id: decision.id,
-        proposalId: decision.proposalId,
-        assetId: decision.assetId,
-        acceptedRuleResults: JSON.parse(
-          decision.acceptedRuleResultsJson,
-        ) as RecognitionDecision["acceptedRuleResults"],
-      },
-      artifacts: artifactRows.map((row): Artifact => ({ id: row.id })),
-      locations: locationRows.map(
-        (row): Location => ({
-          id: row.id,
-          artifactId: row.artifactId,
-          address: row.address,
-          kind: row.kind as Location["kind"],
-        }),
-      ),
-      blobs: blobRows.map(
-        (row): Blob => ({
-          digest: row.digest,
-          mediaType: row.mediaType,
-          byteLength: row.byteLength,
-        }),
-      ),
-      artifactRevisions: revisionRows.map(
-        (row): ArtifactRevision => ({
-          id: row.id,
-          artifactId: row.artifactId,
-          blobDigest: row.blobDigest,
-          ...(row.producerJson === null
-            ? {}
-            : { producer: producerFromJson(row.producerJson) }),
-        }),
-      ),
-      ...(currentLocationRevisions.length === 0
-        ? {}
-        : { currentLocationRevisions }),
-      artifactAssociations: currentArtifactAssociationRows.map(
-        (row): ArtifactAssociation => {
-          const sourceRecordIdsForAssociation = jsonStringArray(
-            row.sourceRecordIdsJson,
-            "artifact association source records",
-          );
-          return {
-            id: row.id,
-            target: descriptionTargetFromColumns(row),
-            artifactId: row.artifactId,
-            role: row.role,
-            ...(row.sourceAssociationId === null
-              ? {}
-              : { sourceAssociationId: row.sourceAssociationId }),
-            ...(sourceRecordIdsForAssociation.length === 0
-              ? {}
-              : { sourceRecordIds: sourceRecordIdsForAssociation }),
-            ...(row.observedArtifactPartJson === null
-              ? {}
-              : {
-                  observedArtifactPart: JSON.parse(
-                    row.observedArtifactPartJson,
-                  ) as NonNullable<ArtifactAssociation["observedArtifactPart"]>,
-                }),
-            ...(row.producerJson === null
-              ? {}
-              : { producer: producerFromJson(row.producerJson) }),
-          };
-        },
-      ),
-      artifactAssociationRecognitionSupports: recognitionSupportRows.filter(
-        (support) =>
-          currentArtifactAssociationRows.some(
-            ({ id: associationId }) => associationId === support.associationId,
-          ) && !endedRecognitionDecisionIds.has(support.recognitionDecisionId),
-      ),
-      metadata,
-      entities: currentEntities.map(({ kind: _kind, ...entity }) => entity),
-      currentRelatedEntities: [
-        ...new Map(
-          [...currentEntities, ...observedCurrentEntities].map((item) => [
-            item.id,
-            item,
-          ]),
-        ).values(),
-      ],
-      entityMentions: entityMentionsForView,
-      entityResolutionDecisions: entityResolutionDecisionsForView,
-      relationships,
-      ...(observedEntityGraphs.length === 0 ? {} : { observedEntityGraphs }),
-    };
+    return accepted;
   }
 }
 
@@ -17450,6 +21003,29 @@ function sourceLineageKey(
   nativeAddress: string,
 ): string {
   return `${sourceIdentity}\u0000${nativeAddress}`;
+}
+
+/** 来源 owner 在其精确坐标上的当前关联资格键。 */
+function sourceOwnerCoordinateKey(
+  ownerSubjectId: string,
+  sourceIdentity: string,
+  nativeAddress: string,
+): string {
+  return `${ownerSubjectId}\u0000${sourceIdentity}\u0000${nativeAddress}`;
+}
+
+/** 来源 owner 在某坐标下占据的覆盖或来源记录头键。 */
+function sourceOwnerLineageKey(
+  ownerSubjectId: string,
+  sourceIdentity: string,
+  nativeAddress: string,
+  occupiedBy: string,
+): string {
+  return `${sourceOwnerCoordinateKey(
+    ownerSubjectId,
+    sourceIdentity,
+    nativeAddress,
+  )}\u0000${occupiedBy}`;
 }
 
 function parseSourceRefreshChanges(
@@ -17677,10 +21253,73 @@ function producerJson(
   return producer === undefined ? null : JSON.stringify(producer);
 }
 
+/** 决定行的中立还原：目标与冻结选择必须完整，才承认这是一条人工决定。 */
+function artifactRoleDecisionFromRow(
+  row: typeof artifactRoleDecisions.$inferSelect,
+): ArtifactRoleDecision {
+  let target: DescriptionTarget | undefined;
+  if (row.targetKind === "entity" && row.targetEntityId !== null)
+    target = { kind: "entity", entityId: row.targetEntityId };
+  else if (
+    row.targetKind === "artifact-revision" &&
+    row.targetArtifactId !== null &&
+    row.targetRevisionId !== null
+  )
+    target = {
+      kind: "artifact-revision",
+      artifactId: row.targetArtifactId,
+      revisionId: row.targetRevisionId,
+    };
+  if (target === undefined)
+    throw new Error("人工产物角色决定行缺少完整目标坐标");
+  return {
+    id: row.id,
+    target,
+    role: row.role,
+    kind: row.kind === "clear" ? "clear" : "select",
+    ...(row.selectedAssociationId !== null &&
+    row.selectedArtifactId !== null &&
+    row.selectedRevisionId !== null
+      ? {
+          selected: {
+            associationId: row.selectedAssociationId,
+            artifactId: row.selectedArtifactId,
+            revisionId: row.selectedRevisionId,
+          },
+        }
+      : {}),
+    ...(row.predecessorDecisionId === null
+      ? {}
+      : { predecessorDecisionId: row.predecessorDecisionId }),
+    initiatedBy: row.initiatedBy,
+  };
+}
+
+function artifactRoleDecisionRow(
+  decision: ArtifactRoleDecision,
+): typeof artifactRoleDecisions.$inferInsert {
+  const target = decision.target;
+  return {
+    id: decision.id,
+    targetKind: target.kind,
+    targetEntityId: target.kind === "entity" ? target.entityId : null,
+    targetArtifactId:
+      target.kind === "artifact-revision" ? target.artifactId : null,
+    targetRevisionId:
+      target.kind === "artifact-revision" ? target.revisionId : null,
+    role: decision.role,
+    kind: decision.kind,
+    selectedAssociationId: decision.selected?.associationId ?? null,
+    selectedArtifactId: decision.selected?.artifactId ?? null,
+    selectedRevisionId: decision.selected?.revisionId ?? null,
+    predecessorDecisionId: decision.predecessorDecisionId ?? null,
+    initiatedBy: decision.initiatedBy,
+  };
+}
+
 function producerFromJson(value: string): CapabilityCoordinate {
   return JSON.parse(value) as CapabilityCoordinate;
 }
-
 function assertCompatibleProducer(
   persisted: string | null,
   candidate: CapabilityCoordinate | undefined,
@@ -17807,6 +21446,73 @@ function observedRootRegistrationToDrizzle(
   };
 }
 
+function assetLibraryFromDrizzle(
+  row: typeof assetLibraries.$inferSelect,
+): AssetLibrary {
+  const rootIds: unknown = JSON.parse(row.rootIdsJson);
+  const recognitionProfileIds: unknown = JSON.parse(
+    row.recognitionProfileIdsJson,
+  );
+  const sourceIdentities: unknown = JSON.parse(row.sourceIdentitiesJson);
+  const lists = [rootIds, recognitionProfileIds, sourceIdentities];
+  if (
+    (row.status !== "active" && row.status !== "removed") ||
+    row.displayName.trim().length === 0 ||
+    !Number.isSafeInteger(row.configVersion) ||
+    row.configVersion < 1 ||
+    lists.some(
+      (list) =>
+        !Array.isArray(list) ||
+        list.some(
+          (item: unknown) => typeof item !== "string" || item.length === 0,
+        ) ||
+        new Set(list).size !== list.length,
+    )
+  )
+    throw new Error("资产库持久配置无效");
+  return {
+    id: row.id,
+    displayName: row.displayName,
+    status: row.status,
+    configVersion: row.configVersion,
+    rootIds: rootIds as string[],
+    recognitionProfileIds: recognitionProfileIds as string[],
+    sourceIdentities: sourceIdentities as string[],
+  };
+}
+
+function libraryDirectoryGrantFromDrizzle(
+  row: typeof libraryDirectoryGrants.$inferSelect,
+): LibraryDirectoryGrant {
+  const allowedTargetGrantIds: unknown = JSON.parse(
+    row.allowedTargetGrantIdsJson,
+  );
+  if (
+    (row.status !== "active" && row.status !== "removed") ||
+    !Number.isSafeInteger(row.authorityVersion) ||
+    row.authorityVersion < 1 ||
+    (row.symlinkMode !== "do-not-follow" &&
+      row.symlinkMode !== "follow-file-links" &&
+      row.symlinkMode !== "follow-file-and-directory-links") ||
+    !Array.isArray(allowedTargetGrantIds) ||
+    allowedTargetGrantIds.some(
+      (item: unknown) => typeof item !== "string" || item.length === 0,
+    ) ||
+    new Set(allowedTargetGrantIds).size !== allowedTargetGrantIds.length
+  )
+    throw new Error("库目录授权持久配置无效");
+  return {
+    id: row.id,
+    libraryId: row.libraryId,
+    observedRootId: row.observedRootId,
+    status: row.status,
+    authorityVersion: row.authorityVersion,
+    symlinkMode: row.symlinkMode as LibraryDirectoryGrant["symlinkMode"],
+    allowedTargetGrantIds: allowedTargetGrantIds as string[],
+    awaitingObservation: row.awaitingObservation === 1,
+  };
+}
+
 function observedRootRegistrationFromDrizzle(
   row: typeof observedRootRegistrations.$inferSelect,
 ): ObservedRootRegistration {
@@ -17829,4 +21535,70 @@ function observedRootRegistrationFromDrizzle(
   });
   if (!decoded.valid) throw new Error("文件位置持久配置无效");
   return decoded.value;
+}
+
+/** 目录账本行到 Application 投影的可逆映射；坐标与计数都按耐久值原样返回。 */
+function libraryScanDirectoryRecordFromRow(
+  row: typeof libraryScanDirectories.$inferSelect,
+): LibraryScanDirectoryRecord {
+  return {
+    directoryKey: row.directoryKey,
+    scopeReference: row.scopeReference,
+    rootVersion: row.rootVersion,
+    relativeScope: row.relativeScope,
+    mode: row.mode as LibraryScanDirectoryRecord["mode"],
+    ...(row.executedByKey === null
+      ? {}
+      : { executedByDirectoryKey: row.executedByKey }),
+    ...(row.coveredPrefix === null ? {} : { coveredPrefix: row.coveredPrefix }),
+    ...(row.childExecutionId === null
+      ? {}
+      : { childExecutionId: row.childExecutionId }),
+    stage: row.stage as LibraryScanDirectoryRecord["stage"],
+    ...(row.outcome === null
+      ? {}
+      : { outcome: row.outcome as AssetRefreshOutcome }),
+    ...(row.reason === null ? {} : { reason: row.reason }),
+    workItemCount: row.workItemCount,
+    unresolvedCount: row.unresolvedCount,
+    failedCount: row.failedCount,
+  };
+}
+
+function parseWorkflowInputObject(
+  value: string | null,
+): Record<string, unknown> | undefined {
+  if (value === null) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return typeof parsed === "object" &&
+      parsed !== null &&
+      !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseLibraryScanPlanAssetLibraryId(
+  value: string | null,
+): string | undefined {
+  const plan = parseWorkflowInputObject(value)?.libraryScan;
+  if (typeof plan !== "object" || plan === null || Array.isArray(plan))
+    return undefined;
+  const assetLibraryId = (plan as Record<string, unknown>).assetLibraryId;
+  return typeof assetLibraryId === "string" ? assetLibraryId : undefined;
+}
+
+function parseLibraryScanObservedRootId(
+  value: string | null,
+): string | undefined {
+  const roots = parseWorkflowInputObject(value)?.observedRoots;
+  if (!Array.isArray(roots)) return undefined;
+  const first = roots[0];
+  if (typeof first !== "object" || first === null || Array.isArray(first))
+    return undefined;
+  const id = (first as Record<string, unknown>).id;
+  return typeof id === "string" ? id : undefined;
 }

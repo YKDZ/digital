@@ -3,6 +3,7 @@ import { PanelRight, X } from "@lucide/vue";
 import { useElementBounding, useWindowSize } from "@vueuse/core";
 import { computed, ref, watch } from "vue";
 
+import AssetInfoNotice from "#/components/formal/AssetInfoNotice.vue";
 import LibraryCover from "#/components/formal/LibraryCover.vue";
 import LibraryPreview from "#/components/formal/LibraryPreview.vue";
 import { Button } from "#/components/ui/button";
@@ -112,10 +113,9 @@ function moveSelection(event: KeyboardEvent, index: number, step: number) {
                     v-if="asset.creator || asset.fileCount !== undefined"
                     class="mt-1 block truncate text-sm text-muted-foreground"
                     >{{ asset.creator ?? `${asset.fileCount} 个文件` }}</span
-                  ></span
-                >
-              </button></TableCell
-            >
+                  ><AssetInfoNotice :asset="asset" variant="card"
+                /></span></button
+            ></TableCell>
             <TableCell
               class="hidden truncate text-sm text-muted-foreground md:table-cell"
               >{{ asset.classification ?? "—" }}</TableCell

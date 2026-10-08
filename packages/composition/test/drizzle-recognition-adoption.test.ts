@@ -4377,8 +4377,14 @@ function instrumentedRecognitionWorkflow(
 }
 
 function rejectDirectDatabaseWrites(): void {
-  const prepare = DatabaseSync.prototype.prepare;
-  const exec = DatabaseSync.prototype.exec;
+  const prepare: DatabaseSync["prepare"] = Reflect.get(
+    DatabaseSync.prototype,
+    "prepare",
+  );
+  const exec: DatabaseSync["exec"] = Reflect.get(
+    DatabaseSync.prototype,
+    "exec",
+  );
   vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (
     this: DatabaseSync,
     source: string,
@@ -4402,8 +4408,14 @@ function rejectDirectDatabaseWrites(): void {
  * 授权器可以证明后者，但手动准备的 `SELECT` 否则可能在重现旧查询路径时保持不可见。
  */
 function rejectDirectDatabaseQueries(): void {
-  const prepare = DatabaseSync.prototype.prepare;
-  const exec = DatabaseSync.prototype.exec;
+  const prepare: DatabaseSync["prepare"] = Reflect.get(
+    DatabaseSync.prototype,
+    "prepare",
+  );
+  const exec: DatabaseSync["exec"] = Reflect.get(
+    DatabaseSync.prototype,
+    "exec",
+  );
   vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (
     this: DatabaseSync,
     source: string,
@@ -4434,8 +4446,14 @@ function databaseCallOriginatesInDrizzle(): boolean {
  * `BEGIN IMMEDIATE`。
  */
 function rejectAllMetadataRefreshDml(): void {
-  const prepare = DatabaseSync.prototype.prepare;
-  const exec = DatabaseSync.prototype.exec;
+  const prepare: DatabaseSync["prepare"] = Reflect.get(
+    DatabaseSync.prototype,
+    "prepare",
+  );
+  const exec: DatabaseSync["exec"] = Reflect.get(
+    DatabaseSync.prototype,
+    "exec",
+  );
   vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (
     this: DatabaseSync,
     source: string,

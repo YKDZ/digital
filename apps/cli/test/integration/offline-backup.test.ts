@@ -136,12 +136,21 @@ describe("离线备份与恢复维护命令", () => {
     await activeProduct.close();
 
     const registered = runtime(
-      ["root-create", "恢复演练文件位置", observedRoot],
+      [
+        "library-create",
+        "恢复演练文件位置",
+        "--directory",
+        observedRoot,
+        "--json",
+      ],
       sourceProductData,
     );
     await expect(runCli(registered.runtime)).resolves.toBe(0);
-    const rootId = (JSON.parse(registered.stdout()) as { readonly id: string })
-      .id;
+    const rootId = (
+      JSON.parse(registered.stdout()) as {
+        readonly rootIds: readonly string[];
+      }
+    ).rootIds[0]!;
 
     const scanned = runtime(["scan", rootId, "--json"], sourceProductData);
     await expect(runCli(scanned.runtime)).resolves.toBe(0);
@@ -292,15 +301,18 @@ describe("离线备份与恢复维护命令", () => {
       ).mode & 0o777,
     ).toBe(0o640);
 
-    const restoredRoots = runtime(["root-list"], restoredProductData);
-    await expect(runCli(restoredRoots.runtime)).resolves.toBe(0);
-    expect(JSON.parse(restoredRoots.stdout())).toMatchObject([
-      {
-        id: rootId,
-        displayName: "恢复演练文件位置",
-        containerPath: observedRoot,
-      },
-    ]);
+    const restoredRoot = runtime(
+      ["scan", rootId, "--scope", ".", "--json"],
+      restoredProductData,
+    );
+    await expect(runCli(restoredRoot.runtime)).resolves.toBe(0);
+    expect(
+      (
+        JSON.parse(restoredRoot.stdout()) as {
+          readonly execution: { readonly outcome: string };
+        }
+      ).execution,
+    ).toMatchObject({ outcome: "no-change" });
 
     const restoredExecution = runtime(
       ["inspect", executionId, "--json"],

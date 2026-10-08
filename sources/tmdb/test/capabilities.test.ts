@@ -55,7 +55,13 @@ const snapshot = (root: string, directories: readonly string[] = []) => ({
   root,
   complete: true,
   excluded: [],
-  files: [],
+  files: [
+    {
+      relativePath: "content.bin",
+      size: 1,
+      modifiedAt: "2026-07-31T00:00:00.000Z",
+    },
+  ],
   directories: directories.map((relativePath) => ({
     relativePath,
     modifiedAt: "2026-07-31T00:00:00.000Z",
@@ -63,19 +69,36 @@ const snapshot = (root: string, directories: readonly string[] = []) => ({
   observedAt: "2026-07-31T00:00:00.000Z",
 });
 
+/** 目录解释器交出工作项计划；既有调用只消费计划内的规范根证据。 */
+function filmEvidence(root: string, directories: readonly string[] = []) {
+  const plan = new TmdbStrictFilmDirectoryInterpreter().interpret(
+    snapshot(root, directories),
+  );
+  if (!("workItems" in plan))
+    throw new Error("TMDB 目录约定没有形成工作项计划");
+  return plan.workItems.flatMap((workItem) => workItem.evidence);
+}
+
 describe("TMDB strict film directory convention", () => {
   it("accepts only one exact title, ASCII space, and four-digit ASCII year", () => {
     const interpreter = new TmdbStrictFilmDirectoryInterpreter();
 
     expect(
       interpreter.interpret(snapshot("/library/恐怖直播 (2013)")),
-    ).toMatchObject([
-      {
-        kind: "directory-convention",
-        sourceIdentity: "tmdb",
-        sourceAddress: "tmdb-search:%E6%81%90%E6%80%96%E7%9B%B4%E6%92%AD:2013",
-      },
-    ]);
+    ).toMatchObject({
+      workItems: [
+        {
+          evidence: [
+            {
+              kind: "directory-convention",
+              sourceIdentity: "tmdb",
+              sourceAddress:
+                "tmdb-search:%E6%81%90%E6%80%96%E7%9B%B4%E6%92%AD:2013",
+            },
+          ],
+        },
+      ],
+    });
     for (const invalid of [
       "/library/恐怖直播(2013)",
       "/library/恐怖直播  (2013)",
@@ -103,7 +126,7 @@ describe("TMDB strict film directory convention", () => {
     ).toEqual([]);
     expect(
       interpreter.interpret(snapshot("/library/恐怖直播 (2013)")),
-    ).toHaveLength(1);
+    ).toMatchObject({ workItems: [expect.anything()] });
     expect(
       interpreter.interpret(
         snapshot("/library/恐怖直播 (2013)", [
@@ -113,7 +136,7 @@ describe("TMDB strict film directory convention", () => {
           "season 1",
         ]),
       ),
-    ).toHaveLength(1);
+    ).toMatchObject({ workItems: [expect.anything()] });
   });
 });
 
@@ -186,10 +209,10 @@ describe("TMDB collection and interpretation", () => {
     });
     expect(new TmdbStrictFilmRecognizer().capability).toEqual({
       capabilityId: "tmdb.strict-film-recognizer",
-      capabilityVersion: "1",
+      capabilityVersion: "2",
       contractVersion: "1",
       identity: "tmdb.strict-film-recognizer",
-      implementationVersion: "1",
+      implementationVersion: "2",
       kind: "recognizer",
       interpretationContractVersions: ["1"],
     });
@@ -233,9 +256,7 @@ describe("TMDB collection and interpretation", () => {
         });
       },
     });
-    const evidence = new TmdbStrictFilmDirectoryInterpreter().interpret(
-      snapshot("/library/恐怖直播 (2013)"),
-    );
+    const evidence = filmEvidence("/library/恐怖直播 (2013)");
 
     const collected = await collector.collect(evidence[0]);
     const [interpreted] = new TmdbSourceInterpreter().interpret({
@@ -297,9 +318,7 @@ describe("TMDB collection and interpretation", () => {
         });
       },
     });
-    const evidence = new TmdbStrictFilmDirectoryInterpreter().interpret(
-      snapshot("/library/恐怖直播 (2013)"),
-    );
+    const evidence = filmEvidence("/library/恐怖直播 (2013)");
 
     const collection = await collector.collect(evidence[0]);
     const [interpreted] = new TmdbSourceInterpreter().interpret({
@@ -359,9 +378,7 @@ describe("TMDB collection and interpretation", () => {
         });
       },
     });
-    const evidence = new TmdbStrictFilmDirectoryInterpreter().interpret(
-      snapshot("/library/恐怖直播 (2013)"),
-    );
+    const evidence = filmEvidence("/library/恐怖直播 (2013)");
 
     const collection = await collector.collect(evidence[0]);
     const [interpreted] = new TmdbSourceInterpreter().interpret({
@@ -421,9 +438,7 @@ describe("TMDB collection and interpretation", () => {
         });
       },
     });
-    const evidence = new TmdbStrictFilmDirectoryInterpreter().interpret(
-      snapshot("/library/恐怖直播 (2013)"),
-    );
+    const evidence = filmEvidence("/library/恐怖直播 (2013)");
 
     const collected = await collector.collect(evidence[0]);
 
@@ -451,9 +466,7 @@ describe("TMDB collection and interpretation", () => {
         });
       },
     });
-    const evidence = new TmdbStrictFilmDirectoryInterpreter().interpret(
-      snapshot("/library/不存在的作品 (2013)"),
-    );
+    const evidence = filmEvidence("/library/不存在的作品 (2013)");
 
     const collected = await collector.collect(evidence[0]);
 
@@ -497,9 +510,7 @@ describe("TMDB collection and interpretation", () => {
         });
       },
     });
-    const evidence = new TmdbStrictFilmDirectoryInterpreter().interpret(
-      snapshot("/library/恐怖直播 (2013)"),
-    );
+    const evidence = filmEvidence("/library/恐怖直播 (2013)");
 
     const collected = await collector.collect(evidence[0]);
 
@@ -534,9 +545,7 @@ describe("TMDB collection and interpretation", () => {
         });
       },
     });
-    const evidence = new TmdbStrictFilmDirectoryInterpreter().interpret(
-      snapshot("/library/恐怖直播 (2013)"),
-    );
+    const evidence = filmEvidence("/library/恐怖直播 (2013)");
 
     const collected = await collector.collect(evidence[0]);
 
@@ -554,9 +563,7 @@ describe("TMDB collection and interpretation", () => {
 
   it("leaves zero or multiple exact title-and-year candidates unresolved", () => {
     const interpreter = new TmdbSourceInterpreter();
-    const evidence = new TmdbStrictFilmDirectoryInterpreter().interpret(
-      snapshot("/library/恐怖直播 (2013)"),
-    );
+    const evidence = filmEvidence("/library/恐怖直播 (2013)");
     const detail = (id: number, title: string) => ({
       id: `detail-${id}`,
       sourceIdentity: "tmdb",
@@ -636,9 +643,7 @@ describe("TMDB collection and interpretation", () => {
         });
       },
     });
-    const evidence = new TmdbStrictFilmDirectoryInterpreter().interpret(
-      snapshot("/library/恐怖直播 (2013)"),
-    );
+    const evidence = filmEvidence("/library/恐怖直播 (2013)");
     const collected = await collector.collect(evidence[0]);
     const [interpreted] = new TmdbSourceInterpreter().interpret({
       evidence,
@@ -938,9 +943,7 @@ describe("TMDB collection and interpretation", () => {
   });
 
   it("does not copy an Authorization-bearing request failure into its public collection result", async () => {
-    const evidence = new TmdbStrictFilmDirectoryInterpreter().interpret(
-      snapshot("/library/Private Failure Film (2004)"),
-    )[0];
+    const evidence = filmEvidence("/library/Private Failure Film (2004)")[0];
     const result = await new TmdbCollector({
       accessToken: "tmdb-error-token",
       delay: async () => {},
@@ -1088,9 +1091,7 @@ describe("TMDB collection and interpretation", () => {
         authority: "official" as const,
       },
     };
-    const evidence = new TmdbStrictFilmDirectoryInterpreter().interpret(
-      snapshot("/library/恐怖直播 (2013)"),
-    );
+    const evidence = filmEvidence("/library/恐怖直播 (2013)");
     const [interpreted] = interpreter.interpret({
       evidence,
       sourceRecords: [detail, directorCredits, credits],
@@ -1168,9 +1169,7 @@ describe("TMDB collection and interpretation", () => {
         authority: "official" as const,
       },
     };
-    const evidence = new TmdbStrictFilmDirectoryInterpreter().interpret(
-      snapshot("/library/恐怖直播 (2013)"),
-    );
+    const evidence = filmEvidence("/library/恐怖直播 (2013)");
 
     const [interpreted] = new TmdbSourceInterpreter().interpret({
       evidence,

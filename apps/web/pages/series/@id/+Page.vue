@@ -5,11 +5,14 @@ import { computed } from "vue";
 import AssetDetail from "#/components/formal/AssetDetail.vue";
 import { Button } from "#/components/ui/button";
 import { useCatalogueSubject } from "#/composables/use-catalogue-subject";
+import { libraryContext } from "#/lib/library";
 
 const pageContext = usePageContext();
+const library = computed(() => libraryContext(pageContext.urlParsed.search));
 const selectedWorkId = computed(() => pageContext.urlParsed.search.season);
 const { selected, error, loading, reload } = useCatalogueSubject(
   () => pageContext.routeParams.id ?? "",
+  () => library.value,
 );
 </script>
 
@@ -21,7 +24,11 @@ const { selected, error, loading, reload } = useCatalogueSubject(
     {{ error }} <Button variant="link" @click="reload">重试</Button>
   </p>
   <section v-else-if="selected">
-    <AssetDetail :asset="selected.asset" :selected-work-id="selectedWorkId" />
+    <AssetDetail
+      :asset="selected.asset"
+      :selected-work-id="selectedWorkId"
+      :library="library"
+    />
   </section>
   <section v-else class="grid gap-4">
     <h1 class="text-3xl font-bold">未找到作品系列</h1>

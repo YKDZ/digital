@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { sendAction } from "@digital/web-delivery/client";
-import { ref } from "vue";
+import { usePageContext } from "vike-vue/usePageContext";
+import { computed, ref } from "vue";
 
 import { Button } from "#/components/ui/button";
+import { libraryContext, withLibraryContext } from "#/lib/library";
 
 const props = defineProps<{
   readonly target: { readonly subjectId: string };
@@ -12,6 +14,14 @@ const emit = defineEmits<{ done: [] }>();
 const message = ref<string>();
 const executionId = ref<string>();
 const pending = ref<"metadata-refresh" | "rescrape">();
+// 整理页须沿用详情页当前的库语境，避免库内浏览后重新退回多库阻塞。
+const pageContext = usePageContext();
+const enrichHref = computed(() =>
+  withLibraryContext(
+    `/intake/enrich?asset=${encodeURIComponent(props.target.subjectId)}`,
+    libraryContext(pageContext.urlParsed.search),
+  ),
+);
 
 async function refresh(kind: "metadata-refresh" | "rescrape") {
   pending.value = kind;
@@ -38,10 +48,7 @@ async function refresh(kind: "metadata-refresh" | "rescrape") {
 <template>
   <div class="grid gap-2">
     <div class="flex flex-wrap gap-2">
-      <Button
-        v-if="showEnrichment !== false"
-        as="a"
-        :href="`/intake/enrich?asset=${encodeURIComponent(target.subjectId)}`"
+      <Button v-if="showEnrichment !== false" as="a" :href="enrichHref"
         >整理内容</Button
       >
       <Button

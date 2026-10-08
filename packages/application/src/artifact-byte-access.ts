@@ -6,6 +6,10 @@ import type {
 
 export type ArtifactRevisionSelection = {
   readonly artifactRevisionId: string;
+  /**
+   * 库范围读取时携带的观察目录所属资产库；独立或托管读取省略，此时只沿物理根或 managed 自身权威。
+   */
+  readonly assetLibraryId?: string;
 };
 
 /** Application 授权后的、脱敏的精确修订版描述。 */
@@ -230,6 +234,12 @@ export type OpenedArtifactByteSource = {
   readonly observedAuthority?: {
     readonly registrationId: string;
     readonly registrationVersion: number;
+    /**
+     * 本次实际打开所凭的库目录授权坐标：只有库语境观察读取才携带，最终提交据此在同一
+     * immediate 事务复核该 grant 仍 active 且代次相同。独立或托管读取省略，沿各自权威。
+     */
+    readonly assetLibraryId?: string;
+    readonly directoryAuthorityVersion?: number;
   };
 };
 
@@ -240,6 +250,8 @@ export type ArtifactLocationByteSources = {
     readonly blobDigest: string;
     readonly purpose: "confirmation" | "access";
     readonly operation: OperationLease;
+    /** 库范围读取时携带的库授权坐标；独立位置读取省略，只沿物理根或 managed 自身权威。 */
+    readonly assetLibraryId?: string;
   }): Promise<OpenedArtifactByteSource | undefined>;
 };
 
@@ -312,6 +324,8 @@ export type ObservedRevisionConfirmationCommands = {
     readonly observedAuthority: {
       readonly registrationId: string;
       readonly registrationVersion: number;
+      readonly assetLibraryId?: string;
+      readonly directoryAuthorityVersion?: number;
     };
     readonly blob: {
       readonly digest: string;

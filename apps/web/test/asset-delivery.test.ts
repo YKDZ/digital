@@ -18,21 +18,23 @@ import {
   AssetRefreshWorkflow,
   ArtifactByteAccessError,
   ExecutionHost,
+  type EffectiveDescriptionRead,
 } from "@digital/application";
 import { runProduct } from "@digital/composition";
 import {
   dlsiteAssetViewInformationRequirement,
   generalAssetViewInformationRequirement,
+  type AssetViewFacts,
 } from "@digital/presentation";
 import {
   createApi,
   createWebDelivery,
   executionOutcomeLabel,
   catalogueSnapshot,
-  createObservedRoot,
   deliveryAssetView,
   deliveryExecution,
   projectCatalogueAssets,
+  settingsSnapshot,
   startAssetMetadataRefresh,
   startAssetRescrape,
   startAssetRescrapeForSubject,
@@ -40,12 +42,48 @@ import {
   startCatalogueAutomation,
   startRefreshWith,
   updateAutomation,
+  updateSettingsLibrary,
 } from "@digital/web-delivery";
 import { describe, expect, it, vi } from "vitest";
 
 import { prepareWebProductData } from "./prepare-catalogue";
 
 let closeBoundWebProduct: (() => Promise<void>) | undefined;
+
+const acceptedDescription = (
+  entityId: string,
+  properties: readonly (readonly [string, string])[],
+): EffectiveDescriptionRead => ({
+  target: { kind: "entity", entityId },
+  metadataUsageContext: "asset.ordinary",
+  metadataScope: { kind: "all-available" },
+  metadata: properties.map(([property, value]) => ({
+    property,
+    result: {
+      status: "resolved",
+      values: [
+        {
+          property,
+          value,
+          sourceIdentity: "test",
+          sourceSlot: property,
+          reasoning: { kind: "unranked-source-assertion" },
+          assertions: [
+            {
+              target: { kind: "entity", entityId },
+              sourceSlot: property,
+              sourceRecordIds: ["record-1"],
+            },
+          ],
+          sourceRecordIds: ["record-1"],
+        },
+      ],
+    },
+  })),
+  artifactRoles: [],
+  missingArtifactRoles: [],
+  conflicts: [],
+});
 
 function bindWebDelivery() {
   const product = runProduct(
@@ -538,36 +576,30 @@ describe("asset delivery view", () => {
   it("delivers accepted Bangumi episodes as one finite series card", () => {
     const workId = "entity_bangumi-subject_243981";
     const assets = projectCatalogueAssets(
-      Array.from({ length: 13 }, (_, index) => {
+      Array.from({ length: 13 }, (_, index): AssetViewFacts => {
         const position = index + 1;
         const assetId = `asset_bloom_${position}`;
         return {
           id: assetId,
-          sourceAssociation: {
-            sourceIdentity: "bangumi",
-            nativeAddress: `https://bgm.tv/ep/${position}`,
-          },
-          metadata: [
-            { property: "asset.title", value: `第 ${position} 集` },
+          sourceAssociations: [
             {
-              property: "bangumi.episode.season-position",
-              value: String(position),
-            },
-            {
-              property: "bangumi.episode.continuous-position",
-              value: String(position),
-            },
-            {
-              subjectId: workId,
-              property: "bangumi.subject.name.zh-hans",
-              value: "终将成为你",
+              sourceIdentity: "bangumi",
+              nativeAddress: `https://bgm.tv/ep/${position}`,
             },
           ],
-          currentRelatedEntities: [
+          descriptions: [
+            acceptedDescription(assetId, [
+              ["asset.title", `第 ${position} 集`],
+            ]),
+            acceptedDescription(workId, [
+              ["bangumi.subject.name.zh-hans", "终将成为你"],
+            ]),
+          ],
+          relatedEntities: [
             {
               id: workId,
               label: "やがて君になる",
-              kind: { status: "ordinary" as const },
+              kind: { status: "ordinary" },
               sourceIdentity: "bangumi",
               identityNamespace: "bangumi.subject",
               sourceKey: "243981",
@@ -575,6 +607,9 @@ describe("asset delivery view", () => {
           ],
           relationships: [
             {
+              id: `relationship_bloom_${position}`,
+              sourceRecordIds: ["record-1"],
+              type: "asset.membership",
               participants: [
                 { entityId: assetId, role: "asset" },
                 {
@@ -582,15 +617,25 @@ describe("asset delivery view", () => {
                   role: "bangumi.subject.ordinary-episode",
                 },
               ],
-              type: "asset.membership",
+              qualifiers: [
+                {
+                  key: "bangumi.episode.season-position",
+                  value: String(position),
+                },
+                {
+                  key: "bangumi.episode.continuous-position",
+                  value: String(position),
+                },
+              ],
             },
           ],
-          artifactAssociations: [],
           locations: [
             {
+              id: `location_bloom_${position}`,
               artifactId: `artifact_${position}`,
               kind: "observed",
               address: `/media/Bloom/${position}.mkv`,
+              content: { status: "unconfirmed" },
             },
           ],
         };
@@ -878,12 +923,22 @@ describe("asset delivery view", () => {
     });
 
     try {
-      const registration = await createObservedRoot({
+      const configuration = await settingsSnapshot();
+      await updateSettingsLibrary({
+        action: "save",
         displayName: "自动刷新测试",
-        containerPath: observed,
-        symlinkMode: "do-not-follow",
+        directories: [observed],
+        recognitionProfileIds: configuration.recognitionProfiles.map(
+          (profile) => profile.id,
+        ),
+        sourceIdentities: configuration.librarySources.map(
+          (source) => source.id,
+        ),
       });
       const configuredRoots = await catalogueSnapshot();
+      const [registration] = configuredRoots.observedRoots;
+      if (registration === undefined)
+        throw new Error("资产库目录未形成可用观察根");
       expect(configuredRoots.observedRoots).toEqual([
         { id: registration.id, displayName: "自动刷新测试" },
       ]);
@@ -1271,12 +1326,19 @@ describe("asset delivery view", () => {
             artifactRevisions: [],
             artifactAssociations: [],
             metadata: [],
-            effectiveMetadata: [],
-            metadataPolicyConflicts: [],
-            currentRelatedEntities: [],
-            entityMentions: [],
-            entityResolutionDecisions: [],
-            relationships: [],
+            facts: {
+              id: "asset-1",
+              sourceAssociations: [
+                {
+                  sourceIdentity: "source",
+                  nativeAddress: "opaque:episode-1",
+                },
+              ],
+              descriptions: [],
+              relatedEntities: [],
+              relationships: [],
+              locations: [],
+            },
           },
         },
       ],
@@ -1369,7 +1431,7 @@ describe("asset delivery view", () => {
     expect(delivered?.targets).toEqual([
       {
         key: "subject:episode-b",
-        label: "内容 episode-b",
+        label: "内容 1",
         status: "failed",
         reason: "official endpoint unavailable",
         sourceRecordIds: ["episode-b-partial-record"],
@@ -1510,6 +1572,8 @@ describe("asset delivery view", () => {
           languages: [],
           classifications: [],
           credits: [],
+          genres: [],
+          series: [],
         },
       });
 

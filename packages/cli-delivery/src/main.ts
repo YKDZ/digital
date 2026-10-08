@@ -3,8 +3,14 @@ import { readFile } from "node:fs/promises";
 
 import type {
   AssetRefreshInspection,
+  AssetRefreshOutcome,
   ChangeImpactPreviewInspection,
+  EffectiveSubjectRead,
   InformationRequirement,
+  LibraryScanDirectoryStage,
+  LibraryScanInspectionDetail,
+  LibraryScanRun,
+  SelectedMetadataRead,
 } from "@digital/application";
 import type {
   ProductApplication,
@@ -164,6 +170,138 @@ function renderStructuredFailure(reason: string): string {
   })}\n`;
 }
 
+function libraryScanOutcomeLabel(
+  outcome: AssetRefreshOutcome | undefined,
+): string {
+  switch (outcome) {
+    case undefined:
+      return "进行中";
+    case "unresolved":
+      return "未识别";
+    case "proposal":
+      return "已生成识别预览";
+    case "accepted":
+      return "已接受";
+    case "partially-succeeded":
+      return "部分完成";
+    case "no-change":
+      return "无变更（已复用）";
+    case "interrupted":
+      return "已中断";
+    case "cancelled":
+      return "已取消";
+    case "failed":
+      return "失败";
+  }
+}
+
+function libraryScanStageLabel(stage: LibraryScanDirectoryStage): string {
+  switch (stage) {
+    case "queued":
+      return "等待开始";
+    case "running":
+      return "观察中";
+    case "settled":
+      return "已结算";
+    case "cancelled":
+      return "已取消";
+  }
+}
+
+/** 覆盖目录展示代表目录的友好名称，绝不向用户暴露目录标识或服务器路径。 */
+function libraryScanCoveredBy(
+  executedByDirectoryKey: string | undefined,
+  displayNameByKey: ReadonlyMap<string, string>,
+): string {
+  const name =
+    executedByDirectoryKey === undefined
+      ? undefined
+      : displayNameByKey.get(executedByDirectoryKey);
+  return name === undefined ? "其他目录" : `由「${name}」覆盖观察`;
+}
+
+function renderLibraryScanRun(run: LibraryScanRun): string {
+  const displayNameByKey = new Map(
+    run.directories.map((directory) => [
+      directory.directoryKey,
+      directory.displayName,
+    ]),
+  );
+  const lines = [
+    `库扫描记录：${run.parentExecutionId}`,
+    `结果：${libraryScanOutcomeLabel(run.outcome)}`,
+    ...(run.cancelled ? ["（本次扫描已取消，未开始的目录不再观察）"] : []),
+  ];
+  for (const directory of run.directories) {
+    lines.push(
+      `- ${directory.displayName}：${libraryScanOutcomeLabel(directory.outcome)}（${directory.workItems.length} 项材料；${
+        directory.mode === "covered"
+          ? libraryScanCoveredBy(
+              directory.executedByDirectoryKey,
+              displayNameByKey,
+            )
+          : "独立观察"
+      }）`,
+    );
+    if (directory.reason !== undefined)
+      lines.push(`    说明：${directory.reason}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function renderLibraryScanInspection(
+  inspection: LibraryScanInspectionDetail,
+): string {
+  const displayNameByKey = new Map(
+    inspection.directories.map((directory) => [
+      directory.directoryKey,
+      directory.displayName,
+    ]),
+  );
+  const cancellation = inspection.cancellationRequested;
+  const lines = [
+    `库扫描记录：${inspection.parentExecutionId}`,
+    `状态：${
+      inspection.status === "running"
+        ? "进行中"
+        : inspection.status === "completed"
+          ? "已完成"
+          : "失败"
+    }`,
+    ...(inspection.outcome === undefined
+      ? []
+      : [`结果：${libraryScanOutcomeLabel(inspection.outcome)}`]),
+    ...(cancellation === undefined
+      ? []
+      : [
+          `取消请求：${cancellation.requestedBy}${
+            cancellation.reason === undefined
+              ? ""
+              : `（${cancellation.reason}）`
+          }`,
+        ]),
+  ];
+  for (const directory of inspection.directories) {
+    lines.push(
+      `- ${directory.displayName}：${libraryScanStageLabel(directory.stage)}${
+        directory.outcome === undefined
+          ? ""
+          : `；${libraryScanOutcomeLabel(directory.outcome)}`
+      }（${directory.workItemCount} 项材料，未识别 ${directory.unresolvedCount}，失败 ${directory.failedCount}）`,
+    );
+    if (directory.mode === "covered")
+      lines.push(
+        `    归属：${libraryScanCoveredBy(
+          directory.executedByDirectoryKey,
+          displayNameByKey,
+        )}`,
+      );
+    if (directory.reason !== undefined)
+      lines.push(`    说明：${directory.reason}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
 function renderInspection(
   inspection: AssetRefreshInspection,
   json: boolean,
@@ -192,11 +330,17 @@ function renderInspection(
                 ? "无变更（已复用）"
                 : "失败";
   const accepted = inspection.accepted;
-  const metadata = accepted?.effectiveMetadata ?? [];
-  const metadataPolicyConflicts = accepted?.metadataPolicyConflicts ?? [];
-  const title = metadata.find(
-    (entry) => entry.property === "asset.title",
-  )?.value;
+  const titleResult = accepted?.facts.descriptions
+    .find(
+      (description) =>
+        description.target.kind === "entity" &&
+        description.target.entityId === accepted.entity.id,
+    )
+    ?.metadata.find((entry) => entry.property === "asset.title")?.result;
+  const title =
+    titleResult?.status === "resolved" && titleResult.values.length === 1
+      ? titleResult.values[0]?.value
+      : undefined;
   const operation =
     execution.selection.intent === "metadata-refresh"
       ? "刷新元数据"
@@ -223,24 +367,7 @@ function renderInspection(
               (association) =>
                 `  ${association.sourceIdentity}：${association.nativeAddress}`,
             ),
-            "当前采用：",
-            ...metadata.flatMap((item) => [
-              `  ${item.property}：${item.value}（${item.sourceIdentity}；记录 ${item.sourceRecordIds.join("、")}；来源位置 ${item.sourceSlot}）`,
-              `    选择依据：${effectiveMetadataReason(item.reasoning)}`,
-              ...item.alternatives.map(
-                (alternative) =>
-                  `    其他来源：${alternative.value}（${alternative.sourceIdentity}；记录 ${alternative.sourceRecordIds.join("、")}；来源位置 ${alternative.sourceSlot}；${alternative.exclusion?.disagreesWithSelected === true ? "与当前值不一致" : "与当前值一致"}；${alternative.exclusion?.kind === "source-preference" ? "因来源顺序未采用" : "按稳定断言顺序未采用"}）`,
-              ),
-            ]),
-            ...(metadataPolicyConflicts.length === 0
-              ? []
-              : [
-                  "元数据规则冲突：",
-                  ...metadataPolicyConflicts.map(
-                    (conflict) =>
-                      `  ${conflict.property}：${conflict.kind === "policy-conflict" ? `规则 ${conflict.policyIds.join("、")} 尚未确定先后` : "存在多个同等有效值"}，当前没有采用值（候选 ${conflict.candidates.map((candidate) => `${candidate.value}［${candidate.sourceIdentity}］`).join("、") || "无"}）`,
-                  ),
-                ]),
+            ...currentEffectiveLines(accepted.facts, ""),
             "实体：",
             ...(accepted.currentRelatedEntities ?? []).map((entity) => {
               const kind =
@@ -284,24 +411,7 @@ function renderInspection(
                     (association) =>
                       `    ${association.sourceIdentity}：${association.nativeAddress}`,
                   ),
-                  "  当前采用：",
-                  ...item.accepted.effectiveMetadata.flatMap((data) => [
-                    `    ${data.property}：${data.value}（${data.sourceIdentity}；记录 ${data.sourceRecordIds.join("、")}；来源位置 ${data.sourceSlot}）`,
-                    `      选择依据：${effectiveMetadataReason(data.reasoning)}`,
-                    ...data.alternatives.map(
-                      (alternative) =>
-                        `      其他来源：${alternative.value}（${alternative.sourceIdentity}；记录 ${alternative.sourceRecordIds.join("、")}；来源位置 ${alternative.sourceSlot}；${alternative.exclusion?.disagreesWithSelected === true ? "与当前值不一致" : "与当前值一致"}；${alternative.exclusion?.kind === "source-preference" ? "因来源顺序未采用" : "按稳定断言顺序未采用"}）`,
-                    ),
-                  ]),
-                  ...((item.accepted.metadataPolicyConflicts ?? []).length === 0
-                    ? []
-                    : [
-                        "  元数据规则冲突：",
-                        ...(item.accepted.metadataPolicyConflicts ?? []).map(
-                          (conflict) =>
-                            `    ${conflict.property}：${conflict.kind === "policy-conflict" ? `规则 ${conflict.policyIds.join("、")} 尚未确定先后` : "存在多个同等有效值"}，当前没有采用值`,
-                        ),
-                      ]),
+                  ...currentEffectiveLines(item.accepted.facts, "  "),
                 ]),
           ])),
       ...(execution.reusedExecutionId === undefined
@@ -324,10 +434,53 @@ function renderInspection(
   );
 }
 
+/**
+ * 检查与 CLI 唯一的"当前采用"摘要：只从共同读取 `facts` 的实体描述投影已采用值，
+ * 冲突以面向用户的统一说明呈现。原始候选、来源与历史仍留在 `facts`/`--json` 供明确检查，
+ * 这里不再输出第二套生效元数据旁路，也不透传策略标识或候选值等内部坐标。
+ */
+function currentEffectiveLines(
+  facts: EffectiveSubjectRead,
+  pad: string,
+): string[] {
+  const adopted: string[] = [];
+  for (const description of facts.descriptions) {
+    if (description.target.kind !== "entity") continue;
+    for (const entry of description.metadata) {
+      if (entry.result.status !== "resolved") continue;
+      for (const item of entry.result.values) {
+        adopted.push(
+          `${pad}  ${item.property}：${item.value}（${item.sourceIdentity}；记录 ${item.sourceRecordIds.join("、")}；来源位置 ${item.sourceSlot}）`,
+          `${pad}    选择依据：${effectiveMetadataReason(item.reasoning)}`,
+        );
+      }
+    }
+  }
+  const conflicts = facts.descriptions
+    .filter((description) => description.target.kind === "entity")
+    .flatMap((description) => description.conflicts)
+    .filter(
+      (conflict) =>
+        conflict.kind === "policy-conflict" ||
+        conflict.kind === "metadata-value-conflict",
+    );
+  return [
+    `${pad}当前采用：`,
+    ...adopted,
+    ...(conflicts.length === 0
+      ? []
+      : [
+          `${pad}元数据规则冲突：`,
+          ...conflicts.map(
+            (conflict) =>
+              `${pad}  ${conflict.property ?? "相关属性"}：存在尚未解决的资料选择，当前没有采用值`,
+          ),
+        ]),
+  ];
+}
+
 function effectiveMetadataReason(
-  reasoning: NonNullable<
-    AssetRefreshInspection["accepted"]
-  >["effectiveMetadata"][number]["reasoning"],
+  reasoning: SelectedMetadataRead["reasoning"],
 ): string {
   if (reasoning.kind === "source-preference")
     return `采用首选来源 ${reasoning.preferredSource}`;
@@ -342,6 +495,20 @@ function renderChangeImpactPreview(
 ): string {
   if (json)
     return `${JSON.stringify({ format: "temporary-change-impact-preview/v1", unstable: true, preview })}\n`;
+  const metadataLines = (
+    facts: import("@digital/application").EffectiveSubjectRead | undefined,
+  ) =>
+    facts?.descriptions.flatMap((description) =>
+      description.metadata.flatMap((entry) =>
+        entry.result.status === "resolved"
+          ? entry.result.values.map(
+              (item) => `  ${item.property}：${item.value}`,
+            )
+          : [
+              `  ${entry.property}：${entry.result.status === "missing" ? "暂无资料" : "存在待处理冲突"}`,
+            ],
+      ),
+    ) ?? [];
   return (
     [
       `变更影响预演：${preview.id}`,
@@ -350,27 +517,27 @@ function renderChangeImpactPreview(
       `拟定来源：${preview.projected.recognitionSourceAssociation?.nativeAddress ?? "无识别来源"}`,
       `影响：元数据 ${preview.metadataCount}，实体 ${preview.entityCount}，提及 ${preview.mentionCount}，解析 ${preview.resolutionCount}，关系 ${preview.relationshipCount}，产物 ${preview.artifactCount}`,
       "当前元数据：",
-      ...preview.current.metadata.map(
-        (item) => `  ${item.property}：${item.value}`,
-      ),
+      ...metadataLines(preview.facts?.current),
       "拟定元数据：",
-      ...preview.projected.metadata.map(
-        (item) => `  ${item.property}：${item.value}`,
-      ),
+      ...metadataLines(preview.facts?.projected),
       "当前关系：",
-      ...preview.current.relationships.map(
+      ...(preview.facts?.current.relationships ?? []).map(
         (item) =>
           `  ${item.type}：${item.participants.map((participant) => `${participant.role}：${participant.entityId}`).join("；")}`,
       ),
       "拟定关系：",
-      ...preview.projected.relationships.map(
+      ...(preview.facts?.projected.relationships ?? []).map(
         (item) =>
           `  ${item.type}：${item.participants.map((participant) => `${participant.role}：${participant.entityId}`).join("；")}`,
       ),
       "当前产物用途：",
-      ...preview.current.artifactAssociations.map((item) => `  ${item.role}`),
+      ...(preview.facts?.current.descriptions ?? []).flatMap((description) =>
+        description.artifactRoles.map((item) => `  ${item.role}`),
+      ),
       "拟定产物用途：",
-      ...preview.projected.artifactAssociations.map((item) => `  ${item.role}`),
+      ...(preview.facts?.projected.descriptions ?? []).flatMap((description) =>
+        description.artifactRoles.map((item) => `  ${item.role}`),
+      ),
       ...(preview.blockingConditions.length === 0
         ? []
         : [`阻塞条件：${preview.blockingConditions.join("；")}`]),
@@ -407,10 +574,6 @@ export function createCliCommand(
       }
     });
 
-  const rootService = () => {
-    const workflow = resources.assetRefresh();
-    return workflow.observedRootRegistrations;
-  };
   const fanboxConnections = () =>
     resources.assetRefresh().sourceConnections.fanbox;
   const sourceConnections = () => resources.assetRefresh().sourceConnections;
@@ -695,97 +858,129 @@ export function createCliCommand(
       },
     );
 
-  const rootCreateCommand = command
-    .command("root-create")
-    .description("登记一个容器内可见的只读文件位置。")
-    .argument("<name>", "显示名称")
-    .argument("<container-path>", "容器内绝对路径")
-    .option("--symlink-mode <mode>", "链接策略", "do-not-follow")
-    .action(async (name: string, containerPath: string, options) => {
+  const libraryCreateCommand = command
+    .command("library-create")
+    .description(
+      "登记一个资产库及其目录：目录在此归属到该库，之后的扫描都按库与目录归属进行。" +
+        "未指定识别方式或来源时启用当前全部已配置项。",
+    )
+    .argument("<name>", "资产库显示名称")
+    .requiredOption(
+      "--directory <paths...>",
+      "属于该库的一个或多个容器内绝对目录",
+    )
+    .option("--profile <ids...>", "启用的资产识别方式")
+    .option("--source <ids...>", "关联的资料来源")
+    .option("--json", "输出机器可读结果")
+    .action(
+      async (
+        name: string,
+        options: {
+          readonly directory: readonly string[];
+          readonly profile?: readonly string[];
+          readonly source?: readonly string[];
+          readonly json?: boolean;
+        },
+      ) => {
+        try {
+          const libraries = resources.assetRefresh().assetLibraries;
+          const saved = await libraries.save({
+            displayName: name,
+            directories: options.directory,
+            recognitionProfileIds:
+              options.profile ?? libraries.recognitionProfiles.map((p) => p.id),
+            sourceIdentities:
+              options.source ?? libraries.sources.map((source) => source.id),
+          });
+          runtime.streams.stdout.write(
+            options.json === true
+              ? `${JSON.stringify(saved)}\n`
+              : `资产库：${saved.displayName}\n目录：${options.directory.join("、")}\n`,
+          );
+        } catch (error) {
+          if (error instanceof CommanderError) throw error;
+          libraryCreateCommand.error(`error: ${errorMessage(error)}`, {
+            exitCode: 1,
+            code: "cli.library.create-failed",
+          });
+        }
+      },
+    );
+
+  const libraryRemoveCommand = command
+    .command("library-remove")
+    .description(
+      "移除一个资产库：停止它对这些目录的观察与自动刷新；其他库对同一路径的使用、以及已记录的内容与历史都保持不变。",
+    )
+    .argument("<id>", "资产库编号")
+    .option("--json", "输出机器可读结果")
+    .action(async (id: string, options: { readonly json?: boolean }) => {
       try {
-        const created = await rootService().create({
-          displayName: name,
-          containerPath,
-          readOnly: true,
-          symlinkMode: options.symlinkMode,
-          allowedTargetRootIds: [],
-        });
-        runtime.streams.stdout.write(`${JSON.stringify(created)}\n`);
+        const libraries = resources.assetRefresh().assetLibraries;
+        const current = await libraries.get(id);
+        if (current === undefined) throw new Error(`未找到资产库：${id}`);
+        await libraries.remove({ id, expectedVersion: current.configVersion });
+        runtime.streams.stdout.write(
+          options.json === true
+            ? `${JSON.stringify({ id, status: "removed" })}\n`
+            : `资产库已移除：${current.displayName}\n`,
+        );
       } catch (error) {
-        rootCreateCommand.error(`error: ${errorMessage(error)}`, {
+        if (error instanceof CommanderError) throw error;
+        libraryRemoveCommand.error(`error: ${errorMessage(error)}`, {
           exitCode: 1,
-          code: "cli.observed-root.create-failed",
+          code: "cli.library.remove-failed",
         });
       }
     });
-  command
-    .command("root-list")
-    .description("列出文件位置。")
-    .action(async () => {
-      runtime.streams.stdout.write(
-        `${JSON.stringify(await rootService().list())}\n`,
-      );
-    });
-  command
-    .command("root-get")
-    .description("查看一个文件位置。")
-    .argument("<id>", "文件位置编号")
-    .action(async (id: string) => {
-      const registration = await rootService().get(id);
-      if (registration === undefined) throw new Error("文件位置不存在");
-      runtime.streams.stdout.write(`${JSON.stringify(registration)}\n`);
-    });
-  command
-    .command("root-update")
-    .description("更新一个文件位置的名称和链接策略。")
-    .argument("<id>", "文件位置编号")
-    .requiredOption("--version <number>", "当前配置版本")
-    .requiredOption("--name <name>", "显示名称")
-    .requiredOption("--symlink-mode <mode>", "链接策略")
-    .action(async (id: string, options) => {
-      const updated = await rootService().update({
-        id,
-        expectedVersion: Number(options.version),
-        displayName: options.name,
-        readOnly: true,
-        symlinkMode: options.symlinkMode,
-        allowedTargetRootIds: [],
-      });
-      runtime.streams.stdout.write(`${JSON.stringify(updated)}\n`);
-    });
-  command
-    .command("root-deactivate")
-    .description("停用一个文件位置，但保留其历史身份。")
-    .argument("<id>", "文件位置编号")
-    .requiredOption("--version <number>", "当前配置版本")
-    .action(async (id: string, options) => {
-      runtime.streams.stdout.write(
-        `${JSON.stringify(
-          await rootService().deactivate({
+
+  const libraryReconnectCommand = command
+    .command("library-reconnect")
+    .description(
+      "重新连接一个此前从资产库移除的目录：确认该目录仍可访问，等待下一次扫描重新确认其中的文件。",
+    )
+    .argument("<id>", "资产库编号")
+    .argument("<directoryId>", "要重新连接的库目录编号")
+    .option("--json", "输出机器可读结果")
+    .action(
+      async (
+        id: string,
+        directoryId: string,
+        options: { readonly json?: boolean },
+      ) => {
+        try {
+          const libraries = resources.assetRefresh().assetLibraries;
+          const current = await libraries.get(id);
+          if (current === undefined) throw new Error(`未找到资产库：${id}`);
+          const grant = (await libraries.directoryViews(id)).find(
+            (view) => view.directoryId === directoryId,
+          );
+          if (grant === undefined)
+            throw new Error("该目录不属于此资产库，请指定要重新连接的目录");
+          const saved = await libraries.reconnect({
             id,
-            expectedVersion: Number(options.version),
-          }),
-        )}\n`,
-      );
-    });
-  command
-    .command("root-reconnect")
-    .description("按原身份重新连接同一个文件位置。")
-    .argument("<id>", "文件位置编号")
-    .argument("<container-path>", "容器内绝对路径")
-    .requiredOption("--version <number>", "当前配置版本")
-    .action(async (id: string, containerPath: string, options) => {
-      runtime.streams.stdout.write(
-        `${JSON.stringify(
-          await rootService().reconnect({
-            id,
-            expectedVersion: Number(options.version),
-            containerPath,
-            readOnly: true,
-          }),
-        )}\n`,
-      );
-    });
+            expectedVersion: current.configVersion,
+            directoryId,
+            expectedAuthorityVersion: grant.authorityVersion,
+          });
+          runtime.streams.stdout.write(
+            options.json === true
+              ? `${JSON.stringify({
+                  id: saved.id,
+                  directoryId,
+                  status: "reconnected",
+                })}\n`
+              : `目录已重新连接：${grant.containerPath}\n`,
+          );
+        } catch (error) {
+          if (error instanceof CommanderError) throw error;
+          libraryReconnectCommand.error(`error: ${errorMessage(error)}`, {
+            exitCode: 1,
+            code: "cli.library.reconnect-failed",
+          });
+        }
+      },
+    );
 
   for (const [name, acceptTrusted, intent, description] of [
     ["scan", true, "scan-now", "扫描目录并应用受信任的识别结果。"],
@@ -807,6 +1002,7 @@ export function createCliCommand(
           : "已登记的文件位置编号",
       )
       .option("--scope <relative-path>", "登记根内的有限相对范围", ".")
+      .option("--library <id>", "该目录所属的资产库；目录被多个库共享时必填")
       .option("--json", "输出临时机器可读结果")
       .option("--require-artifact-role <roles...>", "要求本次获取指定产物用途")
       .action(
@@ -815,6 +1011,7 @@ export function createCliCommand(
           options: {
             readonly json?: boolean;
             readonly scope?: string;
+            readonly library?: string;
             readonly requireArtifactRole?: readonly string[];
           },
         ) => {
@@ -851,6 +1048,9 @@ export function createCliCommand(
                 : await workflow.scanObservedScope({
                     registrationId: target,
                     relativeScope: options.scope ?? ".",
+                    ...(options.library === undefined
+                      ? {}
+                      : { assetLibraryId: options.library }),
                     acceptTrusted,
                     informationRequirement: requirement,
                     ...callbacks,
@@ -886,6 +1086,206 @@ export function createCliCommand(
   }
 
   command
+    .command("scan-library")
+    .description(
+      "扫描一个资产库的全部目录：同一配置里重复或包含的范围只物理观察一次，" +
+        "全部目录的结果都记录在同一条库扫描记录下。",
+    )
+    .argument("<library>", "资产库标识")
+    .option("--preview", "只生成识别结果，不应用受信任的接受")
+    .option("--json", "输出机器可读结果")
+    .option("--require-artifact-role <roles...>", "要求本次获取指定产物用途")
+    .action(
+      async (
+        library: string,
+        options: {
+          readonly preview?: boolean;
+          readonly json?: boolean;
+          readonly requireArtifactRole?: readonly string[];
+        },
+      ) => {
+        const scanLibraryCommand = command.commands.find(
+          (item) => item.name() === "scan-library",
+        )!;
+        try {
+          const run = await resources.assetRefresh().scanAssetLibrary({
+            libraryId: library,
+            acceptTrusted: options.preview !== true,
+            informationRequirement: informationRequirement(
+              options.requireArtifactRole,
+            ),
+            onProgress(message: string) {
+              runtime.streams.stderr.write(`${message}\n`);
+            },
+          });
+          runtime.streams.stdout.write(
+            options.json === true
+              ? `${JSON.stringify(run)}\n`
+              : renderLibraryScanRun(run),
+          );
+          if (
+            run.outcome === "failed" ||
+            run.outcome === "partially-succeeded" ||
+            run.outcome === "cancelled" ||
+            run.cancelled
+          )
+            scanLibraryCommand.error(
+              `error: ${
+                run.directories
+                  .filter((directory) => directory.reason !== undefined)
+                  .map(
+                    (directory) =>
+                      `${directory.displayName}：${directory.reason}`,
+                  )
+                  .join("；") || `库扫描未完成：${run.outcome}`
+              }`,
+              { exitCode: 1, code: "cli.library-scan.incomplete" },
+            );
+        } catch (error) {
+          if (error instanceof CommanderError) throw error;
+          scanLibraryCommand.error(`error: ${errorMessage(error)}`, {
+            exitCode: 1,
+            code: "cli.library-scan.failed",
+          });
+        }
+      },
+    );
+
+  command
+    .command("inspect-library-scan")
+    .description("查看一次库扫描的全部目录、各自阶段与结果。")
+    .argument("<scan>", "库扫描记录标识")
+    .option("--json", "输出机器可读结果")
+    .action(async (scan: string, options: { readonly json?: boolean }) => {
+      const inspectCommand = command.commands.find(
+        (item) => item.name() === "inspect-library-scan",
+      )!;
+      try {
+        const inspection = await resources
+          .assetRefresh()
+          .inspectAssetLibraryScan(scan);
+        if (inspection === undefined) throw new Error("未找到刷新记录");
+        runtime.streams.stdout.write(
+          options.json === true
+            ? `${JSON.stringify(inspection)}\n`
+            : renderLibraryScanInspection(inspection),
+        );
+      } catch (error) {
+        inspectCommand.error(`error: ${errorMessage(error)}`, {
+          exitCode: 1,
+          code: "cli.library-scan.inspect-failed",
+        });
+      }
+    });
+
+  command
+    .command("cancel-library-scan")
+    .description(
+      "取消一次库扫描：没有开始的目录不再开始观察，仍在观察的目录被取消，" +
+        "已经提交的结果保持不动。",
+    )
+    .argument("<scan>", "库扫描记录标识")
+    .requiredOption("--requested-by <actor>", "发起者")
+    .option("--reason <text>", "取消原因")
+    .option("--json", "输出机器可读结果")
+    .action(
+      async (
+        scan: string,
+        options: {
+          readonly requestedBy: string;
+          readonly reason?: string;
+          readonly json?: boolean;
+        },
+      ) => {
+        const cancelCommand = command.commands.find(
+          (item) => item.name() === "cancel-library-scan",
+        )!;
+        try {
+          const inspection = await resources
+            .assetRefresh()
+            .cancelAssetLibraryScan({
+              parentExecutionId: scan,
+              requestedBy: options.requestedBy,
+              ...(options.reason === undefined
+                ? {}
+                : { reason: options.reason }),
+            });
+          runtime.streams.stdout.write(
+            options.json === true
+              ? `${JSON.stringify(inspection)}\n`
+              : renderLibraryScanInspection(inspection),
+          );
+        } catch (error) {
+          cancelCommand.error(`error: ${errorMessage(error)}`, {
+            exitCode: 1,
+            code: "cli.library-scan.cancel-failed",
+          });
+        }
+      },
+    );
+
+  command
+    .command("unrecognized-observations")
+    .description(
+      "列出库扫描中没有形成任何决定的观察材料，以及发现它们的目录与范围，" +
+        "供人工整理入口按确切归属继续。",
+    )
+    .option("--scan <id>", "只看某次库扫描")
+    .option("--library <id>", "只看某个资产库")
+    .option("--directory <id>", "只看某个目录")
+    .option("--limit <count>", "最多列出多少条", "50")
+    .option(
+      "--json",
+      "输出机器可读的完整归属坐标，可直接交给 material-association-prepare 等人工入口",
+    )
+    .action(
+      async (options: {
+        readonly scan?: string;
+        readonly library?: string;
+        readonly directory?: string;
+        readonly limit: string;
+        readonly json?: boolean;
+      }) => {
+        const observationsCommand = command.commands.find(
+          (item) => item.name() === "unrecognized-observations",
+        )!;
+        try {
+          const observations = await resources
+            .assetRefresh()
+            .unrecognizedLibraryScanObservations({
+              ...(options.scan === undefined
+                ? {}
+                : { parentExecutionId: options.scan }),
+              ...(options.library === undefined
+                ? {}
+                : { assetLibraryId: options.library }),
+              ...(options.directory === undefined
+                ? {}
+                : { directoryKey: options.directory }),
+              limit: Number(options.limit),
+            });
+          runtime.streams.stdout.write(
+            options.json === true
+              ? `${JSON.stringify(observations)}\n`
+              : observations.length === 0
+                ? "没有待人工整理的观察材料\n"
+                : `${observations
+                    .map(
+                      (observation) =>
+                        `${observation.relativePaths.join("、")}（库扫描 ${observation.parentExecutionId}）`,
+                    )
+                    .join("\n")}\n`,
+          );
+        } catch (error) {
+          observationsCommand.error(`error: ${errorMessage(error)}`, {
+            exitCode: 1,
+            code: "cli.library-scan.observations-failed",
+          });
+        }
+      },
+    );
+
+  command
     .command("source-inputs")
     .description("列出当前产品支持的明确来源输入要求。")
     .option("--json", "输出机器可读结果")
@@ -915,12 +1315,13 @@ export function createCliCommand(
     .argument("<source-identity>", "来源标识")
     .argument("<source-input-json>", "按来源要求提供的 JSON 对象")
     .option("--json", "输出机器可读结果")
+    .option("--library <id>", "明确资产库编号（多库归属时必填）")
     .action(
       async (
         assetId: string,
         sourceIdentity: string,
         sourceInputJson: string,
-        options: { readonly json?: boolean },
+        options: { readonly json?: boolean; readonly library?: string },
       ) => {
         let sourceInput: unknown;
         try {
@@ -949,6 +1350,9 @@ export function createCliCommand(
             sourceIdentity,
             sourceInput: sourceInput as Readonly<Record<string, string>>,
             informationRequirement: cliAssetViewInformationRequirement,
+            ...(options.library === undefined
+              ? {}
+              : { assetLibraryId: options.library }),
             onExecutionStarted(execution) {
               runtime.streams.stderr.write(`刷新记录：${execution.id}\n`);
             },
@@ -973,6 +1377,56 @@ export function createCliCommand(
           enrichSourceCommand.error(`error: ${reason}`, {
             exitCode: 1,
             code: "cli.source-enrichment.failed",
+          });
+        }
+      },
+    );
+
+  const retryEnrichmentCommand = command
+    .command("retry-source-enrichment")
+    .description("明确再次获取一个已终止失败的来源补充项。")
+    .argument("<execution-id>", "失败执行编号")
+    .argument("<asset-id>", "内容编号")
+    .argument("<source-identity>", "来源标识")
+    .option("--json", "输出机器可读结果")
+    .action(
+      async (
+        executionId: string,
+        assetId: string,
+        sourceIdentity: string,
+        options: { readonly json?: boolean },
+      ) => {
+        const workflow = resources.assetRefresh();
+        let wroteInspection = false;
+        try {
+          const inspection = await workflow.retrySourceEnrichment({
+            executionId,
+            subjectId: assetId,
+            sourceIdentity,
+            onExecutionStarted(execution) {
+              runtime.streams.stderr.write(`刷新记录：${execution.id}\n`);
+            },
+            onProgress(message) {
+              runtime.streams.stderr.write(`${message}\n`);
+            },
+          });
+          runtime.streams.stdout.write(
+            renderInspection(inspection, options.json === true),
+          );
+          wroteInspection = true;
+          if (inspection.execution.outcome === "failed")
+            retryEnrichmentCommand.error(
+              `error: ${inspection.execution.reason ?? "再次获取未完成"}`,
+              { exitCode: 1, code: "cli.source-enrichment.retry-failed" },
+            );
+        } catch (error) {
+          if (error instanceof CommanderError) throw error;
+          const reason = errorMessage(error);
+          if (options.json === true && !wroteInspection)
+            runtime.streams.stdout.write(renderStructuredFailure(reason));
+          retryEnrichmentCommand.error(`error: ${reason}`, {
+            exitCode: 1,
+            code: "cli.source-enrichment.retry-failed",
           });
         }
       },
@@ -1186,6 +1640,57 @@ export function createCliCommand(
           retractIdentity.error(`error: ${errorMessage(error)}`, {
             exitCode: 1,
             code: "cli.identity-retraction.failed",
+          });
+        }
+      },
+    );
+
+  const amendScopeCommand = command
+    .command("amend-scope")
+    .description("就一次观察里未决的工作项做出明确的范围决定。")
+    .argument("<source-execution-id>", "形成该观察的记录编号")
+    .argument("<work-item-key>", "未决的工作项标识")
+    .argument("<reason>", "范围决定原因")
+    .requiredOption("--actor <actor-id>", "提议者标识")
+    .option(
+      "--decision <decision-id>",
+      "点名的识别决定，缺省使用那次观察点名的决定",
+    )
+    .option("--json", "输出机器可读结果")
+    .action(
+      async (
+        sourceExecutionId: string,
+        workItemKey: string,
+        reason: string,
+        options: {
+          readonly actor: string;
+          readonly decision?: string;
+          readonly json?: boolean;
+        },
+      ) => {
+        try {
+          const preview = await resources
+            .assetRefresh()
+            .prepareRecognitionScopeAmendment({
+              sourceExecutionId,
+              workItemKey,
+              proposedBy: options.actor,
+              reason,
+              ...(options.decision === undefined
+                ? {}
+                : { decisionId: options.decision }),
+              onExecutionStarted(execution) {
+                runtime.streams.stderr.write(`刷新记录：${execution.id}\n`);
+              },
+            });
+          runtime.streams.stdout.write(
+            renderChangeImpactPreview(preview, options.json === true),
+          );
+        } catch (error) {
+          if (error instanceof CommanderError) throw error;
+          amendScopeCommand.error(`error: ${errorMessage(error)}`, {
+            exitCode: 1,
+            code: "cli.scope-amendment.failed",
           });
         }
       },
@@ -1514,6 +2019,7 @@ export function createCliCommand(
   const automationEnableCommand = command
     .command("automation-enable")
     .description("启用固定间隔自动刷新，并执行首次普通资产刷新。")
+    .requiredOption("--library <asset-library-id>", "要自动刷新的资产库")
     .argument("<observed-root-id>", "已登记的文件位置编号")
     .option("--scope <relative-path>", "登记根内的有限相对范围", ".")
     .requiredOption("--interval-ms <milliseconds>", "固定刷新间隔（毫秒）")
@@ -1522,6 +2028,7 @@ export function createCliCommand(
       async (
         observedRootId: string,
         options: {
+          readonly library: string;
           readonly intervalMs: string;
           readonly json?: boolean;
           readonly scope?: string;
@@ -1530,6 +2037,7 @@ export function createCliCommand(
         try {
           const workflow = resources.assetRefresh();
           const enabled = await workflow.enableAutomation({
+            assetLibraryId: options.library,
             observedRootId,
             relativeScope: options.scope ?? ".",
             intervalMilliseconds: Number(options.intervalMs),

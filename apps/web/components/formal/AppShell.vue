@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { provideSSRWidth, useMounted } from "@vueuse/core";
 import { usePageContext } from "vike-vue/usePageContext";
-import { computed, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 
 import AppSidebar from "#/components/formal/AppSidebar.vue";
 import { SidebarProvider, SidebarTrigger } from "#/components/ui/sidebar";
+import {
+  createLibraryNavigation,
+  provideLibraryNavigation,
+} from "#/composables/use-library-navigation";
 const pageContext = usePageContext();
 const home = computed(() => pageContext.urlParsed.pathname === "/");
 const settings = computed(
@@ -12,6 +16,9 @@ const settings = computed(
 );
 const sidebarOpen = ref(true);
 const mounted = useMounted();
+const libraryNavigation = createLibraryNavigation();
+provideLibraryNavigation(libraryNavigation);
+onMounted(() => void libraryNavigation.refresh());
 provideSSRWidth(1280);
 </script>
 

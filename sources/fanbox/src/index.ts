@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   declareCapability,
   knownSourceAssociationEvidenceCapability,
+  type AssetRefreshWorkPlan,
   type DirectoryInterpreter,
   type FilesystemPackageSnapshot,
   type Recognizer,
@@ -40,7 +41,7 @@ import {
 
 const directoryCapability = declareCapability({
   identity: "fanbox.creator-date-directory",
-  implementationVersion: "1",
+  implementationVersion: "2",
   kind: "directory-interpreter",
   contractVersion: "1",
   interpretationContractVersions: ["1"],
@@ -72,7 +73,7 @@ const interpreterCapability = declareCapability({
 });
 const recognizerCapability = declareCapability({
   identity: "fanbox.creator-date-recognizer",
-  implementationVersion: "1",
+  implementationVersion: "2",
   kind: "recognizer",
   contractVersion: "1",
   interpretationContractVersions: ["1"],
@@ -473,36 +474,56 @@ export function decodeFanboxCollectionFailureCode(input: {
 
 export class FanboxDateDirectoryInterpreter implements DirectoryInterpreter {
   readonly capability = directoryCapability;
-  private readonly creatorIds: () => readonly string[];
-
-  constructor(creatorScope: string | (() => readonly string[])) {
-    if (typeof creatorScope === "string" && !isFanboxCreatorId(creatorScope)) {
-      throw new Error("FANBOX creator scope is invalid");
-    }
-    this.creatorIds =
-      typeof creatorScope === "string"
-        ? () => [creatorScope]
-        : () =>
-            [
-              ...new Set(
-                creatorScope().filter((value) => isFanboxCreatorId(value)),
-              ),
-            ].toSorted();
-  }
 
   interpret(
     snapshot: FilesystemPackageSnapshot,
-  ): readonly RecognitionEvidence[] {
-    const basename = snapshot.root.split(/[\\/]/u).at(-1) ?? "";
-    const date = publicationDateFromDirectory(basename);
-    if (date === undefined) return [];
-    return this.creatorIds().map((creatorId) => ({
-      kind: "directory-convention" as const,
-      sourceIdentity: "fanbox",
-      explanation: "FANBOX 创作者与发布日期目录规则匹配",
-      producer: this.capability,
-      sourceAddress: `fanbox-directory:${creatorId}:${date}`,
+  ): AssetRefreshWorkPlan | readonly RecognitionEvidence[] {
+    const rootComponents = snapshot.root.split(/[\\/]/u).filter(Boolean);
+    const groups = new Map<
+      string,
+      { creatorId: string; date: string; relativePaths: string[] }
+    >();
+    for (const file of snapshot.files) {
+      const directories = [
+        rootComponents.at(-2) ?? "",
+        rootComponents.at(-1) ?? "",
+        ...file.relativePath.split("/").slice(0, -1),
+      ];
+      for (let index = 1; index < directories.length; index++) {
+        const creatorId = directories[index - 1]!;
+        if (!isFanboxCreatorId(creatorId)) continue;
+        const date = publicationDateFromDirectory(directories[index]!);
+        if (date === undefined) continue;
+        const relativeRoot = directories.slice(2, index + 1).join("/") || ".";
+        const group = groups.get(relativeRoot) ?? {
+          creatorId,
+          date,
+          relativePaths: [],
+        };
+        group.relativePaths.push(file.relativePath);
+        groups.set(relativeRoot, group);
+        // 日期目录的普通子树都服务这项内容，不再从内容内猜另一篇帖子。
+        break;
+      }
+    }
+    const workItems = [...groups].map(([relativeRoot, group]) => ({
+      key: `fanbox:date-directory:${relativeRoot}`,
+      relativePaths: group.relativePaths.toSorted(),
+      materialBoundary: {
+        kind: "directory" as const,
+        relativePath: relativeRoot,
+      },
+      evidence: [
+        {
+          kind: "directory-convention",
+          sourceIdentity: "fanbox",
+          explanation: "FANBOX creatorId 与发布日期目录规则匹配",
+          producer: this.capability,
+          sourceAddress: `fanbox-directory:${group.creatorId}:${group.date}`,
+        },
+      ],
     }));
+    return workItems.length === 0 ? [] : { workItems };
   }
 }
 
@@ -1188,7 +1209,7 @@ export const trustedFanboxCreatorDateRule = {
   capabilityId: recognizerCapability.capabilityId,
   capabilityVersion: recognizerCapability.capabilityVersion,
   ruleId: "unique-creator-publication-date",
-  ruleVersion: "1",
+  ruleVersion: "2",
 } as const;
 
 type FanboxPost = {

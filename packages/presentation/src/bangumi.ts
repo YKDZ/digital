@@ -1,4 +1,13 @@
-import type { AssetViewFacts } from "./index";
+import type { SelectedMetadataRead } from "@digital/application";
+
+import {
+  type ArtifactFileView,
+  type AssetViewFacts,
+  factProblems,
+  observedArtifactFiles,
+  subjectMetadata,
+  targetArtwork,
+} from "./index.ts";
 
 export type BangumiEpisodeViewModel = {
   readonly assetId: string;
@@ -12,6 +21,10 @@ export type BangumiEpisodeViewModel = {
   readonly artwork?: string;
   readonly officialPage: string;
   readonly actionTarget: { readonly subjectId: string };
+  /** 该单集已交付的全部材料：同集多技术视频与各自字幕，顺序无关。 */
+  readonly materials: readonly ArtifactFileView[];
+  readonly factProblems?: ReturnType<typeof factProblems>;
+  readonly informationReadiness?: AssetViewFacts["informationReadiness"];
 };
 
 export type BangumiWorkViewModel = {
@@ -22,6 +35,7 @@ export type BangumiWorkViewModel = {
   readonly cover?: string;
   readonly officialPage?: string;
   readonly episodes: readonly BangumiEpisodeViewModel[];
+  readonly factProblems?: ReturnType<typeof factProblems>;
 };
 
 export type BangumiSeriesViewModel = {
@@ -33,6 +47,7 @@ export type BangumiSeriesViewModel = {
   readonly cover?: string;
   /** 合成分组节点绝不拥有应用层动作。 */
   readonly actionTarget?: never;
+  readonly factProblems?: ReturnType<typeof factProblems>;
   readonly works: readonly BangumiWorkViewModel[];
   readonly episodes: readonly BangumiEpisodeViewModel[];
 };
@@ -41,7 +56,7 @@ type WorkState = {
   readonly id: string;
   label: string;
   sourceKey?: string;
-  readonly metadata: Array<AssetViewFacts["metadata"][number]>;
+  readonly metadata: SelectedMetadataRead[];
   readonly facts: AssetViewFacts[];
 };
 
@@ -51,69 +66,56 @@ type SequelEdge = {
 };
 
 function metadata(
-  values: readonly AssetViewFacts["metadata"][number][],
+  values: readonly SelectedMetadataRead[],
   property: string,
 ): string | undefined {
-  return values.find((item) => item.property === property)?.value;
+  const candidates = [
+    ...new Set(
+      values
+        .filter((item) => item.property === property)
+        .map((item) => item.value),
+    ),
+  ];
+  return candidates.length === 1 ? candidates[0] : undefined;
 }
 
-function numberMetadata(
-  values: readonly AssetViewFacts["metadata"][number][],
-  property: string,
+function numberQualifier(
+  relationship: AssetViewFacts["relationships"][number],
+  key: string,
 ): number | undefined {
-  const value = Number(metadata(values, property));
+  const declared = relationship.qualifiers?.filter(
+    (qualifier) => qualifier.key === key,
+  );
+  if (declared?.length !== 1 || declared[0]!.value.trim() === "")
+    return undefined;
+  const value = Number(declared[0]!.value);
   return Number.isFinite(value) ? value : undefined;
-}
-
-function managedArtwork(
-  facts: readonly AssetViewFacts[],
-  subjectId: string,
-): string | undefined {
-  for (const fact of facts) {
-    const coverArtifactIds = [
-      ...new Set(
-        fact.artifactAssociations.flatMap((association) =>
-          association.target.kind === "entity" &&
-          association.target.entityId === subjectId &&
-          association.role === "asset.primary-cover"
-            ? [association.artifactId]
-            : [],
-        ),
-      ),
-    ];
-    if (coverArtifactIds.length !== 1) continue;
-    const location = fact.locations.find(
-      (item) =>
-        item.artifactId === coverArtifactIds[0] && item.kind === "managed",
-    );
-    if (location !== undefined) return location.address;
-  }
-  return undefined;
 }
 
 function episodeFrom(
   fact: AssetViewFacts,
   workId: string,
+  relationship: AssetViewFacts["relationships"][number],
 ): BangumiEpisodeViewModel | undefined {
-  const localPosition = numberMetadata(
-    fact.metadata,
+  const localPosition = numberQualifier(
+    relationship,
     "bangumi.episode.season-position",
   );
-  const continuousPosition = numberMetadata(
-    fact.metadata,
+  const continuousPosition = numberQualifier(
+    relationship,
     "bangumi.episode.continuous-position",
   );
   if (localPosition === undefined || continuousPosition === undefined)
     return undefined;
   const title =
-    metadata(fact.metadata, "asset.title.zh-hans") ??
-    metadata(fact.metadata, "asset.title") ??
+    metadata(subjectMetadata(fact), "asset.title.zh-hans") ??
+    metadata(subjectMetadata(fact), "asset.title") ??
     `第 ${localPosition} 集`;
   const summary =
-    metadata(fact.metadata, "asset.description") ??
-    metadata(fact.metadata, "asset.summary");
-  const date = metadata(fact.metadata, "asset.release-date");
-  const artwork = managedArtwork([fact], fact.id);
+    metadata(subjectMetadata(fact), "asset.description") ??
+    metadata(subjectMetadata(fact), "asset.summary");
+  const date = metadata(subjectMetadata(fact), "asset.release-date");
+  const artwork = targetArtwork([fact], fact.id);
   return {
     assetId: fact.id,
     workId,
@@ -123,9 +125,16 @@ function episodeFrom(
     localPosition,
     continuousPosition,
     available: fact.locations.some((item) => item.kind === "observed"),
-    ...(artwork === undefined ? {} : { artwork }),
-    officialPage: fact.sourceAssociation!.nativeAddress,
+    ...(artwork.address === undefined ? {} : { artwork: artwork.address }),
+    officialPage: fact.sourceAssociations.find(
+      (association) => association.sourceIdentity === "bangumi",
+    )!.nativeAddress,
     actionTarget: { subjectId: fact.id },
+    materials: observedArtifactFiles(fact),
+    factProblems: factProblems(fact),
+    ...(fact.informationReadiness === undefined
+      ? {}
+      : { informationReadiness: fact.informationReadiness }),
   };
 }
 
@@ -136,12 +145,14 @@ function episodeFrom(
 export function projectBangumiCatalogue(
   facts: readonly AssetViewFacts[],
 ): readonly BangumiSeriesViewModel[] {
-  const accepted = facts.filter(
-    (fact) => fact.sourceAssociation?.sourceIdentity === "bangumi",
+  const accepted = facts.filter((fact) =>
+    fact.sourceAssociations.some(
+      (association) => association.sourceIdentity === "bangumi",
+    ),
   );
   const works = new Map<string, WorkState>();
   for (const fact of accepted) {
-    for (const entity of fact.currentRelatedEntities ?? []) {
+    for (const entity of fact.relatedEntities) {
       if (
         entity.sourceIdentity !== "bangumi" ||
         entity.identityNamespace !== "bangumi.subject"
@@ -160,9 +171,7 @@ export function projectBangumiCatalogue(
       if (entity.sourceKey === undefined) delete work.sourceKey;
       else work.sourceKey = entity.sourceKey;
       work.facts.push(fact);
-      work.metadata.push(
-        ...fact.metadata.filter((item) => item.subjectId === entity.id),
-      );
+      work.metadata.push(...subjectMetadata(fact, entity.id));
       works.set(entity.id, work);
     }
   }
@@ -261,7 +270,7 @@ export function projectBangumiCatalogue(
         work.label;
       const summary = metadata(work.metadata, "bangumi.subject.description");
       const date = metadata(work.metadata, "bangumi.subject.date");
-      const cover = managedArtwork(work.facts, work.id);
+      const artwork = targetArtwork(work.facts, work.id);
       const episodes = accepted
         .filter((fact) =>
           fact.relationships?.some(
@@ -280,8 +289,24 @@ export function projectBangumiCatalogue(
           ),
         )
         .flatMap((fact) => {
-          const episode = episodeFrom(fact, work.id);
-          return episode === undefined ? [] : [episode];
+          const memberships = fact.relationships.filter(
+            (relationship) =>
+              relationship.type === "asset.membership" &&
+              relationship.participants.some(
+                (participant) =>
+                  participant.entityId === fact.id &&
+                  participant.role === "asset",
+              ) &&
+              relationship.participants.some(
+                (participant) =>
+                  participant.entityId === work.id &&
+                  participant.role === "bangumi.subject.ordinary-episode",
+              ),
+          );
+          return memberships.flatMap((relationship) => {
+            const episode = episodeFrom(fact, work.id, relationship);
+            return episode === undefined ? [] : [episode];
+          });
         })
         .toSorted(
           (left, right) =>
@@ -294,15 +319,23 @@ export function projectBangumiCatalogue(
         title,
         ...(summary === undefined ? {} : { summary }),
         ...(date === undefined ? {} : { date }),
-        ...(cover === undefined ? {} : { cover }),
+        ...(artwork.address === undefined ? {} : { cover: artwork.address }),
         ...(work.sourceKey === undefined
           ? {}
           : { officialPage: `https://bgm.tv/subject/${work.sourceKey}` }),
         episodes,
+        factProblems: [
+          ...work.facts.flatMap(factProblems),
+          ...(artwork.problem === undefined ? [] : [artwork.problem]),
+        ],
       };
     });
     const first = projectedWorks[0];
-    if (first === undefined) return [];
+    if (
+      first === undefined ||
+      projectedWorks.every((work) => work.episodes.length === 0)
+    )
+      return [];
     return [
       {
         id: `bangumi-series:${workOrder[0]}`,
@@ -312,6 +345,7 @@ export function projectBangumiCatalogue(
         ...(first.date === undefined ? {} : { date: first.date }),
         ...(first.cover === undefined ? {} : { cover: first.cover }),
         works: projectedWorks,
+        factProblems: projectedWorks.flatMap((work) => work.factProblems ?? []),
         episodes: projectedWorks.flatMap((work) => work.episodes),
       },
     ];

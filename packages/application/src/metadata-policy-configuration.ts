@@ -10,6 +10,7 @@ export type MetadataPolicyConfiguration = {
     readonly usageContext: string;
     readonly role: string;
     readonly preferredSourceIdentities: readonly string[];
+    readonly preferredCapabilityIds?: readonly string[];
   }[];
   select(accepted: {
     readonly sourceAssociations: readonly SourceAssociation[];

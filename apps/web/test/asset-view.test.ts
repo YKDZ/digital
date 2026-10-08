@@ -1,23 +1,77 @@
+import type { EffectiveDescriptionRead } from "@digital/application";
 import { projectAssetView } from "@digital/presentation";
 import { describe, expect, it } from "vitest";
+
+const acceptedDescription = (
+  entityId: string,
+  properties: readonly (readonly [string, string])[],
+  artifactRoles: EffectiveDescriptionRead["artifactRoles"] = [],
+): EffectiveDescriptionRead => ({
+  target: { kind: "entity", entityId },
+  metadataUsageContext: "asset.ordinary",
+  metadataScope: { kind: "all-available" },
+  metadata: properties.map(([property, value]) => ({
+    property,
+    result: {
+      status: "resolved",
+      values: [
+        {
+          property,
+          value,
+          sourceIdentity: "test",
+          sourceSlot: property,
+          reasoning: { kind: "unranked-source-assertion" },
+          assertions: [
+            {
+              target: { kind: "entity", entityId },
+              sourceSlot: property,
+              sourceRecordIds: ["record-1"],
+            },
+          ],
+          sourceRecordIds: ["record-1"],
+        },
+      ],
+    },
+  })),
+  missingArtifactRoles: [],
+  conflicts: [],
+  artifactRoles,
+});
+
+const primaryCover = (
+  entityId: string,
+  artifactId: string,
+  address: string,
+): EffectiveDescriptionRead["artifactRoles"][number] => ({
+  role: "asset.primary-cover",
+  artifactId,
+  associationIds: [`association-${entityId}-${artifactId}`],
+  address,
+});
 
 describe("formal asset view", () => {
   it("projects current and proposed asset facts into the same natural view", () => {
     const view = projectAssetView({
       id: "asset-1",
-      sourceAssociation: {
-        nativeAddress: "https://example.test/posts/1",
-      },
-      metadata: [
-        { property: "asset.title", value: "作品标题" },
-        { property: "asset.summary", value: "摘要" },
-        { property: "asset.body", value: "正文" },
+      sourceAssociations: [
         {
-          property: "asset.publication-datetime",
-          value: "2025-01-01T00:00:00Z",
+          sourceIdentity: "example",
+          nativeAddress: "https://example.test/posts/1",
         },
       ],
-      currentRelatedEntities: [
+      descriptions: [
+        acceptedDescription(
+          "asset-1",
+          [
+            ["asset.title", "作品标题"],
+            ["asset.summary", "摘要"],
+            ["asset.body", "正文"],
+            ["asset.publication-datetime", "2025-01-01T00:00:00Z"],
+          ],
+          [primaryCover("asset-1", "cover", "/managed/cover.jpg")],
+        ),
+      ],
+      relatedEntities: [
         {
           id: "creator",
           label: "创作者",
@@ -29,20 +83,23 @@ describe("formal asset view", () => {
       ],
       relationships: [
         {
-          participants: [{ entityId: "creator", role: "fanbox.post.creator" }],
+          id: "relationship-1",
+          sourceRecordIds: ["record-1"],
+          participants: [
+            { entityId: "asset-1", role: "asset" },
+            { entityId: "creator", role: "fanbox.post.creator" },
+          ],
           type: "asset.contribution",
         },
       ],
-      artifactAssociations: [
-        {
-          target: { kind: "entity", entityId: "asset-1" },
-          artifactId: "cover",
-          role: "asset.primary-cover",
-        },
-      ],
-      primaryCoverArtifactId: "cover",
       locations: [
-        { artifactId: "cover", kind: "managed", address: "/managed/cover.jpg" },
+        {
+          id: "location-cover",
+          artifactId: "cover",
+          kind: "managed",
+          address: "/managed/cover.jpg",
+          content: { status: "unconfirmed" },
+        },
       ],
     });
 
@@ -63,24 +120,24 @@ describe("formal asset view", () => {
   it("projects a FANBOX view payload without exposing source role vocabulary", () => {
     const view = projectAssetView({
       id: "asset-fanbox",
-      sourceAssociation: {
-        sourceIdentity: "fanbox",
-        nativeAddress: "https://www.fanbox.cc/@customudon/posts/9135862",
-      },
-      metadata: [
-        { property: "asset.title", value: "年始の挨拶" },
+      sourceAssociations: [
         {
-          property: "asset.publication-datetime",
-          value: "2025-01-01T00:11:17+09:00",
+          sourceIdentity: "fanbox",
+          nativeAddress: "https://www.fanbox.cc/@customudon/posts/9135862",
         },
-        { property: "asset.body", value: "本文" },
-        { property: "fanbox.post.entitlement", value: "available" },
-        { property: "fanbox.post.like-count", value: "1030" },
-        { property: "fanbox.post.comment-count", value: "89" },
       ],
-      sourceArtifactCandidates: [
+      descriptions: [
+        acceptedDescription("asset-fanbox", [
+          ["asset.title", "年始の挨拶"],
+          ["asset.publication-datetime", "2025-01-01T00:11:17+09:00"],
+          ["asset.body", "本文"],
+          ["fanbox.post.entitlement", "available"],
+          ["fanbox.post.like-count", "1030"],
+          ["fanbox.post.comment-count", "89"],
+        ]),
+      ],
+      sourceArtifacts: [
         {
-          sourceRecordId: "detail",
           role: "fanbox.attachment.file",
           mediaType: "video/mp4",
           selectionEvidence: {
@@ -90,7 +147,7 @@ describe("formal asset view", () => {
           },
         },
       ],
-      currentRelatedEntities: [
+      relatedEntities: [
         {
           id: "creator",
           label: "Custom_Udon",
@@ -102,23 +159,31 @@ describe("formal asset view", () => {
       ],
       relationships: [
         {
-          participants: [{ entityId: "creator", role: "fanbox.post.creator" }],
+          id: "relationship-1",
+          sourceRecordIds: ["record-1"],
+          participants: [
+            { entityId: "asset-fanbox", role: "asset" },
+            { entityId: "creator", role: "fanbox.post.creator" },
+          ],
           type: "asset.contribution",
         },
       ],
-      artifactAssociations: [],
       locations: [
         {
+          id: "location-poster",
           artifactId: "poster",
           kind: "observed",
           address: "/library/post/poster.jpg",
+          content: { status: "unconfirmed" },
           byteLength: 10,
           downloadUrl: "/download/poster",
         },
         {
+          id: "location-video",
           artifactId: "video",
           kind: "observed",
           address: "/library/post/video/bonus.mp4",
+          content: { status: "unconfirmed" },
           byteLength: 42,
           downloadUrl: "/download/video",
         },
@@ -164,19 +229,27 @@ describe("formal asset view", () => {
   it("projects a DLsite view payload with source-specific display grouping", () => {
     const view = projectAssetView({
       id: "asset-dlsite",
-      sourceAssociation: {
-        sourceIdentity: "dlsite",
-        nativeAddress:
-          "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html",
-      },
-      metadata: [
-        { property: "asset.title", value: "音声作品" },
-        { property: "asset.release-date", value: "2026-07-17" },
-        { property: "asset.introduction", value: "紹介文" },
-        { property: "asset.declared-language", value: "JPN" },
-        { property: "dlsite.product.price-jpy", value: "0" },
+      sourceAssociations: [
+        {
+          sourceIdentity: "dlsite",
+          nativeAddress:
+            "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html",
+        },
       ],
-      currentRelatedEntities: [
+      descriptions: [
+        acceptedDescription(
+          "asset-dlsite",
+          [
+            ["asset.title", "音声作品"],
+            ["asset.release-date", "2026-07-17"],
+            ["asset.introduction", "紹介文"],
+            ["asset.declared-language", "JPN"],
+            ["dlsite.product.price-jpy", "0"],
+          ],
+          [primaryCover("asset-dlsite", "cover", "/managed/cover.jpg")],
+        ),
+      ],
+      relatedEntities: [
         {
           id: "circle",
           label: "サークル",
@@ -204,29 +277,42 @@ describe("formal asset view", () => {
       ],
       relationships: [
         {
-          participants: [{ entityId: "circle", role: "circle" }],
+          id: "relationship-circle",
+          sourceRecordIds: ["record-1"],
+          participants: [
+            { entityId: "asset-dlsite", role: "asset" },
+            { entityId: "circle", role: "circle" },
+          ],
           type: "asset.contribution",
         },
         {
-          participants: [{ entityId: "voice", role: "voice" }],
+          id: "relationship-voice",
+          sourceRecordIds: ["record-1"],
+          participants: [
+            { entityId: "asset-dlsite", role: "asset" },
+            { entityId: "voice", role: "voice" },
+          ],
           type: "asset.contribution",
         },
         {
-          participants: [{ entityId: "series", role: "dlsite.series.member" }],
+          id: "relationship-series",
+          sourceRecordIds: ["record-1"],
+          participants: [
+            { entityId: "asset-dlsite", role: "asset" },
+            { entityId: "series", role: "dlsite.series.member" },
+          ],
           type: "asset.membership",
           qualifiers: [{ key: "asset.membership.position", value: "2" }],
         },
       ],
-      artifactAssociations: [
-        {
-          target: { kind: "entity", entityId: "asset-dlsite" },
-          artifactId: "cover",
-          role: "asset.primary-cover",
-        },
-      ],
-      primaryCoverArtifactId: "cover",
       locations: [
-        { artifactId: "cover", kind: "managed", address: "/managed/cover.jpg" },
+        {
+          id: "location-cover",
+          artifactId: "cover",
+          kind: "managed",
+          address: "/managed/cover.jpg",
+          content: { status: "unconfirmed" },
+        },
       ],
     });
 
@@ -239,7 +325,7 @@ describe("formal asset view", () => {
         priceJpy: "0",
         languages: ["JPN"],
         credits: [{ heading: "配音", names: ["声優"] }],
-        series: { name: "シリーズ", position: "2" },
+        series: [{ name: "シリーズ", position: "2" }],
       },
     });
   });
@@ -247,33 +333,61 @@ describe("formal asset view", () => {
   it("projects a book shelf and detail payload from generic accepted facts", () => {
     const view = projectAssetView({
       id: "asset-book",
-      sourceAssociation: {
-        sourceIdentity: "nbinet",
-        nativeAddress:
-          "https://nbinet.primo.exlibrisgroup.com/discovery/search?q=isbn%2Cexact%2C9789864738281",
-      },
-      metadata: [
-        { property: "asset.title", value: "幼女战记(1)" },
-        { property: "asset.declared-language", value: "zh" },
-        { property: "book.contributor", value: "Carlo Zen 東條チカ" },
-        { property: "book.isbn-13", value: "9789864738281" },
-        { property: "book.publisher", value: "臺灣角川" },
-        { property: "book.publication-date", value: "2017" },
-      ],
-      artifactAssociations: [
+      sourceAssociations: [
         {
-          target: { kind: "entity", entityId: "asset-book" },
-          artifactId: "cover",
-          role: "asset.primary-cover",
+          sourceIdentity: "nbinet",
+          nativeAddress:
+            "https://nbinet.primo.exlibrisgroup.com/discovery/search?q=isbn%2Cexact%2C9789864738281",
         },
       ],
-      primaryCoverArtifactId: "cover",
-      locations: [
-        { artifactId: "cover", kind: "managed", address: "/managed/cover.jpg" },
+      descriptions: [
+        acceptedDescription(
+          "asset-book",
+          [
+            ["asset.title", "幼女战记(1)"],
+            ["asset.declared-language", "zh"],
+            ["book.isbn-13", "9789864738281"],
+            ["book.publisher", "臺灣角川"],
+            ["book.publication-date", "2017"],
+          ],
+          [primaryCover("asset-book", "cover", "/managed/cover.jpg")],
+        ),
+      ],
+      relatedEntities: [
         {
+          id: "contributor",
+          label: "Carlo Zen 東條チカ",
+          kind: { status: "ordinary" },
+          sourceIdentity: "nbinet",
+          sourceKey: "contributor",
+          identityNamespace: "nbinet.contributor",
+        },
+      ],
+      relationships: [
+        {
+          id: "relationship-contributor",
+          sourceRecordIds: ["record-1"],
+          participants: [
+            { entityId: "asset-book", role: "asset" },
+            { entityId: "contributor", role: "book.contributor" },
+          ],
+          type: "asset.contribution",
+        },
+      ],
+      locations: [
+        {
+          id: "location-cover",
+          artifactId: "cover",
+          kind: "managed",
+          address: "/managed/cover.jpg",
+          content: { status: "unconfirmed" },
+        },
+        {
+          id: "location-epub",
           artifactId: "epub",
           kind: "observed",
           address: "/observed/幼女战记(1).epub",
+          content: { status: "unconfirmed" },
         },
       ],
     });
