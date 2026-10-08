@@ -8,11 +8,12 @@ import { libraryAsset, type LibraryAsset } from "#/lib/library";
 
 export function useLibrary() {
   const pageContext = usePageContext();
-  const assetLibraryId = computed(() =>
-    typeof pageContext.urlParsed.search.library === "string"
-      ? pageContext.urlParsed.search.library
-      : undefined,
-  );
+  // 客户端路由切换会短暂清空 urlParsed，此时沿用上一个明确库语境，不改选全局库。
+  const assetLibraryId = computed<string | undefined>((previous) => {
+    if (!pageContext.urlParsed) return previous;
+    const library = pageContext.urlParsed.search.library;
+    return typeof library === "string" ? library : undefined;
+  });
   const {
     items: libraries,
     loading: librariesLoading,

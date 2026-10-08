@@ -8,7 +8,12 @@ import { useCatalogueSubject } from "#/composables/use-catalogue-subject";
 import { libraryContext } from "#/lib/library";
 
 const pageContext = usePageContext();
-const library = computed(() => libraryContext(pageContext.urlParsed.search));
+// 路由切换期间 urlParsed 会短暂缺失，沿用上一个库语境以免退回多库阻塞。
+const library = computed<string | undefined>((previous) =>
+  pageContext.urlParsed
+    ? libraryContext(pageContext.urlParsed.search)
+    : previous,
+);
 const { selected, loading, error, reload } = useCatalogueSubject(
   () => pageContext.routeParams.id ?? "",
   () => library.value,
