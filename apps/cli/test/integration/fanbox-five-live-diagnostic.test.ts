@@ -144,7 +144,14 @@ async function syntheticJourney(
     }),
   );
 
-  const context = { mode: "source", packageRoot, workDir } as const;
+  const context = {
+    mode: "source",
+    packageRoot,
+    workDir,
+    productDataDirectory: path.join(workDir, "product-data"),
+    environmentName: "completion-08-fixture-context",
+    commandEnvironment: {},
+  } as const;
   await journey.setup(context);
   return {
     context,
@@ -170,7 +177,9 @@ function commandResults(
       commandName: command.name,
       exitCode: 0,
       stdout:
-        index >= 1 && index <= 5 ? JSON.stringify({ id: `root-${index}` }) : "",
+        index >= 1 && index <= 5
+          ? JSON.stringify({ rootIds: [`root-${index}`] })
+          : "",
       stderr: "",
     }));
 }

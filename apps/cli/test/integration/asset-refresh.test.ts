@@ -211,14 +211,49 @@ describe("Asset Refresh CLI", () => {
       { cwd: source, env: { DIGITAL_PRODUCT_DATA: data } },
     );
     expect(await runCli(directed.runtime), directed.stderr()).toBe(0);
-    expect(JSON.parse(directed.stdout())).toMatchObject({
-      execution: { outcome: "accepted" },
-      accepted: {
-        sourceAssociations: [
-          expect.objectContaining({ sourceIdentity: "nbinet" }),
-        ],
-      },
-    });
+    const directedPage = JSON.parse(directed.stdout()) as {
+      execution: { outcome?: string };
+      itemResults: {
+        outcome?: string;
+        accepted?: {
+          entity: { id: string };
+          facts: {
+            id: string;
+            descriptions: {
+              metadata: {
+                property: string;
+                result: {
+                  status: string;
+                  values?: { value: string; sourceIdentity: string }[];
+                };
+              }[];
+            }[];
+          };
+          sourceAssociations: { sourceIdentity: string }[];
+        };
+      }[];
+    };
+    expect(directedPage.execution.outcome).toBe("accepted");
+    expect(directedPage.itemResults).toHaveLength(1);
+    const directedAccepted = directedPage.itemResults[0]!.accepted;
+    expect(directedAccepted?.sourceAssociations).toEqual([
+      expect.objectContaining({ sourceIdentity: "nbinet" }),
+    ]);
+    expect(directedAccepted?.entity.id).toBeTruthy();
+    expect(directedAccepted?.facts.id).toBe(directedAccepted?.entity.id);
+    expect(
+      directedAccepted?.facts.descriptions
+        .flatMap((description) => description.metadata)
+        .map((entry) => [
+          entry.property,
+          entry.result.status,
+          entry.result.values?.[0]?.value,
+          entry.result.values?.[0]?.sourceIdentity,
+        ]),
+    ).toEqual([
+      ["asset.title", "resolved", "CLI 定向书名", "nbinet"],
+      ["book.isbn-13", "resolved", "9789864738281", "nbinet"],
+    ]);
   });
 
   it("uses the public product use case for source requirements and explicit enrichment", async () => {
@@ -489,6 +524,68 @@ describe("Asset Refresh CLI", () => {
     );
     const initialScanExit = await runCli(initialScan.runtime);
     expect(initialScanExit, initialScan.stderr()).toBe(0);
+    const initialScanResult = JSON.parse(initialScan.stdout()) as {
+      execution: { id: string; outcome?: string };
+      itemResults: {
+        accepted?: {
+          entity: { id: string };
+          facts: {
+            id: string;
+            descriptions: { artifactRoles: { role: string }[] }[];
+            locations: { kind: string; content: { status: string } }[];
+          };
+        };
+      }[];
+    };
+    const initialAccepted = initialScanResult.itemResults[0]!.accepted;
+    expect(initialScanResult.execution.outcome).toBe("accepted");
+    expect(initialAccepted?.entity.id).toBeTruthy();
+    expect(initialAccepted?.facts.id).toBe(initialAccepted?.entity.id);
+    expect(
+      initialAccepted?.facts.descriptions
+        .flatMap((description) =>
+          description.artifactRoles.map((entry) => entry.role),
+        )
+        .includes("asset.primary-cover"),
+    ).toBe(true);
+    expect(
+      initialAccepted?.facts.locations.some(
+        (location) =>
+          location.kind === "managed" &&
+          location.content.status === "confirmed",
+      ),
+    ).toBe(true);
+
+    // PDF 精确文件图片是原始观察部件，按 ADR 0086 只经显式检查入口核验，
+    // 不在普通消费投影里另开第二条旁路。
+    const initialInspection = runtime(
+      ["inspect", initialScanResult.execution.id, "--json"],
+      { cwd: source, env },
+    );
+    const initialInspectionExit = await runCli(initialInspection.runtime);
+    expect(initialInspectionExit, initialInspection.stderr()).toBe(0);
+    expect(
+      (
+        JSON.parse(initialInspection.stdout()) as {
+          accepted?: {
+            artifactAssociations: {
+              role: string;
+              observedArtifactPart?: { revisionId: string; locator: string };
+            }[];
+          };
+        }
+      ).accepted?.artifactAssociations.filter(
+        (association) => association.role === "asset.material-image",
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        observedArtifactPart: expect.objectContaining({
+          revisionId: expect.any(String),
+          locator: "pdf:page[1]",
+        }),
+      }),
+    ]);
+
     const initialSurface = runtime(
       ["catalogue-surface", "--surface", "current-catalogue"],
       { cwd: source, env },
@@ -497,31 +594,22 @@ describe("Asset Refresh CLI", () => {
     expect(initialSurfaceExit, initialSurface.stderr()).toBe(0);
     const [initial] = (
       JSON.parse(initialSurface.stdout()) as {
-        items: Array<{
-          entity: { id: string };
-          artifactAssociations: Array<{
-            id: string;
-            role: string;
-            observedArtifactPart?: {
-              revisionId: string;
-              locator: string;
-            };
-          }>;
-        }>;
+        items: {
+          id: string;
+          descriptions: { artifactRoles: { role: string }[] }[];
+          locations: unknown[];
+        }[];
       }
     ).items;
-    expect(initial?.artifactAssociations).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ role: "asset.primary-cover" }),
-        expect.objectContaining({
-          role: "asset.material-image",
-          observedArtifactPart: expect.objectContaining({
-            revisionId: expect.any(String),
-            locator: "pdf:page[1]",
-          }),
-        }),
-      ]),
+    expect(initial?.id).toBe(initialAccepted?.entity.id);
+    expect(
+      initial?.descriptions.flatMap((description) =>
+        description.artifactRoles.map((entry) => entry.role),
+      ),
+    ).toEqual(
+      expect.arrayContaining(["asset.primary-cover", "asset.material-image"]),
     );
+    expect(initial?.locations.length).toBeGreaterThan(0);
 
     const defaultScan = runtime(["scan", rootId, "--json"], {
       cwd: source,
@@ -536,29 +624,14 @@ describe("Asset Refresh CLI", () => {
       { cwd: source, env },
     );
     await expect(runCli(reopenedSurface.runtime)).resolves.toBe(0);
-    const [reopened] = (
+    const reopened = (
       JSON.parse(reopenedSurface.stdout()) as {
         items: (typeof initial)[];
       }
-    ).items;
-    expect(reopened?.entity.id).toBe(initial?.entity.id);
-    expect(
-      reopened?.artifactAssociations.filter(
-        (association) => association.role === "asset.primary-cover",
-      ),
-    ).toHaveLength(1);
-    expect(
-      reopened?.artifactAssociations.filter(
-        (association) => association.role === "asset.material-image",
-      ),
-    ).toEqual([
-      expect.objectContaining({
-        observedArtifactPart: expect.objectContaining({
-          revisionId: expect.any(String),
-          locator: "pdf:page[1]",
-        }),
-      }),
-    ]);
+    ).items[0];
+    expect(reopened?.id).toBe(initial?.id);
+    expect(reopened?.descriptions).toEqual(initial?.descriptions);
+    expect(reopened?.locations).toEqual(initial?.locations);
 
     const repeatedScan = runtime(["scan", rootId, "--json"], {
       cwd: source,
@@ -1286,9 +1359,9 @@ async function currentCatalogueIds(
   const exit = await runCli(command.runtime);
   expect(exit, `${command.stderr()}\n${command.stdout()}`).toBe(0);
   const page = JSON.parse(command.stdout()) as {
-    readonly items: readonly { readonly entity: { readonly id: string } }[];
+    readonly items: readonly { readonly id: string }[];
   };
-  return page.items.map((item) => item.entity.id);
+  return page.items.map((item) => item.id);
 }
 
 async function scanRoot(

@@ -502,127 +502,291 @@ describe("CLI command control", () => {
 
   it("renders every source and the effective metadata audit for each work item", async () => {
     const output = testRuntime(["refresh-metadata", "asset"]);
+    const jsonOutput = testRuntime(["refresh-metadata", "asset", "--json"]);
+    const entityTarget = { kind: "entity", entityId: "asset" } as const;
     const accepted = {
-      entity: { id: "asset", kind: "Entity", label: "怒火救援" },
+      entity: { id: "asset", kind: "digital-asset" },
       recognitionSourceAssociation: {
-        subjectId: "asset",
         sourceIdentity: "tmdb",
         nativeAddress: "tmdb:9509",
-        sourceRecordIds: ["tmdb-record"],
       },
       sourceAssociations: [
+        { sourceIdentity: "tmdb", nativeAddress: "tmdb:9509" },
+        { sourceIdentity: "omdb", nativeAddress: "omdb:tt0328107" },
+      ],
+      // 原始逐项来源断言保留全部候选，包括未被采用的 tmdb 评分候选。
+      metadata: [
         {
-          subjectId: "asset",
-          sourceIdentity: "tmdb",
-          nativeAddress: "tmdb:9509",
+          target: entityTarget,
+          property: "asset.rating",
+          sourceSlot: "omdb.rating",
+          value: "7.7",
+          sourceRecordIds: ["omdb-record"],
+        },
+        {
+          target: entityTarget,
+          property: "asset.rating",
+          sourceSlot: "tmdb.vote-average",
+          value: "7.2",
           sourceRecordIds: ["tmdb-record"],
         },
         {
-          subjectId: "asset",
-          sourceIdentity: "omdb",
-          nativeAddress: "omdb:tt0328107",
-          sourceRecordIds: ["omdb-record"],
-        },
-      ],
-      metadata: [],
-      effectiveMetadata: [
-        {
-          property: "asset.rating",
-          value: "7.7",
-          sourceIdentity: "omdb",
-          sourceRecordIds: ["omdb-record"],
-          sourceSlot: "omdb.rating",
-          reasoning: {
-            kind: "source-preference",
-            preferredSource: "omdb",
-          },
-          alternatives: [
-            {
-              value: "7.2",
-              sourceIdentity: "tmdb",
-              sourceRecordIds: ["tmdb-record"],
-              sourceSlot: "tmdb.vote-average",
-              exclusion: {
-                kind: "source-preference",
-                selectedSource: "omdb",
-                disagreesWithSelected: true,
-              },
-            },
-          ],
-        },
-      ],
-      metadataPolicyConflicts: [
-        {
-          kind: "policy-conflict",
+          target: entityTarget,
           property: "asset.title",
-          metadataUsageContext: "asset.ordinary",
-          policyIds: ["first", "second"],
-          candidates: [
-            {
-              assertion: {
-                property: "asset.title",
-                sourceSlot: "tmdb.title",
-                value: "怒火救援",
-                sourceRecordIds: ["tmdb-record"],
-              },
-              value: "怒火救援",
-              sourceIdentity: "tmdb",
-              sourceRecordIds: ["tmdb-record"],
-              sourceSlot: "tmdb.title",
-            },
-          ],
-          explanation: "incomparable",
+          sourceSlot: "tmdb.title",
+          value: "怒火救援",
+          sourceRecordIds: ["tmdb-record"],
+        },
+        {
+          target: entityTarget,
+          property: "asset.title",
+          sourceSlot: "omdb.title",
+          value: "怒火救援：完全版",
+          sourceRecordIds: ["omdb-record"],
         },
       ],
       entities: [],
-      relationships: [],
+      relationships: [
+        {
+          id: "rel-director",
+          type: "credit.directed_by",
+          sourceSlot: "tmdb.director",
+          participants: [
+            { entityId: "asset", role: "subject" },
+            { entityId: "person-director", role: "object" },
+          ],
+          sourceRecordIds: ["tmdb-record"],
+        },
+      ],
       recognitionExplanation: "已由严格目录规则识别",
-      artifacts: [],
-      locations: [],
-      artifactAssociations: [],
+      artifacts: [{ id: "cover-artifact" }],
+      blobs: [
+        {
+          digest: "cover-digest",
+          mediaType: "image/jpeg",
+          byteLength: 4,
+        },
+      ],
+      artifactRevisions: [
+        {
+          id: "cover-revision",
+          artifactId: "cover-artifact",
+          blobDigest: "cover-digest",
+        },
+      ],
+      locations: [
+        {
+          id: "cover-location",
+          artifactId: "cover-artifact",
+          kind: "managed",
+          address: "poster.jpg",
+        },
+      ],
+      artifactAssociations: [
+        {
+          id: "cover-association",
+          target: entityTarget,
+          artifactId: "cover-artifact",
+          role: "asset.primary-cover",
+          sourceRecordIds: ["tmdb-record"],
+        },
+      ],
+      currentRelatedEntities: [
+        {
+          id: "person-director",
+          sourceIdentity: "tmdb",
+          sourceKey: "p-1",
+          identityNamespace: "tmdb:person",
+          label: "导演甲",
+          sourceRecordIds: ["tmdb-record"],
+          kind: { status: "ordinary" },
+        },
+      ],
+      // 共同生效读取：普通消费路径唯一的事实契约。
+      facts: {
+        id: "asset",
+        recognitionSourceAssociation: {
+          sourceIdentity: "tmdb",
+          nativeAddress: "tmdb:9509",
+        },
+        sourceAssociations: [
+          { sourceIdentity: "tmdb", nativeAddress: "tmdb:9509" },
+          { sourceIdentity: "omdb", nativeAddress: "omdb:tt0328107" },
+        ],
+        descriptions: [
+          {
+            target: entityTarget,
+            metadataUsageContext: "asset.ordinary",
+            metadata: [
+              {
+                property: "asset.rating",
+                result: {
+                  status: "resolved",
+                  values: [
+                    {
+                      property: "asset.rating",
+                      value: "7.7",
+                      sourceIdentity: "omdb",
+                      sourceSlot: "omdb.rating",
+                      sourceRecordIds: ["omdb-record"],
+                      assertions: [
+                        {
+                          target: entityTarget,
+                          sourceSlot: "omdb.rating",
+                          sourceRecordIds: ["omdb-record"],
+                        },
+                      ],
+                      reasoning: {
+                        kind: "source-preference",
+                        preferredSource: "omdb",
+                      },
+                    },
+                  ],
+                },
+              },
+              {
+                property: "asset.title",
+                result: {
+                  status: "conflict",
+                  conflict: {
+                    kind: "policy-conflict",
+                    property: "asset.title",
+                    references: [
+                      {
+                        kind: "metadata",
+                        target: entityTarget,
+                        sourceSlot: "tmdb.title",
+                        sourceRecordIds: ["tmdb-record"],
+                      },
+                      {
+                        kind: "metadata",
+                        target: entityTarget,
+                        sourceSlot: "omdb.title",
+                        sourceRecordIds: ["omdb-record"],
+                      },
+                    ],
+                    explanation: "规则 first、second 尚未确定先后",
+                  },
+                },
+              },
+              { property: "asset.runtime", result: { status: "missing" } },
+            ],
+            metadataScope: { kind: "all-available" },
+            artifactRoles: [
+              {
+                role: "asset.primary-cover",
+                artifactId: "cover-artifact",
+                associationIds: ["cover-association"],
+                locationId: "cover-location",
+                address: "poster.jpg",
+              },
+            ],
+            missingArtifactRoles: ["asset.material-image"],
+            conflicts: [
+              {
+                kind: "policy-conflict",
+                property: "asset.title",
+                references: [
+                  {
+                    kind: "metadata",
+                    target: entityTarget,
+                    sourceSlot: "tmdb.title",
+                    sourceRecordIds: ["tmdb-record"],
+                  },
+                  {
+                    kind: "metadata",
+                    target: entityTarget,
+                    sourceSlot: "omdb.title",
+                    sourceRecordIds: ["omdb-record"],
+                  },
+                ],
+                explanation: "规则 first、second 尚未确定先后",
+              },
+            ],
+          },
+        ],
+        relatedEntities: [
+          {
+            id: "person-director",
+            kind: { status: "ordinary" },
+            label: "导演甲",
+            sourceIdentity: "tmdb",
+            identityNamespace: "tmdb:person",
+            sourceKey: "p-1",
+          },
+        ],
+        relationships: [
+          {
+            id: "rel-director",
+            type: "credit.directed_by",
+            participants: [
+              { entityId: "asset", role: "subject" },
+              { entityId: "person-director", role: "object" },
+            ],
+            sourceRecordIds: ["tmdb-record"],
+          },
+        ],
+        locations: [
+          {
+            id: "cover-location",
+            artifactId: "cover-artifact",
+            kind: "managed",
+            address: "poster.jpg",
+            content: {
+              status: "confirmed",
+              target: {
+                kind: "artifact-revision",
+                artifactId: "cover-artifact",
+                revisionId: "cover-revision",
+              },
+            },
+          },
+        ],
+      },
+    };
+    const inspectionResult = {
+      execution: {
+        id: "itemized",
+        selection: { intent: "metadata-refresh" },
+        operationKind: "refresh-metadata",
+        requestedSelection: {
+          version: "asset-refresh-selection/1",
+          subjects: [],
+          filesystemScopes: [],
+        },
+        resolvedSelection: {
+          version: "asset-refresh-selection/1",
+          subjects: [],
+          filesystemScopes: [],
+        },
+        targetDispositions: [],
+        filesystemSnapshots: [],
+        status: "completed",
+        stage: "completed",
+        outcome: "accepted",
+        sourceRecordIds: ["tmdb-record", "omdb-record"],
+        dispositions: [],
+      },
+      sourceRecords: [],
+      accepted,
+      itemResults: [
+        {
+          key: "movie",
+          relativePaths: ["怒火救援 (2004)/怒火救援 (2004).mkv"],
+          outcome: "accepted",
+          recognition: {
+            status: "accepted",
+            explanation: "已由严格目录规则识别",
+          },
+          accepted,
+        },
+      ],
     };
     const application = {
       openAssetRefresh() {
         return {
           async refreshMetadata() {
-            return {
-              execution: {
-                id: "itemized",
-                selection: { intent: "metadata-refresh" },
-                operationKind: "refresh-metadata",
-                requestedSelection: {
-                  version: "asset-refresh-selection/1",
-                  subjects: [],
-                  filesystemScopes: [],
-                },
-                resolvedSelection: {
-                  version: "asset-refresh-selection/1",
-                  subjects: [],
-                  filesystemScopes: [],
-                },
-                targetDispositions: [],
-                filesystemSnapshots: [],
-                status: "completed",
-                stage: "completed",
-                outcome: "accepted",
-                sourceRecordIds: ["tmdb-record", "omdb-record"],
-                dispositions: [],
-              },
-              sourceRecords: [],
-              accepted,
-              itemResults: [
-                {
-                  key: "movie",
-                  relativePaths: ["怒火救援 (2004)/怒火救援 (2004).mkv"],
-                  outcome: "accepted",
-                  recognition: {
-                    status: "accepted",
-                    explanation: "已由严格目录规则识别",
-                  },
-                  accepted,
-                },
-              ],
-            };
+            return inspectionResult;
           },
           close() {},
         };
@@ -636,17 +800,102 @@ describe("CLI command control", () => {
       runCli(output.runtime, legacyCliApplication(application)),
       output.stderr(),
     ).resolves.toBe(0);
-    expect(output.stdout()).toContain("tmdb：tmdb:9509");
-    expect(output.stdout()).toContain("omdb：omdb:tt0328107");
+    expect(
+      await runCli(jsonOutput.runtime, legacyCliApplication(application)),
+      jsonOutput.stderr(),
+    ).toBe(0);
+    expect(output.stdout()).toContain("\n  tmdb：tmdb:9509");
+    expect(output.stdout()).toContain("\n  omdb：omdb:tt0328107");
     expect(output.stdout()).toContain(
-      "asset.rating：7.7（omdb；记录 omdb-record；来源位置 omdb.rating）",
-    );
-    expect(output.stdout()).toContain("选择依据：采用首选来源 omdb");
-    expect(output.stdout()).toContain(
-      "其他来源：7.2（tmdb；记录 tmdb-record；来源位置 tmdb.vote-average；与当前值不一致；因来源顺序未采用）",
+      "\n当前采用：\n  asset.rating：7.7（omdb；记录 omdb-record；来源位置 omdb.rating）\n    选择依据：采用首选来源 omdb",
     );
     expect(output.stdout()).toContain(
-      "asset.title：规则 first、second 尚未确定先后，当前没有采用值",
+      "\n元数据规则冲突：\n  asset.title：存在尚未解决的资料选择，当前没有采用值",
     );
+    expect(output.stdout()).toContain("  导演甲（entity）");
+    expect(output.stdout()).toContain(
+      "  credit.directed_by：subject：asset；object：导演甲（记录 tmdb-record）",
+    );
+    expect(output.stdout()).toContain("识别说明：已由严格目录规则识别");
+    expect(output.stdout()).toContain(
+      "  asset.primary-cover：poster.jpg（已托管）",
+    );
+    expect(output.stdout()).toContain("边界 movie：accepted");
+    expect(output.stdout()).toContain("\n    tmdb：tmdb:9509");
+    expect(output.stdout()).toContain(
+      "\n  当前采用：\n    asset.rating：7.7（omdb；记录 omdb-record；来源位置 omdb.rating）\n      选择依据：采用首选来源 omdb",
+    );
+    expect(output.stdout()).toContain(
+      "\n  元数据规则冲突：\n    asset.title：存在尚未解决的资料选择，当前没有采用值",
+    );
+    expect(output.stdout()).not.toContain("7.2");
+    expect(output.stdout()).not.toContain("tmdb.vote-average");
+    expect(output.stdout()).not.toContain("first、second");
+
+    const json = JSON.parse(jsonOutput.stdout()) as typeof inspectionResult;
+    expect(json.accepted?.entity.id).toBe("asset");
+    expect(json.accepted?.facts.id).toBe("asset");
+    expect(json.accepted?.metadata).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          property: "asset.rating",
+          value: "7.2",
+          sourceSlot: "tmdb.vote-average",
+          sourceRecordIds: ["tmdb-record"],
+        }),
+      ]),
+    );
+    const [description] = json.accepted?.facts.descriptions ?? [];
+    expect(description?.metadata).toEqual([
+      expect.objectContaining({
+        property: "asset.rating",
+        result: expect.objectContaining({
+          status: "resolved",
+          values: [
+            expect.objectContaining({
+              value: "7.7",
+              sourceIdentity: "omdb",
+              sourceSlot: "omdb.rating",
+            }),
+          ],
+        }),
+      }),
+      expect.objectContaining({
+        property: "asset.title",
+        result: expect.objectContaining({
+          status: "conflict",
+          conflict: expect.objectContaining({
+            kind: "policy-conflict",
+            property: "asset.title",
+            explanation: "规则 first、second 尚未确定先后",
+          }),
+        }),
+      }),
+      expect.objectContaining({
+        property: "asset.runtime",
+        result: { status: "missing" },
+      }),
+    ]);
+    expect(description?.artifactRoles).toEqual([
+      expect.objectContaining({
+        role: "asset.primary-cover",
+        artifactId: "cover-artifact",
+        associationIds: ["cover-association"],
+      }),
+    ]);
+    expect(description?.missingArtifactRoles).toEqual(["asset.material-image"]);
+    expect(json.accepted?.facts.locations).toEqual([
+      expect.objectContaining({
+        id: "cover-location",
+        kind: "managed",
+        content: expect.objectContaining({
+          status: "confirmed",
+          target: expect.objectContaining({ revisionId: "cover-revision" }),
+        }),
+      }),
+    ]);
+    expect(
+      json.itemResults?.[0]?.accepted?.facts.descriptions[0]?.metadata,
+    ).toEqual(description?.metadata);
   });
 });
