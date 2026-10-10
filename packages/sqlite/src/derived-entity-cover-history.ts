@@ -230,6 +230,62 @@ function proposalFrom(
 }
 
 /**
+ * 该提案行是否以「身份保持刷新」的身份点名这条决定与该次观察快照。
+ */
+function acceptedBoundaryRefreshCites(
+  row: DerivedCoverProposalRow,
+  decisionId: string,
+  observationSnapshotId: string | null,
+): boolean {
+  if (observationSnapshotId === null) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.basisJson);
+  } catch {
+    return false;
+  }
+  if (typeof parsed !== "object" || parsed === null) return false;
+  const basis = parsed as Record<string, unknown>;
+  return (
+    basis.kind === "accepted-boundary" &&
+    basis.recognitionDecisionId === decisionId &&
+    basis.observationSnapshotId === observationSnapshotId
+  );
+}
+
+/**
+ * 声明这条观察事实的提案：初始接受时就是决定自己的提案，且它必须属于该支持记录的那次观察执行。
+ * 等尺寸等内容变更的身份保持刷新把新事实挂在同一条不可变决定上，声明它们的却是那次刷新自己的
+ * accepted-boundary 提案——它同时点名这条决定与这次观察冻结的快照，别的执行、别的决定都不能
+ * 充当依据。这里不放宽「谁声明」，只是把刷新这一已知生成程序补进模型；找不到确切声明行就按
+ * 缺少依据判定，绝不退回去用一份坐标对不上的旧提案冒充。
+ */
+function declaringProposalRow(
+  rows: DerivedCoverCurrentRows,
+  decision: DerivedCoverDecisionRow,
+  support: DerivedCoverSupportRow,
+): DerivedCoverProposalRow | undefined {
+  const own = rows.proposals.find((item) => item.id === decision.proposalId);
+  if (
+    own !== undefined &&
+    support.observationExecutionId !== null &&
+    own.executionId === support.observationExecutionId
+  )
+    return own;
+  const citing = rows.proposals.filter(
+    (item) =>
+      support.observationExecutionId !== null &&
+      item.executionId === support.observationExecutionId &&
+      acceptedBoundaryRefreshCites(
+        item,
+        decision.id,
+        support.observationSnapshotId,
+      ),
+  );
+  return citing.length === 1 ? citing[0] : undefined;
+}
+
+/**
  * 封面部件在提案内的观察引用：同一角色与 locator 只声明一次，父修订唯一且摘要与载体
  * 实际修订相同，并且该引用同时被声明为交付材料。任何一项不成立都没有可判定的引用。
  */
@@ -371,9 +427,8 @@ function representableCoverSupport(input: {
   const revision = rows.revisions.find((item) => item.id === part.revisionId);
   if (revision === undefined || revision.artifactId !== part.artifactId)
     return false;
-  const proposal = proposalFrom(
-    rows.proposals.find((item) => item.id === decision.proposalId),
-  );
+  const declaring = declaringProposalRow(rows, decision, support);
+  const proposal = proposalFrom(declaring);
   if (proposal === undefined) return false;
   const reference = partObservedReference({
     proposal,
@@ -463,12 +518,12 @@ function derivedCoverHistoryReasons(input: {
     cover.targetKind !== "entity"
   )
     return fail("decision-subject-mismatch");
-  const proposalRow = rows.proposals.find(
+  const ownProposalRow = rows.proposals.find(
     (item) => item.id === decision.proposalId,
   );
-  if (proposalRow === undefined) return fail("missing-proposal");
-  if (proposalRow.executionId !== support.observationExecutionId)
-    return fail("proposal-execution-mismatch");
+  if (ownProposalRow === undefined) return fail("missing-proposal");
+  const proposalRow = declaringProposalRow(rows, decision, support);
+  if (proposalRow === undefined) return fail("proposal-execution-mismatch");
   const execution = rows.executions.find(
     (item) => item.id === proposalRow.executionId,
   );
@@ -593,7 +648,7 @@ function derivedCoverHistoryReasons(input: {
     return fail("acceptance-kind-grants-no-derivation");
   if (
     acceptance.executionId !== support.observationExecutionId ||
-    acceptance.proposalId !== decision.proposalId ||
+    acceptance.proposalId !== proposalRow.id ||
     acceptance.assetId !== decision.assetId
   )
     return fail("acceptance-coordinates-mismatch");
@@ -726,16 +781,38 @@ export function readDerivedEntityCoverReadiness(
        FROM recognition_decisions WHERE id IN (${placeholders(decisionIds.size)})`,
       [...decisionIds],
     );
+    const proposalSelect = `
+      SELECT id AS id, execution_id AS executionId, boundaries_json AS boundariesJson,
+             basis_json AS basisJson, rule_results_json AS ruleResultsJson,
+             observed_material_interpretation_json AS observedMaterialInterpretationJson
+      FROM recognition_proposals`;
     const proposalIds = new Set(
       decisions.map((row) => text(row, "proposalId")),
     );
-    const proposals = selectIds(
-      database,
-      `SELECT id AS id, execution_id AS executionId, boundaries_json AS boundariesJson,
-              basis_json AS basisJson, rule_results_json AS ruleResultsJson,
-              observed_material_interpretation_json AS observedMaterialInterpretationJson
-       FROM recognition_proposals WHERE id IN (${placeholders(proposalIds.size)})`,
-      [...proposalIds],
+    // 内容变化的身份保持刷新由那次观察执行自己的 accepted-boundary 提案声明，判定要读到的正是
+    // 那一行；只按决定的提案装载会让这条真实历史无法证明。多装载几行不放宽任何判定：具体依据
+    // 仍由 `declaringProposalRow` 按「属于本观察执行、点名本决定、冻结本观察快照」逐条确认。
+    const observationExecutionIds = new Set(
+      loaded
+        .map((item) => item.support.observationExecutionId)
+        .filter((id): id is string => id !== null),
+    );
+    const proposals = [
+      ...selectIds(
+        database,
+        `${proposalSelect} WHERE id IN (${placeholders(proposalIds.size)})`,
+        [...proposalIds],
+      ),
+      ...selectIds(
+        database,
+        `${proposalSelect} WHERE execution_id IN (${placeholders(observationExecutionIds.size)})`,
+        [...observationExecutionIds],
+      ),
+    ].filter(
+      (row, index, rows) =>
+        rows.findIndex(
+          (candidate) => text(candidate, "id") === text(row, "id"),
+        ) === index,
     );
     const executionIds = new Set(
       proposals.map((row) => text(row, "executionId")),

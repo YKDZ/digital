@@ -19,6 +19,26 @@ export const requestedLocalMaterialConfirmationVersion =
 export const localMaterialConfirmationStaleCode =
   "local-material-observation-stale";
 
+/**
+ * 终态替换执行／最终投影的事务重核发现已确认目标已被取代时抛出：整笔事务不写入，
+ * 只回带被取代的目标键，由 Application 折算 partial 后重试。它刻意定义在 Application，
+ * 让 SQLite 适配器与调用方共享同一类型，而不让领域/应用反向依赖 SQLite。
+ */
+export class LocalMaterialConfirmationTerminalStaleError extends Error {
+  readonly staleTargetKeys: readonly string[];
+  constructor(staleTargetKeys: readonly string[]) {
+    super("Local material confirmation terminals are stale");
+    this.name = "LocalMaterialConfirmationTerminalStaleError";
+    this.staleTargetKeys = staleTargetKeys;
+  }
+}
+
+export function isLocalMaterialConfirmationTerminalStaleError(
+  error: unknown,
+): error is LocalMaterialConfirmationTerminalStaleError {
+  return error instanceof LocalMaterialConfirmationTerminalStaleError;
+}
+
 /** 需求与选定主体的绑定；同一执行内的检查点据此识别自己属于哪一次需求。 */
 export function localMaterialConfirmationRequirementKey(input: {
   readonly subjectIds: readonly string[];
@@ -309,9 +329,12 @@ export function decodeObservedMaterialConfirmationCheckpoint(
     const frozenEntry = item.frozenEntry;
     if (!isRecord(frozenEntry))
       throw new Error("本地材料确认目标缺少冻结快照条目");
-    const observation = isRecord(item.observation)
-      ? item.observation
-      : undefined;
+    // 区分「属性不存在」（合法的尚未建立观察）与「属性存在但类型错误」（耐久状态损坏）。
+    // 后者绝不能被当成缺字段忽略：pending 目标可以合法携带崩溃窗口已提交的观察事实。
+    const rawObservation = item.observation;
+    if (rawObservation !== undefined && !isRecord(rawObservation))
+      throw new Error("本地材料确认目标 observation 字段类型错误");
+    const observation = isRecord(rawObservation) ? rawObservation : undefined;
     const target: LocalMaterialConfirmationCheckpointTarget = {
       subjectId: requiredText(item.subjectId, "subjectId"),
       associationIds,

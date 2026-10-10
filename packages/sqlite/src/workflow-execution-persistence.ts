@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+
 import type {
   AssetRefreshSelection,
   OrdinaryScanReusePlan,
@@ -10,6 +12,7 @@ import {
   decodeSourceAssociationDecisionCheckpoint,
   decodeWorkflowExecutionInput,
   localMaterialConfirmationDispositionKey,
+  localMaterialConfirmationRequirementKey,
   localMaterialConfirmationTargetKey,
   validateSourceAssociationDecisionEnvelope,
   validateSourceAssociationDecisionPriorExecution,
@@ -464,7 +467,29 @@ function executionFromRow(row: ExecutionRow): WorkflowExecution {
 function assertDurableLocalMaterialConfirmations(
   execution: WorkflowExecution,
 ): void {
+  const corrupt = () => {
+    throw new Error("Malformed Workflow Execution local material confirmation");
+  };
   const seen = new Set<string>();
+  // 冻结快照坐标只从本执行自己的输入取，跨执行搬移的载荷据此被拒。
+  const frozenSnapshots =
+    execution.filesystemSnapshots ??
+    (execution.snapshot === undefined ? [] : [execution.snapshot]);
+  const requirement = execution.selection.informationRequirement;
+  if (requirement === undefined) {
+    for (const disposition of execution.dispositions)
+      if (disposition.observedMaterialConfirmation !== undefined) corrupt();
+    return;
+  }
+  const acceptedSubjects = new Set<string>();
+  for (const item of execution.workItems ?? [])
+    if (
+      (item.outcome === "accepted" || item.outcome === "no-change") &&
+      item.acceptedAssetId !== undefined
+    )
+      acceptedSubjects.add(item.acceptedAssetId);
+  if (execution.acceptedAssetId !== undefined)
+    acceptedSubjects.add(execution.acceptedAssetId);
   for (const disposition of execution.dispositions) {
     const payload = disposition.observedMaterialConfirmation;
     if (payload === undefined) continue;
@@ -476,19 +501,37 @@ function assertDurableLocalMaterialConfirmations(
       checkpoint.targets.length === 0 ||
       checkpoint.targets.length > 512
     )
-      throw new Error(
-        "Malformed Workflow Execution local material confirmation",
-      );
+      corrupt();
     seen.add(disposition.key);
     const targetKeys = new Set(
       checkpoint.targets.map((target) =>
         localMaterialConfirmationTargetKey(target),
       ),
     );
-    if (targetKeys.size !== checkpoint.targets.length)
-      throw new Error(
-        "Malformed Workflow Execution local material confirmation",
+    if (targetKeys.size !== checkpoint.targets.length) corrupt();
+    // 需求绑定：按本执行的实际信息需求重算 key，搬移自不同需求执行的载荷在此不符。
+    if (
+      localMaterialConfirmationRequirementKey({
+        subjectIds: checkpoint.subjectIds,
+        informationRequirement: requirement,
+      }) !== checkpoint.requirementKey
+    )
+      corrupt();
+    const subjectIds = new Set<string>(checkpoint.subjectIds);
+    // 选定主体既不能超出本执行已接受／重用的主体，也不能与载荷自带主体不符。
+    for (const subjectId of subjectIds)
+      if (!acceptedSubjects.has(subjectId)) corrupt();
+    for (const target of checkpoint.targets) {
+      if (!subjectIds.has(target.subjectId)) corrupt();
+      const frozen = frozenSnapshots.find(
+        (snapshot) => snapshot.id === target.frozenEntry.snapshotId,
       );
+      if (
+        frozen === undefined ||
+        resolve(frozen.root) !== resolve(target.frozenEntry.snapshotRoot)
+      )
+        corrupt();
+    }
   }
 }
 

@@ -88,8 +88,11 @@ import {
   type ArtifactRoleCandidate,
   type CurrentLocationRead,
   type EffectiveArtifactRoleRead,
+  type EffectiveDescriptionRead,
   type EffectiveSubjectRead,
+  type FactReadConflict,
   type RelationshipReadBasis,
+  type SelectedMetadataRead,
   type SubjectConflictEvidence,
   type SubjectFactBasis,
 } from "./effective-fact-reads.ts";
@@ -139,7 +142,9 @@ import {
   type UnrecognizedLibraryScanObservation,
 } from "./library-scan-plan.ts";
 import {
+  decodeObservedMaterialConfirmationCheckpoint,
   ensureRequestedLocalMaterialEvidence,
+  isLocalMaterialConfirmationTerminalStaleError,
   markLocalMaterialConfirmationTerminalsStale,
   type ExpectedObservedRevisionConfirmation,
   type LocalMaterialEvidencePersistence,
@@ -736,6 +741,69 @@ export type ArtifactRoleCoverInspection = {
   readonly problems: readonly string[];
 };
 
+/** 公共预演的已采用值：保留值、来源标签与选择解释，去掉内部来源记录标识。 */
+export type PublicSelectedMetadataRead = Omit<
+  SelectedMetadataRead,
+  "sourceRecordIds" | "assertions"
+> & {
+  readonly assertions: readonly Omit<
+    SelectedMetadataRead["assertions"][number],
+    "sourceRecordIds"
+  >[];
+};
+
+/** 公共预演的冲突引用：保留类别与不透明引用，去掉内部来源记录标识。 */
+export type PublicFactReadConflict = Omit<FactReadConflict, "references"> & {
+  readonly references: readonly (
+    | {
+        readonly kind: "metadata";
+        readonly target: DescriptionTarget;
+        readonly sourceSlot: string;
+      }
+    | { readonly kind: "artifact-association"; readonly associationId: string }
+    | { readonly kind: "artifact-role-decision"; readonly decisionId: string }
+  )[];
+};
+
+/**
+ * 公共预演的生效事实：普通读取契约里只去掉本地存储地址（位置地址与角色地址）和内部来源记录
+ * 标识。主体、角色、冲突、来源标签、候选引用、相对材料与选择解释都按原判定保留，预演不是
+ * 资料审计出口，也不重新求值任何生效规则。
+ */
+export type ChangeImpactPreviewFacts = Omit<
+  EffectiveSubjectRead,
+  "descriptions" | "relationships" | "locations"
+> & {
+  readonly descriptions: readonly (Omit<
+    EffectiveDescriptionRead,
+    "metadata" | "artifactRoles" | "conflicts"
+  > & {
+    readonly metadata: readonly {
+      readonly property: string;
+      readonly result:
+        | {
+            readonly status: "resolved";
+            readonly values: readonly PublicSelectedMetadataRead[];
+          }
+        | { readonly status: "missing" }
+        | {
+            readonly status: "conflict";
+            readonly conflict: PublicFactReadConflict;
+          };
+    }[];
+    readonly artifactRoles: readonly Omit<
+      EffectiveArtifactRoleRead,
+      "address"
+    >[];
+    readonly conflicts: readonly PublicFactReadConflict[];
+  })[];
+  readonly relationships: readonly Omit<
+    EffectiveSubjectRead["relationships"][number],
+    "sourceRecordIds"
+  >[];
+  readonly locations: readonly Omit<CurrentLocationRead, "address">[];
+};
+
 /** 安全的交付 DTO；原始提议和条件基线保留在内部。 */
 export type ChangeImpactPreviewInspection = {
   readonly id: string;
@@ -748,8 +816,8 @@ export type ChangeImpactPreviewInspection = {
   readonly current: PublicAssetStateProjection;
   readonly projected: PublicAssetStateProjection;
   readonly facts?: {
-    readonly current: EffectiveSubjectRead;
-    readonly projected: EffectiveSubjectRead;
+    readonly current: ChangeImpactPreviewFacts;
+    readonly projected: ChangeImpactPreviewFacts;
   };
   readonly metadataCount: number;
   readonly entityCount: number;
@@ -8468,6 +8536,74 @@ function artifactRoleCandidateReference(
   )}`;
 }
 
+function publicFactReadConflict(
+  conflict: FactReadConflict,
+): PublicFactReadConflict {
+  return {
+    ...conflict,
+    references: conflict.references.map((reference) =>
+      reference.kind === "metadata"
+        ? {
+            kind: "metadata",
+            target: reference.target,
+            sourceSlot: reference.sourceSlot,
+          }
+        : reference,
+    ),
+  };
+}
+
+/**
+ * 公开预演事实的窄收敛：逐层去掉本地存储地址与内部来源记录标识，其余字段原样透传，因此
+ * 生效选择、冲突与解释都还是同一次读取的判定结果。
+ */
+function publicChangeImpactFacts(
+  facts: EffectiveSubjectRead,
+): ChangeImpactPreviewFacts {
+  return {
+    ...facts,
+    descriptions: facts.descriptions.map((description) => ({
+      ...description,
+      metadata: description.metadata.map((entry) => ({
+        property: entry.property,
+        result:
+          entry.result.status === "resolved"
+            ? {
+                status: "resolved" as const,
+                values: entry.result.values.map(
+                  ({
+                    sourceRecordIds: _sourceRecordIds,
+                    assertions,
+                    ...value
+                  }) => ({
+                    ...value,
+                    assertions: assertions.map(
+                      ({ sourceRecordIds: _ids, ...assertion }) => assertion,
+                    ),
+                  }),
+                ),
+              }
+            : entry.result.status === "conflict"
+              ? {
+                  status: "conflict" as const,
+                  conflict: publicFactReadConflict(entry.result.conflict),
+                }
+              : entry.result,
+      })),
+      artifactRoles: description.artifactRoles.map(
+        ({ address: _address, ...role }) => role,
+      ),
+      conflicts: description.conflicts.map(publicFactReadConflict),
+    })),
+    relationships: facts.relationships.map(
+      ({ sourceRecordIds: _sourceRecordIds, ...relationship }) => relationship,
+    ),
+    locations: facts.locations.map(
+      ({ address: _address, ...location }) => location,
+    ),
+  };
+}
+
 function publicChangeImpactPreview(
   preview: ChangeImpactPreview,
 ): ChangeImpactPreviewInspection {
@@ -8540,7 +8676,14 @@ function publicChangeImpactPreview(
         }),
     current: safeProjection(preview.current),
     projected: safeProjection(preview.projected),
-    ...(preview.facts === undefined ? {} : { facts: preview.facts }),
+    ...(preview.facts === undefined
+      ? {}
+      : {
+          facts: {
+            current: publicChangeImpactFacts(preview.facts.current),
+            projected: publicChangeImpactFacts(preview.facts.projected),
+          },
+        }),
     metadataCount: preview.projected.metadata.length,
     entityCount: preview.projected.entities.length,
     mentionCount: preview.projected.entityMentions.length,
@@ -18170,8 +18313,11 @@ export class AssetRefreshWorkflow {
         }
         const reusedProposal =
           decisionObservation?.proposal ?? retained.accepted.proposal;
-        const reusedExecution =
-          decisionObservation?.execution ?? retained.execution;
+        // 主头保持同一不可变决定，但内容刷新已有新的耐久观察；下一次重扫应与最近一次
+        // 同范围成功执行比较。追加决定仍只使用自己的原始观察，不能借主头的快照。
+        const reusedExecution = refreshesHeadDecision
+          ? retained.execution
+          : (decisionObservation?.execution ?? retained.execution);
         const localAssociations: readonly ObservedArtifactAssociationCandidate[] =
           [
             ...plan.relativePaths.map((observedArtifactReference) => ({
@@ -18299,6 +18445,17 @@ export class AssetRefreshWorkflow {
           // refreshAcceptedRecognition 的 accepted 是"当前完整事实减去被变化坐标替换的旧本地
           // 观察事实，再并入本次增量"。选择只依据工作项冻结的相对引用、Location 地址与
           // Artifact/Revision 关系，绝不依据文件名或 presentation 输出。
+          //
+          // 交付门必须与上面判定「已变化」用的是同一个权威信号：尺寸/修改时间只是必要的第一层
+          // 提示，同尺寸同修改时间的内容变更只由冻结坐标里的真实摘要表达。若这里仍只按
+          // 尺寸/时间投递，就会出现"判定已变化却什么都不投递"的半状态：新决定引用的是本次
+          // 观察，而该引用的 Location/交付关联/精确修订没有任何增量，接受绑定与耐久支持因此
+          // 断链（普通重扫报缺交付或新状态通不过就绪核对）。
+          const baselineRevisionFacts =
+            inspectedRevisionFactsByReference(previousEvidence);
+          const currentRevisionFacts = inspectedRevisionFactsByReference(
+            plan.evidence,
+          );
           const deliveryReferences =
             baseline === undefined
               ? plan.relativePaths
@@ -18311,11 +18468,16 @@ export class AssetRefreshWorkflow {
                       `${baseline.root}/${item.relativePath}` ===
                       `${snapshot.root}/${reference}`,
                   );
+                  const previousFacts = baselineRevisionFacts.get(reference);
+                  const currentFacts = currentRevisionFacts.get(reference);
                   return (
                     file === undefined ||
                     previous === undefined ||
                     file.size !== previous.size ||
-                    file.modifiedAt !== previous.modifiedAt
+                    file.modifiedAt !== previous.modifiedAt ||
+                    (previousFacts !== undefined &&
+                      currentFacts !== undefined &&
+                      previousFacts !== currentFacts)
                   );
                 });
           const deliverySnapshot: FilesystemPackageSnapshot = {
@@ -18406,6 +18568,26 @@ export class AssetRefreshWorkflow {
               )
               .map((location) => location.artifactId),
           );
+          // 派生本地事实（封面／预览部件的 Artifact、managed Location、修订与部件＋实体封面
+          // 两种关联）挂在被物化出来的部件 Artifact 上，而不是被投递的观察 Artifact 上。只按
+          // 观察 Artifact 过滤会把它们留在下一状态，可它们的父修订已随本次字节变化退出，严格
+          // 校验据此判定「观察部件出处不成立」，整次刷新回滚。沿 observedArtifactPart 把部件
+          // 事实一并纳入替换集：本次交付会为确有变化的引用重新铸造它们。
+          const replacedPartArtifactIds = new Set(
+            retained.accepted.artifactAssociations
+              .filter(
+                (association) =>
+                  association.observedArtifactPart !== undefined &&
+                  replacedArtifactIds.has(
+                    association.observedArtifactPart.artifactId,
+                  ),
+              )
+              .map((association) => association.artifactId),
+          );
+          const replacedLocalFactIds = new Set([
+            ...replacedArtifactIds,
+            ...replacedPartArtifactIds,
+          ]);
           const unionById = <T>(
             left: readonly T[],
             right: readonly T[],
@@ -18419,7 +18601,7 @@ export class AssetRefreshWorkflow {
             proposal,
             artifacts: unionById(
               retained.accepted.artifacts.filter(
-                (artifact) => !replacedArtifactIds.has(artifact.id),
+                (artifact) => !replacedLocalFactIds.has(artifact.id),
               ),
               delta.artifacts,
               ({ id: artifactId }) => artifactId,
@@ -18430,7 +18612,7 @@ export class AssetRefreshWorkflow {
                   !(
                     location.kind === "observed" &&
                     replacedArtifactIds.has(location.artifactId)
-                  ),
+                  ) && !replacedPartArtifactIds.has(location.artifactId),
               ),
               delta.locations,
               (location) => location.id,
@@ -18442,7 +18624,7 @@ export class AssetRefreshWorkflow {
             ),
             artifactRevisions: unionById(
               retained.accepted.artifactRevisions.filter(
-                (revision) => !replacedArtifactIds.has(revision.artifactId),
+                (revision) => !replacedLocalFactIds.has(revision.artifactId),
               ),
               delta.artifactRevisions,
               ({ id: revisionId }) => revisionId,
@@ -18450,7 +18632,7 @@ export class AssetRefreshWorkflow {
             artifactAssociations: unionById(
               retained.accepted.artifactAssociations.filter(
                 (association) =>
-                  !replacedArtifactIds.has(association.artifactId),
+                  !replacedLocalFactIds.has(association.artifactId),
               ),
               delta.artifactAssociations,
               ({ id: associationId }) => associationId,
@@ -23440,11 +23622,61 @@ export class AssetRefreshWorkflow {
     next: WorkflowExecution,
     resumeClaim?: { readonly token: string; readonly now: string },
   ): Promise<void> {
-    await this.ports.executionCommands.transitionExecution(
-      expected,
-      next,
-      resumeClaim,
+    let current = next;
+    // 终态重核与最终观察投影在同一事务内：被取代的目标让整笔事务回滚，这里按报回的精确
+    // 坐标折算 partial 后重新提交。每次必须减少成功目标，最多推进冻结目标数次，
+    // 绝不因持续抢跑而扩充目标或无限重试。
+    for (;;) {
+      try {
+        await this.ports.executionCommands.transitionExecution(
+          expected,
+          current,
+          resumeClaim,
+        );
+        return;
+      } catch (error) {
+        if (!isLocalMaterialConfirmationTerminalStaleError(error)) throw error;
+        const folded = this.refoldStaleLocalMaterialTerminals(
+          current,
+          error.staleTargetKeys,
+        );
+        if (folded === current) throw error;
+        current = folded;
+      }
+    }
+  }
+
+  /**
+   * 只把报回的坐标改判失败：目标数量、顺序与冻结坐标都不变，因此同一次终态折算既能诚实
+   * 反映 partial，也让投影跳过这些精确位置。未完成项按改判后耐久数组里的实际剩余计数，
+   * 已接受身份绝不改写。
+   */
+  private refoldStaleLocalMaterialTerminals(
+    execution: WorkflowExecution,
+    staleTargetKeys: readonly string[],
+  ): WorkflowExecution {
+    const folded = markLocalMaterialConfirmationTerminalsStale(
+      execution,
+      staleTargetKeys,
     );
+    if (folded.failed === 0) return execution;
+    let failedLocal = 0;
+    for (const disposition of folded.execution.dispositions) {
+      const payload = disposition.observedMaterialConfirmation;
+      if (payload === undefined) continue;
+      failedLocal += decodeObservedMaterialConfirmationCheckpoint(
+        payload,
+      ).targets.filter((target) => target.status === "failed").length;
+    }
+    return this.partialForUnfinishedRecovery({
+      base: folded.execution,
+      failedSourceEnrichments: folded.execution.dispositions.filter(
+        (disposition) =>
+          disposition.key.startsWith("source-enrichment:") &&
+          disposition.status === "failed",
+      ).length,
+      failedLocalEvidence: failedLocal,
+    });
   }
 
   /**
@@ -25101,26 +25333,53 @@ function recognitionMaterialBoundary(
   });
 }
 
+/** 一份观察证据的引用与其精确修订事实（能力身份 + 真实摘要 + 字节长度）。 */
+function inspectedRevisionFacts(
+  item: RecognitionEvidence,
+): readonly [string, readonly (string | number)[]] | undefined {
+  const inspection = item.inspection;
+  return inspection === undefined
+    ? undefined
+    : [
+        inspection.observedArtifactReference,
+        [
+          item.producer.capabilityId,
+          item.producer.capabilityVersion,
+          item.producer.contractVersion,
+          inspection.revision.digest,
+          inspection.revision.byteLength,
+        ],
+      ];
+}
+
+/**
+ * 按观察引用索引的精确修订事实。跨两次运行比较时不带根地址：同一目录在两次运行里的规范
+ * 地址相同，而引用文本也相同，加根只会把「换根」和「换内容」混成同一个信号。
+ */
+function inspectedRevisionFactsByReference(
+  evidence: readonly RecognitionEvidence[],
+): ReadonlyMap<string, string> {
+  const byReference = new Map<string, string>();
+  for (const item of evidence) {
+    const facts = inspectedRevisionFacts(item);
+    if (facts === undefined) continue;
+    byReference.set(facts[0], JSON.stringify(facts[1]));
+  }
+  return byReference;
+}
+
 function inspectedRevisionCoordinates(
   evidence: readonly RecognitionEvidence[],
   root: string,
 ): string {
   return JSON.stringify(
     evidence
-      .flatMap((item) =>
-        item.inspection === undefined
+      .flatMap((item) => {
+        const facts = inspectedRevisionFacts(item);
+        return facts === undefined
           ? []
-          : [
-              JSON.stringify([
-                `${root}/${item.inspection.observedArtifactReference}`,
-                item.producer.capabilityId,
-                item.producer.capabilityVersion,
-                item.producer.contractVersion,
-                item.inspection.revision.digest,
-                item.inspection.revision.byteLength,
-              ]),
-            ],
-      )
+          : [JSON.stringify([`${root}/${facts[0]}`, ...facts[1]])];
+      })
       .toSorted(),
   );
 }

@@ -23,6 +23,7 @@ import {
   type LocalMaterialConfirmationCheckpointOutcome,
   type LocalMaterialConfirmationObservation,
   type LocalMaterialConfirmationPlanEntry,
+  type LocalMaterialConfirmationCheckpointTarget,
   type LocalMaterialEvidencePersistence,
   type ObservedMaterialConfirmationCheckpoint,
   type RequestedLocalMaterialConfirmationTarget,
@@ -577,6 +578,55 @@ describe("local material confirmation checkpoint", () => {
       "association_a",
       "association_b",
     ]);
+  });
+
+  it("区分「尚未建立观察」与「observation 字段类型错误」：前者合法，后者按损坏拒绝", () => {
+    const pending: LocalMaterialConfirmationCheckpointTarget = {
+      ...carrierTarget(),
+      status: "pending",
+    };
+    const checkpoint: ObservedMaterialConfirmationCheckpoint = {
+      version: requestedLocalMaterialConfirmationVersion,
+      requirementKey,
+      subjectIds: ["entity_subject"],
+      targets: [pending],
+    };
+    // 属性缺失是合法的「还没读」：pending 目标可以完全没有观察事实。
+    expect(
+      decodeObservedMaterialConfirmationCheckpoint(checkpoint).targets,
+    ).toEqual([pending]);
+    // 崩溃窗口已随检查点提交观察、字节尚未确认时，pending 携带精确事实同样合法。
+    const pendingWithObservation = {
+      ...pending,
+      observation: {
+        selectionId: "selection_pdf",
+        conditionalBaseline: "b".repeat(64),
+      },
+    };
+    expect(
+      decodeObservedMaterialConfirmationCheckpoint({
+        ...checkpoint,
+        targets: [pendingWithObservation],
+      }).targets,
+    ).toEqual([pendingWithObservation]);
+
+    // 属性存在但类型错误是耐久状态损坏，绝不能降格成「没有该字段」继续。
+    for (const wrong of ["selection_pdf", 42, true, null, ["selection_pdf"]])
+      expect(() =>
+        decodeObservedMaterialConfirmationCheckpoint({
+          ...checkpoint,
+          targets: [{ ...pending, observation: wrong }],
+        }),
+      ).toThrow(/observation 字段类型错误/);
+    // 对象但字段不齐同样是损坏，只是由逐字段读取判定。
+    expect(() =>
+      decodeObservedMaterialConfirmationCheckpoint({
+        ...checkpoint,
+        targets: [
+          { ...pending, observation: { selectionId: "selection_pdf" } },
+        ],
+      }),
+    ).toThrow(/本地材料确认/);
   });
 
   it("载荷不可读时按执行损坏处理，绝不按没有该字段忽略", () => {

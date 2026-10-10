@@ -138,6 +138,7 @@ import {
   localMaterialConfirmationDispositions,
   localMaterialConfirmationStaleCode,
   localMaterialConfirmationTargetKey,
+  LocalMaterialConfirmationTerminalStaleError,
   mergeRequestedLocalMaterialConfirmationTargets,
   representativeObservedMaterialReferences,
   staleLocalMaterialConfirmationAddresses,
@@ -228,6 +229,7 @@ import { enableCatalogueWal } from "./connection.ts";
 import {
   derivedCoverCurrentlyRepresentative,
   derivedCoverSiblingId,
+  isDerivedEntityCover,
   observedPartOf,
   type DerivedCoverCurrentRows,
 } from "./derived-entity-cover-history.ts";
@@ -869,6 +871,11 @@ type CurrentCatalogueHydrationRows = {
   readonly currentSourceOwnerRecordHeads: ReadonlySet<string>;
   readonly decisions: readonly (typeof recognitionDecisions.$inferSelect)[];
   readonly proposals: readonly (typeof recognitionProposals.$inferSelect)[];
+  /**
+   * 派生实体封面的声明提案：身份保持刷新把新观察事实挂在原不可变决定上，声明它们的是那次
+   * 观察执行自己的提案，不在 `proposals`（按决定装载）里。只参与封面当前资格判定。
+   */
+  readonly derivedCoverDeclaringProposals?: readonly (typeof recognitionProposals.$inferSelect)[];
   readonly artifactAssociations: readonly (typeof artifactAssociations.$inferSelect)[];
   readonly artifactSupersessions: readonly (typeof artifactAssociationSupersessions.$inferSelect)[];
   readonly artifactRetractions: readonly (typeof artifactAssociationRetractions.$inferSelect)[];
@@ -5762,26 +5769,43 @@ export class SqliteCatalogue
   ): Promise<void> {
     const database = await this.ensure();
     const query = drizzle({ client: database });
-    query.transaction(
-      (transaction) => {
-        const baseline =
-          this.workflowExecutionPersistence.runningExecutionBaseline(
+    try {
+      query.transaction(
+        (transaction) => {
+          const baseline =
+            this.workflowExecutionPersistence.runningExecutionBaseline(
+              transaction,
+              expected,
+              next,
+            );
+          this.assertResumeMutationClaim(transaction, expected.id, resumeClaim);
+          // 终态重核与最终观察投影共用这一个 immediate 事务：核对通过才写回与投影，任何被
+          // 取代的已确认目标都让整笔事务回滚，绝不把中间落入的较新观察投出去。
+          const staleTerminals =
+            next.status === "completed"
+              ? this.requestedLocalMaterialStaleTerminalsWithDrizzle(
+                  transaction,
+                  next,
+                )
+              : [];
+          if (staleTerminals.length > 0)
+            throw new LocalMaterialConfirmationTerminalStaleError(
+              staleTerminals,
+            );
+          this.workflowExecutionPersistence.replaceExecutionWithDrizzle(
             transaction,
-            expected,
             next,
+            {
+              auditJson: baseline.auditJson,
+            },
           );
-        this.assertResumeMutationClaim(transaction, expected.id, resumeClaim);
-        this.workflowExecutionPersistence.replaceExecutionWithDrizzle(
-          transaction,
-          next,
-          {
-            auditJson: baseline.auditJson,
-          },
-        );
-        this.projectCompletedFilesystemScanWithDrizzle(transaction, next);
-      },
-      { behavior: "immediate" },
-    );
+          this.projectCompletedFilesystemScanWithDrizzle(transaction, next);
+        },
+        { behavior: "immediate" },
+      );
+    } catch (error) {
+      throw originalPersistenceError(error);
+    }
   }
 
   async finishExecutionWithProposal(
@@ -16568,14 +16592,40 @@ export class SqliteCatalogue
             )
             .all();
     const proposalIds = [...new Set(decisions.map((row) => row.proposalId))];
-    const proposals =
-      proposalIds.length === 0
+    // 内容变化的身份保持刷新由那次观察执行自己的 accepted-boundary 提案声明新事实，当前资格判定
+    // 要读到那一行；装载范围放宽几行不改变判定，仍由 `declaringProposalRow` 逐条确认所属执行、
+    // 点名的决定与冻结的观察快照。
+    const observationExecutionIds = [
+      ...new Set(
+        supports
+          .map((row) => row.observationExecutionId)
+          .filter((id): id is string => id !== null),
+      ),
+    ];
+    const proposalRows = [
+      ...(proposalIds.length === 0
         ? []
         : query
             .select()
             .from(recognitionProposals)
             .where(inArray(recognitionProposals.id, sqliteTextSet(proposalIds)))
-            .all();
+            .all()),
+      ...(observationExecutionIds.length === 0
+        ? []
+        : query
+            .select()
+            .from(recognitionProposals)
+            .where(
+              inArray(
+                recognitionProposals.executionId,
+                sqliteTextSet(observationExecutionIds),
+              ),
+            )
+            .all()),
+    ].filter(
+      (row, index, rows) =>
+        rows.findIndex((candidate) => candidate.id === row.id) === index,
+    );
     const part = observedPartOf(cover);
     const revisions =
       part === undefined
@@ -16585,7 +16635,13 @@ export class SqliteCatalogue
             .from(artifactRevisions)
             .where(eq(artifactRevisions.id, part.revisionId))
             .all();
-    return { associations, supports, decisions, proposals, revisions };
+    return {
+      associations,
+      supports,
+      decisions,
+      proposals: proposalRows,
+      revisions,
+    };
   }
 
   /**
@@ -17655,19 +17711,30 @@ export class SqliteCatalogue
     );
     const targets: RequestedLocalMaterialConfirmationTarget[] = [];
     for (const requirement of requestedRoles) {
-      const matching = candidates
-        .filter((item) => item.role === requirement.role)
-        .map((item) => item.target)
-        .toSorted((left, right) =>
+      // 数量语义按既有每主体消费选择：一张 material-image 属于每个已接受主体各自一份，
+      // 不能把整批主体候选混排后统一 slice 而漏掉其他主体本次实际消费的载体。
+      const bySubject = new Map<
+        string,
+        RequestedLocalMaterialConfirmationTarget[]
+      >();
+      for (const item of candidates) {
+        if (item.role !== requirement.role) continue;
+        const bucket = bySubject.get(item.target.subjectId) ?? [];
+        bucket.push(item.target);
+        bySubject.set(item.target.subjectId, bucket);
+      }
+      for (const bucket of bySubject.values()) {
+        const sorted = bucket.toSorted((left, right) =>
           localMaterialConfirmationTargetKey(left).localeCompare(
             localMaterialConfirmationTargetKey(right),
           ),
         );
-      targets.push(
-        ...(requirement.maximum === undefined
-          ? matching
-          : matching.slice(0, requirement.maximum)),
-      );
+        targets.push(
+          ...(requirement.maximum === undefined
+            ? sorted
+            : sorted.slice(0, requirement.maximum)),
+        );
+      }
     }
     return mergeRequestedLocalMaterialConfirmationTargets(targets).map(
       (target) => ({
@@ -17930,12 +17997,37 @@ export class SqliteCatalogue
   async verifyRequestedLocalMaterialConfirmationTerminals(input: {
     readonly execution: WorkflowExecution;
   }): Promise<readonly string[]> {
-    const withPayload = input.execution.dispositions.filter(
+    if (
+      input.execution.dispositions.every(
+        (disposition) => disposition.observedMaterialConfirmation === undefined,
+      )
+    )
+      return [];
+    const database = await this.ensure();
+    return this.requestedLocalMaterialStaleTerminalsWithDrizzle(
+      drizzle({ client: database }),
+      input.execution,
+    );
+  }
+
+  /**
+   * 核对在同一读取会话内完成，因此既能独立调用，也能被终态事务在自己的 immediate 事务里
+   * 复用——终态重核与最终观察投影绝不分居两个事务，否则中间落入的较新观察会被当成已确认。
+   * 除逐字观察事实与精确修订确认外，还重核本执行冻结的授权代际与已接受支持：两者任一推进
+   * 都只把该目标判为被取代，历史身份本身不在这里修改。
+   */
+  private requestedLocalMaterialStaleTerminalsWithDrizzle(
+    query: DrizzleReadQuery,
+    execution: WorkflowExecution,
+  ): readonly string[] {
+    const withPayload = execution.dispositions.filter(
       (disposition) => disposition.observedMaterialConfirmation !== undefined,
     );
     if (withPayload.length === 0) return [];
-    const database = await this.ensure();
-    const query = drizzle({ client: database });
+    const authorityStale = this.requestedLocalMaterialAuthorityStaleWithDrizzle(
+      query,
+      execution,
+    );
     const stale: string[] = [];
     for (const disposition of withPayload) {
       const checkpoint = decodeObservedMaterialConfirmationCheckpoint(
@@ -17944,6 +18036,15 @@ export class SqliteCatalogue
       for (const target of checkpoint.targets) {
         if (target.status !== "confirmed" || target.observation === undefined)
           continue;
+        const targetKey = localMaterialConfirmationTargetKey(target);
+        if (authorityStale) {
+          stale.push(targetKey);
+          continue;
+        }
+        if (!this.requestedLocalMaterialGraphIntactWithDrizzle(query, target)) {
+          stale.push(targetKey);
+          continue;
+        }
         const facts = observedSelectionFacts(query, target.locationId, {
           includeConfirmed: true,
         });
@@ -17952,11 +18053,11 @@ export class SqliteCatalogue
           facts.selectionId !== target.observation.selectionId ||
           facts.conditionalBaseline !== target.observation.conditionalBaseline
         ) {
-          stale.push(localMaterialConfirmationTargetKey(target));
+          stale.push(targetKey);
           continue;
         }
         if (!this.observedRevisionConfirmationMatchesWithDrizzle(query, target))
-          stale.push(localMaterialConfirmationTargetKey(target));
+          stale.push(targetKey);
       }
     }
     return [...new Set(stale)];
@@ -18325,6 +18426,14 @@ export class SqliteCatalogue
           AND NOT EXISTS (
             SELECT 1 FROM recognition_decision_retractions AS ended
             WHERE ended.predecessor_decision_id = ${recognitionDecisions.id}
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM artifact_association_supersessions AS ended
+            WHERE ended.predecessor_association_id = ${artifactAssociations.id}
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM artifact_association_retractions AS ended
+            WHERE ended.association_id = ${artifactAssociations.id}
           )`,
         ),
       )
@@ -18336,6 +18445,24 @@ export class SqliteCatalogue
     for (const row of rows) {
       if (row.locationId === null || row.materialKind !== "file") continue;
       if (row.locationArtifactId !== row.revisionArtifactId) continue;
+      // 保留接受图包含历史载体；同一地址已由本次接受投影到新 Location 时，旧位置不能
+      // 再参加当前需求的数量选择，否则 maximum:1 会随机挑到旧摘要并把正常刷新判失败。
+      // 没有当前观察仍可建立单位置正向观察，但不能取代该地址已经选定的另一载体。
+      const currentLocation = query
+        .select({ id: currentFileObservations.locationId })
+        .from(currentFileObservations)
+        .where(
+          eq(
+            currentFileObservations.address,
+            path.resolve(row.locationAddress),
+          ),
+        )
+        .get();
+      if (
+        currentLocation !== undefined &&
+        currentLocation.id !== row.locationId
+      )
+        continue;
       const part =
         row.observedArtifactPartJson === null
           ? undefined
@@ -20457,6 +20584,34 @@ export class SqliteCatalogue
             .orderBy(asc(sql<number>`${sourceRecords}.rowid`)),
     ]);
     /**
+     * 派生实体封面由身份保持刷新产生时，决定仍指向初始接受的提案，声明新观察事实的是那次刷新
+     * 自己的观察执行。当前资格判定必须读到那一行，因此按封面支持的观察执行补装提案；装载放宽
+     * 几行不改变判定，「谁声明」仍逐条由所属执行、点名的决定与冻结的观察快照确认。
+     */
+    const coverAssociationIds = new Set(
+      artifactAssociationRows
+        .filter((row) => isDerivedEntityCover(row))
+        .map((row) => row.id),
+    );
+    const coverObservationExecutionIds = uniqueStrings(
+      artifactRecognitionSupportRows
+        .filter((row) => coverAssociationIds.has(row.associationId))
+        .map((row) => row.observationExecutionId)
+        .filter((id): id is string => id !== null),
+    );
+    const derivedCoverDeclaringProposalRows =
+      coverObservationExecutionIds.length === 0
+        ? []
+        : await query
+            .select()
+            .from(recognitionProposals)
+            .where(
+              inArray(
+                recognitionProposals.executionId,
+                sqliteTextSet(coverObservationExecutionIds),
+              ),
+            );
+    /**
      * 相关目标的资料只由其 provenance 所属来源 owner 确认资格：owner 必须仍在该精确坐标持有
      * 当前关联，并在该精确覆盖（元数据）或该来源记录（产物）上保留谱系头。owner 的关联被撤回
      * 或替换后，旧谱系头仍在也不能把已撤回的资料重新带回，另一 owner 的同地址当前也不得复活。
@@ -20935,6 +21090,7 @@ export class SqliteCatalogue
         currentSourceOwnerRecordHeads,
         decisions,
         proposals: proposalRows,
+        derivedCoverDeclaringProposals: derivedCoverDeclaringProposalRows,
         artifactAssociations: artifactAssociationRows,
         artifactSupersessions,
         artifactRetractions: artifactRetractionsRows,
@@ -21110,7 +21266,12 @@ export class SqliteCatalogue
       associations: rows.artifactAssociations,
       supports: rows.artifactRecognitionSupports,
       decisions: rows.decisions,
-      proposals: rows.proposals,
+      proposals: [
+        ...rows.proposals,
+        ...(rows.derivedCoverDeclaringProposals ?? []).filter(
+          (row) => !rows.proposals.some((item) => item.id === row.id),
+        ),
+      ],
       revisions: rows.revisions,
     };
     const currentArtifactAssociationRows = artifactAssociationRows.filter(
