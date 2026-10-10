@@ -48,6 +48,11 @@ const previewUrl = externalServiceUrl ?? `http://127.0.0.1:${previewPort}`;
 
 export default defineConfig({
   testDir: "./test/e2e",
+  // 真实 HTTP 产品链路由 playwright.acceptance.config.ts 显式选择，普通页面入口不发现它们。
+  testIgnore: [
+    "**/managed-service-product-chain.spec.ts",
+    "**/provided-service-verification.spec.ts",
+  ],
   timeout: 60_000,
   use: {
     baseURL: previewUrl,

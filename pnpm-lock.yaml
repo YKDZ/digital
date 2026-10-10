@@ -237,6 +237,9 @@ importers:
       '@digital/db-migrations':
         specifier: workspace:*
         version: link:../../packages/db-migrations
+      '@digital/environment':
+        specifier: workspace:*
+        version: link:../../packages/environment
       '@digital/fanbox':
         specifier: workspace:*
         version: link:../../sources/fanbox

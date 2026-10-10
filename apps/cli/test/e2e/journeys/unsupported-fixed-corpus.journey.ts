@@ -143,7 +143,7 @@ const journey: CliJourney = {
   },
   commands(context) {
     const { corpusAssetsDirectory, unsupportedRoots } = currentState(context);
-    const data = path.join(context.workDir, "product-data");
+    const data = context.productDataDirectory;
     return [
       {
         name: "register fixed corpus root",

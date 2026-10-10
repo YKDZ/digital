@@ -7,6 +7,10 @@
     "test:e2e": {
       "dependsOn": ["build", "@digital/sqlite#build"],
       "cache": false
+    },
+    "test:e2e:environment": {
+      "dependsOn": ["build", "@digital/sqlite#build"],
+      "cache": false
     }
   }
 }
