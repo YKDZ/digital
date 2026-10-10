@@ -1824,18 +1824,10 @@ export function deliveryExecution(
             blockingConditions:
               inspection.changeImpactPreview.blockingConditions,
             current: deliveryAssetView(
-              projectAssetView(
-                deliveryFactAddresses(
-                  inspection.changeImpactPreview.facts.current,
-                ),
-              ),
+              projectAssetView(inspection.changeImpactPreview.facts.current),
             ),
             proposed: deliveryAssetView(
-              projectAssetView(
-                deliveryFactAddresses(
-                  inspection.changeImpactPreview.facts.projected,
-                ),
-              ),
+              projectAssetView(inspection.changeImpactPreview.facts.projected),
             ),
           },
         }),
