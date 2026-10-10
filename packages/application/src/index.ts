@@ -138,6 +138,13 @@ import {
   type LibraryScanRun,
   type UnrecognizedLibraryScanObservation,
 } from "./library-scan-plan.ts";
+import {
+  ensureRequestedLocalMaterialEvidence,
+  markLocalMaterialConfirmationTerminalsStale,
+  type ExpectedObservedRevisionConfirmation,
+  type LocalMaterialEvidencePersistence,
+  type ObservedMaterialConfirmationCheckpoint,
+} from "./local-material-evidence.ts";
 import type { MetadataPolicyConfiguration } from "./metadata-policy-configuration.ts";
 import {
   decodeObservedRootSnapshot,
@@ -172,6 +179,10 @@ import {
   validateRelationshipDefinition,
 } from "./relationship-definition.ts";
 import {
+  representativeBodyMaterialReferences,
+  representativeObservedMaterialReferences,
+} from "./representative-material.ts";
+import {
   CheckpointedSourceArtifactWork,
   projectManagedSourceArtifacts,
   SourceArtifactAcquisitionEffectFailure,
@@ -195,6 +206,8 @@ export * from "./source-connection.ts";
 export * from "./recognition-material-boundaries.ts";
 export * from "./library-scan-plan.ts";
 export * from "./library-directory-grants.ts";
+export * from "./representative-material.ts";
+export * from "./local-material-evidence.ts";
 
 export * from "./asset-refresh-selection.ts";
 export * from "./artifact-byte-access.ts";
@@ -1466,6 +1479,11 @@ export type WorkItemDisposition = {
   readonly key: string;
   /** 本次处理实际涉及的观察材料，供部分失败后的检查与继续操作使用。 */
   readonly materialReferences?: readonly string[];
+  /**
+   * 本次刷新按实际信息需求建立的本地材料真实确认任务。它复用同一 disposition 容器保存
+   * 有界耐久坐标，使字节读取前后两个中断点都能沿同一冻结目标恢复。
+   */
+  readonly observedMaterialConfirmation?: ObservedMaterialConfirmationCheckpoint;
   readonly status:
     | "running"
     | "completed"
@@ -6815,6 +6833,12 @@ export type AssetRefreshWorkflowPorts = {
   readonly recognitionAcceptance: RecognitionAcceptancePersistence;
   readonly observedMaterialAssociationPersistence?: ObservedMaterialAssociationPersistence;
   readonly recognitionReevaluation: RecognitionReevaluationPersistence;
+  /**
+   * 第5节共同阶段的两个窄端口：SQLite 的检查点/规划查询与 byte-access 的受约束精确确认。
+   * 二者缺失时共同阶段零效果；它们绝不改变来源解析或补充协议。
+   */
+  readonly localMaterialEvidence?: LocalMaterialEvidencePersistence;
+  readonly expectedObservedRevisionConfirmation?: ExpectedObservedRevisionConfirmation;
   readonly recognitionChangeImpact: RecognitionChangeImpactPersistence;
   readonly metadataRefreshPersistence: MetadataRefreshPersistence;
   /** 生产环境只读取履行就绪所需的精确当前事实。 */
@@ -14969,6 +14993,8 @@ export class AssetRefreshWorkflow {
       readonly onHostCheckpoint?:
         | ((execution: WorkflowExecution) => void)
         | undefined;
+      /** 恢复先处理的本地确认未完成项，收尾与来源失败一并折算。 */
+      readonly failedLocalEvidence?: number | undefined;
     },
     mutationClaim: () => { readonly token: string; readonly now: string },
   ): Promise<AssetRefreshInspection> {
@@ -15055,7 +15081,13 @@ export class AssetRefreshWorkflow {
       onHostCheckpoint: input.onHostCheckpoint,
       resumeClaim: mutationClaim(),
     });
-    const running = enrichment.execution;
+    const terminals = await this.verifyRequestedLocalMaterialEvidenceTerminals(
+      enrichment.execution,
+      mutationClaim(),
+    );
+    const failedLocalEvidence =
+      (input.failedLocalEvidence ?? 0) + terminals.failed;
+    const running = terminals.execution;
     const applied = (running.sourceEnrichments ?? []).some(
       (item) =>
         item.subjectId === restrictTo.subjectId &&
@@ -15097,7 +15129,15 @@ export class AssetRefreshWorkflow {
               status: "no-change" as const,
             })),
           };
-    await this.transition(running, finished, mutationClaim());
+    await this.transition(
+      running,
+      this.partialForUnfinishedRecovery({
+        base: finished,
+        failedSourceEnrichments: 0,
+        failedLocalEvidence,
+      }),
+      mutationClaim(),
+    );
     return await this.inspectResumedPublic(finished.id);
   }
 
@@ -15520,6 +15560,145 @@ export class AssetRefreshWorkflow {
    * 明确配置的识别后来源补充运行。它不创建识别决策，并独立处理每个来源结果。从普通
    * 元数据刷新调用它，可让来源补充留在同一产品路径，而不添加提供方专用 CLI 操作。
    */
+  /**
+   * 第5节共同阶段：本地识别接受／重评估全部落库之后、按当前事实规划来源信息补充之前，
+   * 为本次实际需求消费的精确载体建立真实确认。窄端口缺失、没有已接受主体或没有目标时
+   * 一律零效果；它绝不位于来源补充插件存在性的门后，也不改写已接受身份。
+   */
+  private async ensureRequestedLocalMaterialEvidence(input: {
+    readonly execution: WorkflowExecution;
+    readonly subjectIds: readonly string[];
+    readonly informationRequirement: InformationRequirement;
+    readonly resumeClaim?:
+      | { readonly token: string; readonly now: string }
+      | undefined;
+  }): Promise<{
+    readonly execution: WorkflowExecution;
+    readonly failed: number;
+  }> {
+    const persistence = this.ports.localMaterialEvidence;
+    const confirmation = this.ports.expectedObservedRevisionConfirmation;
+    const snapshots =
+      input.execution.filesystemSnapshots ??
+      (input.execution.snapshot === undefined
+        ? []
+        : [input.execution.snapshot]);
+    if (
+      persistence === undefined ||
+      confirmation === undefined ||
+      input.subjectIds.length === 0 ||
+      input.informationRequirement.artifactRoles.length === 0 ||
+      snapshots.length === 0
+    )
+      return { execution: input.execution, failed: 0 };
+    const assetLibraryId = input.execution.workflowInput?.assetLibrary?.id;
+    const settled = await ensureRequestedLocalMaterialEvidence({
+      execution: input.execution,
+      subjectIds: input.subjectIds,
+      informationRequirement: input.informationRequirement,
+      snapshots,
+      ...(assetLibraryId === undefined ? {} : { assetLibraryId }),
+      ...(input.resumeClaim === undefined
+        ? {}
+        : { resumeClaim: input.resumeClaim }),
+      persistence,
+      confirmation,
+      transition: (expected, next, resumeClaim) =>
+        this.transition(expected, next, resumeClaim),
+    });
+    return { execution: settled.execution, failed: settled.failed };
+  }
+
+  /**
+   * 终态事务之前核对检查点里的成功确认仍与当前事实逐字相同。被更晚观察、接受或授权
+   * 变化取代的目标改判失败并重新折算 partial；其坐标随后由单位置投影跳过。
+   */
+  private async verifyRequestedLocalMaterialEvidenceTerminals(
+    execution: WorkflowExecution,
+    resumeClaim?: { readonly token: string; readonly now: string },
+  ): Promise<{
+    readonly execution: WorkflowExecution;
+    readonly failed: number;
+  }> {
+    const persistence = this.ports.localMaterialEvidence;
+    if (
+      persistence === undefined ||
+      !execution.dispositions.some(
+        (disposition) => disposition.observedMaterialConfirmation !== undefined,
+      )
+    )
+      return { execution, failed: 0 };
+    const staleKeys =
+      await persistence.verifyRequestedLocalMaterialConfirmationTerminals({
+        execution,
+      });
+    if (staleKeys.length === 0) return { execution, failed: 0 };
+    const stale = markLocalMaterialConfirmationTerminalsStale(
+      execution,
+      staleKeys,
+    );
+    await this.transition(execution, stale.execution, resumeClaim);
+    return { execution: stale.execution, failed: stale.failed };
+  }
+
+  /**
+   * 恢复沿执行自己持久化的需求与已接受／重用主体运行同一共同阶段：已有检查点只按冻结坐标
+   * 核对并复用，没有检查点则从保留的接受图正常建立。耐久需求不可读时不猜当前输入，一律零
+   * 效果；没有已接受／重用主体时也不为零目标制造 partial。
+   */
+  private async resumeRequestedLocalMaterialEvidence(
+    execution: WorkflowExecution,
+    resumeClaim: { readonly token: string; readonly now: string },
+  ): Promise<{
+    readonly execution: WorkflowExecution;
+    readonly failed: number;
+  }> {
+    const requirement = execution.selection.informationRequirement;
+    const subjects = new Set<string>();
+    for (const item of execution.workItems ?? [])
+      if (
+        (item.outcome === "accepted" || item.outcome === "no-change") &&
+        item.acceptedAssetId !== undefined
+      )
+        subjects.add(item.acceptedAssetId);
+    if (execution.acceptedAssetId !== undefined)
+      subjects.add(execution.acceptedAssetId);
+    if (requirement === undefined || subjects.size === 0)
+      return { execution, failed: 0 };
+    return await this.ensureRequestedLocalMaterialEvidence({
+      execution,
+      subjectIds: [...subjects].toSorted(),
+      informationRequirement: requirement,
+      resumeClaim,
+    });
+  }
+
+  /**
+   * 公共收尾：协调失败与来源失败一并折算 partial，no-change 基础同样不能把未完成的图片
+   * 隐藏成成功；全部成功时保留既有终态，已接受身份始终不变。
+   */
+  private partialForUnfinishedRecovery(input: {
+    readonly base: WorkflowExecution;
+    readonly failedSourceEnrichments: number;
+    readonly failedLocalEvidence: number;
+  }): WorkflowExecution {
+    const failedLocal = input.failedLocalEvidence;
+    const failedSource = input.failedSourceEnrichments;
+    if (
+      failedLocal + failedSource === 0 ||
+      (input.base.outcome !== "accepted" && input.base.outcome !== "no-change")
+    )
+      return input.base;
+    const notes: string[] = [];
+    if (failedSource > 0) notes.push(`${failedSource} 个来源补充未完成`);
+    if (failedLocal > 0) notes.push(`${failedLocal} 个本地图片证据未完成`);
+    return {
+      ...input.base,
+      outcome: "partially-succeeded",
+      reason: `${notes.join("；")}；已接受身份保持有效`,
+    };
+  }
+
   private async enrichAcceptedSubjectsInExecution(input: {
     readonly execution: WorkflowExecution;
     readonly selection: ResolvedAssetRefreshSelection;
@@ -17602,8 +17781,13 @@ export class AssetRefreshWorkflow {
           expectedLineageHeads,
         });
       }
-      const enrichment = await this.enrichAcceptedSubjectsInExecution({
+      const localEvidence = await this.ensureRequestedLocalMaterialEvidence({
         execution: acceptedExecution,
+        subjectIds: [accepted.entity.id],
+        informationRequirement,
+      });
+      const enrichment = await this.enrichAcceptedSubjectsInExecution({
+        execution: localEvidence.execution,
         selection: {
           version: assetRefreshSelectionVersion,
           subjects: [
@@ -17619,18 +17803,24 @@ export class AssetRefreshWorkflow {
         onCheckpoint: input.onCheckpoint,
         onHostCheckpoint: input.onHostCheckpoint,
       });
+      const terminals =
+        await this.verifyRequestedLocalMaterialEvidenceTerminals(
+          enrichment.execution,
+        );
+      const unfinished =
+        enrichment.failed + localEvidence.failed + terminals.failed;
       const finished: WorkflowExecution = {
-        ...enrichment.execution,
+        ...terminals.execution,
         status: "completed",
         stage: "completed",
-        outcome: enrichment.failed > 0 ? "partially-succeeded" : "accepted",
-        ...(enrichment.failed === 0
+        outcome: unfinished > 0 ? "partially-succeeded" : "accepted",
+        ...(unfinished === 0
           ? {}
           : {
-              reason: `${enrichment.failed} 个来源补充未完成；成功范围已保留`,
+              reason: `${unfinished} 个来源补充未完成；成功范围已保留`,
             }),
       };
-      await this.transition(enrichment.execution, finished);
+      await this.transition(terminals.execution, finished);
       return await this.inspectPublic(finished.id);
     } catch (error) {
       rethrowWorkflowLifecycle(error);
@@ -18141,10 +18331,30 @@ export class AssetRefreshWorkflow {
             ).filter((candidate) =>
               deliveryReferences.includes(candidate.observedArtifactReference),
             ),
+            // 交付载体的三项观察投影必须一起裁剪到确有字节变化的引用：留下未变材料的
+            // 格式事实却没有它自己的精确修订，会让严格投影把「没有可核对父修订」当成
+            // 数据损坏而炸掉整次刷新。
             observedArtifactRevisions: (
               proposal.observedArtifactRevisions ?? []
             ).filter((candidate) =>
               deliveryReferences.includes(candidate.observedArtifactReference),
+            ),
+            observedMetadata: (proposal.observedMetadata ?? []).filter(
+              (candidate) =>
+                deliveryReferences.includes(
+                  candidate.observedArtifactReference,
+                ),
+            ),
+            observedArtifactParts: (
+              proposal.observedArtifactParts ?? []
+            ).filter((candidate) =>
+              deliveryReferences.includes(candidate.observedArtifactReference),
+            ),
+            observedEntityGraphs: (proposal.observedEntityGraphs ?? []).filter(
+              (candidate) =>
+                deliveryReferences.includes(
+                  candidate.observedArtifactReference,
+                ),
             ),
           };
           // 提交基线只能取最后一次持久化的运行中审计：可选预览失败的处置随 next 一起
@@ -19182,6 +19392,18 @@ export class AssetRefreshWorkflow {
       readonly execution: WorkflowExecution;
       readonly failed: number;
     };
+    // 全批工作项收拢后、规划来源信息补充前运行共同协调阶段；no-change 的工作项结果
+    // 照样保留，但本次实际消费的图片载体仍需真实确认。
+    const localEvidence =
+      acceptedSubjectIds.length === 0
+        ? { execution, failed: 0 }
+        : await this.ensureRequestedLocalMaterialEvidence({
+            execution,
+            subjectIds: acceptedSubjectIds,
+            informationRequirement: requirement,
+            ...(resumeClaim === undefined ? {} : { resumeClaim }),
+          });
+    execution = localEvidence.execution;
     try {
       enrichment =
         acceptedSubjectIds.length === 0
@@ -19214,16 +19436,21 @@ export class AssetRefreshWorkflow {
       return await this.inspectPublic(failed.id);
     }
     execution = enrichment.execution;
+    const terminals =
+      await this.verifyRequestedLocalMaterialEvidenceTerminals(execution);
+    execution = terminals.execution;
+    const unfinished =
+      enrichment.failed + localEvidence.failed + terminals.failed;
     const workItemTerminal = terminalFromWorkItems(execution);
     const terminalExecution: WorkflowExecution =
-      enrichment.failed === 0
+      unfinished === 0
         ? workItemTerminal
         : {
             ...workItemTerminal,
             status: "completed",
             stage: "completed",
             outcome: "partially-succeeded",
-            reason: `${enrichment.failed} 个来源补充未完成；成功工作项已保留`,
+            reason: `${unfinished} 个来源补充未完成；成功工作项已保留`,
           };
     await this.transition(execution, terminalExecution, resumeClaim);
     return await this.inspectPublic(terminalExecution.id);
@@ -21568,66 +21795,83 @@ export class AssetRefreshWorkflow {
             mutationClaim,
           );
         if (domainRecovery !== undefined) return domainRecovery;
-        if (
+        // 崩溃留在本地确认检查点之前或之中：先沿执行自己持久化的需求与已接受／重用主体处理
+        // 本地确认检查点，再进入原来源恢复。已提交检查点只按冻结坐标核对复用，绝不重查当前
+        // 候选换目标。显式多工作项且没有待处理来源检查点的执行会走到普通刷新主体，那里在全批
+        // 收拢后运行同一阶段，因此不在这里用较小主体集合提前建立另一份检查点。
+        const pendingSourceEnrichments =
           inspection.execution.sourceEnrichments?.some(
             (checkpoint) => checkpoint.stage !== "applied",
-          ) === true
-        ) {
+          ) === true;
+        const localEvidence =
+          !hasExplicitWorkItems || pendingSourceEnrichments
+            ? await this.resumeRequestedLocalMaterialEvidence(
+                inspection.execution,
+                mutationClaim(),
+              )
+            : { execution: inspection.execution, failed: 0 };
+        const recoveredExecution = localEvidence.execution;
+        if (pendingSourceEnrichments) {
           const resumed = await this.resumeSourceEnrichmentCheckpoints({
-            execution: inspection.execution,
+            execution: recoveredExecution,
             sourceRecords: inspection.sourceRecords,
             beforeEffect: renew,
             resumeClaim: mutationClaim(),
             onHostCheckpoint: input.onHostCheckpoint,
           });
+          const terminals =
+            await this.verifyRequestedLocalMaterialEvidenceTerminals(
+              resumed,
+              mutationClaim(),
+            );
           const baseFinished =
-            resumed.workItems === undefined
+            terminals.execution.workItems === undefined
               ? {
-                  ...resumed,
+                  ...terminals.execution,
                   status: "completed" as const,
                   stage: "completed" as const,
                   outcome: "accepted" as const,
                 }
-              : terminalFromWorkItems(resumed);
-          const failedEnrichments = resumed.dispositions.filter(
-            (item) =>
-              item.key.startsWith("source-enrichment:") &&
-              item.status === "failed",
-          ).length;
-          const finished: WorkflowExecution =
-            failedEnrichments === 0 || baseFinished.outcome !== "accepted"
-              ? baseFinished
-              : {
-                  ...baseFinished,
-                  outcome: "partially-succeeded",
-                  reason: `${failedEnrichments} 个来源补充未完成；已接受身份保持有效`,
-                };
-          await this.transition(resumed, finished, mutationClaim());
+              : terminalFromWorkItems(terminals.execution);
+          const finished = this.partialForUnfinishedRecovery({
+            base: baseFinished,
+            failedSourceEnrichments: terminals.execution.dispositions.filter(
+              (item) =>
+                item.key.startsWith("source-enrichment:") &&
+                item.status === "failed",
+            ).length,
+            failedLocalEvidence: localEvidence.failed + terminals.failed,
+          });
+          await this.transition(terminals.execution, finished, mutationClaim());
           return await this.inspectResumedPublic(finished.id);
         }
         const retryIntent = durableRetryIntent;
         if (
           !hasExplicitWorkItems &&
           retryIntent !== undefined &&
-          inspection.execution.acceptedAssetId !== undefined &&
-          (inspection.execution.sourceEnrichments?.length ?? 0) === 0
+          recoveredExecution.acceptedAssetId !== undefined &&
+          (recoveredExecution.sourceEnrichments?.length ?? 0) === 0
         ) {
           // 首来源检查点之前中断的新重试：沿同新 ID 与同精确操作续跑，绝不退回普通自动补充，
-          // 也不重开旧失败执行或以当前候选替换显式输入。
+          // 也不重开旧失败执行或以当前候选替换显式输入。本地检查点已先处理，故以恢复后的
+          // 执行继续，并把其未完成项一并交给同一收尾折算。
           return await this.resumeSourceEnrichmentRetry(
-            inspection.execution,
+            recoveredExecution,
             retryIntent,
-            input,
+            {
+              ...input,
+              failedLocalEvidence: localEvidence.failed,
+            },
             mutationClaim,
           );
         }
         if (
           !hasExplicitWorkItems &&
-          inspection.execution.acceptedAssetId !== undefined
+          recoveredExecution.acceptedAssetId !== undefined
         ) {
-          const acceptedAssetId = inspection.execution.acceptedAssetId;
+          const acceptedAssetId = recoveredExecution.acceptedAssetId;
           const enrichment = await this.enrichAcceptedSubjectsInExecution({
-            execution: inspection.execution,
+            execution: recoveredExecution,
             selection: {
               version: assetRefreshSelectionVersion,
               subjects: [
@@ -21639,32 +21883,31 @@ export class AssetRefreshWorkflow {
               filesystemScopes: [],
             },
             informationRequirement:
-              inspection.execution.selection.informationRequirement ??
+              recoveredExecution.selection.informationRequirement ??
               emptyInformationRequirement,
             onProgress: input.onProgress,
             onHostCheckpoint: input.onHostCheckpoint,
             resumeClaim: mutationClaim(),
           });
-          const finished: WorkflowExecution = {
-            ...enrichment.execution,
-            status: "completed",
-            stage: "completed",
-            outcome:
-              enrichment.failed === 0 ? "accepted" : "partially-succeeded",
-            ...(enrichment.failed === 0
-              ? {}
-              : {
-                  reason: `${enrichment.failed} 个来源补充未完成；已接受身份保持有效`,
-                }),
-          };
-          await this.transition(
-            enrichment.execution,
-            finished,
-            mutationClaim(),
-          );
+          const terminals =
+            await this.verifyRequestedLocalMaterialEvidenceTerminals(
+              enrichment.execution,
+              mutationClaim(),
+            );
+          const finished = this.partialForUnfinishedRecovery({
+            base: {
+              ...terminals.execution,
+              status: "completed",
+              stage: "completed",
+              outcome: "accepted",
+            },
+            failedSourceEnrichments: enrichment.failed,
+            failedLocalEvidence: localEvidence.failed + terminals.failed,
+          });
+          await this.transition(terminals.execution, finished, mutationClaim());
           return await this.inspectResumedPublic(finished.id);
         }
-        let resumedExecution = inspection.execution;
+        let resumedExecution = recoveredExecution;
         const retainResumedCapabilities = async (
           capabilities: readonly CapabilityCoordinate[],
         ): Promise<void> => {
@@ -24457,34 +24700,18 @@ function withObservedMaterialImageRequirement(
   };
 }
 
+/**
+ * 一条本地派生图片兼任实体封面的资格来自被接受的材料边界与明确代表依据，绝不来自「本次
+ * 格式检查恰好只覆盖一个修订」：多材料台本里的附件不会因为只有自己被检查过就冒充作品封面。
+ */
 function observedArtifactPartRepresentsEntity(
   proposal: RecognitionProposal,
   candidate: ObservedArtifactPartCandidate,
 ): boolean {
   if (candidate.role !== "asset.material-image") return false;
-  const isExplicitSingleMaterial =
-    proposal.basis.kind === "manual-boundary" &&
-    proposal.basis.materialReferences.length === 1 &&
-    proposal.basis.materialReferences[0] ===
-      candidate.observedArtifactReference;
-  const observedRevisions =
-    proposal.basis.kind === "observed-evidence"
-      ? proposal.basis.artifactRevisions
-      : (proposal.observedArtifactRevisions ?? []);
-  const isRecognitionEvidenceForCandidate = proposal.ruleResults.some(
-    (result) =>
-      result.evidence.some(
-        (evidence) =>
-          evidence.inspection?.observedArtifactReference ===
-          candidate.observedArtifactReference,
-      ),
+  return representativeObservedMaterialReferences(proposal).has(
+    candidate.observedArtifactReference,
   );
-  const isRecognizedSingleRevision =
-    observedRevisions.length === 1 &&
-    observedRevisions[0]?.observedArtifactReference ===
-      candidate.observedArtifactReference &&
-    isRecognitionEvidenceForCandidate;
-  return isExplicitSingleMaterial || isRecognizedSingleRevision;
 }
 
 function observedArtifactPartAssociationRole(
@@ -25128,64 +25355,10 @@ function selectRepresentativeBodyEntityMetadata(input: {
   >;
   readonly observedMetadata: readonly MetadataAssertion[];
 }): readonly MetadataAssertion[] {
-  const { basis } = input.proposal;
-  if (basis.kind !== "observed-evidence" && basis.kind !== "accepted-boundary")
-    return [];
-  const [boundary] = input.proposal.boundaries;
-  if (input.proposal.boundaries.length !== 1 || boundary === undefined)
-    return [];
-  const inspectedReferences = new Set(
-    (input.proposal.observedArtifactRevisions ?? []).map(
-      (candidate) => candidate.observedArtifactReference,
-    ),
-  );
-  let bodyReferences: readonly string[];
-  if (boundary.kind === "discrete") {
-    // 材料唯一且格式检查只覆盖一个观察引用，两者才同指那条正文。
-    if (boundary.materialReferences.length !== 1) return [];
-    const [inspectedReference] = [...inspectedReferences];
-    if (inspectedReferences.size !== 1 || inspectedReference === undefined)
-      return [];
-    // 整批依据只有那一个修订时，才谈得上这条正文代表资产本身。
-    if (
-      basis.kind === "observed-evidence" &&
-      basis.artifactRevisions.length !== 1
-    )
-      return [];
-    bodyReferences = [inspectedReference];
-  } else {
-    // 目录范围的代表正文只认来源规则的声明，核心不解释路径含义。
-    bodyReferences = [
-      ...new Set(
-        (input.proposal.observedArtifactAssociations ?? [])
-          .filter((candidate) => candidate.role === "asset.representative-body")
-          .map((candidate) => candidate.observedArtifactReference)
-          .filter((reference) => inspectedReferences.has(reference)),
-      ),
-    ].toSorted();
-    if (bodyReferences.length === 0) return [];
-  }
-  const represented = bodyReferences.every((reference) =>
-    basis.kind === "observed-evidence"
-      ? basis.artifactRevisions.some(
-          (candidate) =>
-            candidate.observedArtifactReference === reference &&
-            input.proposal.ruleResults.some(
-              (result) =>
-                result.outcome === "satisfied" &&
-                result.evidence.some(
-                  (evidence) =>
-                    evidence.inspection?.observedArtifactReference ===
-                    reference,
-                ),
-            ),
-        )
-      : basis.evidence.some(
-          (evidence) =>
-            evidence.inspection?.observedArtifactReference === reference,
-        ),
-  );
-  if (!represented) return [];
+  const bodyReferences = [
+    ...representativeBodyMaterialReferences(input.proposal),
+  ];
+  if (bodyReferences.length === 0) return [];
   const titles: MetadataAssertion[] = [];
   for (const reference of bodyReferences) {
     const parent = input.observedRevisionByReference.get(reference);

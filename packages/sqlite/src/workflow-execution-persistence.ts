@@ -6,8 +6,11 @@ import type {
 import {
   assertAssetRefreshSelection,
   decodeObservedMaterialAssociationCheckpoint,
+  decodeObservedMaterialConfirmationCheckpoint,
   decodeSourceAssociationDecisionCheckpoint,
   decodeWorkflowExecutionInput,
+  localMaterialConfirmationDispositionKey,
+  localMaterialConfirmationTargetKey,
   validateSourceAssociationDecisionEnvelope,
   validateSourceAssociationDecisionPriorExecution,
 } from "@digital/application";
@@ -449,7 +452,44 @@ function executionFromRow(row: ExecutionRow): WorkflowExecution {
   );
   assertPlannedAssetIdentities(execution);
   assertDurableSourceFailureCodes(execution);
+  assertDurableLocalMaterialConfirmations(execution);
   return execution;
+}
+
+/**
+ * 耐久本地材料确认载荷的读取验证：未知版本或字段类型错误由解码器直接判定执行损坏，这里
+ * 补充跨条目一致性——检查点必须绑在自己的需求键上、同一需求只有一份、任务非空且有界且
+ * 目标坐标不重复。绝不把被篡改或搬移的载荷按「没有该字段」继续，也不借读取扩大冻结任务。
+ */
+function assertDurableLocalMaterialConfirmations(
+  execution: WorkflowExecution,
+): void {
+  const seen = new Set<string>();
+  for (const disposition of execution.dispositions) {
+    const payload = disposition.observedMaterialConfirmation;
+    if (payload === undefined) continue;
+    const checkpoint = decodeObservedMaterialConfirmationCheckpoint(payload);
+    if (
+      disposition.key !==
+        localMaterialConfirmationDispositionKey(checkpoint.requirementKey) ||
+      seen.has(disposition.key) ||
+      checkpoint.targets.length === 0 ||
+      checkpoint.targets.length > 512
+    )
+      throw new Error(
+        "Malformed Workflow Execution local material confirmation",
+      );
+    seen.add(disposition.key);
+    const targetKeys = new Set(
+      checkpoint.targets.map((target) =>
+        localMaterialConfirmationTargetKey(target),
+      ),
+    );
+    if (targetKeys.size !== checkpoint.targets.length)
+      throw new Error(
+        "Malformed Workflow Execution local material confirmation",
+      );
+  }
 }
 
 function assertDurableSourceFailureCodes(execution: WorkflowExecution): void {

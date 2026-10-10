@@ -99,6 +99,14 @@ import type {
   RelationshipDecisionPersistence,
   FilesystemPackageSnapshot,
   ObservedMaterialAcceptanceBinding,
+  InformationRequirement,
+  LocalMaterialConfirmationCheckpointOutcome,
+  LocalMaterialConfirmationCheckpointTarget,
+  LocalMaterialConfirmationFrozenEntry,
+  LocalMaterialConfirmationObservation,
+  LocalMaterialConfirmationObservationCoordinates,
+  LocalMaterialConfirmationPlanEntry,
+  RequestedLocalMaterialConfirmationTarget,
 } from "@digital/application";
 import {
   createObservedRootAuthorityIndex,
@@ -124,6 +132,15 @@ import {
   encodeInformationFulfillmentPlan,
   encodeLibraryScanFulfillmentRequirement,
   libraryScanFulfillmentVersion,
+  attachLocalMaterialConfirmationObservations,
+  decodeObservedMaterialConfirmationCheckpoint,
+  findObservedMaterialConfirmationCheckpoint,
+  localMaterialConfirmationDispositions,
+  localMaterialConfirmationStaleCode,
+  localMaterialConfirmationTargetKey,
+  mergeRequestedLocalMaterialConfirmationTargets,
+  representativeObservedMaterialReferences,
+  staleLocalMaterialConfirmationAddresses,
 } from "@digital/application";
 import type {
   AcceptedRecognition,
@@ -208,6 +225,12 @@ import {
 import { drizzle } from "drizzle-orm/node-sqlite";
 
 import { enableCatalogueWal } from "./connection.ts";
+import {
+  derivedCoverCurrentlyRepresentative,
+  derivedCoverSiblingId,
+  observedPartOf,
+  type DerivedCoverCurrentRows,
+} from "./derived-entity-cover-history.ts";
 import {
   assertExactLegacySourceEnrichmentAuthority,
   assertOrdinaryEntityMigrationAuthority,
@@ -453,6 +476,26 @@ function currentConfirmedLocationRevisions(
       ? [{ locationId: location.id, revisionId: revisionIds[0]! }]
       : [];
   });
+}
+
+/**
+ * 前置当前观察的 CAS 比较：`null`/`undefined` 都表示「该位置没有观察」，两者相等。定向确认
+ * 检查点据此核对准备查询读到的事实（含不存在）仍未变化。
+ */
+function sameLocalMaterialObservation(
+  left: LocalMaterialConfirmationObservationCoordinates | null | undefined,
+  right: LocalMaterialConfirmationObservationCoordinates | null | undefined,
+): boolean {
+  const a = left === undefined ? null : left;
+  const b = right === undefined ? null : right;
+  if (a === null || b === null) return a === b;
+  return (
+    a.snapshotId === b.snapshotId &&
+    a.observedAt === b.observedAt &&
+    a.size === b.size &&
+    a.modifiedAt === b.modifiedAt &&
+    a.conditionalBaseline === b.conditionalBaseline
+  );
 }
 
 /**
@@ -867,6 +910,21 @@ type CurrentCatalogueHydrationRows = {
   readonly observedEntityGraphEntities: readonly (typeof observedEntityGraphEntities.$inferSelect)[];
   readonly observedEntityGraphRelationships: readonly (typeof observedEntityGraphRelationships.$inferSelect)[];
 };
+
+/**
+ * 派生实体封面的历史真实性/当前角色判定对外可见：就绪检查与迁移测试都按同一份判定读取，
+ * 不在别处复制规则。
+ */
+export {
+  derivedCoverCurrentlyRepresentative,
+  readDerivedEntityCoverReadiness,
+  validateDerivedEntityCoverHistory,
+  type DerivedCoverCurrentRows,
+  type DerivedCoverHistoryRows,
+  type DerivedCoverReadinessEntry,
+  type DerivedCoverSupportRow,
+  type DerivedCoverVerdict,
+} from "./derived-entity-cover-history.ts";
 
 /**
  * 基础设施层拥有用于判断持久恢复租约是否仍然有效的时钟。它刻意不跨越
@@ -16448,13 +16506,106 @@ export class SqliteCatalogue
   }
 
   /**
+   * 派生实体封面的当前判定行集：按数据库行识别（检查点提交的关联对象不带观察部件），不是
+   * 这种封面就返回 undefined 让调用方保持原判定。决定只装载未结束的那些，因此决定结束后
+   * 旧封面自然拿不到当前角色。
+   */
+  private derivedCoverCurrentRowsWithDrizzle(
+    query: DrizzleReadQuery,
+    associationId: string,
+  ): DerivedCoverCurrentRows | undefined {
+    const cover = query
+      .select()
+      .from(artifactAssociations)
+      .where(eq(artifactAssociations.id, associationId))
+      .get();
+    if (
+      cover === undefined ||
+      cover.role !== "asset.primary-cover" ||
+      cover.targetKind !== "entity" ||
+      cover.observedArtifactPartJson === null
+    )
+      return undefined;
+    const siblingId = derivedCoverSiblingId(cover.id);
+    const associationIds =
+      siblingId === undefined ? [cover.id] : [cover.id, siblingId];
+    const associations = query
+      .select()
+      .from(artifactAssociations)
+      .where(inArray(artifactAssociations.id, sqliteTextSet(associationIds)))
+      .all();
+    const supports = query
+      .select()
+      .from(artifactAssociationRecognitionSupports)
+      .where(
+        inArray(
+          artifactAssociationRecognitionSupports.associationId,
+          sqliteTextSet(associationIds),
+        ),
+      )
+      .all();
+    const decisionIds = [
+      ...new Set(supports.map((row) => row.recognitionDecisionId)),
+    ];
+    const decisions =
+      decisionIds.length === 0
+        ? []
+        : query
+            .select()
+            .from(recognitionDecisions)
+            .where(
+              and(
+                inArray(recognitionDecisions.id, sqliteTextSet(decisionIds)),
+                sql`NOT EXISTS (
+                  SELECT 1 FROM recognition_decision_supersessions AS ended
+                  WHERE ended.predecessor_decision_id = ${recognitionDecisions.id}
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM recognition_decision_retractions AS ended
+                  WHERE ended.predecessor_decision_id = ${recognitionDecisions.id}
+                )`,
+              ),
+            )
+            .all();
+    const proposalIds = [...new Set(decisions.map((row) => row.proposalId))];
+    const proposals =
+      proposalIds.length === 0
+        ? []
+        : query
+            .select()
+            .from(recognitionProposals)
+            .where(inArray(recognitionProposals.id, sqliteTextSet(proposalIds)))
+            .all();
+    const part = observedPartOf(cover);
+    const revisions =
+      part === undefined
+        ? []
+        : query
+            .select()
+            .from(artifactRevisions)
+            .where(eq(artifactRevisions.id, part.revisionId))
+            .all();
+    return { associations, supports, decisions, proposals, revisions };
+  }
+
+  /**
    * 当前读取：主体即决定资产的本地关联带精确观察证据时，只按 `isCurrentLocalObservationEvidence`
-   * 判定，与正式当前投影共用同一份规则；其余关联仍由历史载体回查决定。
+   * 判定，与正式当前投影共用同一份规则；其余关联仍由历史载体回查决定。派生实体封面额外
+   * 要求修正后的代表规则成立，历史结构完整不等于当前角色。
    */
   private hasCurrentLocalObservationSupportWithDrizzle(
     query: DrizzleReadQuery,
     association: ArtifactAssociation,
   ): boolean {
+    const derivedCover = this.derivedCoverCurrentRowsWithDrizzle(
+      query,
+      association.id,
+    );
+    if (
+      derivedCover !== undefined &&
+      derivedCoverCurrentlyRepresentative(derivedCover, association.id) !== true
+    )
+      return false;
     const rows = query
       .select({
         locationId:
@@ -16567,6 +16718,19 @@ export class SqliteCatalogue
     query: DrizzleReadQuery,
     association: ArtifactAssociation,
   ): boolean {
+    /**
+     * 派生实体封面的历史回查臂一律不接管：这类封面只有修正代表规则成立才作数，否则完整的
+     * 历史结构也不能在当前读取里复活角色（历史真实性由就绪检查单独判定）。
+     */
+    const derivedCover = this.derivedCoverCurrentRowsWithDrizzle(
+      query,
+      association.id,
+    );
+    if (
+      derivedCover !== undefined &&
+      derivedCoverCurrentlyRepresentative(derivedCover, association.id) !== true
+    )
+      return false;
     if (this.hasCurrentLocalObservationSupportWithDrizzle(query, association))
       return true;
     const result =
@@ -16986,6 +17150,187 @@ export class SqliteCatalogue
    * 普通刷新把本次有界 snapshot 规范化到 Location 键控的当前观察投影。热消费查询
    * 只读该投影，不扫描保留的 WorkflowExecution JSON。
    */
+  /**
+   * 单位置正向投影的纯选择：沿用最终投影的快照排序，只认给定快照里与该地址精确同址的文件
+   * 条目。定向确认检查点据此先比较后写入，绝不按地址猜另一个位置。
+   */
+  private currentFileObservationEntryForAddress(
+    address: string,
+    snapshots: readonly FilesystemPackageSnapshot[],
+    options: { readonly requireWithinSnapshotRoot?: boolean } = {},
+  ):
+    | {
+        readonly snapshot: FilesystemPackageSnapshot;
+        readonly size: number;
+        readonly modifiedAt: string;
+      }
+    | undefined {
+    const matches = snapshots.flatMap((snapshot) =>
+      options.requireWithinSnapshotRoot === true &&
+      !pathIsWithin(snapshot.root, address)
+        ? []
+        : snapshot.files
+            .filter(
+              (file) =>
+                path.resolve(snapshot.root, file.relativePath) ===
+                path.resolve(address),
+            )
+            .map((file) => ({
+              snapshot,
+              size: file.size,
+              modifiedAt: file.modifiedAt,
+            })),
+    );
+    return matches.toSorted((left, right) =>
+      right.snapshot.observedAt.localeCompare(left.snapshot.observedAt),
+    )[0];
+  }
+
+  /**
+   * 条件基线与当前观察写入只保留一份计算：接受投影、终态完整投影、别名换算与定向确认检查点
+   * 共用，避免「检查点算一套、终态再算一套」的两个观察事实版本。
+   */
+  private writeCurrentFileObservationWithDrizzle(
+    transaction: DrizzleWriteTransaction,
+    input: {
+      readonly locationId: string;
+      readonly artifactId: string;
+      readonly address: string;
+      readonly snapshot: FilesystemPackageSnapshot;
+      readonly size: number;
+      readonly modifiedAt: string;
+    },
+  ): LocalMaterialConfirmationObservationCoordinates {
+    const conditionalBaseline = currentObservationConditionalBaseline(
+      transaction,
+      {
+        artifactId: input.artifactId,
+        locationId: input.locationId,
+        snapshotId: input.snapshot.id,
+        observedAt: input.snapshot.observedAt,
+        size: input.size,
+        modifiedAt: input.modifiedAt,
+      },
+    );
+    transaction
+      .insert(currentFileObservations)
+      .values({
+        locationId: input.locationId,
+        address: input.address,
+        snapshotId: input.snapshot.id,
+        observedAt: input.snapshot.observedAt,
+        size: input.size,
+        modifiedAt: input.modifiedAt,
+        conditionalBaseline,
+      })
+      .onConflictDoUpdate({
+        target: currentFileObservations.address,
+        set: {
+          locationId: input.locationId,
+          snapshotId: input.snapshot.id,
+          observedAt: input.snapshot.observedAt,
+          size: input.size,
+          modifiedAt: input.modifiedAt,
+          conditionalBaseline,
+        },
+      })
+      .run();
+    return {
+      snapshotId: input.snapshot.id,
+      observedAt: input.snapshot.observedAt,
+      size: input.size,
+      modifiedAt: input.modifiedAt,
+      conditionalBaseline,
+    };
+  }
+
+  /** 某观察位置当前的耐久观察坐标；不存在返回 `null`，供检查点做「含不存在」的 CAS。 */
+  private currentFileObservationCoordinatesWithDrizzle(
+    query: DrizzleReadQuery,
+    locationId: string,
+  ): LocalMaterialConfirmationObservationCoordinates | null {
+    const row = query
+      .select()
+      .from(currentFileObservations)
+      .where(eq(currentFileObservations.locationId, locationId))
+      .get();
+    return row === undefined
+      ? null
+      : {
+          snapshotId: row.snapshotId,
+          observedAt: row.observedAt,
+          size: row.size,
+          modifiedAt: row.modifiedAt,
+          conditionalBaseline: row.conditionalBaseline,
+        };
+  }
+
+  /**
+   * 单位置正向投影：该位置的既有根/目录授权正向支持，加上本执行冻结条目对应的当前观察与
+   * 观察支持。本执行快照不再含该条目时返回 undefined，由调用方决定缺失处理。
+   */
+  private projectCurrentFileObservationForLocation(
+    transaction: DrizzleWriteTransaction,
+    execution: WorkflowExecution,
+    location: {
+      readonly id: string;
+      readonly artifactId: string;
+      readonly address: string;
+    },
+    snapshots: readonly FilesystemPackageSnapshot[],
+    materialKind: "file" | "directory" | undefined,
+    options: {
+      readonly requireWithinSnapshotRoot?: boolean;
+      readonly presentEligible?: boolean;
+    } = {},
+  ): LocalMaterialConfirmationObservationCoordinates | undefined {
+    this.projectCurrentObservedMaterialSupportForLocation(
+      transaction,
+      execution,
+      location.address,
+      location.id,
+      materialKind,
+      options.presentEligible ?? true,
+    );
+    const entry = this.currentFileObservationEntryForAddress(
+      location.address,
+      snapshots,
+      { requireWithinSnapshotRoot: options.requireWithinSnapshotRoot === true },
+    );
+    if (entry === undefined) return undefined;
+    const coordinates = this.writeCurrentFileObservationWithDrizzle(
+      transaction,
+      {
+        locationId: location.id,
+        artifactId: location.artifactId,
+        address: location.address,
+        snapshot: entry.snapshot,
+        size: entry.size,
+        modifiedAt: entry.modifiedAt,
+      },
+    );
+    this.recordCurrentFileObservationSupportsWithDrizzle(
+      transaction,
+      execution,
+      location.id,
+    );
+    return coordinates;
+  }
+
+  /**
+   * 本协调器已判定被取代的载体地址：终态单位置正向投影必须跳过这些精确坐标，不能将更新
+   * 的事实覆盖回旧确认，也不能由别名第二遍写回绕过。
+   */
+  private staleLocalMaterialConfirmationAddressSet(
+    execution: WorkflowExecution,
+  ): ReadonlySet<string> {
+    return new Set(
+      staleLocalMaterialConfirmationAddresses(execution).map((address) =>
+        path.resolve(address),
+      ),
+    );
+  }
+
   private projectCurrentFileObservationsWithDrizzle(
     transaction: DrizzleWriteTransaction,
     execution: WorkflowExecution,
@@ -17034,74 +17379,26 @@ export class SqliteCatalogue
         }
       }
     }
+    const staleAddresses =
+      this.staleLocalMaterialConfirmationAddressSet(execution);
     for (const location of acceptedLocations) {
       if (location.kind !== "observed") continue;
-      this.projectCurrentObservedMaterialSupportForLocation(
+      if (staleAddresses.has(path.resolve(location.address))) continue;
+      const established = this.projectCurrentFileObservationForLocation(
         transaction,
         execution,
-        location.address,
-        location.id,
+        location,
+        snapshots,
         materialKindFor(location.id),
       );
-      const matches = snapshots.flatMap((snapshot) =>
-        snapshot.files
-          .filter(
-            (file) =>
-              path.resolve(snapshot.root, file.relativePath) ===
-              path.resolve(location.address),
-          )
-          .map((file) => ({ snapshot, file })),
-      );
-      const current = matches.toSorted((left, right) =>
-        right.snapshot.observedAt.localeCompare(left.snapshot.observedAt),
-      )[0];
-      if (current === undefined) {
-        if (this.scanPreciselyCoversAddress(snapshots, location.address))
-          transaction
-            .delete(currentFileObservations)
-            .where(eq(currentFileObservations.locationId, location.id))
-            .run();
-        continue;
-      }
-      const conditionalBaseline = currentObservationConditionalBaseline(
-        transaction,
-        {
-          artifactId: location.artifactId,
-          locationId: location.id,
-          snapshotId: current.snapshot.id,
-          observedAt: current.snapshot.observedAt,
-          size: current.file.size,
-          modifiedAt: current.file.modifiedAt,
-        },
-      );
-      transaction
-        .insert(currentFileObservations)
-        .values({
-          locationId: location.id,
-          address: location.address,
-          snapshotId: current.snapshot.id,
-          observedAt: current.snapshot.observedAt,
-          size: current.file.size,
-          modifiedAt: current.file.modifiedAt,
-          conditionalBaseline,
-        })
-        .onConflictDoUpdate({
-          target: currentFileObservations.address,
-          set: {
-            locationId: location.id,
-            snapshotId: current.snapshot.id,
-            observedAt: current.snapshot.observedAt,
-            size: current.file.size,
-            modifiedAt: current.file.modifiedAt,
-            conditionalBaseline,
-          },
-        })
-        .run();
-      this.recordCurrentFileObservationSupportsWithDrizzle(
-        transaction,
-        execution,
-        location.id,
-      );
+      if (
+        established === undefined &&
+        this.scanPreciselyCoversAddress(snapshots, location.address)
+      )
+        transaction
+          .delete(currentFileObservations)
+          .where(eq(currentFileObservations.locationId, location.id))
+          .run();
     }
     // 同一登记以等价容器拼写重连时，旧 Location 事实保留其原地址；以该登记此前
     // 的成功支持路径换算相对地址，才能由新成功扫描重新建立支持。
@@ -17138,40 +17435,18 @@ export class SqliteCatalogue
               scopedRelativePath
             )
               continue;
-            const conditionalBaseline = currentObservationConditionalBaseline(
-              transaction,
-              {
-                artifactId: alias.artifactId,
-                locationId: alias.locationId,
-                snapshotId: snapshot.id,
-                observedAt: snapshot.observedAt,
-                size: file.size,
-                modifiedAt: file.modifiedAt,
-              },
-            );
-            transaction
-              .insert(currentFileObservations)
-              .values({
-                locationId: alias.locationId,
-                address: path.resolve(snapshot.root, file.relativePath),
-                snapshotId: snapshot.id,
-                observedAt: snapshot.observedAt,
-                size: file.size,
-                modifiedAt: file.modifiedAt,
-                conditionalBaseline,
-              })
-              .onConflictDoUpdate({
-                target: currentFileObservations.address,
-                set: {
-                  locationId: alias.locationId,
-                  snapshotId: snapshot.id,
-                  observedAt: snapshot.observedAt,
-                  size: file.size,
-                  modifiedAt: file.modifiedAt,
-                  conditionalBaseline,
-                },
-              })
-              .run();
+            if (
+              staleAddresses.has(path.resolve(snapshot.root, file.relativePath))
+            )
+              continue;
+            this.writeCurrentFileObservationWithDrizzle(transaction, {
+              locationId: alias.locationId,
+              artifactId: alias.artifactId,
+              address: path.resolve(snapshot.root, file.relativePath),
+              snapshot,
+              size: file.size,
+              modifiedAt: file.modifiedAt,
+            });
             this.recordCurrentFileObservationSupportsWithDrizzle(
               transaction,
               execution,
@@ -17307,83 +17582,37 @@ export class SqliteCatalogue
       const tracked = trackedFileLocationByAddress.get(resolved);
       return tracked ?? soleFileLocationByAddress.get(resolved);
     };
+    const staleAddresses =
+      this.staleLocalMaterialConfirmationAddressSet(execution);
     for (const location of observedLocations) {
-      this.projectCurrentObservedMaterialSupportForLocation(
+      if (staleAddresses.has(path.resolve(location.address))) continue;
+      const established = this.projectCurrentFileObservationForLocation(
         transaction,
         execution,
-        location.address,
-        location.id,
+        location,
+        snapshots,
         boundaries.get(location.id),
-        boundaries.get(location.id) === "directory" ||
-          exactFileLocationFor(location.address) === location.id,
-      );
-      const matches = snapshots.flatMap((snapshot) =>
-        !pathIsWithin(snapshot.root, location.address)
-          ? []
-          : snapshot.files
-              .filter(
-                (file) =>
-                  path.resolve(snapshot.root, file.relativePath) ===
-                  path.resolve(location.address),
-              )
-              .map((file) => ({ snapshot, file })),
-      );
-      const current = matches.toSorted((left, right) =>
-        right.snapshot.observedAt.localeCompare(left.snapshot.observedAt),
-      )[0];
-      if (current === undefined) {
-        if (this.scanPreciselyCoversAddress(snapshots, location.address)) {
-          this.recordCurrentFileObservationSupportsWithDrizzle(
-            transaction,
-            execution,
-            location.id,
-          );
-          transaction
-            .delete(currentFileObservations)
-            .where(eq(currentFileObservations.locationId, location.id))
-            .run();
-        }
-        continue;
-      }
-      const conditionalBaseline = currentObservationConditionalBaseline(
-        transaction,
         {
-          artifactId: location.artifactId,
-          locationId: location.id,
-          snapshotId: current.snapshot.id,
-          observedAt: current.snapshot.observedAt,
-          size: current.file.size,
-          modifiedAt: current.file.modifiedAt,
+          requireWithinSnapshotRoot: true,
+          presentEligible:
+            boundaries.get(location.id) === "directory" ||
+            exactFileLocationFor(location.address) === location.id,
         },
       );
-      transaction
-        .insert(currentFileObservations)
-        .values({
-          locationId: location.id,
-          address: location.address,
-          snapshotId: current.snapshot.id,
-          observedAt: current.snapshot.observedAt,
-          size: current.file.size,
-          modifiedAt: current.file.modifiedAt,
-          conditionalBaseline,
-        })
-        .onConflictDoUpdate({
-          target: currentFileObservations.address,
-          set: {
-            locationId: location.id,
-            snapshotId: current.snapshot.id,
-            observedAt: current.snapshot.observedAt,
-            size: current.file.size,
-            modifiedAt: current.file.modifiedAt,
-            conditionalBaseline,
-          },
-        })
-        .run();
-      this.recordCurrentFileObservationSupportsWithDrizzle(
-        transaction,
-        execution,
-        location.id,
-      );
+      if (
+        established === undefined &&
+        this.scanPreciselyCoversAddress(snapshots, location.address)
+      ) {
+        this.recordCurrentFileObservationSupportsWithDrizzle(
+          transaction,
+          execution,
+          location.id,
+        );
+        transaction
+          .delete(currentFileObservations)
+          .where(eq(currentFileObservations.locationId, location.id))
+          .run();
+      }
     }
     this.projectCurrentFileObservationsWithDrizzle(transaction, execution, []);
     // awaitingObservation 只由一次完整授权观察（scan-filesystem 完成终态 + complete 快照）清零；
@@ -17392,6 +17621,809 @@ export class SqliteCatalogue
       transaction,
       execution,
     );
+  }
+
+  /**
+   * 第6节操作1：读取这些主体仍有效的决定与本地材料历史支持，返回本次实际需求真正消费的
+   * 精确载体目标。这里读的是**保留的接受图**，不是已过滤 current 的接受投影，否则恰好需要
+   * 确认的图永远找不到。本次冻结快照里没有对应条目的载体不入选：既不捏造观察，也不推断缺失。
+   */
+  async planRequestedLocalMaterialConfirmations(input: {
+    readonly subjectIds: readonly string[];
+    readonly informationRequirement: InformationRequirement;
+    readonly snapshots: readonly FilesystemPackageSnapshot[];
+    readonly assetLibraryId?: string | undefined;
+  }): Promise<readonly LocalMaterialConfirmationPlanEntry[]> {
+    // 需求里的角色与数量限制决定「消费哪些本地图片」，必要性不参与筛选：一次只带可选
+    // 图片角色的普通刷新同样要把已物化并会被投影的图片保持在当前证据上。候选范围由
+    // 本次主体与保留接受图决定，因此可选角色不等于全库请求。
+    const requestedRoles = input.informationRequirement.artifactRoles;
+    if (
+      requestedRoles.length === 0 ||
+      input.snapshots.length === 0 ||
+      input.subjectIds.length === 0
+    )
+      return [];
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    const candidates = this.requestedLocalMaterialCandidatesWithDrizzle(
+      query,
+      input.subjectIds,
+      requestedRoles.map((item) => item.role),
+      input.snapshots,
+      input.assetLibraryId,
+    );
+    const targets: RequestedLocalMaterialConfirmationTarget[] = [];
+    for (const requirement of requestedRoles) {
+      const matching = candidates
+        .filter((item) => item.role === requirement.role)
+        .map((item) => item.target)
+        .toSorted((left, right) =>
+          localMaterialConfirmationTargetKey(left).localeCompare(
+            localMaterialConfirmationTargetKey(right),
+          ),
+        );
+      targets.push(
+        ...(requirement.maximum === undefined
+          ? matching
+          : matching.slice(0, requirement.maximum)),
+      );
+    }
+    return mergeRequestedLocalMaterialConfirmationTargets(targets).map(
+      (target) => ({
+        target,
+        prerequisiteObservation:
+          this.currentFileObservationCoordinatesWithDrizzle(
+            query,
+            target.locationId,
+          ),
+      }),
+    );
+  }
+
+  /**
+   * 第6节操作2：同一条 immediate 事务核对执行 CAS 与恢复 claim、保留接受图与冻结坐标、仍有效
+   * 的根与库授权，对本次扫描实际存在的这些精确载体建立单位置正向当前观察，并把检查点连同事务
+   * 内算出的精确 facts 一起提交。它不建立 confirmation，不推断其他材料消失，不清库的
+   * awaitingObservation，也不把执行提前写成 completed。
+   */
+  async checkpointRequestedLocalMaterialConfirmations(input: {
+    readonly expectedExecution: WorkflowExecution;
+    readonly execution: WorkflowExecution;
+    readonly dispositionKey: string;
+    readonly entries: readonly LocalMaterialConfirmationPlanEntry[];
+    readonly resumeClaim?: { readonly token: string; readonly now: string };
+  }): Promise<{
+    readonly execution: WorkflowExecution;
+    readonly outcomes: readonly LocalMaterialConfirmationCheckpointOutcome[];
+  }> {
+    const checkpoint = findObservedMaterialConfirmationCheckpoint(
+      input.execution.dispositions,
+      input.dispositionKey,
+    );
+    if (checkpoint === undefined)
+      throw new Error("本地材料确认检查点缺少耐久目标列表");
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    try {
+      return query.transaction(
+        (transaction) => {
+          const baseline =
+            this.workflowExecutionPersistence.runningExecutionBaseline(
+              transaction,
+              input.expectedExecution,
+              input.execution,
+            );
+          this.assertResumeMutationClaim(
+            transaction,
+            input.expectedExecution.id,
+            input.resumeClaim,
+          );
+          const authorityStale =
+            this.requestedLocalMaterialAuthorityStaleWithDrizzle(
+              transaction,
+              input.execution,
+            );
+          const snapshots =
+            input.execution.filesystemSnapshots ??
+            (input.execution.snapshot === undefined
+              ? []
+              : [input.execution.snapshot]);
+          const outcomes: LocalMaterialConfirmationCheckpointOutcome[] = [];
+          const statuses: {
+            readonly targetKey: string;
+            readonly status: "pending" | "confirmed" | "failed";
+            readonly observation?: LocalMaterialConfirmationObservation;
+            readonly failureCode?: string;
+          }[] = [];
+          for (const target of checkpoint.targets) {
+            if (target.status !== "pending") continue;
+            const targetKey = localMaterialConfirmationTargetKey(target);
+            const stale = (): void => {
+              // 被取代的目标只按该位置当前的精确事实裁定；没有可观察事实时保留为未完成目标
+              // 并记下同一稳定失败码，绝不伪造一份观察。
+              const facts = observedSelectionFacts(
+                transaction,
+                target.locationId,
+                { includeConfirmed: true },
+              );
+              const observation =
+                facts === undefined
+                  ? undefined
+                  : {
+                      selectionId: facts.selectionId,
+                      conditionalBaseline: facts.conditionalBaseline,
+                    };
+              outcomes.push({
+                kind: "stale",
+                target,
+                ...(observation === undefined ? {} : { observation }),
+              });
+              statuses.push(
+                observation === undefined
+                  ? {
+                      targetKey,
+                      status: "pending",
+                      failureCode: localMaterialConfirmationStaleCode,
+                    }
+                  : {
+                      targetKey,
+                      status: "failed",
+                      observation,
+                      failureCode: localMaterialConfirmationStaleCode,
+                    },
+              );
+            };
+            const entry = input.entries.find(
+              (item) =>
+                localMaterialConfirmationTargetKey(item.target) === targetKey,
+            );
+            if (authorityStale) {
+              stale();
+              continue;
+            }
+            if (
+              !this.requestedLocalMaterialGraphIntactWithDrizzle(
+                transaction,
+                target,
+              )
+            ) {
+              stale();
+              continue;
+            }
+            // 崩溃窗口重入：已随检查点提交过精确事实的项只核对，不再建立或覆盖观察。
+            if (target.observation !== undefined) {
+              const facts = observedSelectionFacts(
+                transaction,
+                target.locationId,
+                {
+                  includeConfirmed: true,
+                },
+              );
+              if (
+                facts === undefined ||
+                facts.selectionId !== target.observation.selectionId ||
+                facts.conditionalBaseline !==
+                  target.observation.conditionalBaseline
+              )
+                stale();
+              else
+                this.classifyRequestedLocalMaterialConfirmation(
+                  transaction,
+                  target,
+                  facts,
+                  outcomes,
+                  statuses,
+                );
+              continue;
+            }
+            const existing = this.currentFileObservationCoordinatesWithDrizzle(
+              transaction,
+              target.locationId,
+            );
+            if (
+              !sameLocalMaterialObservation(
+                existing,
+                entry?.prerequisiteObservation ?? null,
+              )
+            ) {
+              stale();
+              continue;
+            }
+            // 已存在的观察比本执行的冻结条目更新时不写回：定向确认绝不取代新事实。
+            if (
+              existing !== null &&
+              existing.observedAt > target.frozenEntry.observedAt
+            ) {
+              stale();
+              continue;
+            }
+            const established = this.projectCurrentFileObservationForLocation(
+              transaction,
+              input.execution,
+              {
+                id: target.locationId,
+                artifactId: target.carrierArtifactId,
+                address: target.locationAddress,
+              },
+              snapshots,
+              this.observedMaterialBoundaryKindsWithDrizzle(transaction).get(
+                target.locationId,
+              ),
+              { requireWithinSnapshotRoot: true },
+            );
+            const frozen = snapshots.find(
+              (snapshot) => snapshot.id === target.frozenEntry.snapshotId,
+            );
+            if (
+              established === undefined ||
+              frozen === undefined ||
+              established.snapshotId !== target.frozenEntry.snapshotId ||
+              established.observedAt !== target.frozenEntry.observedAt ||
+              established.size !== target.frozenEntry.size ||
+              established.modifiedAt !== target.frozenEntry.modifiedAt ||
+              path.resolve(frozen.root) !==
+                path.resolve(target.frozenEntry.snapshotRoot)
+            ) {
+              stale();
+              continue;
+            }
+            const facts = observedSelectionFacts(
+              transaction,
+              target.locationId,
+              {
+                includeConfirmed: true,
+              },
+            );
+            if (
+              facts === undefined ||
+              facts.conditionalBaseline !== established.conditionalBaseline
+            )
+              stale();
+            else
+              this.classifyRequestedLocalMaterialConfirmation(
+                transaction,
+                target,
+                facts,
+                outcomes,
+                statuses,
+              );
+          }
+          const settled = attachLocalMaterialConfirmationObservations(
+            checkpoint,
+            statuses,
+          );
+          const durable: WorkflowExecution = {
+            ...input.execution,
+            dispositions: localMaterialConfirmationDispositions(
+              input.execution.dispositions,
+              input.dispositionKey,
+              settled,
+              "running",
+            ),
+          };
+          this.workflowExecutionPersistence.replaceExecutionWithDrizzle(
+            transaction,
+            durable,
+            { auditJson: baseline.auditJson },
+          );
+          const persisted =
+            this.workflowExecutionPersistence.readExecutionWithDrizzle(
+              transaction,
+              input.execution.id,
+            );
+          if (persisted === undefined)
+            throw new Error("本地材料确认检查点提交后不可读取");
+          return { execution: persisted, outcomes };
+        },
+        { behavior: "immediate" },
+      );
+    } catch (error) {
+      throw originalPersistenceError(error);
+    }
+  }
+
+  /**
+   * 终态核对：检查点里已确认的目标仍与当前事实逐字相同才保留，被更晚观察、接受或授权变化
+   * 取代的返回目标键，由 Application 折算 partial 后重新提交终态，整笔终态事务不写回旧确认。
+   */
+  async verifyRequestedLocalMaterialConfirmationTerminals(input: {
+    readonly execution: WorkflowExecution;
+  }): Promise<readonly string[]> {
+    const withPayload = input.execution.dispositions.filter(
+      (disposition) => disposition.observedMaterialConfirmation !== undefined,
+    );
+    if (withPayload.length === 0) return [];
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    const stale: string[] = [];
+    for (const disposition of withPayload) {
+      const checkpoint = decodeObservedMaterialConfirmationCheckpoint(
+        disposition.observedMaterialConfirmation,
+      );
+      for (const target of checkpoint.targets) {
+        if (target.status !== "confirmed" || target.observation === undefined)
+          continue;
+        const facts = observedSelectionFacts(query, target.locationId, {
+          includeConfirmed: true,
+        });
+        if (
+          facts === undefined ||
+          facts.selectionId !== target.observation.selectionId ||
+          facts.conditionalBaseline !== target.observation.conditionalBaseline
+        ) {
+          stale.push(localMaterialConfirmationTargetKey(target));
+          continue;
+        }
+        if (!this.observedRevisionConfirmationMatchesWithDrizzle(query, target))
+          stale.push(localMaterialConfirmationTargetKey(target));
+      }
+    }
+    return [...new Set(stale)];
+  }
+
+  /** 检查点事务内按当前观察与既有严格确认相交规则裁定精确事实。 */
+  private classifyRequestedLocalMaterialConfirmation(
+    query: DrizzleReadQuery,
+    target: LocalMaterialConfirmationCheckpointTarget,
+    facts: ObservedFileConfirmationFacts,
+    outcomes: LocalMaterialConfirmationCheckpointOutcome[],
+    statuses: {
+      readonly targetKey: string;
+      readonly status: "pending" | "confirmed" | "failed";
+      readonly observation?: LocalMaterialConfirmationObservation;
+      readonly failureCode?: string;
+    }[],
+  ): void {
+    const observation: LocalMaterialConfirmationObservation = {
+      selectionId: facts.selectionId,
+      conditionalBaseline: facts.conditionalBaseline,
+    };
+    const targetKey = localMaterialConfirmationTargetKey(target);
+    if (this.observedRevisionConfirmationMatchesWithDrizzle(query, target)) {
+      outcomes.push({ kind: "exact-confirmed", target, observation });
+      statuses.push({ targetKey, status: "confirmed", observation });
+      return;
+    }
+    if (this.observedRevisionConfirmedWithDrizzle(query, facts)) {
+      // 同一次观察确认的是另一个修订：不能把它当成本目标的成果。
+      outcomes.push({ kind: "stale", target, observation });
+      statuses.push({
+        targetKey,
+        status: "failed",
+        observation,
+        failureCode: localMaterialConfirmationStaleCode,
+      });
+      return;
+    }
+    outcomes.push({ kind: "needs-confirmation", target, observation });
+    statuses.push({ targetKey, status: "pending", observation });
+  }
+
+  /** 该次精确观察是否已存在任何修订确认。 */
+  private observedRevisionConfirmedWithDrizzle(
+    query: DrizzleReadQuery,
+    facts: ObservedFileConfirmationFacts,
+  ): boolean {
+    return (
+      query
+        .select({ revisionId: observedRevisionConfirmations.revisionId })
+        .from(observedRevisionConfirmations)
+        .where(
+          and(
+            eq(
+              observedRevisionConfirmations.locationId,
+              facts.location.locationId,
+            ),
+            eq(
+              observedRevisionConfirmations.snapshotId,
+              facts.observation.snapshotId,
+            ),
+            eq(
+              observedRevisionConfirmations.observedAt,
+              facts.observation.observedAt,
+            ),
+            eq(observedRevisionConfirmations.size, facts.observation.size),
+            eq(
+              observedRevisionConfirmations.modifiedAt,
+              facts.observation.modifiedAt,
+            ),
+            eq(
+              observedRevisionConfirmations.conditionalBaseline,
+              facts.conditionalBaseline,
+            ),
+          ),
+        )
+        .all().length > 0
+    );
+  }
+
+  /** 目标载体修订在该位置的当前观察上是否已被精确确认。 */
+  private observedRevisionConfirmationMatchesWithDrizzle(
+    query: DrizzleReadQuery,
+    target: {
+      readonly locationId: string;
+      readonly expectedRevisionId: string;
+      readonly frozenEntry: LocalMaterialConfirmationFrozenEntry;
+    },
+  ): boolean {
+    const current = query
+      .select()
+      .from(currentFileObservations)
+      .where(eq(currentFileObservations.locationId, target.locationId))
+      .get();
+    if (current === undefined) return false;
+    return (
+      query
+        .select({ revisionId: observedRevisionConfirmations.revisionId })
+        .from(observedRevisionConfirmations)
+        .where(
+          and(
+            eq(observedRevisionConfirmations.locationId, target.locationId),
+            eq(
+              observedRevisionConfirmations.revisionId,
+              target.expectedRevisionId,
+            ),
+            eq(observedRevisionConfirmations.snapshotId, current.snapshotId),
+            eq(observedRevisionConfirmations.observedAt, current.observedAt),
+            eq(observedRevisionConfirmations.size, current.size),
+            eq(observedRevisionConfirmations.modifiedAt, current.modifiedAt),
+            eq(
+              observedRevisionConfirmations.conditionalBaseline,
+              current.conditionalBaseline,
+            ),
+          ),
+        )
+        .all().length > 0
+    );
+  }
+
+  /** 本执行冻结的观察根仍 active 且代次相同，库目录授权也没有被明确撤销或推进。 */
+  private requestedLocalMaterialAuthorityStaleWithDrizzle(
+    query: DrizzleReadQuery,
+    execution: WorkflowExecution,
+  ): boolean {
+    const roots = execution.workflowInput?.observedRoots ?? [];
+    for (const root of roots) {
+      const registration = query
+        .select({
+          status: observedRootRegistrations.status,
+          configVersion: observedRootRegistrations.configVersion,
+        })
+        .from(observedRootRegistrations)
+        .where(eq(observedRootRegistrations.id, root.id))
+        .get();
+      if (
+        registration?.status !== "active" ||
+        registration.configVersion !== root.configVersion
+      )
+        return true;
+    }
+    if (roots.length === 0) return false;
+    return this.directoryAuthorizationsStale(query, execution);
+  }
+
+  /**
+   * 检查点事务内重核保留接受图与冻结载体坐标是否仍逐项相符：决定未结束、主体即决定资产、
+   * 关联的载体产物/修订/位置/地址/摘要/长度与检查点完全一致。真实错载体、locator、执行或
+   * 工作项在此被拒绝，不给伪 current。
+   */
+  private requestedLocalMaterialGraphIntactWithDrizzle(
+    query: DrizzleReadQuery,
+    target: LocalMaterialConfirmationCheckpointTarget,
+  ): boolean {
+    const decisionEnded = (decisionId: string): boolean =>
+      query
+        .select({ id: recognitionDecisions.id })
+        .from(recognitionDecisions)
+        .where(
+          and(
+            eq(recognitionDecisions.id, decisionId),
+            sql`NOT EXISTS (
+              SELECT 1 FROM recognition_decision_supersessions AS ended
+              WHERE ended.predecessor_decision_id = ${recognitionDecisions.id}
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM recognition_decision_retractions AS ended
+              WHERE ended.predecessor_decision_id = ${recognitionDecisions.id}
+            )`,
+          ),
+        )
+        .all().length === 0;
+    if (decisionEnded(target.recognitionDecisionId)) return false;
+    const location = query
+      .select({
+        id: locations.id,
+        artifactId: locations.artifactId,
+        address: locations.address,
+        kind: locations.kind,
+      })
+      .from(locations)
+      .where(eq(locations.id, target.locationId))
+      .get();
+    if (
+      location === undefined ||
+      location.kind !== "observed" ||
+      location.artifactId !== target.carrierArtifactId ||
+      path.resolve(location.address) !== path.resolve(target.locationAddress)
+    )
+      return false;
+    const revision = query
+      .select({
+        id: artifactRevisions.id,
+        artifactId: artifactRevisions.artifactId,
+        blobDigest: artifactRevisions.blobDigest,
+        byteLength: blobs.byteLength,
+      })
+      .from(artifactRevisions)
+      .innerJoin(blobs, eq(blobs.digest, artifactRevisions.blobDigest))
+      .where(eq(artifactRevisions.id, target.expectedRevisionId))
+      .get();
+    if (
+      revision === undefined ||
+      revision.artifactId !== target.carrierArtifactId ||
+      revision.blobDigest !== target.expectedBlobDigest ||
+      revision.byteLength !== target.expectedByteLength
+    )
+      return false;
+    for (const associationId of target.associationIds) {
+      const association = query
+        .select({
+          id: artifactAssociations.id,
+          subjectId: artifactAssociations.subjectId,
+          artifactId: artifactAssociations.artifactId,
+          observedArtifactPartJson:
+            artifactAssociations.observedArtifactPartJson,
+          decisionAssetId: recognitionDecisions.assetId,
+          locationId:
+            artifactAssociationRecognitionSupports.observationLocationId,
+          revisionId:
+            artifactAssociationRecognitionSupports.observationRevisionId,
+          materialKind:
+            artifactAssociationRecognitionSupports.observationMaterialKind,
+        })
+        .from(artifactAssociations)
+        .innerJoin(
+          artifactAssociationRecognitionSupports,
+          eq(
+            artifactAssociationRecognitionSupports.associationId,
+            artifactAssociations.id,
+          ),
+        )
+        .innerJoin(
+          recognitionDecisions,
+          eq(
+            recognitionDecisions.id,
+            artifactAssociationRecognitionSupports.recognitionDecisionId,
+          ),
+        )
+        .where(
+          and(
+            eq(artifactAssociations.id, associationId),
+            eq(
+              artifactAssociationRecognitionSupports.recognitionDecisionId,
+              target.recognitionDecisionId,
+            ),
+          ),
+        )
+        .all();
+      if (association.length === 0) return false;
+      for (const row of association) {
+        if (row.subjectId !== target.subjectId) return false;
+        if (row.decisionAssetId !== target.subjectId) return false;
+        if (
+          row.locationId !== target.locationId ||
+          row.revisionId !== target.expectedRevisionId ||
+          row.materialKind !== "file"
+        )
+          return false;
+        const part =
+          row.observedArtifactPartJson === null
+            ? undefined
+            : (JSON.parse(row.observedArtifactPartJson) as {
+                readonly artifactId: string;
+                readonly revisionId: string;
+                readonly locator: string;
+              });
+        if (
+          (part?.artifactId ?? row.artifactId) !== target.carrierArtifactId ||
+          (part?.revisionId ?? row.revisionId) !== target.expectedRevisionId
+        )
+          return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * 保留接受图里本次需求消费的候选：仍有效的决定所支持、载体产物即观察位置产物、本次冻结
+   * 快照确有一份对应条目。实体派生封面另按修正后的代表依据判定，规则失败的依据不入选。
+   */
+  private requestedLocalMaterialCandidatesWithDrizzle(
+    query: DrizzleReadQuery,
+    subjectIds: readonly string[],
+    roles: readonly string[],
+    snapshots: readonly FilesystemPackageSnapshot[],
+    assetLibraryId?: string,
+  ): readonly {
+    readonly role: string;
+    readonly target: RequestedLocalMaterialConfirmationTarget;
+  }[] {
+    const rows = query
+      .select({
+        associationId: artifactAssociations.id,
+        associationArtifactId: artifactAssociations.artifactId,
+        targetKind: artifactAssociations.targetKind,
+        subjectId: artifactAssociations.subjectId,
+        role: artifactAssociations.role,
+        observedArtifactPartJson: artifactAssociations.observedArtifactPartJson,
+        decisionId: recognitionDecisions.id,
+        proposalId: recognitionDecisions.proposalId,
+        locationId:
+          artifactAssociationRecognitionSupports.observationLocationId,
+        materialKind:
+          artifactAssociationRecognitionSupports.observationMaterialKind,
+        locationAddress: locations.address,
+        locationArtifactId: locations.artifactId,
+        revisionId: artifactRevisions.id,
+        revisionArtifactId: artifactRevisions.artifactId,
+        blobDigest: artifactRevisions.blobDigest,
+        byteLength: blobs.byteLength,
+      })
+      .from(artifactAssociations)
+      .innerJoin(
+        artifactAssociationRecognitionSupports,
+        eq(
+          artifactAssociationRecognitionSupports.associationId,
+          artifactAssociations.id,
+        ),
+      )
+      .innerJoin(
+        recognitionDecisions,
+        eq(
+          recognitionDecisions.id,
+          artifactAssociationRecognitionSupports.recognitionDecisionId,
+        ),
+      )
+      .innerJoin(
+        locations,
+        and(
+          eq(
+            locations.id,
+            artifactAssociationRecognitionSupports.observationLocationId,
+          ),
+          eq(locations.kind, "observed"),
+        ),
+      )
+      .innerJoin(
+        artifactRevisions,
+        eq(
+          artifactRevisions.id,
+          artifactAssociationRecognitionSupports.observationRevisionId,
+        ),
+      )
+      .innerJoin(blobs, eq(blobs.digest, artifactRevisions.blobDigest))
+      .where(
+        and(
+          inArray(artifactAssociations.subjectId, sqliteTextSet(subjectIds)),
+          inArray(artifactAssociations.role, sqliteTextSet(roles)),
+          isNotNull(
+            artifactAssociationRecognitionSupports.observationLocationId,
+          ),
+          isNotNull(
+            artifactAssociationRecognitionSupports.observationRevisionId,
+          ),
+          eq(
+            artifactAssociationRecognitionSupports.observationMaterialKind,
+            "file",
+          ),
+          eq(artifactAssociations.subjectId, recognitionDecisions.assetId),
+          sql`NOT EXISTS (
+            SELECT 1 FROM recognition_decision_supersessions AS ended
+            WHERE ended.predecessor_decision_id = ${recognitionDecisions.id}
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM recognition_decision_retractions AS ended
+            WHERE ended.predecessor_decision_id = ${recognitionDecisions.id}
+          )`,
+        ),
+      )
+      .all();
+    const candidates: {
+      readonly role: string;
+      readonly target: RequestedLocalMaterialConfirmationTarget;
+    }[] = [];
+    for (const row of rows) {
+      if (row.locationId === null || row.materialKind !== "file") continue;
+      if (row.locationArtifactId !== row.revisionArtifactId) continue;
+      const part =
+        row.observedArtifactPartJson === null
+          ? undefined
+          : (JSON.parse(row.observedArtifactPartJson) as {
+              readonly artifactId: string;
+              readonly revisionId: string;
+              readonly locator: string;
+            });
+      const carrierArtifactId = part?.artifactId ?? row.associationArtifactId;
+      if (carrierArtifactId !== row.locationArtifactId) continue;
+      if (part !== undefined && part.revisionId !== row.revisionId) continue;
+      const entry = this.currentFileObservationEntryForAddress(
+        row.locationAddress,
+        snapshots,
+        { requireWithinSnapshotRoot: true },
+      );
+      if (entry === undefined) continue;
+      const acceptance = query
+        .select({
+          observedReference: observedMaterialAcceptances.observedReference,
+          artifactId: observedMaterialAcceptances.artifactId,
+        })
+        .from(observedMaterialAcceptances)
+        .where(
+          and(
+            eq(observedMaterialAcceptances.associationId, row.associationId),
+            eq(observedMaterialAcceptances.locationId, row.locationId),
+          ),
+        )
+        .all();
+      const mismatchedCarrierAcceptance = acceptance.some(
+        (item) => item.artifactId !== carrierArtifactId,
+      );
+      if (mismatchedCarrierAcceptance) continue;
+      const matched = acceptance.find(
+        (item) => item.artifactId === carrierArtifactId,
+      );
+      const observedReference =
+        matched?.observedReference ??
+        path.relative(entry.snapshot.root, path.resolve(row.locationAddress));
+      if (
+        row.targetKind === "entity" &&
+        row.role === "asset.primary-cover" &&
+        !this.observedMaterialReferenceRepresentsWithDrizzle(
+          query,
+          row.proposalId,
+          observedReference,
+        )
+      )
+        continue;
+      candidates.push({
+        role: row.role,
+        target: {
+          subjectId: row.subjectId,
+          associationIds: [row.associationId],
+          recognitionDecisionId: row.decisionId,
+          proposalId: row.proposalId,
+          observedArtifactReference: observedReference,
+          carrierArtifactId,
+          locationId: row.locationId,
+          locationAddress: row.locationAddress,
+          observedReference,
+          expectedRevisionId: row.revisionId,
+          expectedBlobDigest: row.blobDigest,
+          expectedByteLength: row.byteLength,
+          frozenEntry: {
+            snapshotId: entry.snapshot.id,
+            snapshotRoot: entry.snapshot.root,
+            observedAt: entry.snapshot.observedAt,
+            size: entry.size,
+            modifiedAt: entry.modifiedAt,
+          },
+          ...(assetLibraryId === undefined ? {} : { assetLibraryId }),
+        },
+      });
+    }
+    return candidates;
+  }
+
+  /** 实体派生封面的当前角色资格：只代表引用集合内的材料才进入本次消费目标。 */
+  private observedMaterialReferenceRepresentsWithDrizzle(
+    query: DrizzleReadQuery,
+    proposalId: string,
+    reference: string,
+  ): boolean {
+    const proposal = this.readProposalWithDrizzle(query, proposalId);
+    if (proposal === undefined) return false;
+    return representativeObservedMaterialReferences(proposal).has(reference);
   }
 
   /** 本次执行冻结的观察根坐标；覆盖历史与正向支持共用。 */
@@ -20070,11 +21102,30 @@ export class SqliteCatalogue
     const positiveSupportLocationIds = new Set(
       rows.positiveMaterialSupportLocationIds,
     );
+    /**
+     * 派生实体封面在任何返回路径之前先过修正代表规则：观察证据、未结束决定存在、甚至主体
+     * 即资产都不授予它当前角色。旧自然错误图因此仍可整体还原并重开，但不会重新成为当前封面。
+     */
+    const derivedCoverRows: DerivedCoverCurrentRows = {
+      associations: rows.artifactAssociations,
+      supports: rows.artifactRecognitionSupports,
+      decisions: rows.decisions,
+      proposals: rows.proposals,
+      revisions: rows.revisions,
+    };
     const currentArtifactAssociationRows = artifactAssociationRows.filter(
       (row) => {
         if (
           supersededArtifactAssociationIds.has(row.id) ||
           retractedArtifactAssociationIds.has(row.id)
+        )
+          return false;
+        if (
+          derivedCoverCurrentlyRepresentative(
+            derivedCoverRows,
+            row.id,
+            (decisionId) => rows.endedRecognitionDecisionIds.has(decisionId),
+          ) === false
         )
           return false;
         const part =

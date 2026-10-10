@@ -21,6 +21,7 @@ import {
   artifactRoleDecisionKey,
 } from "@digital/domain";
 
+import { readDerivedEntityCoverReadiness } from "./derived-entity-cover-history.ts";
 import { matchesReviewedCatalogueSchema } from "./schema-contract.ts";
 import { workflowExecutionAuditVersion } from "./schema.ts";
 import { canonicalJson } from "./workflow-execution-persistence.ts";
@@ -1189,6 +1190,18 @@ export const currentLocalObservationSupportSql = `
 `;
 
 function hasValidObservedMaterialSupports(database: DatabaseSync): boolean {
+  /**
+   * 派生实体封面（entity 目标、primary-cover、带观察部件）的支持不走下面的 SQL 结构臂：
+   * 它必须先通过只读图加载的完整历史校验，通过的精确 support 键组再作为绑定值接回历史
+   * OR 分支。任一这类封面校验不成立即整体 integrity-failed；未通过的键也不会被 SQL 其他
+   * 分支放行，因此 current proof 臂不能替这类封面跳过结构校验。
+   */
+  const derivedCovers = readDerivedEntityCoverReadiness(database);
+  if (derivedCovers.some((item) => !item.verdict.historicallySupported))
+    return false;
+  const supportedCoverKeys = JSON.stringify(
+    derivedCovers.map((item) => item.supportKey),
+  );
   const invalid = database
     .prepare(`
       SELECT 1
@@ -1206,6 +1219,19 @@ function hasValidObservedMaterialSupports(database: DatabaseSync): boolean {
               association.target_kind <> 'entity'
               OR association.target_entity_id <> decision.asset_id))
         OR NOT (
+          CASE
+            WHEN association.role = 'asset.primary-cover'
+              AND association.target_kind = 'entity'
+              AND association.observed_artifact_part_json IS NOT NULL
+            THEN (
+              support.association_id || char(31) || support.recognition_decision_id ||
+              char(31) || COALESCE(support.observation_execution_id, '') ||
+              char(31) || COALESCE(support.observation_snapshot_id, '') ||
+              char(31) || COALESCE(support.observation_location_id, '') ||
+              char(31) || COALESCE(support.observation_revision_id, '') IN
+              (SELECT value FROM json_each(?))
+            )
+            ELSE (
           (${currentLocalObservationSupportSql})
           OR (json_extract(execution.material_association_json, '$.version') =
              'observed-material-association-checkpoint/1'
@@ -1477,10 +1503,12 @@ function hasValidObservedMaterialSupports(database: DatabaseSync): boolean {
                       accepted_blob.byte_length
               )
           )
-        )
+            )
+          END
+          )
       LIMIT 1
     `)
-    .get();
+    .get(supportedCoverKeys);
   if (invalid !== undefined) return false;
   const missing = database
     .prepare(`
