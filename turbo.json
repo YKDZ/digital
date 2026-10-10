@@ -42,7 +42,8 @@
             "integration",
             "infrastructure",
             "test-support",
-            "tooling"
+            "tooling",
+            "environment"
           ]
         }
       },

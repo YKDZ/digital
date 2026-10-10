@@ -8,6 +8,7 @@
     "db:migrate": "pnpm --filter @digital/db-migrations prepare-only",
     "environment": "pnpm --filter @digital/environment cli",
     "check": "pnpm boundaries && turbo run format:check lint typecheck build test test:e2e --continue=dependencies-successful --output-logs=errors-only --log-order=grouped --log-prefix=task",
+    "check:cli-environment": "turbo run test:e2e:environment --filter=@digital/cli --output-logs=errors-only --log-order=grouped --log-prefix=task",
     "check:deployment": "turbo run deployment --output-logs=errors-only --log-order=grouped --log-prefix=task",
     "fix": "turbo run lint:fix format:write --continue=dependencies-successful --output-logs=full --log-order=grouped --log-prefix=task",
     "format:check": "oxfmt --list-different --config oxfmt.config.ts package.json pnpm-workspace.yaml pnpm-lock.yaml turbo.json tsconfig.json tsconfig.config.json oxfmt.config.ts oxlint.config.ts .gitignore .vscode .github .devcontainer scripts",

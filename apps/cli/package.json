@@ -42,6 +42,8 @@
     "test:e2e:pdf-live": "DIGITAL_E2E_JOURNEY=pdf-publication-live node --conditions=digital-source test/e2e/run-journeys.ts source distribution",
     "test:e2e:tmdb-omdb-live": "DIGITAL_E2E_JOURNEY=tmdb-omdb-live node --conditions=digital-source test/e2e/run-journeys.ts source distribution",
     "test:e2e:deep-integrity": "DIGITAL_DEEP_CORPUS_INTEGRITY=1 node --conditions=digital-source test/e2e/run-journeys.ts source distribution",
+    "pretest:e2e:environment": "pnpm --filter @digital/sqlite build && pnpm --filter @digital/cli build",
+    "test:e2e:environment": "node --conditions=digital-source test/e2e/environment-contracts.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false"
   },
   "dependencies": {
@@ -52,6 +54,7 @@
   "devDependencies": {
     "@digital/application": "workspace:*",
     "@digital/db-migrations": "workspace:*",
+    "@digital/environment": "workspace:*",
     "@digital/fanbox": "workspace:*",
     "@digital/typescript-config": "workspace:*",
     "@types/node": "catalog:",
