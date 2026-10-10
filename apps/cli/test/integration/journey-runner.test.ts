@@ -439,6 +439,64 @@ describe("CLI journey runner", () => {
     expect(unit.closed).toEqual(["interrupted"]);
   });
 
+  it("最终证据保存期间到达的取消改写持久结局为中断，且保存错误仍独立可辨", async () => {
+    const unit = await unitTargets();
+    const cancellation = new AbortController();
+    const journey: CliJourney = {
+      name: "cancel-during-final-persistence",
+      modes: ["source"],
+      async setup() {},
+      commands: () => [{ name: "no-op", args: [] }],
+      async assertions() {},
+    };
+
+    // 取消刻意落在收尾之后、最终证据写入完成之前：调用方会收到中断，
+    // 但按保存开始前那一刻构造的载荷仍是 success，磁盘结局必须被纠正。
+    await expect(
+      runJourney({
+        journey,
+        mode: "source",
+        lifecycle: {
+          async open() {
+            return stubScenarioEnvironment({
+              workspacePath: unit.workspaceRoot,
+            });
+          },
+          async close({ environment, outcome }) {
+            unit.closed.push(outcome);
+            const recycling = await confirmedRecycle(environment, outcome);
+            setImmediate(() =>
+              cancellation.abort(new Error("received SIGINT")),
+            );
+            return recycling;
+          },
+        },
+        evidenceDirectory: unit.evidenceDirectory,
+        signal: cancellation.signal,
+        async executeCommand({ command }) {
+          return {
+            commandName: command.name,
+            exitCode: 0,
+            stdout: "",
+            stderr: "",
+          };
+        },
+      }),
+    ).rejects.toThrow(/interruption failure/u);
+    expect(unit.closed).toEqual(["success"]);
+
+    const evidence = JSON.parse(
+      await readFile(
+        path.join(unit.evidenceDirectory, "completion-02-stub.json"),
+        "utf8",
+      ),
+    ) as { outcome: string; failures: readonly string[] };
+    expect(evidence.outcome).toBe("interrupted");
+    expect(evidence.failures.join("\n")).toMatch(/取消在最终证据保存期间到达/u);
+    // 中断不是保存错误：两者必须分别可辨，不能把取消写成证据保存失败。
+    expect(evidence.failures.join("\n")).not.toMatch(/证据保存失败/u);
+  });
+
   it("环境收尾自身抛出异常时仍报告主失败并保留自有工作区", async () => {
     const workspaceRoot = await mkdtemp(
       path.join(tmpdir(), "digital-cli-journey-runner-throwing-"),

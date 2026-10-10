@@ -402,6 +402,11 @@ async function assertCoverRequirementRefused(
 
 type Check = {
   readonly name: string;
+  /**
+   * 需要外部条件才可能真实执行的检查：条件不满足时按未执行报告，
+   * 既不写成通过，也不冒充失败。返回 undefined 表示条件已满足。
+   */
+  readonly requires?: () => string | undefined;
   /** 取消上下文：真实信号到达后各检查只停止并保留自有现场，不再启动新资源。 */
   run(options: { readonly signal: AbortSignal }): Promise<readonly string[]>;
 };
@@ -1225,11 +1230,11 @@ const checks: readonly Check[] = [
      * 保留的世代随后仍由所有者公开重启、读取并删除。
      */
     name: "formal-entry-signal-window-retains-own-scene",
+    requires: () =>
+      process.env.DIGITAL_T02_SIGNAL_WINDOW === "1"
+        ? undefined
+        : "需要外部脚手架先读取就绪标记再向正式入口发送真实 SIGINT（DIGITAL_T02_SIGNAL_WINDOW=1）",
     async run({ signal }) {
-      if (process.env.DIGITAL_T02_SIGNAL_WINDOW !== "1")
-        return [
-          "未启用：需要外部脚本先读取就绪标记，再向正式入口发送真实 SIGINT",
-        ];
       const { runId, environment } = nameFor("signal-window");
       const port = await reserveFreePort({ runId });
       await ledgerIntent({ runId, environment, port });
@@ -1923,6 +1928,8 @@ export async function runEnvironmentContractChecks(
   const summary: string[] = [];
   const failed: string[] = [];
   const skipped: string[] = [];
+  const passed: string[] = [];
+  const notRun: string[] = [];
   const report = (lines: readonly string[]): void => {
     for (const line of lines) {
       summary.push(line);
@@ -1931,6 +1938,15 @@ export async function runEnvironmentContractChecks(
   };
   for (const check of checks) {
     if (selection.length > 0 && !selection.includes(check.name)) continue;
+    // 外部条件不满足的检查根本没有执行：如实报未执行，绝不冒充第 N 项业务通过。
+    const unmetRequirement = check.requires?.();
+    if (unmetRequirement !== undefined) {
+      notRun.push(check.name);
+      report([
+        `${check.name}: not-run 未执行：${unmetRequirement}；不计通过也不计失败`,
+      ]);
+      continue;
+    }
     // 取消到达后不再启动新的检查：每一项都会拥有自己的端口与世代。
     if (signal.aborted) {
       skipped.push(check.name);
@@ -1942,22 +1958,19 @@ export async function runEnvironmentContractChecks(
     const startedAt = new Date().toISOString();
     try {
       const observations = await check.run({ signal });
-      // 取消之后才跑完的检查体只留观察，不写成通过。
-      report(
-        signal.aborted
-          ? [
-              `${check.name}: interrupted @ ${startedAt} 检查体在取消之后完成，其观察不构成通过`,
-              ...observations.map(
-                (observation) => `  - ${check.name}: ${observation}`,
-              ),
-            ]
-          : [
-              `${check.name}: passed @ ${startedAt}`,
-              ...observations.map(
-                (observation) => `  - ${check.name}: ${observation}`,
-              ),
-            ],
+      const detail = observations.map(
+        (observation) => `  - ${check.name}: ${observation}`,
       );
+      // 取消之后才跑完的检查体只留观察，不写成通过。
+      if (signal.aborted)
+        report([
+          `${check.name}: interrupted @ ${startedAt} 检查体在取消之后完成，其观察不构成通过`,
+          ...detail,
+        ]);
+      else {
+        passed.push(check.name);
+        report([`${check.name}: passed @ ${startedAt}`, ...detail]);
+      }
     } catch (error) {
       failed.push(
         `${check.name}: ${error instanceof Error ? error.message : String(error)}`,
@@ -1977,6 +1990,11 @@ export async function runEnvironmentContractChecks(
         : `cancellation: 未启动的检查 ${skipped.join("、")}`,
     );
   }
+  report([
+    `summary: 实际执行并通过 ${String(passed.length)} 项、未执行 ${String(notRun.length)} 项` +
+      (notRun.length === 0 ? "" : `（${notRun.join("、")}）`) +
+      "；未执行不计入通过",
+  ]);
   if (failed.length > 0)
     throw new Error(`环境归属检查失败：\n${failed.join("\n\n")}`);
   return summary;

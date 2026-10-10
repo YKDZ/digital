@@ -523,6 +523,15 @@ async function writeJourneyEvidence(
   );
 }
 
+/**
+ * 取消状态的实时重读：`await` 之后取消才到达也要读得出来。先前 `interruptedNow`
+ * 的别名条件会把 `signal.aborted` 收窄成永不为 true，所以这里隔一层函数调用，
+ * 而不是放弃晚到取消的收尾。
+ */
+function cancellationReceived(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
+}
+
 export async function runJourney(options: {
   readonly journey: CliJourney;
   readonly mode: CliJourneyMode;
@@ -682,7 +691,7 @@ export async function runJourney(options: {
     }
     const interruptedNow =
       options.signal?.aborted === true || interruptedDuringRun;
-    await saveJourneyEvidence({
+    const finalEvidence: JourneyEvidence = {
       ...draft,
       outcome: interruptedNow ? "interrupted" : outcomeAtClose,
       failures: buildFailureEvidence(interruptedNow),
@@ -693,7 +702,23 @@ export async function runJourney(options: {
       recyclingDiagnostics: recycling?.recyclingDiagnostics ?? [],
       retainedDataRoot: recycling?.retainedDataRoot ?? null,
       retainedLogs: recycling?.retainedLogs ?? [],
-    });
+    };
+    await saveJourneyEvidence(finalEvidence);
+    // 取消允许在最终保存的异步写入期间才到达，此时上面那份载荷已按未取消构造。
+    // 磁盘上的最终结局必须与调用方收到的中断一致：重写为 interrupted，
+    // 已提交的公开删除不假定可逆转，这里只纠正证据，不新增删除动作。
+    if (
+      !interruptedNow &&
+      (cancellationReceived(options.signal) || interruptedDuringRun)
+    )
+      await saveJourneyEvidence({
+        ...finalEvidence,
+        outcome: "interrupted",
+        failures: [
+          ...buildFailureEvidence(true),
+          "取消在最终证据保存期间到达：持久结局按中断记录",
+        ],
+      });
   }
 
   let cleanupFailed = false;
