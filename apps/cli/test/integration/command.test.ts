@@ -634,6 +634,7 @@ describe("CLI command control", () => {
 
     await expect(
       runCli(output.runtime, legacyCliApplication(application)),
+      output.stderr(),
     ).resolves.toBe(0);
     expect(output.stdout()).toContain("tmdb：tmdb:9509");
     expect(output.stdout()).toContain("omdb：omdb:tt0328107");

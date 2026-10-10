@@ -487,12 +487,14 @@ describe("Asset Refresh CLI", () => {
       ],
       { cwd: source, env },
     );
-    await expect(runCli(initialScan.runtime)).resolves.toBe(0);
+    const initialScanExit = await runCli(initialScan.runtime);
+    expect(initialScanExit, initialScan.stderr()).toBe(0);
     const initialSurface = runtime(
       ["catalogue-surface", "--surface", "current-catalogue"],
       { cwd: source, env },
     );
-    await expect(runCli(initialSurface.runtime)).resolves.toBe(0);
+    const initialSurfaceExit = await runCli(initialSurface.runtime);
+    expect(initialSurfaceExit, initialSurface.stderr()).toBe(0);
     const [initial] = (
       JSON.parse(initialSurface.stdout()) as {
         items: Array<{
@@ -1281,7 +1283,8 @@ async function currentCatalogueIds(
       env,
     },
   );
-  await expect(runCli(command.runtime), command.stderr()).resolves.toBe(0);
+  const exit = await runCli(command.runtime);
+  expect(exit, `${command.stderr()}\n${command.stdout()}`).toBe(0);
   const page = JSON.parse(command.stdout()) as {
     readonly items: readonly { readonly entity: { readonly id: string } }[];
   };
