@@ -10,7 +10,8 @@ export const environmentCliRelativePath = path.join(
   "cli.js",
 );
 
-export const ownedPortRange = { first: 51_001, last: 51_999 } as const;
+/** 本票（Web 真实 HTTP 验收）只允许使用 54001—54999 端口段。 */
+export const ownedPortRange = { first: 54_001, last: 54_999 } as const;
 
 export type StructuredEnvelope = {
   readonly schemaVersion: string;
