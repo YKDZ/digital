@@ -12671,11 +12671,17 @@ export class SqliteCatalogue
           .all()
           .map(libraryDirectoryGrantFromDrizzle);
         // 失效坐标只描述本库授权的变化；共享同一物理根的其他库不出现在这里。
+        // keepVersion 是本笔事务提交后仍然成立的活动授权版本：执行服务据此取消更早代次的
+        // 操作并放行这一新代次的新绑定；removed 不带版本，表示该坐标当前没有任何可绑定授权。
         const invalidations = new Map<string, LibraryDirectoryInvalidation>();
-        const invalidate = (observedRootId: string): void => {
+        const invalidate = (
+          observedRootId: string,
+          keepVersion?: number,
+        ): void => {
           invalidations.set(observedRootId, {
             assetLibraryId: save.id,
             observedRootId,
+            ...(keepVersion === undefined ? {} : { keepVersion }),
           });
         };
         let rootIds = previousRootIds;
@@ -12802,7 +12808,7 @@ export class SqliteCatalogue
             if (bumped.changes !== 1)
               throw new Error("该目录的授权已变更，请刷新后重试");
             closureSeeds.add(existing.id);
-            invalidate(entry.rootId);
+            invalidate(entry.rootId, existing.authorityVersion + 1);
           }
           rootIds = [
             ...new Set(pending.map((entry) => entry.rootId)),
@@ -12886,7 +12892,7 @@ export class SqliteCatalogue
                 .run();
               if (cascaded.changes !== 1)
                 throw new Error("该目录的授权已变更，请刷新后重试");
-              invalidate(grant.observedRootId);
+              invalidate(grant.observedRootId, grant.authorityVersion + 1);
             }
           }
         }
@@ -13120,6 +13126,9 @@ export class SqliteCatalogue
             {
               assetLibraryId: input.libraryId,
               observedRootId: grant.observedRootId,
+              // 重连提交后的新活动代次就是本库现行授权：旧冻结工作继续被拒，新的完整
+              // 授权观察必须能够绑定这一代次。
+              keepVersion: grant.authorityVersion + 1,
             },
           ],
         };

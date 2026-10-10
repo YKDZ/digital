@@ -26,6 +26,11 @@ export type LibraryDirectoryGrant = {
 export type LibraryDirectoryInvalidation = {
   readonly assetLibraryId: string;
   readonly observedRootId: string;
+  /**
+   * 本次提交后仍然成立的活动授权版本：执行服务据此取消更早代次的在进程操作，同时放行这一
+   * 新代次的新绑定。目录已不在本库（removed）时不带此字段，表示该坐标没有任何可绑定授权。
+   */
+  readonly keepVersion?: number;
 };
 
 /**
