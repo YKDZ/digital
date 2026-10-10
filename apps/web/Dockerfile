@@ -3,7 +3,11 @@
 ARG DEPLOYMENT_BUILD_ID="local"
 
 FROM node:24-bookworm-slim AS base
-ARG PACKAGE_MANAGER_PIN="pnpm@11.23.0"
+# 与根 package.json 的 packageManager 保持一致：pruner 的 `pnpm fetch` 在 package.json 就位前
+# 运行（用此激活版本），`pnpm install --offline` 在其后运行（corepack 读 packageManager）。
+# 两者若跨 pnpm 主版本，fetch 写入的离线元数据命名空间与 install 读取的不兼容，报
+# ERR_PNPM_NO_OFFLINE_META。统一为工作区声明的 pnpm@12.3.4 以保证同一版本与裁剪一致性。
+ARG PACKAGE_MANAGER_PIN="pnpm@12.3.4"
 ENV COREPACK_HOME="/corepack"
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"
