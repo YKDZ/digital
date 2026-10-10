@@ -428,6 +428,7 @@ function assertBdmvPackage(accepted: AcceptedProjection): void {
 
 const journey: CliJourney = {
   name: "tmdb-omdb-live",
+  source: { mode: "real" },
   modes: ["source", "distribution"],
   async setup(context) {
     if (
@@ -456,7 +457,7 @@ const journey: CliJourney = {
     const strict = selectedRoot(state, strictFilmLogicalRoot);
     const directed = selectedRoot(state, directedBdmvLogicalRoot);
     const env = {
-      DIGITAL_PRODUCT_DATA: path.join(context.workDir, "product-data"),
+      DIGITAL_PRODUCT_DATA: context.productDataDirectory,
       DIGITAL_TMDB_ACCESS_TOKEN: process.env.DIGITAL_TMDB_ACCESS_TOKEN!,
       DIGITAL_OMDB_API_KEY: process.env.DIGITAL_OMDB_API_KEY!,
     };

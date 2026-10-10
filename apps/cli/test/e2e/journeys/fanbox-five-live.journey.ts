@@ -1676,7 +1676,7 @@ export function fanboxJourneyCommands(
   posts: readonly FanboxPostOracle[],
   roots: readonly Pick<FixedCorpusRoot, "directory">[],
 ): readonly CliJourneyCommand[] {
-  const data = path.join(context.workDir, "product-data");
+  const data = context.productDataDirectory;
   const productEnv = { DIGITAL_PRODUCT_DATA: data };
   const expected = expectedFanboxCommands(posts);
   const acceptedAssetIdForRefresh = (
@@ -1766,6 +1766,7 @@ export function fanboxJourneyCommands(
 
 const journey: CliJourney = {
   name: "fanbox-five-live",
+  source: { mode: "real" },
   modes: ["source", "distribution"],
   async setup(context) {
     const corpus = corpusRoot(context);

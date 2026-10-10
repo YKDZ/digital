@@ -18,7 +18,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json --pretty false",
+    "build": "tsc -b tsconfig.build.json --force --pretty false",
     "prepare-only": "pnpm build && node ./dist/cli.js prepare-only",
     "offline-restore": "pnpm build && node ./dist/cli.js offline-restore",
     "format:check": "oxfmt --list-different --config ../../oxfmt.config.ts .",

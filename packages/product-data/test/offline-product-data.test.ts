@@ -38,19 +38,48 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 import {
-  createOfflineProductDataBackup,
   ProductDataOperations,
-  restoreOfflineProductDataBackup,
+  createOfflineProductDataBackup as copyOfflineProductDataBackup,
+  restoreOfflineProductDataBackup as copyOfflineProductDataRestore,
 } from "../src/index.ts";
 
 const temporaryRoots: string[] = [];
+/**
+ * 自有操作账本：被框架超时放弃的用例仍可能继续写入它自己的工作区。清理必须先等这些
+ * Promise 真正结束，否则 `rm -r` 与复制交错，产生与备份语义无关的 ENOTEMPTY 次生失败。
+ */
+const inFlightOperations = new Set<Promise<void>>();
 
-afterEach(async () => {
-  await Promise.all(
-    temporaryRoots
-      .splice(0)
-      .map(async (root) => await rm(root, { recursive: true, force: true })),
+function trackProductDataOperation(operation: Promise<void>): Promise<void> {
+  const settled = operation.then(
+    () => undefined,
+    () => undefined,
   );
+  inFlightOperations.add(settled);
+  void settled.then(() => inFlightOperations.delete(settled));
+  return operation;
+}
+
+function createOfflineProductDataBackup(
+  input: Parameters<typeof copyOfflineProductDataBackup>[0],
+): Promise<void> {
+  return trackProductDataOperation(copyOfflineProductDataBackup(input));
+}
+
+function restoreOfflineProductDataBackup(
+  input: Parameters<typeof copyOfflineProductDataRestore>[0],
+): Promise<void> {
+  return trackProductDataOperation(copyOfflineProductDataRestore(input));
+}
+
+/**
+ * 清理必须等自有操作真正落盘后再删：被框架放弃的用例仍会继续写它自己的工作区，早先的
+ * ENOTEMPTY 与 `Hook timed out` 都来自「仍在写入的根被并发 rm」这个顺序，而不是备份语义。
+ */
+afterEach(async () => {
+  await Promise.allSettled(inFlightOperations);
+  for (const root of temporaryRoots.splice(0))
+    await rm(root, { recursive: true, force: true });
 });
 
 describe("offline product-data layout", () => {
@@ -388,7 +417,9 @@ describe("offline product-data layout", () => {
 });
 
 async function temporaryRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(tmpdir(), "digital-offline-layout-"));
+  const root = await mkdtemp(
+    path.join(tmpdir(), "completion-07-offline-layout-"),
+  );
   temporaryRoots.push(root);
   return root;
 }
