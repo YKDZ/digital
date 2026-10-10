@@ -41,29 +41,67 @@ afterAll(async () => {
  * 生产观察者测试必须跨越已注册根边界。该辅助方法刻意避开旧版原始路径扫描入口，
  * 使 Node 观察者像交付层一样接收绑定描述符的权威。
  */
+const authorizedDirectories = new Map<
+  string,
+  { readonly libraryId: string; readonly rootId: string }
+>();
+
+/**
+ * 通过公开资产库入口为目录建立授权：只登记目录而不属于任何活动库时，现行产品既不给
+ * 读取权威也不给自动刷新归属。同一目录复用同一份库授权，避免该目录同时点名进两个库。
+ */
+async function authorizeDirectory(
+  workflow: Pick<ComposedAssetRefresh, "assetLibraries">,
+  displayName: string,
+  directory: string,
+): Promise<{ readonly libraryId: string; readonly rootId: string }> {
+  const seeded = authorizedDirectories.get(directory);
+  if (seeded !== undefined) return seeded;
+  const libraries = workflow.assetLibraries;
+  const saved = await libraries.save({
+    displayName,
+    directories: [directory],
+    recognitionProfileIds: libraries.recognitionProfiles.map(
+      (profile) => profile.id,
+    ),
+    sourceIdentities: libraries.sources.map((source) => source.id),
+  });
+  const authorized = { libraryId: saved.id, rootId: saved.rootIds[0]! };
+  authorizedDirectories.set(directory, authorized);
+  return authorized;
+}
+
 async function scanRegisteredScope(
-  workflow: Pick<
-    ComposedAssetRefresh,
-    "observedRootRegistrations" | "scanObservedScope"
-  >,
+  workflow: Pick<ComposedAssetRefresh, "assetLibraries" | "scanObservedScope">,
   observed: string,
   input: Omit<
     Parameters<ComposedAssetRefresh["scanObservedScope"]>[0],
     "registrationId" | "relativeScope"
   >,
 ): Promise<AssetRefreshInspection> {
-  const root = await workflow.observedRootRegistrations.create({
-    displayName: "测试观察目录",
-    containerPath: observed,
-    readOnly: true,
-    symlinkMode: "do-not-follow",
-    allowedTargetRootIds: [],
-  });
-  return await workflow.scanObservedScope({
-    registrationId: root.id,
+  const { rootId } = await authorizeDirectory(
+    workflow,
+    "测试观察目录",
+    observed,
+  );
+  const result = await workflow.scanObservedScope({
+    registrationId: rootId,
     relativeScope: ".",
     ...input,
   });
+  return { ...result, accepted: singleAcceptedSubject(result) };
+}
+
+/** 此文件每次点名扫描一个作品；多工作项信封不能默取首项掩盖额外主体。 */
+function singleAcceptedSubject(inspection: AssetRefreshInspection) {
+  if (inspection.accepted !== undefined) return inspection.accepted;
+  const accepted = (inspection.itemResults ?? []).flatMap((item) =>
+    item.outcome === "accepted" && item.accepted !== undefined
+      ? [item.accepted]
+      : [],
+  );
+  expect(accepted).toHaveLength(1);
+  return accepted[0]!;
 }
 
 describe("information fulfillment composition", () => {
@@ -184,10 +222,23 @@ describe("information fulfillment composition", () => {
         },
       ],
     };
+    let pollClock: (() => void) | undefined;
     const runtime = composeAssetRefreshRuntime(productData, {
       configuration: {},
-      automationInformationRequirementForAcceptedSubject: () =>
-        coverRequirement,
+      clock: {
+        now: () => new Date("2099-01-01T00:00:00.000Z"),
+        setInterval(callback) {
+          pollClock = callback;
+          return callback;
+        },
+        clearInterval() {
+          pollClock = undefined;
+        },
+      },
+      automationInformationRequirementForAcceptedSubject: {
+        coordinate: "composition-cover-test/1",
+        requirementForAcceptedSubject: () => coverRequirement,
+      },
     });
 
     try {
@@ -219,16 +270,14 @@ describe("information fulfillment composition", () => {
       expect(refreshed.sourceRefreshRuns).toEqual([
         expect.objectContaining({ outcome: "succeeded", phase: "terminal" }),
       ]);
-      const automationRoot =
-        await runtime.workflow.observedRootRegistrations.create({
-          displayName: "自动刷新测试",
-          containerPath: observed,
-          readOnly: true,
-          symlinkMode: "do-not-follow",
-          allowedTargetRootIds: [],
-        });
+      const automationRoot = await authorizeDirectory(
+        runtime.workflow,
+        "自动刷新测试",
+        observed,
+      );
       const automated = await runtime.workflow.enableAutomation({
-        observedRootId: automationRoot.id,
+        assetLibraryId: automationRoot.libraryId,
+        observedRootId: automationRoot.rootId,
         relativeScope: ".",
         intervalMilliseconds: 60_000,
         acceptTrusted: true,
@@ -245,7 +294,11 @@ describe("information fulfillment composition", () => {
         selection: { subjectIds: [subjectId] },
         requirement: coverRequirement,
       });
-      const host = runtime.automationHost.start();
+      const host = runtime.automationHost.start().then(async () => {
+        expect(pollClock).toBeTypeOf("function");
+        pollClock!();
+        await runtime.automationHost.settled();
+      });
       const [readiness, repeatedReadiness] = await Promise.all([
         interactive,
         repeatedInteractive,
@@ -386,7 +439,7 @@ describe("information fulfillment composition", () => {
           }),
         ]),
       );
-      expect(circle?.accepted.map(({ entity }) => entity.id)).toEqual(
+      expect(circle?.accepted.map(({ id }) => id)).toEqual(
         expect.arrayContaining([firstAssetId, secondAssetId]),
       );
       expect(circleRelationshipIds).toContain(firstCircleRelationshipId);
@@ -527,7 +580,7 @@ describe("information fulfillment composition", () => {
         execution: {
           workflowInput: {
             operation: {
-              version: "information-fulfillment-operation/1",
+              version: "information-fulfillment-operation/2",
               kind: "source-artifact-acquisition",
               subjectId,
               sourceIdentity: "dlsite",
@@ -598,27 +651,33 @@ describe("information fulfillment composition", () => {
       productData,
       {},
       {
-        automationInformationRequirementForAcceptedSubject: () =>
-          missingIntroduction,
+        automationInformationRequirementForAcceptedSubject: {
+          coordinate: "composition-introduction-test/1",
+          requirementForAcceptedSubject: () => missingIntroduction,
+        },
       },
     );
 
     try {
-      const automationRoot = await workflow.observedRootRegistrations.create({
-        displayName: "自动刷新测试",
-        containerPath: observed,
-        readOnly: true,
-        symlinkMode: "do-not-follow",
-        allowedTargetRootIds: [],
-      });
+      const automationRoot = await authorizeDirectory(
+        workflow,
+        "自动刷新测试",
+        observed,
+      );
       const automated = await workflow.enableAutomation({
-        observedRootId: automationRoot.id,
+        assetLibraryId: automationRoot.libraryId,
+        observedRootId: automationRoot.rootId,
         relativeScope: ".",
         intervalMilliseconds: 60_000,
         acceptTrusted: true,
       });
       const parent = automated.initial?.execution;
-      const subjectId = parent?.accepted?.entity.id;
+      const subjects =
+        parent === undefined
+          ? []
+          : await workflow.acceptedSubjectsOfLibraryScan(parent.execution.id);
+      expect(subjects).toHaveLength(1);
+      const subjectId = subjects[0]?.subjectId;
       if (parent === undefined || subjectId === undefined)
         throw new Error(
           "automatic recognition did not retain an accepted subject",
@@ -711,8 +770,9 @@ describe("information fulfillment composition", () => {
       const before = await verifier.findAcceptedForSubjects([subjectId]);
       const recognitionDecisionId = before[0]?.accepted.recognitionDecision.id;
       const recognitionProposalId = before[0]?.accepted.proposal.id;
-      const sourceAssociationId =
-        before[0]?.accepted.recognitionSourceAssociation?.id;
+      const sourceAssociationId = before[0]?.accepted.sourceAssociations.find(
+        (association) => association.sourceIdentity === "dlsite",
+      )?.id;
       if (
         recognitionDecisionId === undefined ||
         recognitionProposalId === undefined ||
@@ -752,15 +812,34 @@ describe("information fulfillment composition", () => {
       const [staleFacts] = await verifier.readCurrentInformationSubjectFacts({
         subjectIds: [subjectId],
       });
-      expect(staleFacts?.artifactAssociations).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            id: oldAssociationId,
-            sourceAssociationId,
-            currentSourceArtifact: false,
-          }),
-        ]),
+      // 来源刷新已结束旧支持；历史关联仍保留，但共同生效读取不再把它当当前封面。
+      expect(
+        staleFacts?.basis.artifactAssociations.some(
+          (association) => association.id === oldAssociationId,
+        ),
+      ).toBe(false);
+      expect(
+        staleFacts?.sourceArtifactCurrency.some(
+          (item) => item.associationId === oldAssociationId && item.current,
+        ),
+      ).toBe(false);
+      const historicalLedger = new DatabaseSync(
+        path.join(productData, "catalogue.sqlite"),
       );
+      try {
+        expect(
+          historicalLedger
+            .prepare(
+              "SELECT id, source_association_id FROM artifact_associations WHERE id = ?",
+            )
+            .get(oldAssociationId!),
+        ).toMatchObject({
+          id: oldAssociationId,
+          source_association_id: sourceAssociationId,
+        });
+      } finally {
+        historicalLedger.close();
+      }
 
       const readiness = await workflow.fulfillInformation({
         selection: { subjectIds: [subjectId] },
@@ -1335,8 +1414,10 @@ describe("information fulfillment composition", () => {
       productData,
       {},
       {
-        automationInformationRequirementForAcceptedSubject: () =>
-          coverRequirement,
+        automationInformationRequirementForAcceptedSubject: {
+          coordinate: "composition-cover-test/1",
+          requirementForAcceptedSubject: () => coverRequirement,
+        },
       },
     );
 
@@ -1406,15 +1487,14 @@ describe("information fulfillment composition", () => {
       });
       expect(await workflow.listInspections()).toHaveLength(executionCount);
 
-      const automationRoot = await workflow.observedRootRegistrations.create({
-        displayName: "自动刷新测试",
-        containerPath: observed,
-        readOnly: true,
-        symlinkMode: "do-not-follow",
-        allowedTargetRootIds: [],
-      });
+      const automationRoot = await authorizeDirectory(
+        workflow,
+        "自动刷新测试",
+        observed,
+      );
       const automatic = await workflow.enableAutomation({
-        observedRootId: automationRoot.id,
+        assetLibraryId: automationRoot.libraryId,
+        observedRootId: automationRoot.rootId,
         relativeScope: ".",
         intervalMilliseconds: 60_000,
         acceptTrusted: true,
@@ -1423,14 +1503,19 @@ describe("information fulfillment composition", () => {
       expect(automatic.initial).toMatchObject({
         status: "started",
         execution: {
-          execution: { status: "completed", outcome: "accepted" },
+          execution: { status: "completed", outcome: "no-change" },
         },
       });
       expect(
         requested.filter(
           (address) => address === "https://img.dlsite.jp/primary.jpg",
         ),
-      ).toHaveLength(2);
+      ).toHaveLength(1);
+      expect(
+        await workflow.acceptedSubjectsOfLibraryScan(
+          automatic.initial!.execution.execution.id,
+        ),
+      ).toEqual([expect.objectContaining({ subjectId })]);
       expect(await workflow.listInspections()).toHaveLength(executionCount + 2);
     } finally {
       await workflow.close();
@@ -1509,7 +1594,9 @@ describe("information fulfillment composition", () => {
         throw new Error("DLsite subject was not accepted");
       const persisted = await verifier.findAcceptedForSubjects([subjectId]);
       const sourceAssociationId =
-        persisted[0]?.accepted.recognitionSourceAssociation?.id;
+        persisted[0]?.accepted.sourceAssociations.find(
+          (association) => association.sourceIdentity === "dlsite",
+        )?.id;
       if (sourceAssociationId === undefined)
         throw new Error("DLsite source association was not retained");
       expect(requested).not.toContain("https://img.dlsite.jp/initial.jpg");
@@ -1638,15 +1725,26 @@ describe("information fulfillment composition", () => {
       const [facts] = await verifier.readCurrentInformationSubjectFacts({
         subjectIds: [subjectId],
       });
-      expect(facts?.artifactAssociations).toEqual(
+      expect(facts?.basis.artifactAssociations).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            subjectId,
+            target: { kind: "entity", entityId: subjectId },
             role: "asset.material-delivered",
-            managedLocations: [],
           }),
         ]),
       );
+      const delivered = facts!.basis.artifactAssociations.filter(
+        (association) => association.role === "asset.material-delivered",
+      );
+      expect(
+        facts!.basis.locations.filter(
+          (location) =>
+            location.kind === "managed" &&
+            delivered.some(
+              (association) => association.artifactId === location.artifactId,
+            ),
+        ),
+      ).toEqual([]);
 
       await expect(
         workflow.fulfillInformation({
