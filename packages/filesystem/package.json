@@ -21,7 +21,7 @@
     "test:public-interface": "pnpm build && tsc -p tsconfig.public-interface.json --noEmit --pretty false",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
     "test": "vitest run --reporter=verbose",
-    "build": "tsc -p tsconfig.build.json --pretty false"
+    "build": "tsc -b tsconfig.build.json --force --pretty false"
   },
   "dependencies": {
     "@digital/application": "workspace:*"
