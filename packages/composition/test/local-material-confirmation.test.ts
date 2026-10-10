@@ -4,7 +4,15 @@
  * 隔离副本。这里覆盖第 5/6/8 节：等大小同修改时间的内容变更重扫、终态与投影同事务、
  * 冻结授权代际与已接受支持重核，以及两个耐久中断窗口之后的恢复。
  */
-import { copyFile, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -201,6 +209,8 @@ it("真实 proof 提交后进度未提交，重开只复用原冻结目标且不
   let workflow = composeAssetRefresh(data, {});
   let execution: WorkflowExecution | undefined;
   const checkpoint =
+    // 原型拦截只注入中断时机；下方 call(this, input) 保持真实实例和事务。
+    // oxlint-disable-next-line typescript/unbound-method
     SqliteCatalogue.prototype.checkpointRequestedLocalMaterialConfirmations;
   const checkpointSpy = vi
     .spyOn(
@@ -299,6 +309,8 @@ it("目标和观察已真实提交而字节未读，重开恢复沿原目标确�
   let workflow = composeAssetRefresh(data, {});
   let execution: WorkflowExecution | undefined;
   const checkpoint =
+    // 原型拦截只注入中断时机；下方 call(this, input) 保持真实实例和事务。
+    // oxlint-disable-next-line typescript/unbound-method
     SqliteCatalogue.prototype.checkpointRequestedLocalMaterialConfirmations;
   const spy = vi
     .spyOn(
@@ -447,6 +459,8 @@ it("终态预查询后较新真实观察抢先提交，旧确认不覆盖新观�
   const workflow = composeAssetRefresh(data, {});
   const catalogue = SqliteCatalogue.forProductData(data);
   const verify =
+    // 下方 call(this, input) 沿原实例执行真实查询，再插入较新的真实观察。
+    // oxlint-disable-next-line typescript/unbound-method
     SqliteCatalogue.prototype.verifyRequestedLocalMaterialConfirmationTerminals;
   let raced = false;
   let latestSnapshot: string | undefined;
@@ -732,6 +746,320 @@ it("其他执行的合法已确认载荷搬入新执行，持久读取明确拒�
     await workflow.close();
     await rm(data, { recursive: true, force: true });
     await rm(damaged, { recursive: true, force: true });
+    await rm(media, { recursive: true, force: true });
+  }
+}, 120000);
+
+it("同名书籍目录的明确代表正文正常接受、真实确认并能重开读取封面", async () => {
+  const data = await preparedCatalogueRoot();
+  const media = await mkdtemp(path.join(tmpdir(), "digital-representative-"));
+  let workflow = composeAssetRefresh(data, {});
+  try {
+    await writeFile(
+      path.join(media, path.basename(media) + ".pdf"),
+      syntheticPdf({ author: "One", pageCount: 1 }),
+    );
+    await writeFile(path.join(media, "notes.txt"), "附带说明不是代表正文");
+    const library = await workflow.assetLibraries.save({
+      displayName: "明确代表库",
+      directories: [media],
+      recognitionProfileIds: ["books"],
+      sourceIdentities: [],
+    });
+    const first = await workflow.scanObservedScope({
+      registrationId: library.rootIds[0]!,
+      relativeScope: ".",
+      acceptTrusted: true,
+      informationRequirement: coverRequirement,
+    });
+    expect(first.execution.outcome).toBe("accepted");
+    const accepted = first.itemResults![0]!.accepted!;
+    expect(
+      accepted.artifactAssociations.some(
+        (association) => association.role === "asset.representative-body",
+      ),
+    ).toBe(true);
+    expect(
+      first.execution.dispositions
+        .find((item) => item.observedMaterialConfirmation !== undefined)!
+        .observedMaterialConfirmation!.targets.map((target) => target.status),
+    ).toEqual(["confirmed"]);
+    await workflow.close();
+    workflow = composeAssetRefresh(data, {});
+    const current = await workflow.inspectCurrentCatalogueSubject(
+      accepted.entity.id,
+    );
+    expect(
+      current!.descriptions
+        .flatMap((description) => description.artifactRoles)
+        .filter((role) => role.role === "asset.primary-cover"),
+    ).toHaveLength(1);
+    expect(
+      current!.descriptions
+        .flatMap((description) => description.artifactRoles)
+        .some((role) => role.role === "asset.material-image"),
+    ).toBe(true);
+    await expect(
+      SqliteCatalogue.inspectProductionReadiness({
+        productDataDirectory: data,
+      }),
+    ).resolves.toMatchObject({ state: "ready" });
+  } finally {
+    await workflow.close();
+    await rm(data, { recursive: true, force: true });
+    await rm(media, { recursive: true, force: true });
+  }
+}, 120000);
+
+it("人工明确单材料正常接受后，普通刷新真实确认且缺失观察后仍可重开", async () => {
+  const data = await preparedCatalogueRoot();
+  const media = await mkdtemp(path.join(tmpdir(), "digital-manual-material-"));
+  let workflow = composeAssetRefresh(data, {});
+  try {
+    const file = path.join(media, "one.pdf");
+    await writeFile(file, syntheticPdf({ author: "One", pageCount: 1 }));
+    const library = await workflow.assetLibraries.save({
+      displayName: "人工材料库",
+      directories: [media],
+      recognitionProfileIds: ["books"],
+      sourceIdentities: [],
+    });
+    const scan = await workflow.scanObservedScope({
+      registrationId: library.rootIds[0]!,
+      relativeScope: ".",
+      acceptTrusted: false,
+      informationRequirement: coverRequirement,
+    });
+    const review = await workflow.prepareLocalContent({
+      executionId: scan.execution.id,
+      relativePaths: ["one.pdf"],
+      name: "人工材料",
+    });
+    const confirmed = await workflow.confirmLocalContent({
+      executionId: review.executionId,
+    });
+    expect(
+      confirmed.content.facts.locations.find(
+        (location) => location.kind === "observed",
+      )!.content.status,
+    ).toBe("confirmed");
+    const assetId = confirmed.content.entity.id;
+    const refreshed = await workflow.scanObservedScope({
+      registrationId: library.rootIds[0]!,
+      relativeScope: ".",
+      acceptTrusted: true,
+      informationRequirement: coverRequirement,
+    });
+    expect(refreshed.execution.outcome).toBe("no-change");
+
+    const current = await workflow.inspectCurrentCatalogueSubject(assetId);
+    expect(
+      current!.descriptions
+        .flatMap((description) => description.artifactRoles)
+        .filter((role) => role.role === "asset.primary-cover"),
+    ).toHaveLength(1);
+    await rm(file);
+    await workflow.scanObservedScope({
+      registrationId: library.rootIds[0]!,
+      relativeScope: ".",
+      acceptTrusted: true,
+    });
+    await workflow.close();
+    workflow = composeAssetRefresh(data, {});
+    expect(
+      await workflow.inspectCurrentCatalogueSubject(assetId),
+    ).toBeUndefined();
+    await expect(
+      SqliteCatalogue.inspectProductionReadiness({
+        productDataDirectory: data,
+      }),
+    ).resolves.toMatchObject({ state: "ready" });
+  } finally {
+    await workflow.close();
+    await rm(data, { recursive: true, force: true });
+    await rm(media, { recursive: true, force: true });
+  }
+}, 120000);
+
+it("真实旧封面历史的载体经实际字节确认后，错误实体封面仍非当前而 sibling 材料图当前", async () => {
+  const data = await preparedCatalogueRoot();
+  const media = await mkdtemp(path.join(tmpdir(), "digital-legacy-material-"));
+  const root = path.join(media, "RJ01668691");
+  await mkdir(path.join(root, "台本"), { recursive: true });
+  const original = await readFile(
+    new URL(
+      "../../db-migrations/test/fixtures/legacy-derived-entity-cover/attribution-closure.json",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const oldPrefix =
+    "/workspaces/digital/.scratch/environment-system/run/16-readiness-attribution-worktree/run/rd16-attribution";
+  // 已存在的真实历史闭包只做物理根定位适配；所有嵌入 JSON 与镜像使用同一映射，
+  // 原决定、角色、代表资格、产物与关联 ID 均保持，proof/confirmation 由真实字节入口建立。
+  const closure = JSON.parse(
+    original
+      .replaceAll(oldPrefix + "/product-data", data)
+      .replaceAll(oldPrefix + "/RJ01668691", root),
+  ) as Record<string, Record<string, string | number | null>[]>;
+  const carrierLocation = closure.locations!.find(
+    (row) =>
+      row.kind === "observed" && String(row.address).endsWith("script.pdf"),
+  )!;
+  const carrierRevision = closure.artifact_revisions!.find(
+    (row) => row.artifact_id === carrierLocation.artifact_id,
+  )!;
+  const observation = closure.current_file_observations!.find(
+    (row) => row.location_id === carrierLocation.id,
+  )!;
+  const historicalPdf = Uint8Array.from(
+    Buffer.from(
+      "JVBERi0xLjcKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCAyMDAgMzAwXSA+PgplbmRvYmoKeHJlZgowIDQKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDAwNTggMDAwMDAgbiAKMDAwMDAwMDExNSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDQgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjE4NgolJUVPRgo=",
+      "base64",
+    ),
+  );
+  await writeFile(String(carrierLocation.address), historicalPdf);
+  await utimes(
+    String(carrierLocation.address),
+    new Date(String(observation.modified_at)),
+    new Date(String(observation.modified_at)),
+  );
+  await writeFile(path.join(root, "track.wav"), new Uint8Array(44));
+  const database = new DatabaseSync(path.join(data, "catalogue.sqlite"));
+  try {
+    const artifacts = new Set<string>();
+    const entities = new Set<string>();
+    for (const row of closure.locations!)
+      artifacts.add(String(row.artifact_id));
+    for (const row of closure.artifact_revisions!)
+      artifacts.add(String(row.artifact_id));
+    for (const row of closure.artifact_associations!) {
+      artifacts.add(String(row.artifact_id));
+      if (typeof row.target_artifact_id === "string")
+        artifacts.add(row.target_artifact_id);
+      if (typeof row.target_entity_id === "string")
+        entities.add(row.target_entity_id);
+    }
+    for (const row of closure.recognition_decisions!)
+      entities.add(String(row.asset_id));
+    for (const id of artifacts)
+      database.prepare("INSERT INTO artifacts (id) VALUES (?)").run(id);
+    for (const id of entities)
+      database.prepare("INSERT INTO entities (id) VALUES (?)").run(id);
+    for (const table of [
+      "observed_root_registrations",
+      "asset_libraries",
+      "library_directory_grants",
+      "workflow_executions",
+      "recognition_proposals",
+      "recognition_decisions",
+      "blobs",
+      "artifact_revisions",
+      "locations",
+      "artifact_associations",
+      "artifact_association_recognition_supports",
+      "observed_material_boundaries",
+      "observed_material_acceptances",
+      "current_observed_material_supports",
+      "current_file_observations",
+      "current_file_observation_supports",
+    ]) {
+      for (const row of closure[table] ?? []) {
+        const columns = Object.keys(row);
+        database
+          .prepare(
+            "INSERT INTO " +
+              table +
+              " (" +
+              columns.join(", ") +
+              ") VALUES (" +
+              columns.map(() => "?").join(", ") +
+              ")",
+          )
+          .run(...columns.map((column) => row[column]!));
+      }
+    }
+    const decision = closure.recognition_decisions![0]!;
+    // 闭包只收录材料归属子图；补齐通用数字资产父类型，不改变原材料决定。
+    database
+      .prepare(
+        "INSERT INTO entity_kind_assertions (id, entity_id, kind, basis) VALUES (?, ?, 'digital-asset', 'legacy-migration')",
+      )
+      .run("legacy-parent-kind", decision.asset_id!);
+    database
+      .prepare(
+        "INSERT INTO recognition_heads (subject_id, recognition_decision_id) VALUES (?, ?)",
+      )
+      .run(decision.asset_id!, decision.id!);
+  } finally {
+    database.close();
+  }
+  let workflow = composeAssetRefresh(data, {});
+  try {
+    const selectionId =
+      await workflow.artifactByteAccess.observedFileSelectionForLocation(
+        String(carrierLocation.id),
+      );
+    expect(selectionId).toBeDefined();
+    const confirmation =
+      await workflow.artifactByteAccess.confirmExpectedObservedRevision({
+        selectionId: selectionId!,
+        expectedArtifactId: String(carrierLocation.artifact_id),
+        expectedRevisionId: String(carrierRevision.id),
+        expectedDigest:
+          "4f6420b173401ac277b9570bb3359b0bd1298a6c4a70b3b4f9f143ea0ef89680",
+        expectedByteLength: 329,
+        assetLibraryId: String(closure.asset_libraries![0]!.id),
+      });
+    expect(confirmation.kind).toBe("exact-confirmed");
+    const oldCover = closure.artifact_associations!.find(
+      (row) =>
+        row.role === "asset.primary-cover" &&
+        row.observed_artifact_part_json !== null,
+    )!;
+    const sibling = closure.artifact_associations!.find(
+      (row) => row.role === "asset.material-image",
+    )!;
+    const assetId = String(closure.recognition_decisions![0]!.asset_id);
+    await workflow.close();
+    workflow = composeAssetRefresh(data, {});
+    const current = (await workflow.inspectCurrentCatalogueSubject(assetId))!;
+    const roles = current.descriptions.flatMap(
+      (description) => description.artifactRoles,
+    );
+    expect(roles.flatMap((role) => role.associationIds)).not.toContain(
+      oldCover.id,
+    );
+    expect(
+      roles
+        .filter((role) => role.role === "asset.material-image")
+        .flatMap((role) => role.associationIds),
+    ).toContain(sibling.id);
+    const history = await workflow.inspect(
+      String(closure.workflow_executions![0]!.id),
+    );
+    expect(history.execution.id).toBe(closure.workflow_executions![0]!.id);
+    // 当前公共角色排除错误封面；原历史关联仍保留且受完整性检查，而非被硬删除。
+    const reopenedDatabase = new DatabaseSync(
+      path.join(data, "catalogue.sqlite"),
+    );
+    try {
+      expect(
+        reopenedDatabase
+          .prepare("SELECT role FROM artifact_associations WHERE id = ?")
+          .get(String(oldCover.id)),
+      ).toEqual({ role: "asset.primary-cover" });
+    } finally {
+      reopenedDatabase.close();
+    }
+    await expect(
+      SqliteCatalogue.inspectProductionReadiness({
+        productDataDirectory: data,
+      }),
+    ).resolves.toMatchObject({ state: "ready" });
+  } finally {
+    await workflow.close();
+    await rm(data, { recursive: true, force: true });
     await rm(media, { recursive: true, force: true });
   }
 }, 120000);

@@ -10886,20 +10886,25 @@ export class AssetRefreshWorkflow {
           },
           basis.evidence,
         );
+        const informationRequirement = withObservedMaterialImageRequirement(
+          prepared.execution.selection.informationRequirement ??
+            emptyInformationRequirement,
+        );
         const managedObservedParts =
           await this.materializeObservedArtifactParts(
             proposal,
             selected,
-            withObservedMaterialImageRequirement(
-              prepared.execution.selection.informationRequirement ??
-                emptyInformationRequirement,
-            ),
+            informationRequirement,
             bound.scope,
           );
-        const initial = this.localContentExecution(
+        const localExecution = this.localContentExecution(
           prepared.execution,
           requiredFilesystemSnapshot(prepared.execution),
         );
+        const initial: WorkflowExecution = {
+          ...localExecution,
+          selection: { ...localExecution.selection, informationRequirement },
+        };
         await this.ports.executionCommands.createExecution(initial);
         const accepted = createAcceptedRecognition({
           proposal,
@@ -10918,18 +10923,16 @@ export class AssetRefreshWorkflow {
                   this.ports.observedRootRegistrations.objectIdentityContract,
               }),
         });
-        const finished: WorkflowExecution = {
+        const acceptedExecution: WorkflowExecution = {
           ...initial,
-          status: "completed",
-          stage: "completed",
-          outcome: "accepted",
+          stage: "source-artifacts-stored",
           proposalId: proposal.id,
           acceptedAssetId: accepted.entity.id,
         };
         try {
           await this.ports.recognitionAcceptance.acceptRecognition({
             expectedExecution: initial,
-            execution: finished,
+            execution: acceptedExecution,
             accepted,
             observedMaterialAcceptances: observedMaterialAcceptanceBindings({
               accepted,
@@ -10963,10 +10966,34 @@ export class AssetRefreshWorkflow {
             );
           throw error;
         }
+        // 人工明确范围同样会消费本地材料图。接受先建立身份与精确支持，再沿共同阶段
+        // 确认实际载体；不能以格式检查或托管图片存在替代观察载体的真实确认。
+        const localEvidence = await this.ensureRequestedLocalMaterialEvidence({
+          execution: acceptedExecution,
+          subjectIds: [accepted.entity.id],
+          informationRequirement,
+        });
+        const terminals =
+          await this.verifyRequestedLocalMaterialEvidenceTerminals(
+            localEvidence.execution,
+          );
+        const unfinished = localEvidence.failed + terminals.failed;
+        await this.transition(terminals.execution, {
+          ...terminals.execution,
+          status: "completed",
+          stage: "completed",
+          outcome: unfinished === 0 ? "accepted" : "partially-succeeded",
+          ...(unfinished === 0
+            ? {}
+            : { reason: `${unfinished} 个本地图片证据未完成；已接受内容保留` }),
+        });
+        const [current] = await this.ports.reuseQueries.findAcceptedForSubjects(
+          [accepted.entity.id],
+        );
         return this.localContentReview(
           prepared.execution,
           prepared.proposal!,
-          accepted,
+          current?.accepted ?? accepted,
         );
       },
     );
