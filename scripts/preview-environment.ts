@@ -782,8 +782,19 @@ async function ownedStop(
 async function recycleOwned(
   request: PreviewRequest,
   reporter: PreviewReporter,
+  running: RunningState,
 ): Promise<void> {
   await ownedStop(request, reporter);
+  running.startedHere = false;
+  if (request.signal?.aborted === true) {
+    // 取消在等待停止期间到达：已取消的运行不能把删除当成功收尾。
+    reporter.say(
+      "等待停止期间收到取消，按取消语义收尾：环境记录、数据与日志载体原样保留，本入口不删除。停止与删除仍由使用者经公共生命周期命令决定。",
+    );
+    running.startedHere = false;
+    running.failureFinished = true;
+    return;
+  }
   const result = await deleteEnvironment({
     workspacePath: request.workspacePath,
     environment: request.environment,
@@ -793,7 +804,11 @@ async function recycleOwned(
     reporter.fail("无法确认自有数据已清理，保留现场而不宣称回收成功。");
 }
 
-/** 失败与取消共用的收尾：先停止自有服务，数据、日志与证据载体保持可重启。 */
+/**
+ * 失败与取消共用的收尾：停止本次真正启动的服务，数据、日志与证据载体保持可重启。
+ * 服务启动责任按「本次是否真的启动了服务」判定，而不是按环境记录的归属判定：既有已停止
+ * 环境由本次启动新服务后，本次就该停止它，但那条记录与它的数据仍归原使用者，绝不删除。
+ */
 async function finishOwnedFailure(
   request: PreviewRequest,
   reporter: PreviewReporter,
@@ -801,8 +816,10 @@ async function finishOwnedFailure(
   startedHere: boolean,
 ): Promise<readonly string[]> {
   const cleanupErrors: string[] = [];
-  if (!ownsService) {
-    reporter.say("环境不归本入口所有（调用方提供或他人既有），未做任何收尾。");
+  if (!ownsService && !startedHere) {
+    reporter.say(
+      "环境不归本入口所有，本次也没有启动服务（调用方提供或复用既有就绪世代），未做任何收尾。",
+    );
     return cleanupErrors;
   }
   if (startedHere) {
@@ -963,15 +980,21 @@ async function scenarioManualEdit(context: ScenarioContext): Promise<void> {
     asObject(asArray(choice["candidates"])[0])?.["reference"],
   );
   if (reference === undefined) throw new Error("封面候选为空，无法演示编辑");
-  const preview = await client.chooseCover({
+  const decision = await client.chooseCover({
     entityId: subjectId,
     candidateReference: reference,
   });
-  const applied = await client.applyPreview(preview.previewId, "开发预览");
-  if (applied.kind === "already-current")
+  if (decision.kind === "already-current")
     reporter.say(
-      `该候选已是当前人工选择（${applied.reason}），本次不重复应用；人工决定是否成立由下面的回读判定。`,
+      `该候选已是当前人工选择（${decision.reason}），产品在建立预演这一步就给出无变化结论，本次不重复预演也不应用；人工决定是否成立由下面的回读判定。`,
     );
+  else {
+    const applied = await client.applyPreview(decision.previewId, "开发预览");
+    if (applied.kind === "already-current")
+      reporter.say(
+        `该候选已是当前人工选择（${applied.reason}），本次不重复应用；人工决定是否成立由下面的回读判定。`,
+      );
+  }
   const after = await client.coverCandidates(subjectId);
   check(
     reporter,
@@ -1148,7 +1171,9 @@ async function scenarioRestartRetention(
     enable.status >= 200 && enable.status < 300,
     `自动刷新设置由产品受理（HTTP ${String(enable.status)}）`,
   );
-  const detail = await client.get(`/catalogue/${subjectId}`);
+  const detail = await client.get(`/catalogue/${subjectId}`, {
+    library: library.id,
+  });
   const downloadUrl = findFirstString(detail.body, "downloadUrl");
   if (downloadUrl === undefined) {
     reporter.fail(
@@ -1156,6 +1181,10 @@ async function scenarioRestartRetention(
     );
     return;
   }
+  reporter.fact(
+    "观察文件交付地址由产品带资产库语境投影",
+    downloadUrl.includes("library=") ? "是" : "否",
+  );
   const firstRead = await client.bytes(downloadUrl.replace(/^\/api/u, ""));
   check(
     reporter,
@@ -1165,7 +1194,7 @@ async function scenarioRestartRetention(
   );
   if (firstRead.status !== 200) return;
   const revisionId = findFirstString(
-    (await client.get(`/catalogue/${subjectId}`)).body,
+    (await client.get(`/catalogue/${subjectId}`, { library: library.id })).body,
     "revisionId",
   );
   if (revisionId === undefined) {
@@ -1187,6 +1216,12 @@ async function scenarioRestartRetention(
     `播放进度写入由产品受理（HTTP ${String(interact.status)}）`,
   );
   await ownedStop(request, reporter);
+  if (request.signal?.aborted === true) {
+    reporter.say(
+      "等待停止期间收到取消：本场景不再重启，保留停止前的数据世代与现场。",
+    );
+    return;
+  }
   const started = await startEnvironment({
     workspacePath: request.workspacePath,
     environment: request.environment,
@@ -1236,7 +1271,7 @@ async function scenarioRestartRetention(
     "重启后内容仍按既有识别结果可浏览",
   );
   const retainedInteraction = findInteractionObject(
-    (await client.get(`/catalogue/${subjectId}`)).body,
+    (await client.get(`/catalogue/${subjectId}`, { library: library.id })).body,
   );
   check(
     reporter,
@@ -1267,6 +1302,12 @@ async function scenarioRebuild(context: ScenarioContext): Promise<void> {
   for (const material of request.materials)
     before[path.basename(material)] = await digestDirectory(material);
   await ownedStop(request, reporter);
+  if (request.signal?.aborted === true) {
+    reporter.say(
+      "等待停止期间收到取消：本场景不重建，保留原数据世代与私有现场。",
+    );
+    return;
+  }
   const rebuild = await rebuildEnvironment({
     workspacePath: request.workspacePath,
     environment: request.environment,
@@ -1582,37 +1623,56 @@ async function runLifecycleScenarios(
     ...staging,
   };
   const assertionCountBefore = reporter.failures.length;
+  const wants = (names: readonly string[]): boolean =>
+    lifecycleCases.length === 0 ||
+    names.some((name) => lifecycleCases.includes(name));
+  const steps = [
+    {
+      when: wants(["first-run"]),
+      label: "首次接入与浏览",
+      run: scenarioFirstRun,
+    },
+    {
+      when: wants(["first-run", "restart-retention"]),
+      label: "人工封面选择",
+      run: scenarioManualEdit,
+    },
+    { when: wants(["subset"]), label: "子集接入", run: scenarioSubset },
+    {
+      when: wants(["multi-directory"]),
+      label: "多目录接入",
+      run: scenarioMultiDirectory,
+    },
+    {
+      when: wants(["refused-source-request"]),
+      label: "未列入受控清单的来源请求",
+      run: scenarioRefusedSourceRequest,
+    },
+    {
+      when: wants(["restart-retention"]),
+      label: "重启保留（停止并重启服务）",
+      run: scenarioRestartRetention,
+    },
+    {
+      when: wants(["rebuild-inputs-preserved"]),
+      label: "显式重建（删除自有产品数据根并提交下一数据世代）",
+      run: scenarioRebuild,
+    },
+  ].filter((step) => step.when);
   try {
-    if (lifecycleCases.length === 0 || lifecycleCases.includes("first-run"))
-      await scenarioFirstRun(context);
-    if (
-      lifecycleCases.length === 0 ||
-      lifecycleCases.includes("first-run") ||
-      lifecycleCases.includes("restart-retention")
-    )
-      await scenarioManualEdit(context);
-    if (lifecycleCases.length === 0 || lifecycleCases.includes("subset"))
-      await scenarioSubset(context);
-    if (
-      lifecycleCases.length === 0 ||
-      lifecycleCases.includes("multi-directory")
-    )
-      await scenarioMultiDirectory(context);
-    if (
-      lifecycleCases.length === 0 ||
-      lifecycleCases.includes("refused-source-request")
-    )
-      await scenarioRefusedSourceRequest(context);
-    if (
-      lifecycleCases.length === 0 ||
-      lifecycleCases.includes("restart-retention")
-    )
-      await scenarioRestartRetention(context);
-    if (
-      lifecycleCases.length === 0 ||
-      lifecycleCases.includes("rebuild-inputs-preserved")
-    )
-      await scenarioRebuild(context);
+    for (const step of steps) {
+      if (request.signal?.aborted === true) {
+        reporter.say(`已收到取消，剩余场景（从「${step.label}」起）不再执行。`);
+        break;
+      }
+      if (reporter.failures.length > assertionCountBefore) {
+        reporter.say(
+          `已有未通过的断言，本入口停止后续有副作用的场景（不执行「${step.label}」），保留出现失败时的数据世代与现场供排查与重启。`,
+        );
+        break;
+      }
+      await step.run(context);
+    }
   } catch (error) {
     // 抛出的失败（含取消）与断言失败走同一个失败保留出口，见下统一判定。
     reporter.fail(`场景执行中断：${describeError(error)}`);
@@ -1628,20 +1688,48 @@ async function runLifecycleScenarios(
       ownsService,
       running.startedHere,
     );
+    for (const error of cleanupErrors)
+      reporter.say(`收尾错误（不覆盖主错误）：${error}`);
     running.failureFinished = true;
     if (request.signal?.aborted ?? false) {
-      for (const error of cleanupErrors)
-        reporter.say(`收尾错误（不覆盖主错误）：${error}`);
       // 主结论是被中断：保留现场，不把业务失败码覆盖信号退出码。
       return 0;
     }
     return exitCodes.intakeFailed;
   }
-  if (recycle) {
+  if (request.evidencePath !== undefined) {
+    try {
+      await writeEvidence(request, reporter, exitCodes.okay, undefined);
+      reporter.say(
+        `结构化结果已在任何成功回收之前保存：${request.evidencePath}（最终退出时仍会按真实退出码复写一次）`,
+      );
+    } catch (error) {
+      reporter.fail(
+        `结果保存失败（保存错误，不覆盖主错误）：${describeError(error)}。本入口因此不做成功删除，保留原数据世代与现场。`,
+      );
+      const cleanupErrors = await finishOwnedFailure(
+        request,
+        reporter,
+        ownsService,
+        running.startedHere,
+      );
+      for (const cleanupError of cleanupErrors)
+        reporter.say(`收尾错误（不覆盖主错误）：${cleanupError}`);
+      running.failureFinished = true;
+      return exitCodes.operationFailed;
+    }
+  }
+  if (recycle === "delete") {
     reporter.section("按归属收尾（自建环境）");
-    await recycleOwned(request, reporter);
-  } else if (!ownsService)
-    reporter.say("环境由调用方提供，本入口未停止、重建或删除它。");
+    await recycleOwned(request, reporter, running);
+  } else if (recycle === "stop") {
+    reporter.section("按归属收尾（恢复上次失败记录）");
+    await ownedStop(request, reporter);
+    running.startedHere = false;
+    reporter.say(
+      "本次运行只停止自己启动的服务；那条失败记录与它的日志、数据载体不属于本入口，未删除，停止与删除仍归原使用者经公共生命周期命令决定。",
+    );
+  } else reporter.say("环境由调用方提供，本入口未停止、重建或删除它。");
   return exitCodes.okay;
 }
 
@@ -1814,7 +1902,7 @@ async function runSingleCommand(
             return exitCodes.unmanaged;
           }
           reporter.say(
-            `复用既有环境 ${request.environment}（状态 ${precondition.state}）：本次归属仍归原使用者，不重新准备，失败只保留现状，不停止或删除它。`,
+            `复用既有环境 ${request.environment}（状态 ${precondition.state}）：本次不重新准备，环境记录与数据仍归原使用者，本入口不删除它；既有就绪服务或调用方提供的服务不被停止，但本次真正启动的新服务在失败时由本入口停止。`,
           );
         }
         let address: string | undefined;
@@ -1840,12 +1928,14 @@ async function runSingleCommand(
           reporter.fail(
             "环境报告就绪却没有给出可核验的服务地址，接入阶段未执行。",
           );
-          await finishOwnedFailure(
+          const cleanupErrors = await finishOwnedFailure(
             request,
             reporter,
             running.ownsService,
             running.startedHere,
           );
+          for (const cleanupError of cleanupErrors)
+            reporter.say(`收尾错误（不覆盖主错误）：${cleanupError}`);
           running.failureFinished = true;
           running.startedHere = false;
           return exitCodes.operationFailed;
@@ -1863,12 +1953,14 @@ async function runSingleCommand(
       } catch (error) {
         // 主因先落账，再对本次真正启动的自有服务收尾；复用他人服务不动。
         reporter.fail(`接入阶段失败：${describeError(error)}`);
-        await finishOwnedFailure(
+        const cleanupErrors = await finishOwnedFailure(
           request,
           reporter,
           running.ownsService,
           running.startedHere,
         );
+        for (const cleanupError of cleanupErrors)
+          reporter.say(`收尾错误（不覆盖主错误）：${cleanupError}`);
         running.failureFinished = true;
         running.startedHere = false;
         return request.signal?.aborted === true
@@ -1974,12 +2066,31 @@ export async function main(
     exit = interruptedExitCode(cancellation.signal.reason as NodeJS.Signals);
   }
   if (mainError !== undefined) reporter.fail(describeError(mainError));
-  await writeEvidence(requestWithSignal, reporter, exit, mainError);
-  reporter.print();
   if (exit === exitCodes.okay && reporter.failures.length > 0) {
-    process.stderr.write("存在未通过的断言或收尾告警\n");
-    return exitCodes.intakeFailed;
+    exit = exitCodes.intakeFailed;
   }
+  try {
+    await writeEvidence(requestWithSignal, reporter, exit, mainError);
+  } catch (error) {
+    reporter.fail(
+      `结果保存失败（保存错误，不覆盖主错误）：${describeError(error)}`,
+    );
+    if (exit === exitCodes.okay) exit = exitCodes.operationFailed;
+    if (!running.failureFinished && running.startedHere) {
+      const cleanupErrors = await finishOwnedFailure(
+        requestWithSignal,
+        reporter,
+        running.ownsService,
+        running.startedHere,
+      );
+      for (const cleanupError of cleanupErrors)
+        reporter.say(`收尾错误（不覆盖主错误）：${cleanupError}`);
+      running.failureFinished = true;
+    }
+  }
+  if (cancellation.signal.aborted)
+    exit = interruptedExitCode(cancellation.signal.reason as NodeJS.Signals);
+  reporter.print();
   return exit;
 }
 

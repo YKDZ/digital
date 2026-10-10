@@ -75,16 +75,22 @@ export type ProductClient = {
   chooseCover(input: {
     readonly entityId: string;
     readonly candidateReference: string;
-  }): Promise<{ readonly previewId: string }>;
+  }): Promise<CoverChoiceResult>;
   applyPreview(previewId: string, actorId: string): Promise<PreviewApplyResult>;
 };
 
 /**
- * 产品的封面决定应用带幂等守卫：同一候选再次被选为人工封面时以 400
- * 「该封面已经是当前人工选择」拒绝（`packages/application/src/index.ts:13190-13200`）。这条无变化
- * 不是业务失败——人工决定是否真的成立由调用方的回读断言判定，所以这里如实把它与应用成功分开，
- * 其余 4xx/5xx 仍按未受理抛出。
+ * 产品的封面决定带幂等守卫：同一候选已经是当前人工选择时，建立预演（`POST /api/cover-decisions`）
+ * 与应用预演（`POST /api/preview`）都以 400 「该封面已经是当前人工选择」拒绝
+ * （`packages/application/src/index.ts:13190-13200`）。这条无变化不是业务失败——人工决定是否真的
+ * 成立由调用方的回读断言判定，所以这里如实把它与受理成功分开，其余 4xx/5xx 仍按未受理抛出。
  */
+const alreadyCurrentCover = "该封面已经是当前人工选择";
+
+export type CoverChoiceResult =
+  | { readonly kind: "preview"; readonly previewId: string }
+  | { readonly kind: "already-current"; readonly reason: string };
+
 export type PreviewApplyResult =
   | { readonly kind: "applied"; readonly body: JsonValue }
   | { readonly kind: "already-current"; readonly reason: string };
@@ -319,8 +325,12 @@ export function createProductClient(
           candidateReference: input.candidateReference,
         },
       });
+      const rejection = text(object(reply.body)?.["error"]);
+      if (reply.status === 400 && rejection === alreadyCurrentCover)
+        return { kind: "already-current", reason: rejection };
       expectAccepted(reply, "封面决定");
       return {
+        kind: "preview",
         previewId: requiredText(
           object(reply.body) ?? {},
           "previewId",
@@ -334,7 +344,7 @@ export function createProductClient(
         body: { action: "apply", actorId, previewId },
       });
       const rejection = text(object(reply.body)?.["error"]);
-      if (reply.status === 400 && rejection === "该封面已经是当前人工选择")
+      if (reply.status === 400 && rejection === alreadyCurrentCover)
         return { kind: "already-current", reason: rejection };
       expectAccepted(reply, "封面决定应用");
       return { kind: "applied", body: reply.body };
