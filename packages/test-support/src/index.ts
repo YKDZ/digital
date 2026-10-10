@@ -287,14 +287,49 @@ export class InMemoryObservedFilesystemCapability {
 export type InMemoryVersionedRegistration = {
   readonly id: string;
   readonly configVersion: number;
+  readonly status?: "active" | "revoked";
+};
+
+/** 测试夹具声明的一个资产库；未声明的库不会给任何观察根提供 I/O 授权。 */
+export type InMemoryAuthorizedLibrary = {
+  readonly id: string;
+  readonly status: "active" | "removed";
+  readonly rootIds: readonly string[];
+};
+
+/** 测试夹具声明的一条库目录授权，保留 removed 关系以支持点名重连。 */
+export type InMemoryLibraryDirectoryGrant = {
+  readonly id: string;
+  readonly libraryId: string;
+  readonly observedRootId: string;
+  readonly status: "active" | "removed";
+  readonly authorityVersion: number;
+  readonly symlinkMode:
+    | "do-not-follow"
+    | "follow-file-links"
+    | "follow-file-and-directory-links";
+  readonly allowedTargetGrantIds: readonly string[];
+  readonly awaitingObservation: boolean;
+};
+
+export type InMemoryObservedRootAuthorization = {
+  readonly libraries?: readonly InMemoryAuthorizedLibrary[];
+  readonly grants?: readonly InMemoryLibraryDirectoryGrant[];
 };
 
 export class InMemoryObservedRootRegistrationStore<
   Registration extends InMemoryVersionedRegistration,
 > {
   private readonly registrations = new Map<string, Registration>();
+  private readonly libraries: readonly InMemoryAuthorizedLibrary[];
+  private readonly directoryGrants: readonly InMemoryLibraryDirectoryGrant[];
 
-  constructor(initial: readonly Registration[] = []) {
+  constructor(
+    initial: readonly Registration[] = [],
+    authorization: InMemoryObservedRootAuthorization = {},
+  ) {
+    this.libraries = authorization.libraries ?? [];
+    this.directoryGrants = authorization.grants ?? [];
     for (const registration of initial) {
       if (this.registrations.has(registration.id)) {
         throw new Error(`duplicate in-memory registration: ${registration.id}`);
@@ -307,6 +342,22 @@ export class InMemoryObservedRootRegistrationStore<
     getObservedRootRegistration: async (id: string) =>
       this.registrations.get(id),
     listObservedRootRegistrations: async () => [...this.registrations.values()],
+    listAuthorizedObservedRootRegistrations: async () =>
+      [...this.registrations.values()].filter(
+        (registration) =>
+          registration.status !== "revoked" &&
+          this.libraries.some(
+            (library) =>
+              library.status === "active" &&
+              library.rootIds.includes(registration.id),
+          ),
+      ),
+    listLibraryDirectoryGrants: async (libraryId: string) =>
+      this.directoryGrants
+        .filter((grant) => grant.libraryId === libraryId)
+        .toSorted((left, right) =>
+          left.observedRootId.localeCompare(right.observedRootId),
+        ),
   };
 
   readonly commands = {

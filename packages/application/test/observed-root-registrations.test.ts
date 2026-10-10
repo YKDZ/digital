@@ -74,6 +74,15 @@ function registrationsFor(
       async listObservedRootRegistrations() {
         return [...roots.values()];
       },
+      // 本夹具的唯一本地库授权全部登记根，因此已授权清单只按活动状态筛除撤销。
+      async listAuthorizedObservedRootRegistrations() {
+        return [...roots.values()].filter(
+          (registration) => registration.status === "active",
+        );
+      },
+      async listLibraryDirectoryGrants() {
+        return [];
+      },
     },
     filesystem,
     productDataDirectory: "/product-data",

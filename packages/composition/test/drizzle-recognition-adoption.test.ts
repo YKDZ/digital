@@ -107,17 +107,27 @@ function instrumentedObservedRootRegistrations(
   | "closeBoundScope"
   | "reportCleanupFailure"
 > {
+  const directories = [
+    ["manual", "/observed/manual"],
+    ["automatic", "/observed/automatic"],
+    ["RJ01668691", "/observed/RJ01668691"],
+    ["same-title-a", "/observed/same-title-a"],
+    ["same-title-b", "/observed/same-title-b"],
+  ];
   const store =
     new InMemoryObservedRootRegistrationStore<ObservedRootRegistration>(
-      [
-        ["manual", "/observed/manual"],
-        ["automatic", "/observed/automatic"],
-        ["RJ01668691", "/observed/RJ01668691"],
-        ["same-title-a", "/observed/same-title-a"],
-        ["same-title-b", "/observed/same-title-b"],
-      ].map(([id, logicalDirectory]) =>
+      directories.map(([id, logicalDirectory]) =>
         instrumentedObservedRootRegistration(id, logicalDirectory),
       ),
+      {
+        libraries: [
+          {
+            id: "library-instrumented",
+            status: "active" as const,
+            rootIds: directories.map(([id]) => id),
+          },
+        ],
+      },
     );
   const cleanupReporter = new InMemoryObservedRootCleanupReporter();
   return new ObservedRootRegistrations({

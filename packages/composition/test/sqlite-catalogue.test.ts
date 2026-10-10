@@ -3349,6 +3349,15 @@ function inMemoryObservedRootRegistrations(
           path.resolve("/", directory),
         ),
       ),
+      {
+        libraries: [
+          {
+            id: "library-catalogue",
+            status: "active" as const,
+            rootIds: fixtureObservedDirectories.map((directory) => directory),
+          },
+        ],
+      },
     );
   const cleanupReporter = new InMemoryObservedRootCleanupReporter();
   return new ObservedRootRegistrations({

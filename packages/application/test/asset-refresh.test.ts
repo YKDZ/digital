@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import {
   beginSourceRefreshScopeAcquisition,
   cancelSourceRefreshRun,
@@ -26,6 +28,7 @@ import {
   ObservedRootRegistrations,
   attachAssetRefreshAutomation,
   prerequisiteUnavailableFailure,
+  recognitionMaterialBoundaryIntersectsScope,
   sha256,
   workflowCompatibilityCanReuse,
   type AssetRefreshReuseQueries,
@@ -34,6 +37,7 @@ import {
   type ChangeImpactCommands,
   type ChangeImpactPreview,
   type ChangeImpactQueries,
+  type EffectiveRecognitionMaterialBoundary,
   type ExecutionInspection,
   type MetadataRefreshPersistence,
   type InformationRequirement,
@@ -1140,6 +1144,62 @@ function refreshFixture(options?: {
             ];
       });
     },
+    /**
+     * 与 SQLite 同一语义：只有范围引用仍能解析到一份登记观察根、且该决定仍留在当前
+     * 已接受状态里的声明才算生效；再按与本次刷新范围是否相交筛除无关根。
+     */
+    async listEffectiveMaterialBoundaries({ scope, relativeScope }) {
+      const address = path.resolve(scope.containerPath, relativeScope);
+      const members = await Promise.all(
+        accepted.flatMap((item) =>
+          item.recognitionDecision.boundaries.map(async (boundary) => {
+            const registration =
+              await observedRootStore.queries.getObservedRootRegistration(
+                boundary.scopeReference,
+              );
+            if (registration === undefined) return undefined;
+            const candidate: EffectiveRecognitionMaterialBoundary = {
+              assetId: item.entity.id,
+              decisionId: item.recognitionDecision.id,
+              boundary,
+              rootPath: registration.containerPath,
+            };
+            return recognitionMaterialBoundaryIntersectsScope(
+              candidate,
+              address,
+            )
+              ? candidate
+              : undefined;
+          }),
+        ),
+      );
+      return members.filter(
+        (member): member is EffectiveRecognitionMaterialBoundary =>
+          member !== undefined,
+      );
+    },
+    /**
+     * 与 SQLite 同一语义：被点名决定只由形成其提案的那次执行代表，并返回该主体当前
+     * 仍生效的已接受投影。缺这份读取时逐决定复用会诚实停下，夹具必须提供而不是省略。
+     */
+    async findAcceptedForDecision({ decisionId }) {
+      const acceptedValue = accepted.find(
+        (current) => current.recognitionDecision.id === decisionId,
+      );
+      if (acceptedValue === undefined) return undefined;
+      const inspection = [...persisted.values()]
+        .toReversed()
+        .find(
+          (candidate) => candidate.proposal?.id === acceptedValue.proposal.id,
+        );
+      return inspection === undefined
+        ? undefined
+        : {
+            accepted: acceptedValue,
+            proposal: acceptedValue.proposal,
+            execution: inspection.execution,
+          };
+    },
     async findCurrentSourceAssociationByCoordinate(input) {
       return accepted
         .flatMap((item) => item.sourceAssociations)
@@ -1718,9 +1778,18 @@ function refreshFixture(options?: {
     },
   });
   const observedRootStore =
-    new InMemoryObservedRootRegistrationStore<ObservedRootRegistration>([
-      fixtureObservedRootRegistration("fixture-root"),
-    ]);
+    new InMemoryObservedRootRegistrationStore<ObservedRootRegistration>(
+      [fixtureObservedRootRegistration("fixture-root")],
+      {
+        libraries: [
+          {
+            id: "library-fixture",
+            status: "active" as const,
+            rootIds: ["fixture-root"],
+          },
+        ],
+      },
+    );
   const observedRootCleanupReporter = new InMemoryObservedRootCleanupReporter();
   const observedRootRegistrations = new ObservedRootRegistrations({
     commands: observedRootStore.commands,
