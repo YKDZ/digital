@@ -362,6 +362,8 @@ export type InMemoryLibraryLedgerEntry = {
 export type InMemoryLibraryDirectoryInvalidation = {
   readonly assetLibraryId: string;
   readonly observedRootId: string;
+  /** 本次提交后仍活动的授权版本；移除坐标省略，与生产receipt一致。 */
+  readonly keepVersion?: number;
 };
 
 /** `authorization.saveLibrary` 的一次目录意图；目标只引用同一库内的目录。 */
@@ -559,6 +561,15 @@ export class InMemoryObservedRootRegistrationStore<
         return undefined;
       if (current === undefined)
         throw new Error(`unknown in-memory library: ${input.libraryId}`);
+      for (const directory of input.directories)
+        if (
+          this.directoryGrants.get(
+            inMemoryGrantKey(input.libraryId, directory.observedRootId),
+          )?.status === "removed"
+        )
+          throw new Error(
+            "该目录此前已从本资产库移除，请使用重新连接而不是重复添加",
+          );
       const invalidations: InMemoryLibraryDirectoryInvalidation[] = [];
       const previous = [...this.directoryGrants.values()].filter(
         (grant) =>
@@ -609,6 +620,7 @@ export class InMemoryObservedRootRegistrationStore<
         invalidations.push({
           assetLibraryId: input.libraryId,
           observedRootId: directory.observedRootId,
+          keepVersion: retained.authorityVersion + 1,
         });
       }
       for (const grant of previous)
@@ -628,6 +640,49 @@ export class InMemoryObservedRootRegistrationStore<
           invalidations.push({
             assetLibraryId: input.libraryId,
             observedRootId: grant.observedRootId,
+          });
+        }
+      // 目标授权改变后，依赖它的同库旧闭包也不能继续读取；新授权和其他库不被推进。
+      const seeds = new Set(
+        previous
+          .filter((grant) =>
+            invalidations.some(
+              (item) => item.observedRootId === grant.observedRootId,
+            ),
+          )
+          .map((grant) => grant.id),
+      );
+      const dirty = new Set(seeds);
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const grant of this.directoryGrants.values())
+          if (
+            grant.libraryId === input.libraryId &&
+            grant.status === "active" &&
+            !dirty.has(grant.id) &&
+            grant.allowedTargetGrantIds.some((id) => dirty.has(id))
+          ) {
+            dirty.add(grant.id);
+            grew = true;
+          }
+      }
+      for (const grant of this.directoryGrants.values())
+        if (
+          grant.libraryId === input.libraryId &&
+          grant.status === "active" &&
+          dirty.has(grant.id) &&
+          !seeds.has(grant.id) &&
+          grantByRootId.has(grant.observedRootId)
+        ) {
+          this.directoryGrants.set(
+            inMemoryGrantKey(input.libraryId, grant.observedRootId),
+            { ...grant, authorityVersion: grant.authorityVersion + 1 },
+          );
+          invalidations.push({
+            assetLibraryId: input.libraryId,
+            observedRootId: grant.observedRootId,
+            keepVersion: grant.authorityVersion + 1,
           });
         }
       const desired = input.directories
@@ -666,6 +721,7 @@ export class InMemoryObservedRootRegistrationStore<
       library.rootIds = library.rootIds.filter(
         (rootId) => rootId !== input.observedRootId,
       );
+      library.configVersion += 1;
       this.directoryGrants.set(
         inMemoryGrantKey(grant.libraryId, grant.observedRootId),
         {

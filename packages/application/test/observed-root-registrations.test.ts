@@ -562,7 +562,11 @@ describe("Observed Root Registrations", () => {
     expect(receipt).toEqual({
       configVersion: (configVersion ?? 0) + 1,
       invalidations: [
-        { assetLibraryId: localLibraryId, observedRootId: "registered-root" },
+        {
+          assetLibraryId: localLibraryId,
+          observedRootId: "registered-root",
+          keepVersion: 2,
+        },
       ],
     });
     const after = await registrations.resolveActiveScope({
@@ -599,9 +603,101 @@ describe("Observed Root Registrations", () => {
     await registrations.closeBoundScope(after.scope);
   });
 
+  it("目标目录策略变化后，同库依赖范围的旧观察失效而另一库仍可观察", async () => {
+    const roots = ["source-root", "target-root"];
+    const store = new InMemoryObservedRootRegistrationStore(
+      roots.map((id) => registeredRoot(id)),
+      {
+        libraries: [
+          {
+            id: localLibraryId,
+            status: "active",
+            rootIds: roots,
+            directoryLinks: [
+              {
+                observedRootId: "source-root",
+                symlinkMode: "follow-file-links",
+                targetObservedRootIds: ["target-root"],
+              },
+            ],
+          },
+          { id: "other-library", status: "active", rootIds: roots },
+        ],
+      },
+    );
+    const { registrations } = registrationsFor(
+      new InMemoryObservedFilesystemCapability(),
+      { store },
+    );
+    const before = await registrations.resolveActiveScope({
+      registrationId: "source-root",
+      relativeScope: ".",
+      assetLibraryId: localLibraryId,
+    });
+    const other = await registrations.resolveActiveScope({
+      registrationId: "source-root",
+      relativeScope: ".",
+      assetLibraryId: "other-library",
+    });
+    const scopes = [before.scope, other.scope];
+    try {
+      await registrations.observeBoundScope(before.scope);
+      store.authorization.saveLibrary({
+        libraryId: localLibraryId,
+        expectedConfigVersion: 1,
+        directories: [
+          {
+            observedRootId: "source-root",
+            symlinkMode: "follow-file-links",
+            targetObservedRootIds: ["target-root"],
+          },
+          {
+            observedRootId: "target-root",
+            symlinkMode: "follow-file-links",
+          },
+        ],
+      });
+      await expect(
+        registrations.observeBoundScope(before.scope),
+      ).rejects.toThrow("此目录已从资产库移除或重新连接，本次工作不能继续");
+      await expect(
+        registrations.assertFrozenRootsCurrent([before.root], {
+          assetLibraryId: localLibraryId,
+          directoryAuthorizations: [
+            { observedRootId: "source-root", authorityVersion: 1 },
+          ],
+        }),
+      ).rejects.toThrow("此目录已从资产库移除或重新连接，本次工作不能继续");
+      const after = await registrations.resolveActiveScope({
+        registrationId: "source-root",
+        relativeScope: ".",
+        assetLibraryId: localLibraryId,
+      });
+      scopes.push(after.scope);
+      expect(after.directoryAuthorityVersion).toBe(2);
+      await registrations.observeBoundScope(after.scope);
+      await expect(
+        registrations.observeBoundScope(other.scope),
+      ).resolves.toMatchObject({ root: "/observed/source-root" });
+    } finally {
+      for (const scope of scopes) await registrations.closeBoundScope(scope);
+    }
+  });
+
   it("leaves the authorization ledger untouched when a saved library config loses its version race", async () => {
+    const roots = ["registered-root", "retained-root"];
     const { registrations, store } = registrationsFor(
       new InMemoryObservedFilesystemCapability(),
+      {
+        store: new InMemoryObservedRootRegistrationStore(
+          roots.map((id) => registeredRoot(id)),
+          {
+            libraries: [
+              { id: localLibraryId, status: "active", rootIds: roots },
+            ],
+          },
+        ),
+      },
     );
     const current = store.libraryLedger.read(localLibraryId);
 
@@ -625,6 +721,33 @@ describe("Observed Root Registrations", () => {
     });
     expect(resolved.directoryAuthorityVersion).toBe(1);
     await registrations.closeBoundScope(resolved.scope);
+
+    store.authorization.removeDirectory({
+      libraryId: localLibraryId,
+      observedRootId: "registered-root",
+    });
+    const removed = store.libraryLedger.read(localLibraryId);
+    expect(
+      store.authorization.saveLibrary({
+        libraryId: localLibraryId,
+        expectedConfigVersion: current?.configVersion,
+        directories: [
+          { observedRootId: "retained-root", symlinkMode: "follow-file-links" },
+        ],
+      }),
+    ).toBeUndefined();
+    expect(store.libraryLedger.read(localLibraryId)).toEqual(removed);
+    const retained = await registrations.resolveActiveScope({
+      registrationId: "retained-root",
+      relativeScope: ".",
+      assetLibraryId: localLibraryId,
+    });
+    try {
+      expect(retained.root.symlinkMode).toBe("do-not-follow");
+      await registrations.observeBoundScope(retained.scope);
+    } finally {
+      await registrations.closeBoundScope(retained.scope);
+    }
   });
 
   it("detaches a directory that a saved library config no longer selects", async () => {
@@ -676,6 +799,24 @@ describe("Observed Root Registrations", () => {
       libraryId: localLibraryId,
       observedRootId: "registered-root",
     });
+    // 普通保存不能代替点名重连，也不能让原绑定范围沿旧授权重新取得访问。
+    const removed = store.libraryLedger.read(localLibraryId);
+    expect(() =>
+      store.authorization.saveLibrary({
+        libraryId: localLibraryId,
+        expectedConfigVersion: removed?.configVersion,
+        directories: [
+          {
+            observedRootId: "registered-root",
+            symlinkMode: "do-not-follow",
+          },
+        ],
+      }),
+    ).toThrow("该目录此前已从本资产库移除，请使用重新连接而不是重复添加");
+    expect(store.libraryLedger.read(localLibraryId)).toEqual(removed);
+    await expect(
+      registrations.observeBoundScope(resolved.scope),
+    ).rejects.toThrow("冻结文件位置当前不可用");
     // 点名重连走与生产相同的 CAS：只有 removed 行与预期代次匹配才推进新权威。
     expect(
       store.authorization.reconnectDirectory({
