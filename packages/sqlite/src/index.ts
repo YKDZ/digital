@@ -18352,13 +18352,9 @@ export class SqliteCatalogue
       );
       if (
         previous !== undefined &&
-        metadataAssertionMatchesCurrent(previous, assertion)
+        metadataAssertionMatchesCurrent(previous, assertion) &&
+        !durableProducerDiverges(previous.producer_json, assertion.producer)
       ) {
-        assertCompatibleProducer(
-          previous.producer_json,
-          assertion.producer,
-          "Metadata Assertion",
-        );
         const provenance = new Set([
           ...(JSON.parse(previous.source_record_ids_json) as string[]),
           ...assertion.sourceRecordIds,
@@ -18509,13 +18505,12 @@ export class SqliteCatalogue
       );
       if (
         previous !== undefined &&
-        relationshipMatchesCurrent(previous, { ...relationship, participants })
+        relationshipMatchesCurrent(previous, {
+          ...relationship,
+          participants,
+        }) &&
+        !durableProducerDiverges(previous.producer_json, relationship.producer)
       ) {
-        assertCompatibleProducer(
-          previous.producer_json,
-          relationship.producer,
-          "Entity Relationship",
-        );
         const provenance = new Set([
           ...(JSON.parse(previous.source_record_ids_json) as string[]),
           ...relationship.sourceRecordIds,
@@ -21320,13 +21315,23 @@ function artifactRoleDecisionRow(
 function producerFromJson(value: string): CapabilityCoordinate {
   return JSON.parse(value) as CapabilityCoordinate;
 }
+/**
+ * 持久出处与新候选都为已知且序列化不相等：这是解释契约/实现版本演进后的重新派生，
+ * 不是同一既有事实的再次确认，因此不能走要求出处一致的复用分支。
+ */
+function durableProducerDiverges(
+  persisted: string | null,
+  candidate: CapabilityCoordinate | undefined,
+): boolean {
+  const encoded = producerJson(candidate);
+  return persisted !== null && encoded !== null && persisted !== encoded;
+}
 function assertCompatibleProducer(
   persisted: string | null,
   candidate: CapabilityCoordinate | undefined,
   fact: string,
 ): void {
-  const encoded = producerJson(candidate);
-  if (persisted !== null && encoded !== null && persisted !== encoded) {
+  if (durableProducerDiverges(persisted, candidate)) {
     throw new Error(`${fact} conflicts with durable producer provenance`);
   }
 }
