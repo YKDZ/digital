@@ -8736,6 +8736,163 @@ export class SqliteCatalogue
     return input.sourceRecordIds.some((id) => currentSourceRecordIds.has(id));
   }
 
+  /** 等价完整来源响应沿真实托管获取证据承接图片支持，不改图片身份或人工决定。 */
+  private extendEquivalentManagedSourceArtifactSupportWithDrizzle(
+    transaction: DrizzleWriteTransaction,
+    input: {
+      readonly subjectId: string;
+      readonly sourceAssociationId: string;
+      readonly record: SourceRecord;
+      readonly interpretation: SourceInterpretationBatch;
+    },
+  ): void {
+    if (
+      input.record.coverage.completeness !== "complete" ||
+      input.record.producer === undefined
+    )
+      return;
+    const candidates = input.interpretation.sourceArtifacts.filter(
+      (candidate) =>
+        candidate.sourceRecordId === input.record.id &&
+        (candidate.subjectId ?? input.subjectId) === input.subjectId &&
+        candidate.producer !== undefined &&
+        candidate.mediaType.startsWith("image/"),
+    );
+    if (candidates.length === 0) return;
+    const associations = transaction
+      .select({
+        id: artifactAssociations.id,
+        role: artifactAssociations.role,
+        sourceRecordIdsJson: artifactAssociations.sourceRecordIdsJson,
+        producerJson: artifactAssociations.producerJson,
+        digest: artifactRevisions.blobDigest,
+        revisionProducerJson: artifactRevisions.producerJson,
+        mediaType: blobs.mediaType,
+        byteLength: blobs.byteLength,
+        address: locations.address,
+      })
+      .from(artifactAssociations)
+      .innerJoin(
+        artifactRevisions,
+        eq(artifactRevisions.artifactId, artifactAssociations.artifactId),
+      )
+      .innerJoin(blobs, eq(blobs.digest, artifactRevisions.blobDigest))
+      .innerJoin(
+        locations,
+        and(
+          eq(locations.artifactId, artifactAssociations.artifactId),
+          eq(locations.kind, "managed"),
+        ),
+      )
+      .where(
+        and(
+          eq(artifactAssociations.subjectId, input.subjectId),
+          eq(artifactAssociations.targetKind, "entity"),
+          eq(artifactAssociations.targetEntityId, input.subjectId),
+          eq(
+            artifactAssociations.sourceAssociationId,
+            input.sourceAssociationId,
+          ),
+          sql`EXISTS (SELECT 1 FROM current_source_associations AS current WHERE current.subject_id = ${input.subjectId} AND current.association_id = ${input.sourceAssociationId})
+          AND NOT EXISTS (SELECT 1 FROM artifact_association_supersessions AS ended WHERE ended.predecessor_association_id = ${artifactAssociations.id})
+          AND NOT EXISTS (SELECT 1 FROM artifact_association_retractions AS ended WHERE ended.association_id = ${artifactAssociations.id})`,
+        ),
+      )
+      .all();
+    const { id: _nextId, acquiredAt: _nextTime, ...nextSupport } = input.record;
+    for (const association of associations) {
+      if (
+        association.producerJson === null ||
+        association.revisionProducerJson === null
+      )
+        continue;
+      const previousIds = JSON.parse(
+        association.sourceRecordIdsJson,
+      ) as string[];
+      if (previousIds.includes(input.record.id)) continue;
+      let equivalent = false;
+      for (const previousId of previousIds) {
+        const previous = this.sourceRecordWithDrizzle(transaction, previousId);
+        const {
+          id: _previousId,
+          acquiredAt: _previousTime,
+          ...previousSupport
+        } = previous;
+        if (
+          previous.coverage.completeness !== "complete" ||
+          previous.producer === undefined ||
+          canonicalJson(previousSupport) !== canonicalJson(nextSupport)
+        )
+          continue;
+        // 获取可以由来源采集执行以外的正式履行子执行提交；只读这些精确 Record 的真实检查点。
+        const rows = transaction
+          .select({ id: workflowExecutions.id })
+          .from(workflowExecutions)
+          .where(sql`EXISTS (SELECT 1 FROM json_tree(COALESCE(${workflowExecutions.managedCoverJson}, '[]')) WHERE key = 'sourceRecordId' AND value = ${previousId})
+            OR EXISTS (SELECT 1 FROM json_tree(${workflowExecutions.workItemsJson}) WHERE key = 'sourceRecordId' AND value = ${previousId})
+            OR EXISTS (SELECT 1 FROM json_tree(${workflowExecutions.sourceEnrichmentsJson}) WHERE key = 'sourceRecordId' AND value = ${previousId})`)
+          .all();
+        for (const row of rows) {
+          const execution =
+            this.workflowExecutionPersistence.readExecutionWithDrizzle(
+              transaction,
+              row.id,
+            );
+          if (execution?.status !== "completed") continue;
+          const managed = [
+            ...(execution.managedSourceArtifacts ?? []),
+            ...(execution.workItems ?? []).flatMap(
+              (item) => item.managedSourceArtifacts ?? [],
+            ),
+            ...(execution.sourceEnrichments ?? []).flatMap((item) =>
+              "managedSourceArtifacts" in item
+                ? (item.managedSourceArtifacts ?? [])
+                : [],
+            ),
+          ];
+          equivalent = managed.some(
+            (stored) =>
+              stored.sourceRecordId === previousId &&
+              stored.subjectId === input.subjectId &&
+              stored.role === association.role &&
+              stored.acquisitionReference !== undefined &&
+              stored.sourceArtifactProducer !== undefined &&
+              stored.acquisitionProducer !== undefined &&
+              stored.blob.digest === association.digest &&
+              stored.blob.mediaType === association.mediaType &&
+              stored.blob.byteLength === association.byteLength &&
+              stored.location.address === association.address &&
+              canonicalJson(stored.acquisitionProducer) ===
+                canonicalJson(JSON.parse(association.revisionProducerJson!)) &&
+              canonicalJson(stored.sourceArtifactProducer) ===
+                canonicalJson(JSON.parse(association.producerJson!)) &&
+              candidates.some(
+                (candidate) =>
+                  candidate.role === stored.role &&
+                  candidate.acquisitionReference ===
+                    stored.acquisitionReference &&
+                  candidate.mediaType === stored.blob.mediaType &&
+                  canonicalJson(candidate.producer) ===
+                    canonicalJson(stored.sourceArtifactProducer),
+              ),
+          );
+          if (equivalent) break;
+        }
+        if (equivalent) break;
+      }
+      if (equivalent)
+        transaction
+          .update(artifactAssociations)
+          .set({
+            sourceRecordIdsJson: JSON.stringify(
+              [...new Set([...previousIds, input.record.id])].toSorted(),
+            ),
+          })
+          .where(eq(artifactAssociations.id, association.id))
+          .run();
+    }
+  }
+
   private persistCurrentSourceArtifactCandidateLineageWithDrizzle(
     transaction: DrizzleWriteTransaction,
     input: {
@@ -10645,6 +10802,15 @@ export class SqliteCatalogue
       }
     }
     for (const record of input.submission.sourceRecords) {
+      this.extendEquivalentManagedSourceArtifactSupportWithDrizzle(
+        transaction,
+        {
+          subjectId: input.submission.assetId,
+          sourceAssociationId: input.submission.sourceAssociation.id,
+          record,
+          interpretation: input.submission.interpretation,
+        },
+      );
       this.persistCurrentSourceArtifactCandidateLineageWithDrizzle(
         transaction,
         {
@@ -17684,11 +17850,110 @@ export class SqliteCatalogue
    * 精确载体目标。这里读的是**保留的接受图**，不是已过滤 current 的接受投影，否则恰好需要
    * 确认的图永远找不到。本次冻结快照里没有对应条目的载体不入选：既不捏造观察，也不推断缺失。
    */
+  async findCurrentLocalMaterialObservationExecutions(input: {
+    readonly subjectIds: readonly string[];
+    readonly informationRequirement: InformationRequirement;
+    readonly assetLibraryId?: string;
+  }): Promise<readonly WorkflowExecution[]> {
+    if (
+      input.subjectIds.length === 0 ||
+      input.informationRequirement.artifactRoles.length === 0
+    )
+      return [];
+    const database = await this.ensure();
+    const query = drizzle({ client: database });
+    const currentSnapshots = query
+      .selectDistinct({ id: currentFileObservations.snapshotId })
+      .from(currentFileObservations)
+      .innerJoin(
+        artifactAssociationRecognitionSupports,
+        eq(
+          artifactAssociationRecognitionSupports.observationLocationId,
+          currentFileObservations.locationId,
+        ),
+      )
+      .innerJoin(
+        artifactAssociations,
+        eq(
+          artifactAssociations.id,
+          artifactAssociationRecognitionSupports.associationId,
+        ),
+      )
+      .where(
+        and(
+          inArray(
+            artifactAssociations.subjectId,
+            sqliteTextSet(input.subjectIds),
+          ),
+          inArray(
+            artifactAssociations.role,
+            sqliteTextSet(
+              input.informationRequirement.artifactRoles.map(
+                (item) => item.role,
+              ),
+            ),
+          ),
+        ),
+      )
+      .all();
+    const result: WorkflowExecution[] = [];
+    for (const { id: snapshotId } of currentSnapshots) {
+      const rows = query
+        .select({ id: workflowExecutions.id })
+        .from(workflowExecutions)
+        .where(sql`json_extract(${workflowExecutions.snapshotJson}, '$.id') = ${snapshotId}
+          OR EXISTS (SELECT 1 FROM json_each(COALESCE(${workflowExecutions.filesystemSnapshotsJson}, '[]')) AS snapshot WHERE json_extract(snapshot.value, '$.id') = ${snapshotId})`)
+        .orderBy(asc(sql<number>`${workflowExecutions}.rowid`))
+        .all();
+      for (const row of rows) {
+        const execution =
+          this.workflowExecutionPersistence.readExecutionWithDrizzle(
+            query,
+            row.id,
+          );
+        if (
+          execution === undefined ||
+          execution.operationKind !== "scan-filesystem" ||
+          execution.status !== "completed" ||
+          (input.assetLibraryId !== undefined &&
+            execution.workflowInput?.assetLibrary?.id !==
+              input.assetLibraryId) ||
+          this.requestedLocalMaterialAuthorityStaleWithDrizzle(query, execution)
+        )
+          continue;
+        const snapshots =
+          execution.filesystemSnapshots ??
+          (execution.snapshot === undefined ? [] : [execution.snapshot]);
+        const entries = await this.planRequestedLocalMaterialConfirmations({
+          ...input,
+          snapshots,
+          currentObservationsOnly: true,
+        });
+        if (
+          entries.some(
+            (entry) =>
+              entry.target.frozenEntry.snapshotId === snapshotId &&
+              !this.observedRevisionConfirmationMatchesWithDrizzle(
+                query,
+                entry.target,
+              ),
+          )
+        ) {
+          if (!result.some((item) => item.id === execution.id))
+            result.push(execution);
+          break;
+        }
+      }
+    }
+    return result;
+  }
+
   async planRequestedLocalMaterialConfirmations(input: {
     readonly subjectIds: readonly string[];
     readonly informationRequirement: InformationRequirement;
     readonly snapshots: readonly FilesystemPackageSnapshot[];
     readonly assetLibraryId?: string | undefined;
+    readonly currentObservationsOnly?: boolean;
   }): Promise<readonly LocalMaterialConfirmationPlanEntry[]> {
     // 需求里的角色与数量限制决定「消费哪些本地图片」，必要性不参与筛选：一次只带可选
     // 图片角色的普通刷新同样要把已物化并会被投影的图片保持在当前证据上。候选范围由
@@ -17708,6 +17973,7 @@ export class SqliteCatalogue
       requestedRoles.map((item) => item.role),
       input.snapshots,
       input.assetLibraryId,
+      input.currentObservationsOnly,
     );
     const targets: RequestedLocalMaterialConfirmationTarget[] = [];
     for (const requirement of requestedRoles) {
@@ -17737,14 +18003,30 @@ export class SqliteCatalogue
       }
     }
     return mergeRequestedLocalMaterialConfirmationTargets(targets).map(
-      (target) => ({
-        target,
-        prerequisiteObservation:
+      (target) => {
+        const prerequisiteObservation =
           this.currentFileObservationCoordinatesWithDrizzle(
             query,
             target.locationId,
-          ),
-      }),
+          );
+        const facts = input.currentObservationsOnly
+          ? observedSelectionFacts(query, target.locationId, {
+              includeConfirmed: true,
+            })
+          : undefined;
+        return {
+          target,
+          prerequisiteObservation,
+          ...(facts === undefined
+            ? {}
+            : {
+                establishedObservation: {
+                  selectionId: facts.selectionId,
+                  conditionalBaseline: facts.conditionalBaseline,
+                },
+              }),
+        };
+      },
     );
   }
 
@@ -17882,6 +18164,11 @@ export class SqliteCatalogue
                   outcomes,
                   statuses,
                 );
+              continue;
+            }
+            // 无扫描履行只能消费规划时已有的精确观察；缺失时绝不借旧快照建立新观察。
+            if (input.execution.operationKind === "refresh-metadata") {
+              stale();
               continue;
             }
             const existing = this.currentFileObservationCoordinatesWithDrizzle(
@@ -18346,6 +18633,7 @@ export class SqliteCatalogue
     roles: readonly string[],
     snapshots: readonly FilesystemPackageSnapshot[],
     assetLibraryId?: string,
+    currentObservationsOnly = false,
   ): readonly {
     readonly role: string;
     readonly target: RequestedLocalMaterialConfirmationTarget;
@@ -18480,6 +18768,20 @@ export class SqliteCatalogue
         { requireWithinSnapshotRoot: true },
       );
       if (entry === undefined) continue;
+      if (currentObservationsOnly) {
+        const current = this.currentFileObservationCoordinatesWithDrizzle(
+          query,
+          row.locationId,
+        );
+        if (
+          current === null ||
+          current.snapshotId !== entry.snapshot.id ||
+          current.observedAt !== entry.snapshot.observedAt ||
+          current.size !== entry.size ||
+          current.modifiedAt !== entry.modifiedAt
+        )
+          continue;
+      }
       const acceptance = query
         .select({
           observedReference: observedMaterialAcceptances.observedReference,

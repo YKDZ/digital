@@ -224,11 +224,18 @@ export type ExpectedObservedRevisionConfirmationResult =
  * confirmation，不推断其他材料消失，不清库的 awaitingObservation，也不提前写成 completed。
  */
 export type LocalMaterialEvidencePersistence = {
+  /** 无扫描履行只复用精确当前观察所引用的真实执行输入；没有待确认载体时零效果。 */
+  findCurrentLocalMaterialObservationExecutions?(input: {
+    readonly subjectIds: readonly string[];
+    readonly informationRequirement: InformationRequirement;
+    readonly assetLibraryId?: string;
+  }): Promise<readonly WorkflowExecution[]>;
   planRequestedLocalMaterialConfirmations(input: {
     readonly subjectIds: readonly string[];
     readonly informationRequirement: InformationRequirement;
     readonly snapshots: readonly FilesystemPackageSnapshot[];
     readonly assetLibraryId?: string | undefined;
+    readonly currentObservationsOnly?: boolean;
   }): Promise<readonly LocalMaterialConfirmationPlanEntry[]>;
   /**
    * 在同一 immediate 事务内核对执行 CAS/claim、接受图与冻结坐标、仍有效的根与库授权，把
@@ -614,6 +621,9 @@ export async function ensureRequestedLocalMaterialEvidence(
           subjectIds: subjects,
           informationRequirement: input.informationRequirement,
           snapshots: input.snapshots,
+          ...(input.execution.operationKind === "refresh-metadata"
+            ? { currentObservationsOnly: true }
+            : {}),
           ...(input.assetLibraryId === undefined
             ? {}
             : { assetLibraryId: input.assetLibraryId }),

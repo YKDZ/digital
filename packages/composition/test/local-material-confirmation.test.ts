@@ -9,6 +9,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  rename,
   rm,
   utimes,
   writeFile,
@@ -1058,6 +1059,152 @@ it("真实旧封面历史的载体经实际字节确认后，错误实体封面�
       }),
     ).resolves.toMatchObject({ state: "ready" });
   } finally {
+    await workflow.close();
+    await rm(data, { recursive: true, force: true });
+    await rm(media, { recursive: true, force: true });
+  }
+}, 120000);
+
+it("无扫描明确履行本地材料图复用真实当前观察，纯元数据不读载体且缺失时 unavailable", async () => {
+  const data = await preparedCatalogueRoot();
+  const media = await mkdtemp(
+    path.join(tmpdir(), "digital-local-fulfillment-"),
+  );
+  const workflow = composeAssetRefresh(data, {});
+  const realConfirm =
+    workflow.artifactByteAccess.confirmExpectedObservedRevision.bind(
+      workflow.artifactByteAccess,
+    );
+  const confirm = vi.spyOn(
+    workflow.artifactByteAccess,
+    "confirmExpectedObservedRevision",
+  );
+  try {
+    const file = path.join(media, "one.pdf");
+    await writeFile(file, syntheticPdf({ author: "One", pageCount: 1 }));
+    confirm.mockImplementationOnce(async (input) => {
+      await rename(file, `${file}.held`);
+      try {
+        const result = await realConfirm(input);
+        expect(result.kind).toBe("failed");
+        return result;
+      } finally {
+        await rename(`${file}.held`, file);
+      }
+    });
+    const library = await workflow.assetLibraries.save({
+      displayName: "本地履行库",
+      directories: [media],
+      recognitionProfileIds: ["books"],
+      sourceIdentities: [],
+    });
+    const first = await workflow.scanObservedScope({
+      registrationId: library.rootIds[0]!,
+      relativeScope: ".",
+      acceptTrusted: true,
+      informationRequirement: coverRequirement,
+    });
+    expect(first.execution.outcome).toBe("partially-succeeded");
+    const assetId = first.itemResults![0]!.accepted!.entity.id;
+    expect(confirm).toHaveBeenCalledTimes(1);
+    confirm.mockClear();
+    const before = new DatabaseSync(path.join(data, "catalogue.sqlite"), {
+      readOnly: true,
+    });
+    const observations = before
+      .prepare(
+        "SELECT location_id, snapshot_id, observed_at, size, modified_at, conditional_baseline FROM current_file_observations",
+      )
+      .all();
+    expect(observations).toHaveLength(1);
+    expect(
+      before
+        .prepare(
+          "SELECT COUNT(*) AS count FROM artifact_associations WHERE role = 'asset.primary-cover'",
+        )
+        .get(),
+    ).toEqual({ count: 1 });
+    expect(
+      before
+        .prepare(
+          "SELECT COUNT(*) AS count FROM observed_revision_confirmations",
+        )
+        .get(),
+    ).toEqual({ count: 0 });
+    before.close();
+    const selection = { subjectIds: [assetId] };
+    await workflow.fulfillInformation({
+      selection,
+      assetLibraryId: library.id,
+      requirement: {
+        ...coverRequirement,
+        metadata: [{ property: "asset.title", necessity: "optional" }],
+        artifactRoles: [],
+      },
+    });
+    expect(confirm).not.toHaveBeenCalled();
+    const readiness = await workflow.fulfillInformation({
+      selection,
+      assetLibraryId: library.id,
+      requirement: coverRequirement,
+    });
+    console.log("04无扫描履行实际结果", JSON.stringify(readiness));
+    expect(readiness.subjects[0]!.status).toBe("available");
+    expect(confirm).toHaveBeenCalledTimes(1);
+    const current = (await workflow.inspectCurrentCatalogueSubject(assetId))!;
+    expect(
+      current.locations.find((location) => location.kind === "observed")!
+        .content.status,
+    ).toBe("confirmed");
+    const localExecution = (await workflow.listInspections()).find(
+      (inspection) => inspection.execution.operationKind === "refresh-metadata",
+    )!.execution;
+    expect(localExecution.resolvedSelection!.filesystemScopes).toEqual([]);
+    expect(localExecution.filesystemSnapshots).toEqual(
+      first.execution.filesystemSnapshots,
+    );
+    const executionCount = (await workflow.listInspections()).length;
+    expect(
+      (
+        await workflow.fulfillInformation({
+          selection,
+          assetLibraryId: library.id,
+          requirement: coverRequirement,
+        })
+      ).subjects[0]!.status,
+    ).toBe("available");
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(await workflow.listInspections()).toHaveLength(executionCount);
+    const after = new DatabaseSync(path.join(data, "catalogue.sqlite"), {
+      readOnly: true,
+    });
+    expect(
+      after
+        .prepare(
+          "SELECT location_id, snapshot_id, observed_at, size, modified_at, conditional_baseline FROM current_file_observations",
+        )
+        .all(),
+    ).toEqual(observations);
+    after.close();
+    await rm(file);
+    await workflow.scanObservedScope({
+      registrationId: library.rootIds[0]!,
+      relativeScope: ".",
+      acceptTrusted: true,
+    });
+    const unavailable = await workflow.fulfillInformation({
+      selection,
+      requirement: coverRequirement,
+    });
+    expect(unavailable.subjects[0]!.status).toBe("unavailable");
+    expect(confirm).toHaveBeenCalledTimes(1);
+    await expect(
+      SqliteCatalogue.inspectProductionReadiness({
+        productDataDirectory: data,
+      }),
+    ).resolves.toMatchObject({ state: "ready" });
+  } finally {
+    confirm.mockRestore();
     await workflow.close();
     await rm(data, { recursive: true, force: true });
     await rm(media, { recursive: true, force: true });

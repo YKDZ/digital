@@ -9051,8 +9051,10 @@ export class AssetRefreshWorkflow {
     if (
       this.ports.assetLibrarySnapshot !== undefined ||
       this.ports.assetLibraries === undefined
-    )
+    ) {
+      await this.fulfillCurrentLocalMaterial(input);
       return await this.informationFulfillment.fulfill(fulfillment);
+    }
     const contexts = await this.resolveInformationLibraryContexts(
       input.selection.subjectIds,
       input.assetLibraryId,
@@ -9119,6 +9121,178 @@ export class AssetRefreshWorkflow {
         return subject;
       }),
     };
+  }
+
+  /** 无扫描的图片履行复用真实观察输入；不计划本地图片的请求不建立执行或读取字节。 */
+  private async fulfillCurrentLocalMaterial(input: {
+    readonly selection: InformationSubjectSelection;
+    readonly requirement: InformationRequirement;
+    readonly initiation?: InformationFulfillmentInitiation;
+  }): Promise<void> {
+    const persistence = this.ports.localMaterialEvidence;
+    const supervisor = this.ports.invocationSupervisor;
+    if (
+      input.requirement.artifactRoles.length === 0 ||
+      persistence?.findCurrentLocalMaterialObservationExecutions ===
+        undefined ||
+      supervisor === undefined
+    )
+      return;
+    for (const subjectId of input.selection.subjectIds) {
+      const key = `local-material\u0000${subjectId}`;
+      const predecessor = this.informationWork.get(key);
+      if (predecessor !== undefined) {
+        await predecessor;
+        continue;
+      }
+      const origins =
+        await persistence.findCurrentLocalMaterialObservationExecutions({
+          subjectIds: [subjectId],
+          informationRequirement: input.requirement,
+          ...(this.ports.assetLibrarySnapshot === undefined
+            ? {}
+            : { assetLibraryId: this.ports.assetLibrarySnapshot.id }),
+        });
+      if (origins.length === 0) continue;
+      const snapshots = [
+        ...new Map(
+          origins
+            .flatMap(
+              (origin) =>
+                origin.filesystemSnapshots ??
+                (origin.snapshot === undefined ? [] : [origin.snapshot]),
+            )
+            .map((snapshot) => [snapshot.id, snapshot]),
+        ).values(),
+      ];
+      const roots = [
+        ...new Map(
+          origins
+            .flatMap((origin) => origin.workflowInput?.observedRoots ?? [])
+            .map((root) => [root.id, root]),
+        ).values(),
+      ];
+      const authorizations = [
+        ...new Map(
+          origins
+            .flatMap(
+              (origin) => origin.workflowInput?.directoryAuthorizations ?? [],
+            )
+            .map((authorization) => [
+              authorization.observedRootId,
+              authorization,
+            ]),
+        ).values(),
+      ];
+      if (
+        input.initiation?.directoryAuthorizations !== undefined &&
+        authorizations.some(
+          (authorization) =>
+            !input.initiation!.directoryAuthorizations!.some(
+              (frozen) =>
+                frozen.observedRootId === authorization.observedRootId &&
+                frozen.authorityVersion === authorization.authorityVersion,
+            ),
+        )
+      )
+        continue;
+      const selection = await freezeAssetRefreshSelection({
+        version: assetRefreshSelectionVersion,
+        subjects: [
+          {
+            subjectId,
+            explanations: [
+              { path: ["information-fulfillment", "local-material"] },
+            ],
+          },
+        ],
+        filesystemScopes: [],
+      });
+      const initial: WorkflowExecution = {
+        id: id("execution"),
+        workflowInput: {
+          version: "asset-refresh-input/1",
+          trigger: "information-fulfillment",
+          initiatedBy: "information-fulfillment",
+          acceptTrusted: false,
+          configurationReferences: [],
+          observedRoots: roots,
+          directoryAuthorizations: authorizations,
+          ...(this.ports.assetLibrarySnapshot === undefined
+            ? {}
+            : { assetLibrary: this.ports.assetLibrarySnapshot }),
+          ...(input.initiation === undefined
+            ? {}
+            : { parentExecutionId: input.initiation.parentExecutionId }),
+        },
+        selection: {
+          intent: "metadata-refresh",
+          informationRequirement: input.requirement,
+        },
+        operationKind: "refresh-metadata",
+        requestedSelection: selection,
+        resolvedSelection: selection,
+        // 这些是已有观察所引用的原快照，ID、条目与时间原样冻结；没有执行扫描。
+        filesystemSnapshots: snapshots,
+        acceptedAssetId: subjectId,
+        status: "running",
+        stage: "source-artifacts-stored",
+        sourceRecordIds: [],
+        dispositions: [],
+        compatibility: {
+          ...this.compatibility(),
+          capabilityCoordinates: [
+            ...new Set(
+              origins.flatMap(
+                (origin) => origin.compatibility.capabilityCoordinates,
+              ),
+            ),
+          ].toSorted(),
+        },
+      };
+      let running: Promise<AssetRefreshInspection> | undefined;
+      await supervisor.invoke(async (control) => {
+        const run = async (): Promise<AssetRefreshInspection> => {
+          const started =
+            await this.ports.executionCommands.createExecution(initial);
+          if (started !== "started")
+            throw new AutomationExecutionNotStarted(started);
+          control.executionStarted(initial.id);
+          control.safeCheckpoint();
+          const local = await this.ensureRequestedLocalMaterialEvidence({
+            execution: initial,
+            subjectIds: [subjectId],
+            informationRequirement: input.requirement,
+          });
+          control.safeCheckpoint();
+          const terminals =
+            await this.verifyRequestedLocalMaterialEvidenceTerminals(
+              local.execution,
+            );
+          const finished = this.partialForUnfinishedRecovery({
+            base: {
+              ...terminals.execution,
+              status: "completed",
+              stage: "completed",
+              outcome: "accepted",
+            },
+            failedSourceEnrichments: 0,
+            failedLocalEvidence: local.failed + terminals.failed,
+          });
+          await this.transition(terminals.execution, finished);
+          return await this.inspectPublic(finished.id);
+        };
+        running = run();
+        this.informationWork.set(key, running);
+        try {
+          await running;
+        } finally {
+          if (this.informationWork.get(key) === running)
+            this.informationWork.delete(key);
+        }
+      });
+      await running;
+    }
   }
 
   /**
