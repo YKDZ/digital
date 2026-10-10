@@ -465,6 +465,14 @@ async function main(argv: readonly string[]): Promise<number> {
       journal,
     });
     (outcome.lifecycleCalls as string[]).push(phase);
+    if (record.journalError !== undefined) {
+      // journal 记账失败单列为保存错误：已取得的公开生命周期结果照常可用，不折算成清理失败。
+      saveErrors.push({
+        stage: "journal",
+        target: "commands.ndjson",
+        message: `${phase}：${record.journalError}`,
+      });
+    }
     try {
       const result = lifecycleResult(record);
       lifecycleLogFiles.push(...logFilesOf(result));
@@ -923,21 +931,26 @@ async function main(argv: readonly string[]): Promise<number> {
   } catch (error) {
     cleanupErrors.push(`收尾阶段异常：${describeError(error)}`);
     dataRetained = true;
-    if (
-      options.mode === "owned" &&
-      environmentPrepared &&
-      serviceStartAttempted
-    ) {
-      // 兜底：收尾序列中断时仍要对自己的服务给出一次停止调用，实况由 inspect 记录。
-      const lastResort = await lifecycle("stop", [], false);
-      cleanupErrors.push(
-        lastResort === undefined
-          ? "兜底 stop 没有返回结构化结果：自有服务实况未知"
-          : `兜底 stop 返回 ${lastResort.status}`,
-      );
-      ownerConfirmation ??= summarizeObserved(
-        await lifecycle("inspect", [], false),
-      );
+    try {
+      if (
+        options.mode === "owned" &&
+        environmentPrepared &&
+        serviceStartAttempted
+      ) {
+        // 兜底：收尾序列中断时仍要对自己的服务给出一次停止调用，实况由 inspect 记录。
+        const lastResort = await lifecycle("stop", [], false);
+        cleanupErrors.push(
+          lastResort === undefined
+            ? "兜底 stop 没有返回结构化结果：自有服务实况未知"
+            : `兜底 stop 返回 ${lastResort.status}`,
+        );
+        ownerConfirmation ??= summarizeObserved(
+          await lifecycle("inspect", [], false),
+        );
+      }
+    } catch (fallbackError) {
+      // 兜底自身再失败也如实入账：异常不能穿透到最终 ledger/outcome 与退出分类之前。
+      cleanupErrors.push(`兜底收尾自身异常：${describeError(fallbackError)}`);
     }
   }
 

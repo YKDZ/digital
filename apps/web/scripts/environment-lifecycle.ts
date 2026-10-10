@@ -34,6 +34,11 @@ export type SpawnRecord = {
   readonly envelope?: StructuredEnvelope;
   readonly stdoutTail: string;
   readonly stderrTail: string;
+  /**
+   * journal 追加失败的原因。子进程已退出、结构化结果已解析时，
+   * 记账失败不得丢弃这次正常结果：失败随记录另列，由调用方折算成保存错误。
+   */
+  readonly journalError?: string;
 };
 
 export type CommandJournal = {
@@ -111,8 +116,16 @@ export async function runCommand(input: {
     stdoutTail: tail(stdout),
     stderrTail: tail(stderr),
   };
-  await input.journal?.record(record);
-  return record;
+  try {
+    await input.journal?.record(record);
+    return record;
+  } catch (error) {
+    // CLI 已退出且结果可得：journal 失败只随记录另列，不向外丢弃这次正常结果。
+    return {
+      ...record,
+      journalError: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 function parseEnvelope(stdout: string): StructuredEnvelope | undefined {
