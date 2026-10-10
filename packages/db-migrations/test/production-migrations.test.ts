@@ -52,9 +52,7 @@ describe("production catalogue preparation", () => {
       await expect(
         inspectProductionCatalogueReadiness({ productDataDirectory }),
       ).resolves.toMatchObject({ state: "ready" });
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toMatchObject({ applied: 0 });
+      await expectDerivedPrepareApplied(productDataDirectory);
     } finally {
       await rm(productDataDirectory, { recursive: true, force: true });
     }
@@ -92,9 +90,7 @@ describe("production catalogue preparation", () => {
     const productDataDirectory = await temporaryProductData();
     try {
       await prepareCatalogueBeforeDescriptionTargets(productDataDirectory);
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 12 });
+      await expectDerivedPrepareApplied(productDataDirectory);
       const database = new DatabaseSync(
         path.join(productDataDirectory, "catalogue.sqlite"),
         { readOnly: true },
@@ -283,9 +279,7 @@ describe("production catalogue preparation", () => {
         );
       legacy.close();
 
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 11 });
+      await expectDerivedPrepareApplied(productDataDirectory);
       const migrated = new DatabaseSync(
         path.join(productDataDirectory, "catalogue.sqlite"),
         { readOnly: true },
@@ -373,9 +367,7 @@ describe("production catalogue preparation", () => {
     const corrupt = await temporaryProductData();
     try {
       await prepareLegacySourceEnrichmentCatalogue(valid, false);
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory: valid }),
-      ).resolves.toEqual({ applied: 15 });
+      await expectDerivedPrepareApplied(valid);
       await expect(
         inspectProductionCatalogueReadiness({ productDataDirectory: valid }),
       ).resolves.toMatchObject({ state: "ready" });
@@ -396,9 +388,10 @@ describe("production catalogue preparation", () => {
       migrated.close();
 
       await prepareLegacySourceEnrichmentCatalogue(corrupt, true);
-      await expect(
+      await expectLegacySourceAuthorityLockout(
         prepareProductionCatalogue({ productDataDirectory: corrupt }),
-      ).rejects.toThrow("生产迁移");
+        corrupt,
+      );
     } finally {
       await rm(valid, { recursive: true, force: true });
       await rm(corrupt, { recursive: true, force: true });
@@ -433,9 +426,10 @@ describe("production catalogue preparation", () => {
       wrongCoordinate.close();
 
       for (const root of roots)
-        await expect(
+        await expectLegacySourceAuthorityLockout(
           prepareProductionCatalogue({ productDataDirectory: root }),
-        ).rejects.toThrow("生产迁移");
+          root,
+        );
     } finally {
       await Promise.all(
         roots.map(
@@ -595,9 +589,7 @@ describe("production catalogue preparation", () => {
         .run(target.basis_json, target.id);
       repaired.close();
 
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 3 });
+      await expectDerivedPrepareApplied(productDataDirectory);
       const recovered = new DatabaseSync(
         path.join(productDataDirectory, "catalogue.sqlite"),
         { readOnly: true },
@@ -620,9 +612,7 @@ describe("production catalogue preparation", () => {
       await expect(
         inspectProductionCatalogueReadiness({ productDataDirectory }),
       ).resolves.toMatchObject({ state: "ready" });
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 0 });
+      await expectDerivedPrepareApplied(productDataDirectory);
     } finally {
       await rm(productDataDirectory, { recursive: true, force: true });
     }
@@ -663,9 +653,7 @@ describe("production catalogue preparation", () => {
         .run(target.basis_json, target.id);
       repaired.close();
 
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 3 });
+      await expectDerivedPrepareApplied(productDataDirectory);
       const recovered = new DatabaseSync(
         path.join(productDataDirectory, "catalogue.sqlite"),
         { readOnly: true },
@@ -688,9 +676,7 @@ describe("production catalogue preparation", () => {
       await expect(
         inspectProductionCatalogueReadiness({ productDataDirectory }),
       ).resolves.toMatchObject({ state: "ready" });
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 0 });
+      await expectDerivedPrepareApplied(productDataDirectory);
     } finally {
       await rm(productDataDirectory, { recursive: true, force: true });
     }
@@ -860,15 +846,11 @@ describe("production catalogue preparation", () => {
       requirePlanted(planted.changes, "可选解释成员缺省");
       mutated.close();
 
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 3 });
+      await expectDerivedPrepareApplied(productDataDirectory);
       await expect(
         inspectProductionCatalogueReadiness({ productDataDirectory }),
       ).resolves.toMatchObject({ state: "ready" });
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 0 });
+      await expectDerivedPrepareApplied(productDataDirectory);
     } finally {
       await rm(productDataDirectory, { recursive: true, force: true });
     }
@@ -1120,9 +1102,7 @@ describe("production catalogue preparation", () => {
         .prepare("UPDATE recognition_proposals SET basis_json = ? WHERE id = ?")
         .run(pristineManual.basis_json, pristineManual.id);
       recovering.close();
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory: recoveryRoot }),
-      ).resolves.toEqual({ applied: 3 });
+      await expectDerivedPrepareApplied(recoveryRoot);
       const migrated = new DatabaseSync(
         path.join(recoveryRoot, "catalogue.sqlite"),
         { readOnly: true },
@@ -1147,9 +1127,7 @@ describe("production catalogue preparation", () => {
           productDataDirectory: recoveryRoot,
         }),
       ).resolves.toMatchObject({ state: "ready" });
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory: recoveryRoot }),
-      ).resolves.toEqual({ applied: 0 });
+      await expectDerivedPrepareApplied(recoveryRoot);
 
       // 识别取代分支合法携带兼容视图与自身 basis：互斥检查不得误拒。
       const legalRoot = await ordinaryEntityFixtureRoot();
@@ -1176,9 +1154,7 @@ describe("production catalogue preparation", () => {
           SqliteCatalogue.assertOrdinaryEntityMigrationAuthority(database),
         ).not.toThrow();
         database.close();
-        await expect(
-          prepareProductionCatalogue({ productDataDirectory: legalRoot }),
-        ).resolves.toEqual({ applied: 3 });
+        await expectDerivedPrepareApplied(legalRoot);
       } finally {
         await rm(legalRoot, { recursive: true, force: true });
       }
@@ -1268,9 +1244,7 @@ describe("production catalogue preparation", () => {
         associationCount: 1,
         terminated: true,
       });
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory: terminated }),
-      ).resolves.toEqual({ applied: 16 });
+      await expectDerivedPrepareApplied(terminated);
       const terminatedDatabase = new DatabaseSync(
         path.join(terminated, "catalogue.sqlite"),
         { readOnly: true },
@@ -1381,9 +1355,7 @@ describe("production catalogue preparation", () => {
     }
 
     try {
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 18 });
+      await expectDerivedPrepareApplied(productDataDirectory);
       const reopened = SqliteCatalogue.forProductData(productDataDirectory);
       await expect(reopened.listCurrentCatalogue()).resolves.toMatchObject([
         {
@@ -1474,6 +1446,7 @@ describe("production catalogue preparation", () => {
         inspectProductionCatalogueReadiness({ productDataDirectory }),
       ).resolves.toMatchObject({ state: "catalogue-not-prepared" });
 
+      // 采用路径不重放任何 DDL，也不登记迁移台账，因此这条断言钉的正是「零应用」。
       await expect(
         prepareProductionCatalogue({ productDataDirectory }),
       ).resolves.toEqual({ applied: 0 });
@@ -1686,9 +1659,7 @@ describe("production catalogue preparation", () => {
         ]),
       );
 
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 4 });
+      await expectDerivedPrepareApplied(productDataDirectory);
       await expect(
         inspectProductionCatalogueReadiness({ productDataDirectory }),
       ).resolves.toMatchObject({ state: "ready" });
@@ -1788,9 +1759,7 @@ describe("production catalogue preparation", () => {
         database.close();
       }
 
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 0 });
+      await expectDerivedPrepareApplied(productDataDirectory);
       const reopened = SqliteCatalogue.forProductData(productDataDirectory);
       expect(
         (await reopened.listCurrentCatalogue()).map(({ entity }) => entity.id),
@@ -1808,9 +1777,7 @@ describe("production catalogue preparation", () => {
       "legacy-duplicate-package-before-current-supports",
     );
     try {
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 4 });
+      await expectDerivedPrepareApplied(productDataDirectory);
       await expect(
         inspectProductionCatalogueReadiness({ productDataDirectory }),
       ).resolves.toMatchObject({ state: "ready" });
@@ -1896,9 +1863,7 @@ describe("production catalogue preparation", () => {
         database.close();
       }
 
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 0 });
+      await expectDerivedPrepareApplied(productDataDirectory);
       const reopened = SqliteCatalogue.forProductData(productDataDirectory);
       expect(
         (await reopened.listCurrentCatalogue()).map(({ entity }) => entity.id),
@@ -1919,9 +1884,7 @@ describe("production catalogue preparation", () => {
       "legacy-top-level-a-before-current-supports",
     );
     try {
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 4 });
+      await expectDerivedPrepareApplied(productDataDirectory);
       await expect(
         inspectProductionCatalogueReadiness({ productDataDirectory }),
       ).resolves.toMatchObject({ state: "ready" });
@@ -1994,9 +1957,7 @@ describe("production catalogue preparation", () => {
       }
 
       // 重开正确且历史不丢：迁移幂等 applied 0，资产仍 current，账本保留全部历史行。
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 0 });
+      await expectDerivedPrepareApplied(productDataDirectory);
       const reopened = SqliteCatalogue.forProductData(productDataDirectory);
       expect(
         (await reopened.listCurrentCatalogue()).map(({ entity }) => entity.id),
@@ -2047,9 +2008,7 @@ describe("production catalogue preparation", () => {
       "overlapping-roots-before-current-supports",
     );
     try {
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 4 });
+      await expectDerivedPrepareApplied(productDataDirectory);
       const catalogue = SqliteCatalogue.forProductData(productDataDirectory);
       const current = await catalogue.listCurrentCatalogue();
       catalogue.close();
@@ -2106,9 +2065,7 @@ describe("production catalogue preparation", () => {
       "observed-material-shape-swap-before-current-supports",
     );
     try {
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 4 });
+      await expectDerivedPrepareApplied(productDataDirectory);
       await expect(
         inspectProductionCatalogueReadiness({ productDataDirectory }),
       ).resolves.toMatchObject({ state: "ready" });
@@ -2204,9 +2161,7 @@ describe("production catalogue preparation", () => {
       "observed-material-carriers-before-current-supports",
     );
     try {
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 4 });
+      await expectDerivedPrepareApplied(productDataDirectory);
       await expect(
         inspectProductionCatalogueReadiness({ productDataDirectory }),
       ).resolves.toMatchObject({ state: "ready" });
@@ -2367,9 +2322,7 @@ describe("production catalogue preparation", () => {
         database.close();
       }
 
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 0 });
+      await expectDerivedPrepareApplied(productDataDirectory);
       const reopened = SqliteCatalogue.forProductData(productDataDirectory);
       expect(
         (await reopened.listCurrentCatalogue()).map(({ entity }) => entity.id),
@@ -2463,9 +2416,7 @@ describe("production catalogue preparation", () => {
       } finally {
         repairing.close();
       }
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 4 });
+      await expectDerivedPrepareApplied(productDataDirectory);
       await expect(
         inspectProductionCatalogueReadiness({ productDataDirectory }),
       ).resolves.toMatchObject({ state: "ready" });
@@ -2491,9 +2442,7 @@ describe("production catalogue preparation", () => {
       } finally {
         ledger.close();
       }
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 0 });
+      await expectDerivedPrepareApplied(productDataDirectory);
     } finally {
       await rm(productDataDirectory, { recursive: true, force: true });
     }
@@ -2524,9 +2473,7 @@ describe("production catalogue preparation", () => {
       },
     ] as const;
     try {
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 4 });
+      await expectDerivedPrepareApplied(productDataDirectory);
       await expect(
         inspectProductionCatalogueReadiness({ productDataDirectory }),
       ).resolves.toMatchObject({ state: "ready" });
@@ -2782,11 +2729,7 @@ describe("production catalogue preparation", () => {
         "observed-material-carriers-before-current-supports",
       );
       try {
-        await expect(
-          prepareProductionCatalogue({
-            productDataDirectory: carriers.productDataDirectory,
-          }),
-        ).resolves.toEqual({ applied: 4 });
+        await expectDerivedPrepareApplied(carriers.productDataDirectory);
         await expect(
           inspectProductionCatalogueReadiness({
             productDataDirectory: carriers.productDataDirectory,
@@ -2953,15 +2896,11 @@ describe("production catalogue preparation", () => {
       } finally {
         repairing.close();
       }
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 4 });
+      await expectDerivedPrepareApplied(productDataDirectory);
       await expect(
         inspectProductionCatalogueReadiness({ productDataDirectory }),
       ).resolves.toMatchObject({ state: "ready" });
-      await expect(
-        prepareProductionCatalogue({ productDataDirectory }),
-      ).resolves.toEqual({ applied: 0 });
+      await expectDerivedPrepareApplied(productDataDirectory);
     } finally {
       await rm(productDataDirectory, { recursive: true, force: true });
     }
@@ -3081,6 +3020,83 @@ async function temporaryProductData(): Promise<string> {
   return await mkdtemp(
     path.join(tmpdir(), "digital-disposable-production-migrations-"),
   );
+}
+
+/**
+ * 副本当前台账之外、正式计划之内的产物数，就是这次 prepare 应当应用的迁移数。
+ * 计划顺序与内容都取自生产入口自己的 productionMigrationArtifacts，测试不复制常数。
+ */
+function outstandingMigrations(catalogueFile: string): number {
+  const database = new DatabaseSync(catalogueFile);
+  try {
+    const ledger = database
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '__digital_catalogue_migrations'",
+      )
+      .get();
+    if (ledger === undefined)
+      throw new Error(`副本没有可推导的迁移台账：${catalogueFile}`);
+    const applied = new Set(
+      (
+        database
+          .prepare("SELECT id FROM __digital_catalogue_migrations")
+          .all() as { id: string }[]
+      ).map(({ id }) => id),
+    );
+    return productionMigrationArtifacts.filter(({ id }) => !applied.has(id))
+      .length;
+  } finally {
+    database.close();
+  }
+}
+
+/** 先按正式计划与副本台账推导本次应应用的迁移数，再要求 prepare 实际返回同一数。 */
+async function expectDerivedPrepareApplied(
+  productDataDirectory: string,
+): Promise<void> {
+  const expectedApplied = outstandingMigrations(
+    path.join(productDataDirectory, "catalogue.sqlite"),
+  );
+  await expect(
+    prepareProductionCatalogue({ productDataDirectory }),
+  ).resolves.toEqual({ applied: expectedApplied });
+}
+
+/** 旧来源补充权威由这条迁移承载：它的完整性前置在 DDL 之前执行。 */
+const legacySourceIdentityMigrationId =
+  "20260906010000_source_identity_correction";
+
+/**
+ * 旧来源补充权威前置的拒绝要钉住该权威所属的产物本身：正式消息带失败的迁移 id，台账
+ * 不登记该产物，失败台账记录该产物。只匹配「生产迁移」前缀会让任意其它迁移失败都算通过。
+ */
+async function expectLegacySourceAuthorityLockout(
+  operation: Promise<unknown>,
+  productDataDirectory: string,
+): Promise<void> {
+  await expect(operation).rejects.toThrow(
+    `生产迁移 ${legacySourceIdentityMigrationId} 失败；Web 不会启动`,
+  );
+  const rejected = new DatabaseSync(
+    path.join(productDataDirectory, "catalogue.sqlite"),
+    { readOnly: true },
+  );
+  try {
+    expect(
+      rejected
+        .prepare("SELECT 1 FROM __digital_catalogue_migrations WHERE id = ?")
+        .get(legacySourceIdentityMigrationId),
+    ).toBeUndefined();
+    expect(
+      rejected
+        .prepare(
+          "SELECT id, message FROM __digital_catalogue_migration_failures WHERE id = ?",
+        )
+        .get(legacySourceIdentityMigrationId),
+    ).toEqual({ id: legacySourceIdentityMigrationId, message: "Error" });
+  } finally {
+    rejected.close();
+  }
 }
 
 /** 把退出前固定点 fixture 原样拷入一个新的临时产品数据根。 */
