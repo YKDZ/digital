@@ -384,13 +384,14 @@ it("普通组合资产刷新接受无 ISBN EPUB 并保留修订版格式事实",
           (description) => description.target.kind === "artifact-revision",
         ),
       ).toBe(true);
-      expect(
-        reopenedSubject.locations.map((location) => location.content.status),
-      ).toEqual(["confirmed"]);
-      // 原断言：同一范围未变化重扫判为 no-change。
-      // 现断言：保留同一意图，但现行交付增量在重扫未变化范围时缺少已铸好的父修订依据，
-      // 直接抛「Observed metadata requires a progressively hashed parent Artifact Revision…」
-      // （归属同一 delta 路径缺陷，见 coordination.md D3）。
+      const carrierArtifactId = accepted!.locations.find(
+        (location) => location.kind === "observed",
+      )!.artifactId;
+      const carrierLocation = reopenedSubject.locations.find(
+        (location) => location.artifactId === carrierArtifactId,
+      );
+      expect(carrierLocation?.content.status).toBe("confirmed");
+      // 同一范围未变化时保留已确认的载体、材料图和身份。
       const replay = await reopened.scanObservedScope({
         registrationId: root.id,
         relativeScope: ".",
