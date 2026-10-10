@@ -19,44 +19,83 @@ type Roles = readonly (readonly [
 
 const usageContext = "asset.ordinary";
 
+/** 正式读取会表达的负向事实：确定缺失的属性、缺失的角色与同级冲突。 */
+type DescriptionExtras = {
+  readonly missingProperties?: readonly string[];
+  readonly missingArtifactRoles?: readonly string[];
+  readonly conflicts?: EffectiveDescriptionRead["conflicts"];
+  /**
+   * 本次读取的请求选择器。正式读取只有在 requested 范围里才把未解析属性写成确定缺失，
+   * all-available 范围不产生缺失项，因此确定缺失的夹具必须给出它真正请求的坐标集。
+   */
+  readonly requestedMetadata?: readonly string[];
+};
+
 function description(
   target: EffectiveDescriptionRead["target"],
   properties: Properties,
   roles: Roles,
+  extras: DescriptionExtras = {},
 ): EffectiveDescriptionRead {
   const owner =
     target.kind === "entity"
       ? target.entityId
       : `${target.artifactId}-${target.revisionId}`;
-  const metadata = properties.map(
-    ([property, value]): EffectiveDescriptionRead["metadata"][number] => ({
+  // 正式生效读取按属性分组：同一属性的全部选中值进入该项的 result.values。
+  type ResolvedValues = Extract<
+    EffectiveDescriptionRead["metadata"][number]["result"],
+    { status: "resolved" }
+  >["values"];
+  const valuesByProperty = new Map<string, ResolvedValues>();
+  for (const [property, value] of properties) {
+    const selected = valuesByProperty.get(property) ?? [];
+    selected.push({
       property,
-      result: {
-        status: "resolved",
-        values: [
-          {
-            property,
-            value,
-            sourceIdentity: "synthetic",
-            sourceSlot: property,
-            reasoning: { kind: "unranked-source-assertion" },
-            assertions: [
-              {
-                target,
-                sourceSlot: property,
-                sourceRecordIds: [`record-${owner}`],
-              },
-            ],
-            sourceRecordIds: [`record-${owner}`],
-          },
-        ],
-      },
-    }),
+      value,
+      sourceIdentity: "synthetic",
+      sourceSlot: property,
+      reasoning: { kind: "unranked-source-assertion" },
+      assertions: [
+        {
+          target,
+          sourceSlot: property,
+          sourceRecordIds: [`record-${owner}`],
+        },
+      ],
+      sourceRecordIds: [`record-${owner}`],
+    });
+    valuesByProperty.set(property, selected);
+  }
+  const conflictsByProperty = new Map(
+    (extras.conflicts ?? [])
+      .filter((conflict) => conflict.property !== undefined)
+      .map((conflict) => [conflict.property!, conflict]),
   );
+  // 正式读取把同级冲突表达为该属性项的 conflict 结果，而不是再另列一个已解决值。
+  const metadata = [...valuesByProperty.entries()].map(
+    ([property, values]): EffectiveDescriptionRead["metadata"][number] => {
+      const conflict = conflictsByProperty.get(property);
+      return {
+        property,
+        result:
+          conflict === undefined
+            ? { status: "resolved", values }
+            : { status: "conflict", conflict },
+      };
+    },
+  );
+  for (const property of extras.missingProperties ?? []) {
+    if (valuesByProperty.has(property) || conflictsByProperty.has(property))
+      continue;
+    metadata.push({ property, result: { status: "missing" } });
+  }
   return {
     target,
     metadataUsageContext: usageContext,
-    metadataScope: { kind: "all-available" },
+    metadataScope:
+      extras.requestedMetadata === undefined
+        ? { kind: "all-available" }
+        : { kind: "requested", selectors: [...extras.requestedMetadata] },
     metadata,
     artifactRoles: roles.map(
       ([role, artifactId, address]) =>
@@ -67,8 +106,8 @@ function description(
           address,
         }) satisfies EffectiveDescriptionRead["artifactRoles"][number],
     ),
-    missingArtifactRoles: [],
-    conflicts: [],
+    missingArtifactRoles: [...(extras.missingArtifactRoles ?? [])],
+    conflicts: [...(extras.conflicts ?? [])],
   };
 }
 
@@ -77,8 +116,9 @@ export function entityDescription(
   entityId: string,
   properties: Properties = [],
   roles: Roles = [],
+  extras: DescriptionExtras = {},
 ): EffectiveDescriptionRead {
-  return description({ kind: "entity", entityId }, properties, roles);
+  return description({ kind: "entity", entityId }, properties, roles, extras);
 }
 
 /** 修订版本地描述；文件页图片等材料角色读在这里，只服务该精确修订版。 */
@@ -87,11 +127,13 @@ export function revisionDescription(
   revisionId: string,
   properties: Properties = [],
   roles: Roles = [],
+  extras: DescriptionExtras = {},
 ): EffectiveDescriptionRead {
   return description(
     { kind: "artifact-revision", artifactId, revisionId },
     properties,
     roles,
+    extras,
   );
 }
 

@@ -240,6 +240,72 @@ describe("PDF 本地格式能力", () => {
         },
       }),
     ).toThrow("PDF 本地识别只接受格式检查确认的单一出版物修订版");
+
+    // 逐条件负项：每次只改变一项依据，其余保持合法，识别仍必须拒绝，
+    // 覆盖精确修订版的摘要、字节长度、媒体类型、观察引用、修订生产者与依据数量。
+    const rejectsOneCondition = (
+      label: string,
+      context: Awaited<ReturnType<typeof contextFor>>,
+    ) => {
+      expect(recognizer.canRecognize(context), label).toBe(false);
+      expect(() => recognizer.recognize(context), label).toThrow(
+        "PDF 本地识别只接受格式检查确认的单一出版物修订版",
+      );
+    };
+    const revision = single.basis.artifactRevisions[0]!;
+    const withRevision = (
+      change: (
+        source: typeof revision,
+      ) => (typeof single.basis.artifactRevisions)[number],
+    ) => ({
+      ...single,
+      basis: {
+        ...single.basis,
+        artifactRevisions: [change(revision)],
+      },
+    });
+    rejectsOneCondition(
+      "摘要与格式检查不一致",
+      withRevision((source) => ({
+        ...source,
+        blob: { ...source.blob, digest: "0".repeat(64) },
+      })),
+    );
+    rejectsOneCondition(
+      "字节长度与格式检查不一致",
+      withRevision((source) => ({
+        ...source,
+        blob: { ...source.blob, byteLength: source.blob.byteLength + 1 },
+      })),
+    );
+    rejectsOneCondition(
+      "媒体类型与格式检查不一致",
+      withRevision((source) => ({
+        ...source,
+        blob: { ...source.blob, mediaType: "application/octet-stream" },
+      })),
+    );
+    rejectsOneCondition(
+      "观察引用与格式检查不一致",
+      withRevision((source) => ({
+        ...source,
+        observedArtifactReference: "renamed.pdf",
+      })),
+    );
+    rejectsOneCondition(
+      "修订生产者不是格式检查能力",
+      withRevision((source) => ({
+        ...source,
+        producer: { ...source.producer, implementationVersion: "1" },
+      })),
+    );
+    rejectsOneCondition("依据包含两个修订版", {
+      ...single,
+      basis: {
+        ...single.basis,
+        artifactRevisions: [revision, revision],
+      },
+    });
   });
 
   it("只从完整 XMP carrier 读取有效 ISBN，并在 Title 冲突时不任选", async () => {

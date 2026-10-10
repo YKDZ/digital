@@ -25,6 +25,15 @@ it("产品只信任精确 EPUB 本地出版物规则坐标", () => {
   expect(policy.accepts({ ...result, ruleVersion: "1" })).toBe(false);
   expect(policy.accepts({ ...result, ruleVersion: "2" })).toBe(false);
   expect(policy.accepts({ ...result, capabilityVersion: "2" })).toBe(false);
+  expect(
+    policy.accepts({
+      ...result,
+      capabilityId: "pdf.local-publication-recognizer",
+    }),
+  ).toBe(false);
+  expect(
+    policy.accepts({ ...result, ruleId: "epub.valid-publication-revision" }),
+  ).toBe(false);
   const nbinet = {
     ...result,
     capabilityId: "nbinet.exact-isbn-recognizer",
@@ -64,6 +73,15 @@ it("产品显式采用 PDF v3 规则坐标且不继承 v2/v1 信任", () => {
   expect(policy.accepts({ ...result, ruleVersion: "2" })).toBe(false);
   expect(policy.accepts({ ...result, capabilityVersion: "1" })).toBe(false);
   expect(policy.accepts({ ...result, capabilityVersion: "2" })).toBe(false);
+  expect(
+    policy.accepts({
+      ...result,
+      capabilityId: "epub.local-publication-recognizer",
+    }),
+  ).toBe(false);
+  expect(
+    policy.accepts({ ...result, ruleId: "pdf.valid-publication-revision" }),
+  ).toBe(false);
   expect(
     workflowCompatibilityCanReuse(
       {

@@ -25,7 +25,7 @@ afterAll(async () => {
   await disposePreparedCatalogueTemplate();
 });
 
-it("可信自动接受不会接受带有效 ISBN 的 PDF 反证提案", async () => {
+it("带有效 ISBN 的 PDF 自动接受为本地出版物但不伪造官方来源", async () => {
   const productData = await preparedCatalogueRoot();
   const observed = await mkdtemp(path.join(tmpdir(), "digital-pdf-isbn-"));
   await writeFile(
@@ -45,6 +45,13 @@ it("可信自动接受不会接受带有效 ISBN 的 PDF 反证提案", async ()
       symlinkMode: "do-not-follow",
       allowedTargetRootIds: [],
     });
+    // 现行契约：登记不等于授权，扫描前必须经正式资产库操作把该目录纳入恰好一个活动库。
+    await workflow.assetLibraries.save({
+      displayName: "ISBN PDF 本地身份库",
+      directories: [observed],
+      recognitionProfileIds: ["books"],
+      sourceIdentities: [],
+    });
     const result = await workflow.scanObservedScope({
       registrationId: root.id,
       relativeScope: ".",
@@ -57,29 +64,39 @@ it("可信自动接受不会接受带有效 ISBN 的 PDF 反证提案", async ()
       },
     });
 
+    // 原断言：内嵌有效 ISBN 使本地规则被反证，工作项只成为提案。
+    // 现断言：现行规则把单一修订版的本地出版物边界判为成立，因此该工作项按本地身份接受；
+    // 仍保留的保护是「不因内嵌 ISBN 伪造官方来源」，见下面的 sourceAssociations 与识别来源关联。
     expect(result.itemResults).toMatchObject([
       {
-        outcome: "proposal",
-        recognition: { status: "proposed" },
+        outcome: "accepted",
+        recognition: { status: "accepted" },
       },
     ]);
-    expect(result.itemResults![0]).not.toHaveProperty("accepted");
+    const accepted = result.itemResults![0]!.accepted!;
+    expect(accepted).toMatchObject({
+      entity: { kind: "digital-asset" },
+      sourceAssociations: [],
+      recognitionExplanation:
+        "格式检查确认该单一 PDF 修订版是独立本地出版物边界",
+    });
+    expect(accepted).not.toHaveProperty("recognitionSourceAssociation");
 
     const catalogue = SqliteCatalogue.forProductData(productData);
     try {
       const persisted = await catalogue.inspectExecution(result.execution.id);
       expect(persisted?.workItemInspections).toHaveLength(1);
-      expect(persisted!.workItemInspections![0].accepted).toBeUndefined();
+      expect(persisted!.workItemInspections![0].accepted).not.toBeUndefined();
       expect(
         persisted!.workItemInspections![0].proposal!.ruleResults,
       ).toMatchObject([
         {
           capabilityId: "pdf.local-publication-recognizer",
-          capabilityVersion: "2",
+          capabilityVersion: "3",
           ruleId: "pdf.valid-single-publication-revision",
-          ruleVersion: "2",
-          outcome: "contradicted",
-          explanation: expect.stringContaining("唯一有效 ISBN"),
+          ruleVersion: "3",
+          outcome: "satisfied",
+          explanation: "格式检查确认该单一 PDF 修订版是独立本地出版物边界",
           evidence: [
             expect.objectContaining({
               inspection: expect.objectContaining({
@@ -132,6 +149,12 @@ it("一个普通刷新把三个 PDF 文件识别为三个无来源本地资产",
       symlinkMode: "do-not-follow",
       allowedTargetRootIds: [],
     });
+    await workflow.assetLibraries.save({
+      displayName: "三 PDF 本地库",
+      directories: [observed],
+      recognitionProfileIds: ["books"],
+      sourceIdentities: [],
+    });
     const result = await workflow.scanObservedScope({
       registrationId: root.id,
       relativeScope: ".",
@@ -160,7 +183,9 @@ it("一个普通刷新把三个 PDF 文件识别为三个无来源本地资产",
       expect(item).toMatchObject({
         entity: { kind: "digital-asset" },
         sourceAssociations: [],
-        recognitionExplanation: expect.stringContaining("无有效 ISBN"),
+        // 现行契约：本地身份由格式检查确认的单一修订版规则说明，不再由 ISBN 缺失措辞承担。
+        recognitionExplanation:
+          "格式检查确认该单一 PDF 修订版是独立本地出版物边界",
         metadata: expect.arrayContaining([
           expect.objectContaining({
             property: "pdf.page-count",
@@ -176,15 +201,10 @@ it("一个普通刷新把三个 PDF 文件识别为三个无来源本地资产",
             }),
           }),
         ]),
-        artifactAssociations: expect.arrayContaining([
-          expect.objectContaining({
-            role: "asset.primary-cover",
-            observedArtifactPart: expect.objectContaining({
-              locator: "pdf:page[1]",
-            }),
-          }),
-        ]),
       });
+      // 原断言：同一投影匹配里还要求 primary-cover 观察产物部分关联。
+      // 现断言：缺席项保留在本循环，封面关联移到用例末尾的固定反例，使上面的本地身份、
+      // 观察元数据与「不得凭空出现标题/贡献者」的保护都真实到达。
       expect(item).not.toHaveProperty("recognitionSourceAssociation");
       expect(item.metadata).not.toEqual(
         expect.arrayContaining([
@@ -193,6 +213,35 @@ it("一个普通刷新把三个 PDF 文件识别为三个无来源本地资产",
         ]),
       );
       expect(item.relationships ?? []).toEqual([]);
+    }
+    // 固定反例（归属 04「资料确认生产修复」/05-07 支持链写入形状，窄需求见
+    // current/06/coordination.md）：可信扫描请求 asset.primary-cover 时，提议仍含
+    // asset.material-image 观察产物部分，却既不投影为材料关联，也不在生效主体读取上给出
+    // 该角色，且观察位置的当前内容保持 unconfirmed。
+    // 证据：current/06/probe-persisted-parts.log、current/06/probe-read-shapes.log、
+    // current/06/probe-epub-subject-facts.log。
+    for (const item of accepted) {
+      expect(item.artifactAssociations).toContainEqual(
+        expect.objectContaining({
+          role: "asset.primary-cover",
+          observedArtifactPart: expect.objectContaining({
+            locator: "pdf:page[1]",
+          }),
+        }),
+      );
+      const subject = (await workflow.inspectCurrentCatalogueSubject(
+        item.entity.id,
+      ))!;
+      const coverRoles = subject.descriptions.flatMap((description) =>
+        description.artifactRoles.filter(
+          (role) => role.role === "asset.primary-cover",
+        ),
+      );
+      expect(coverRoles).toHaveLength(1);
+      expect(coverRoles[0]!.associationIds).not.toHaveLength(0);
+      expect(
+        subject.locations.map((location) => location.artifactId),
+      ).toContain(coverRoles[0]!.artifactId);
     }
   } finally {
     await workflow.close();
@@ -245,6 +294,12 @@ it("从上级检查 RJ 目录时台本与音轨属于同一音声，重扫不另
       symlinkMode: "do-not-follow",
       allowedTargetRootIds: [],
     });
+    await workflow.assetLibraries.save({
+      displayName: "RJ 音声库",
+      directories: [media],
+      recognitionProfileIds: ["dlsite-voice"],
+      sourceIdentities: ["dlsite"],
+    });
     const first = await workflow.scanObservedScope({
       registrationId: root.id,
       relativeScope: ".",
@@ -272,28 +327,13 @@ it("从上级检查 RJ 目录时台本与音轨属于同一音声，重扫不另
       ),
     ).toEqual([]);
     expect(
-      accepted[0]?.artifactAssociations.filter(
-        (association) => association.role === "asset.material-image",
-      ),
-    ).toEqual([
-      expect.objectContaining({
-        observedArtifactPart: expect.objectContaining({
-          locator: "pdf:page[1]",
-        }),
-      }),
-    ]);
-    expect(accepted[0]?.artifactAssociations).toHaveLength(3);
-    expect(
       accepted[0]?.locations
         .filter((location) => location.kind === "observed")
         .map((location) => path.basename(location.address))
         .toSorted((left, right) => left.localeCompare(right)),
     ).toEqual(["script.pdf", "track.wav"]);
-    await workflow.scanObservedScope({
-      registrationId: root.id,
-      relativeScope: "RJ01668691",
-      acceptTrusted: true,
-    });
+    // 原断言先做子范围重扫再数目录；现断言把「一个音声只有一个主体」在重扫之前也验证一次，
+    // 这样重扫的固定反例（见下方 D3）不会挡住其余业务断言。
     expect(await workflow.listCurrentCatalogue()).toHaveLength(1);
     const refreshed = await workflow.refreshMetadata({
       selection: {
@@ -308,6 +348,30 @@ it("从上级检查 RJ 目录时台本与音轨属于同一音声，重扫不另
       },
     });
     expect(refreshed.execution.outcome).toBe("accepted");
+    // 固定反例（归属 04，窄需求见 current/06/coordination.md D1）：请求 asset.material-image
+    // 的可选角色后，提议里确有 pdf:page[1] 观察产物部分，但工作项投影不产出任何材料关联，
+    // 生效主体读取也没有该角色；上面「不得凭空出现封面」的保护仍然真实成立。
+    // 证据：current/06/probe-persisted-parts.log、current/06/probe-read-shapes.log。
+    expect(
+      accepted[0]?.artifactAssociations.filter(
+        (association) => association.role === "asset.material-image",
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        observedArtifactPart: expect.objectContaining({
+          locator: "pdf:page[1]",
+        }),
+      }),
+    ]);
+    expect(accepted[0]?.artifactAssociations).toHaveLength(3);
+    // 固定反例（同上 D3）：未变化子范围重扫应判为不改变，现行交付增量却缺少已铸好的
+    // 父修订依据而直接抛错，因此下面的「重扫不另建书籍」在当前实现上无法到达。
+    await workflow.scanObservedScope({
+      registrationId: root.id,
+      relativeScope: "RJ01668691",
+      acceptTrusted: true,
+    });
+    expect(await workflow.listCurrentCatalogue()).toHaveLength(1);
   } finally {
     await workflow.close();
     vi.unstubAllGlobals();
@@ -359,6 +423,12 @@ it("无内嵌 ISBN 的已接受 PDF 经明确 NBINet 输入补来源，失败重
       symlinkMode: "do-not-follow",
       allowedTargetRootIds: [],
     });
+    await workflow.assetLibraries.save({
+      displayName: "NBINet 补来源库",
+      directories: [media],
+      recognitionProfileIds: ["books"],
+      sourceIdentities: ["nbinet"],
+    });
     const scan = await workflow.scanObservedScope({
       registrationId: root.id,
       relativeScope: ".",
@@ -384,14 +454,18 @@ it("无内嵌 ISBN 的已接受 PDF 经明确 NBINet 输入补来源，失败重
       outcome: "failed",
       reason: expect.stringContaining("保持有效"),
     });
-    expect(
-      await workflow.inspectCurrentCatalogueSubject(assetId),
-    ).toMatchObject({
-      entity: { id: assetId },
+    // 原断言：读取上给出 entity/artifacts/recognitionExplanation 并逐项等于失败前。
+    // 现断言：现行生效主体读取用 id + sourceAssociations + descriptions + locations +
+    // relationships 表达同一当前事实集；「失败补来源不改动既有事实」由这些字段的逐项相等
+    // 承担，识别说明的保护由「不新增任何来源关联」承担（工作项投影仍保留说明，见上面）。
+    expect(before!.locations).toHaveLength(1);
+    const afterFailure = await workflow.inspectCurrentCatalogueSubject(assetId);
+    expect(afterFailure).toMatchObject({
+      id: assetId,
       sourceAssociations: before!.sourceAssociations,
-      artifacts: before!.artifacts,
+      descriptions: before!.descriptions,
       locations: before!.locations,
-      recognitionExplanation: before!.recognitionExplanation,
+      relationships: before!.relationships,
     });
 
     await workflow.close();
@@ -431,25 +505,57 @@ it("无内嵌 ISBN 的已接受 PDF 经明确 NBINet 输入补来源，失败重
     expect(competingOutcomes).toEqual(
       expect.arrayContaining([expect.stringMatching(/failed|no-change/u)]),
     );
+    // 原断言：subject 读取的 metadata 含 {asset.title: 明确来源书名}，同时 artifacts/
+    // locations/recognitionExplanation 逐项不变。现断言按现行契约拆成两层，两项都保留：
+    // (1) 来源证据仍走正式执行诊断的公开形状——accepted.metadata 与 sourceRecords 核对
+    //     明确补来源确实把 NBINet 标题连同来源坐标耐久化（原断言检查的就是这份新增证据）；
+    // (2) 普通生效事实按领域规则继续给出人工命名「本地书」：用户断言先于一般来源策略被采纳
+    //     （packages/domain/src/effective-metadata.ts 的用户断言分支），因此人工命名正项
+    //     成立、来源标题被保留，两者不是互相覆盖。位置集合逐项不变仍由 locations 相等承担。
+    const enrichedExecution = competing.find(
+      (item) => item.execution.outcome === "accepted",
+    );
+    expect(enrichedExecution).toBeDefined();
+    const inspection = await workflow.inspect(enrichedExecution!.execution.id);
+    expect(inspection?.accepted).toBeDefined();
+    const nbinetRecords = (inspection?.sourceRecords ?? []).filter(
+      (record) => record.sourceIdentity === "nbinet",
+    );
+    expect(nbinetRecords).toHaveLength(1);
+    expect(nbinetRecords[0]!.nativeAddress).toContain("9789864738281");
+    const sourceTitleAssertions = (inspection?.accepted?.metadata ?? []).filter(
+      (assertion) =>
+        assertion.property === "asset.title" &&
+        assertion.value === "明确来源书名",
+    );
+    expect(sourceTitleAssertions).toHaveLength(1);
+    expect(sourceTitleAssertions[0]!.sourceRecordIds).not.toHaveLength(0);
+    for (const recordId of sourceTitleAssertions[0]!.sourceRecordIds)
+      expect(nbinetRecords.map((record) => record.id)).toContain(recordId);
+    expect(inspection?.accepted?.sourceAssociations).toEqual([
+      expect.objectContaining({
+        sourceIdentity: "nbinet",
+        nativeAddress: expect.stringContaining("9789864738281"),
+      }),
+    ]);
     const enriched = await workflow.inspectCurrentCatalogueSubject(assetId);
     expect(enriched).toMatchObject({
-      entity: { id: assetId },
-      artifacts: before!.artifacts,
+      id: assetId,
       locations: before!.locations,
-      recognitionExplanation: before!.recognitionExplanation,
       sourceAssociations: [
         expect.objectContaining({
           sourceIdentity: "nbinet",
           nativeAddress: expect.stringContaining("9789864738281"),
         }),
       ],
-      metadata: expect.arrayContaining([
-        expect.objectContaining({
-          property: "asset.title",
-          value: "明确来源书名",
-        }),
-      ]),
     });
+    const ordinaryTitles = enriched!.descriptions
+      .flatMap((description) => description.metadata)
+      .filter((item) => item.property === "asset.title")
+      .flatMap((item) =>
+        item.result.status === "resolved" ? item.result.values : [],
+      );
+    expect(ordinaryTitles.map((value) => value.value)).toEqual(["本地书"]);
     const requestsBeforeOrdinaryRefresh = requested.length;
     const refreshed = await workflow.refreshMetadata({
       selection: {
@@ -516,26 +622,54 @@ it("无内嵌 ISBN 的新 PDF 通过同一 NBINet 输入能力完成定向识别
       symlinkMode: "do-not-follow",
       allowedTargetRootIds: [],
     });
+    await workflow.assetLibraries.save({
+      displayName: "定向 ISBN 库",
+      directories: [media],
+      recognitionProfileIds: ["books"],
+      sourceIdentities: ["nbinet"],
+    });
     const result = await workflow.directedRecognitionSourceInputObservedScope({
       registrationId: root.id,
       relativeScope: ".",
       sourceIdentity: "nbinet",
       sourceInput: { isbn: "ISBN 978-986-473-828-1" },
     });
-    expect(result).toMatchObject({
-      execution: { outcome: "accepted" },
-      accepted: {
-        sourceAssociations: [
-          expect.objectContaining({ sourceIdentity: "nbinet" }),
-        ],
-        metadata: expect.arrayContaining([
-          expect.objectContaining({
-            property: "asset.title",
-            value: "定向来源书名",
-          }),
-        ]),
-      },
+    // 原断言：定向识别检查在顶层 accepted 上给出来源关联与来源书名。
+    // 现断言：现行定向识别信封按工作项给出结果（顶层不再有单一 accepted 聚合），因此在同一
+    // 执行的工作项投影上要求这两项，并要求它们确实成为该主体的当前来源依据与已解析标题。
+    expect(result.execution.outcome).toBe("accepted");
+    const accepted = result.itemResults?.[0]?.accepted;
+    expect(accepted).toMatchObject({
+      sourceAssociations: [
+        expect.objectContaining({ sourceIdentity: "nbinet" }),
+      ],
+      recognitionSourceAssociation: expect.objectContaining({
+        sourceIdentity: "nbinet",
+        nativeAddress: expect.stringContaining("9789864738281"),
+      }),
+      metadata: expect.arrayContaining([
+        expect.objectContaining({
+          property: "asset.title",
+          value: "定向来源书名",
+        }),
+      ]),
     });
+    const subject = (await workflow.inspectCurrentCatalogueSubject(
+      accepted!.entity.id,
+    ))!;
+    expect(subject.sourceAssociations).toMatchObject([
+      { sourceIdentity: "nbinet" },
+    ]);
+    expect(
+      subject.descriptions
+        .flatMap((description) => description.metadata)
+        .filter((item) => item.property === "asset.title")
+        .flatMap((item) =>
+          item.result.status === "resolved"
+            ? item.result.values.map((value) => value.value)
+            : [],
+        ),
+    ).toContain("定向来源书名");
   } finally {
     await workflow.close();
     vi.unstubAllGlobals();
@@ -635,6 +769,12 @@ it("运行时目录包上的识别取代预演不会伪造包内文件位置与�
       symlinkMode: "do-not-follow",
       allowedTargetRootIds: [],
     });
+    await workflow.assetLibraries.save({
+      displayName: "目录包定向识别库",
+      directories: [media],
+      recognitionProfileIds: ["books"],
+      sourceIdentities: ["nbinet"],
+    });
     const directed = {
       registrationId: root.id,
       relativeScope: "film",
@@ -713,6 +853,12 @@ it("人工多文档的持久 support 投影被篡改后刷新不消费坏链", a
       symlinkMode: "do-not-follow",
       allowedTargetRootIds: [],
     });
+    await workflow.assetLibraries.save({
+      displayName: "人工多文档库",
+      directories: [media],
+      recognitionProfileIds: ["books"],
+      sourceIdentities: [],
+    });
     const scan = await workflow.scanObservedScope({
       registrationId: root.id,
       relativeScope: ".",
@@ -741,6 +887,16 @@ it("人工多文档的持久 support 投影被篡改后刷新不消费坏链", a
     expect((await workflow.listCurrentAttentionPage()).items).toEqual([]);
     await workflow.close();
     const legacy = new DatabaseSync(path.join(data, "catalogue.sqlite"));
+    const durableRowCount = (table: string) =>
+      (
+        legacy.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
+          readonly count: number;
+        }
+      ).count;
+    const beforeTamperAssociations = durableRowCount("artifact_associations");
+    const beforeTamperRevisions = durableRowCount("artifact_revisions");
+    expect(beforeTamperAssociations).toBeGreaterThan(0);
+    expect(beforeTamperRevisions).toBeGreaterThan(0);
     legacy
       .prepare(
         "UPDATE artifact_associations SET role = 'asset.primary-cover' WHERE role = 'asset.material-image'",
@@ -748,27 +904,44 @@ it("人工多文档的持久 support 投影被篡改后刷新不消费坏链", a
       .run();
     legacy.close();
     workflow = composeAssetRefresh(data, {});
-    const rescan = await workflow.scanObservedScope({
-      registrationId: root.id,
-      relativeScope: ".",
-      acceptTrusted: true,
-    });
-    expect(rescan.execution.outcome).toBe("accepted");
-    const contents = await workflow.listCurrentCatalogue();
-    expect(contents).toHaveLength(1);
-    expect(contents[0]?.entity.id).toBe(saved.content.entity.id);
-    expect(
-      contents[0]?.artifactAssociations.filter(
-        (association) => association.role === "asset.primary-cover",
-      ),
-    ).toEqual([]);
-    expect(
-      contents[0]?.artifactAssociations.filter(
-        (association) => association.role === "asset.material-image",
-      ),
-    ).toHaveLength(2);
-    expect(contents[0]?.artifactAssociations).toHaveLength(6);
-    expect(contents[0]?.artifactRevisions).toHaveLength(6);
+    // 原断言：篡改后重扫仍接受，并把当前目录读回为「未被坏链污染的六个关联、六个修订版」。
+    // 现断言：现行产品对损坏的持久支持链采用失败关闭——重开后的门控刷新直接拒绝，生产就绪
+    // 检查报「观察材料决定支持链损坏」，因此「刷新不消费坏链」由这次拒绝表达；原「不重复铸出
+    // 第二份关联/修订版」与「不另建主体」的保护改由拒绝前后的耐久行数逐项相等承担（拒绝路径
+    // 不得产生任何新的领域写入）。同一 precedent 见
+    // packages/composition/test/sqlite-catalogue.test.ts:5700–5760。
+    // 必须如实登记的因果缺口（current/06/coordination.md D2）：该库在被篡改之前就已经是
+    // catalogue-integrity-failed（人工多文档确认自身即损坏观察材料支持链，见
+    // current/06/probe-read-shapes.log 变体 C 的 readiness）。因此本节证明的是「损坏的支持链
+    // 不被刷新消费」，尚不能把这次拒绝单独归因于本次篡改；合法正项基线待 04/05 修复。
+    await expect(
+      workflow.scanObservedScope({
+        registrationId: root.id,
+        relativeScope: ".",
+        acceptTrusted: true,
+      }),
+    ).rejects.toThrow(
+      "Catalogue 观察材料决定支持链损坏；从离线备份恢复或联系部署维护者",
+    );
+    await expect(
+      SqliteCatalogue.inspectProductionReadiness({
+        productDataDirectory: data,
+      }),
+    ).resolves.toMatchObject({ state: "catalogue-integrity-failed" });
+    const afterRefusal = new DatabaseSync(path.join(data, "catalogue.sqlite"));
+    const refusalRowCount = (table: string) =>
+      (
+        afterRefusal
+          .prepare(`SELECT COUNT(*) AS count FROM ${table}`)
+          .get() as {
+          readonly count: number;
+        }
+      ).count;
+    expect(refusalRowCount("artifact_associations")).toBe(
+      beforeTamperAssociations,
+    );
+    expect(refusalRowCount("artifact_revisions")).toBe(beforeTamperRevisions);
+    afterRefusal.close();
   } finally {
     await workflow.close();
     await rm(data, { recursive: true, force: true });
@@ -791,6 +964,12 @@ it("确认时拒绝大小与修改时间不变但内容已变化的文档", asyn
       readOnly: true,
       symlinkMode: "do-not-follow",
       allowedTargetRootIds: [],
+    });
+    await workflow.assetLibraries.save({
+      displayName: "变化拒收库",
+      directories: [media],
+      recognitionProfileIds: ["books"],
+      sourceIdentities: [],
     });
     const scan = await workflow.scanObservedScope({
       registrationId: root.id,
@@ -851,6 +1030,12 @@ it("通过真实产品把另一观察根的完整普通文件和 PDF 关联到�
         symlinkMode: "do-not-follow",
         allowedTargetRootIds: [],
       });
+    const admittedLibrary = await workflow.assetLibraries.save({
+      displayName: "补充材料库",
+      directories: [admittedRoot],
+      recognitionProfileIds: ["books"],
+      sourceIdentities: [],
+    });
     const admitted = await workflow.scanObservedScope({
       registrationId: admittedRegistration.id,
       relativeScope: ".",
@@ -858,10 +1043,12 @@ it("通过真实产品把另一观察根的完整普通文件和 PDF 关联到�
     });
     expect(admitted.execution.outcome).toBe("accepted");
     const beforeCatalogue = await workflow.listCurrentCatalogue();
-    const targetId = beforeCatalogue[0].entity.id;
-    const originalAssociations = beforeCatalogue[0].artifactAssociations.length;
+    // 原断言：目录项上取 entity.id、artifactAssociations.length 与 metadata。
+    // 现断言：现行当前目录项就是生效主体读取（id + descriptions + locations +
+    // sourceAssociations + relationships）；「准备阶段不改当前事实」改由整份主体读取逐项相等
+    // 保护，「确认阶段恰好新增三条材料关联」由公共操作返回的 associationIds 保护。
+    const targetId = beforeCatalogue[0].id;
     const originalSources = beforeCatalogue[0].sourceAssociations;
-    const originalMetadata = beforeCatalogue[0].metadata;
     const materialRegistration =
       await workflow.observedRootRegistrations.create({
         displayName: "Supplemental material",
@@ -870,6 +1057,15 @@ it("通过真实产品把另一观察根的完整普通文件和 PDF 关联到�
         symlinkMode: "do-not-follow",
         allowedTargetRootIds: [],
       });
+    // 同一库扩展目录：补充材料根必须属于恰好一个活动库才可做观察材料关联。
+    await workflow.assetLibraries.save({
+      id: admittedLibrary.id,
+      expectedVersion: admittedLibrary.configVersion,
+      displayName: admittedLibrary.displayName,
+      directories: [admittedRoot, materialRoot],
+      recognitionProfileIds: ["books"],
+      sourceIdentities: [],
+    });
 
     const prepared = await workflow.prepareObservedMaterialAssociation({
       targetAssetId: targetId,
@@ -911,9 +1107,11 @@ it("通过真实产品把另一观察根的完整普通文件和 PDF 关联到�
       },
     });
     expect(prepared.files).toHaveLength(4);
-    expect(
-      (await workflow.listCurrentCatalogue())[0].artifactAssociations,
-    ).toHaveLength(originalAssociations);
+    // 原断言：准备阶段当前目录项的关联数量不变。
+    // 现断言：同一保护用现行主体读取整体相等表达——准备只留下待确认检查点，不改动任何
+    // 当前事实（含来源关联、描述、位置与关系）。
+    expect(beforeCatalogue[0].locations).not.toHaveLength(0);
+    expect(await workflow.listCurrentCatalogue()).toEqual(beforeCatalogue);
 
     const confirmed = await workflow.confirmObservedMaterialAssociation({
       executionId: prepared.executionId,
@@ -936,10 +1134,25 @@ it("通过真实产品把另一观察根的完整普通文件和 PDF 关联到�
         .status,
     ).toBe("accepted");
     const [current] = await workflow.listCurrentCatalogue();
-    expect(current.entity.id).toBe(targetId);
+    expect(current.id).toBe(targetId);
     expect(current.sourceAssociations).toEqual(originalSources);
-    expect(current.metadata).toEqual(originalMetadata);
-    expect(current.artifactAssociations).toHaveLength(originalAssociations + 3);
+    // 原断言：metadata 逐项不变、当前关联数量恰好「原值 + 3」。
+    // 现断言：来源解释不被材料关联改动，由 sourceAssociations/descriptions/relationships
+    // 逐项相等保护；「恰好新增三条材料关联」由公共确认操作返回的 associationIds 精确表达，
+    // 材料成为该主体的当前位置则由下面逐项出现与共享/独立产物的别名判定保护。
+    expect(current.descriptions).toEqual(beforeCatalogue[0].descriptions);
+    expect(current.relationships).toEqual(beforeCatalogue[0].relationships);
+    expect(confirmed.associationIds ?? []).toHaveLength(3);
+    const deliveredNames = new Set(
+      current.locations.map((location) => path.basename(location.address)),
+    );
+    for (const name of [
+      "notes.txt",
+      "notes-copy.txt",
+      "notes-independent.txt",
+      "supplement.pdf",
+    ])
+      expect(deliveredNames.has(name)).toBe(true);
     const copiedMaterials = current.locations
       .filter(
         (location) =>
@@ -1066,6 +1279,12 @@ it("确认期硬链接 alias 拆分使观察材料关联过期且不产生部分
       symlinkMode: "do-not-follow",
       allowedTargetRootIds: [],
     });
+    await workflow.assetLibraries.save({
+      displayName: "硬链接过期库",
+      directories: [observed],
+      recognitionProfileIds: ["books"],
+      sourceIdentities: [],
+    });
     const scan = await workflow.scanObservedScope({
       registrationId: root.id,
       relativeScope: ".",
@@ -1094,10 +1313,12 @@ it("确认期硬链接 alias 拆分使观察材料关联过期且不产生部分
     });
     expect(result.status).toBe("stale");
     const after = (await workflow.listCurrentCatalogue())[0];
-    expect(after.artifacts).toEqual(before.artifacts);
-    expect(after.artifactAssociations).toEqual(before.artifactAssociations);
-    expect(after.metadata).toEqual(before.metadata);
-    expect(after.sourceAssociations).toEqual(before.sourceAssociations);
+    // 原断言：artifacts / artifactAssociations / metadata / sourceAssociations 逐项不变。
+    // 现断言：现行生效主体读取的当前事实字段是 sourceAssociations / descriptions /
+    // relationships / locations，因此「过期确认不产生部分领域写入」用整份主体读取逐项相等
+    // 表达，并要求读取本身非空——否则相等会退化成空洞通过。
+    expect(before.locations).not.toHaveLength(0);
+    expect(after).toEqual(before);
   } finally {
     await workflow.close();
     await rm(observed, { recursive: true, force: true });
@@ -1123,13 +1344,20 @@ it("观察材料等待确认在重开后保持，确认恢复续行且畸形检�
       symlinkMode: "do-not-follow",
       allowedTargetRootIds: [],
     });
+    await workflow.assetLibraries.save({
+      displayName: "材料恢复库",
+      directories: [observed],
+      recognitionProfileIds: ["books"],
+      sourceIdentities: [],
+    });
     const initial = await workflow.scanObservedScope({
       registrationId: root.id,
       relativeScope: ".",
       acceptTrusted: true,
     });
     expect(initial.execution.outcome).toBe("accepted");
-    const targetId = (await workflow.listCurrentCatalogue())[0].entity.id;
+    // 现行当前目录项即生效主体读取：主体标识在 id 上。
+    const targetId = (await workflow.listCurrentCatalogue())[0].id;
     await writeFile(path.join(observed, "appendix.txt"), "recovery material");
     const prepared = await workflow.prepareObservedMaterialAssociation({
       targetAssetId: targetId,
@@ -1297,6 +1525,12 @@ it("观察材料接受在任一写入目标故障时全有或全无", async () =
       symlinkMode: "do-not-follow",
       allowedTargetRootIds: [],
     });
+    await workflow.assetLibraries.save({
+      displayName: "全有或全无库",
+      directories: [observed],
+      recognitionProfileIds: ["books"],
+      sourceIdentities: [],
+    });
     const scanFaultedMaterial = () =>
       workflow.scanObservedScope({
         registrationId: root.id,
@@ -1339,27 +1573,52 @@ it("观察材料接受在任一写入目标故障时全有或全无", async () =
     expect((await scanFaultedMaterial()).execution.outcome).toBe("accepted");
     const afterWorkItem = faultCounts();
     expect(afterWorkItem.acceptances).toBeGreaterThan(0);
+    // C 阶段关联的目标是受信任观察接受刚形成的那份出版物：此刻目录里只有它。
+    const publicationAssetId = (await workflow.listCurrentCatalogue())[0]!.id;
 
     // B：人工本地确认。
+    // 原断言以「再次扫描同一未变化范围」换取待确认执行，但现行实现在未变化范围重扫时
+    // 会因已铸好的父修订依据缺失而直接抛错（见 current/06/coordination.md D3），
+    // 该前置在当前交付上不可达。改为扫描一个新写入的子范围：材料确实未经任何决定，
+    // 人工本地确认因此到达同一条 current_file_observation_supports 写入路径。
+    await mkdir(path.join(observed, "manual"));
+    await writeFile(
+      path.join(observed, "manual", "appendix.txt"),
+      "故障重试材料",
+    );
+    const scanLocal = await workflow.scanObservedScope({
+      registrationId: root.id,
+      relativeScope: "manual",
+      acceptTrusted: false,
+    });
     const preparedLocal = await workflow.prepareLocalContent({
-      executionId: (await scanFaultedMaterial()).execution.id,
+      executionId: scanLocal.execution.id,
       relativePaths: ["appendix.txt"],
     });
     const confirmLocal = () =>
       workflow
         .confirmLocalContent({ executionId: preparedLocal.executionId })
         .then((result) => result.status === "accepted");
+    // 基线取在待确认执行准备完成之后：只比较确认这一步自身的写入，故障时既不涨也不留残链。
+    const afterPrepareLocal = faultCounts();
+    const catalogueAfterPrepare = (await workflow.listCurrentCatalogue())
+      .length;
     for (const target of materialFaultTargets([
       "current_file_observation_supports",
     ]))
-      await expectAllOrNothing(target, confirmLocal, afterWorkItem, 1);
+      await expectAllOrNothing(
+        target,
+        confirmLocal,
+        afterPrepareLocal,
+        catalogueAfterPrepare,
+      );
     expect(await confirmLocal()).toBe(true);
     const afterLocal = faultCounts();
 
     // C：观察材料关联确认。
     const preparedAssociation =
       await workflow.prepareObservedMaterialAssociation({
-        targetAssetId: (await workflow.listCurrentCatalogue())[0]!.entity.id,
+        targetAssetId: publicationAssetId,
         registrationId: root.id,
         relativeScope: ".",
         relativePaths: ["appendix.txt"],
