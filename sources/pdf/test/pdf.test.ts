@@ -158,90 +158,88 @@ describe("PDF 本地格式能力", () => {
   });
 
   it("对精确单一修订版按 0／1／多 ISBN 形成可审计规则结果", async () => {
-    const bytes = syntheticPdf({ author: "Document Author", pageCount: 1 });
     const capabilities = createPdfRecognitionCapabilities();
-    const [evidence] = await capabilities.formatInspectors[0].inspect({
-      observedArtifactReference: "local.pdf",
-      byteSource: byteSource(bytes, "local.pdf"),
-    });
-    const inspection = evidence.inspection!;
-    const context = {
-      basis: {
-        kind: "observed-evidence" as const,
-        producer: evidence.producer,
-        artifactRevisions: [
-          {
-            observedArtifactReference: inspection.observedArtifactReference,
-            blob: inspection.revision,
-            producer: evidence.producer,
-          },
-        ],
-      },
-      evidence: [evidence],
-    };
-    const recognizer = capabilities.recognizers[0];
+    const inspector = capabilities.formatInspectors[0]!;
+    const recognizer = capabilities.recognizers[0]!;
 
-    expect(recognizer.canRecognize(context)).toBe(true);
-    expect(recognizer.recognize(context).ruleResults).toMatchObject([
-      {
-        capabilityId: "pdf.local-publication-recognizer",
-        capabilityVersion: "2",
-        ruleId: "pdf.valid-single-publication-revision",
-        ruleVersion: "2",
-        outcome: "satisfied",
-      },
-    ]);
-    expect(
-      recognizer.recognize({
-        ...context,
-        evidence: [
-          {
-            ...evidence,
-            inspection: {
-              ...inspection,
-              identifiers: [
-                {
-                  scheme: "isbn-13",
-                  value: "9784049131291",
-                  locators: ["pdf:xmp/dc:identifier[1]"],
-                },
-              ],
+    async function contextFor(isbns: readonly string[]) {
+      const bytes = syntheticPdf({
+        author: "Document Author",
+        pageCount: 1,
+        isbns,
+      });
+      const [evidence] = await inspector.inspect({
+        observedArtifactReference: "local.pdf",
+        byteSource: byteSource(bytes, "local.pdf"),
+      });
+      const inspection = evidence!.inspection!;
+      return {
+        basis: {
+          kind: "observed-evidence" as const,
+          producer: evidence!.producer,
+          artifactRevisions: [
+            {
+              observedArtifactReference: inspection.observedArtifactReference,
+              blob: inspection.revision,
+              producer: evidence!.producer,
             },
-          },
-        ],
-      }).ruleResults,
-    ).toMatchObject([
-      {
-        ...trustedRuleCoordinate(),
-        outcome: "contradicted",
-        evidence: expect.any(Array),
-      },
-    ]);
+          ],
+        },
+        evidence: [evidence!],
+      };
+    }
+
+    // 现行 v3 契约：识别规则只声明「格式检查确认的单一修订版即独立本地出版物边界」，
+    // ISBN 的条数与冲突解释留在格式检查层逐载体保留，不在此任选或改写（见下一条用例）。
+    for (const isbns of [
+      [] as string[],
+      ["9784049131291"],
+      ["9784049131291", "9789577435064"],
+    ]) {
+      const context = await contextFor(isbns);
+      expect(recognizer.canRecognize(context)).toBe(true);
+      expect(recognizer.recognize(context).ruleResults).toMatchObject([
+        {
+          ...trustedRuleCoordinate(),
+          outcome: "satisfied",
+          evidence: context.evidence,
+        },
+      ]);
+    }
+
+    const single = await contextFor(["9784049131291"]);
     expect(
-      recognizer.recognize({
-        ...context,
-        evidence: [
-          {
-            ...evidence,
-            inspection: {
-              ...inspection,
-              identifiers: [
-                {
-                  scheme: "isbn-13",
-                  value: "9784049131291",
-                  locators: ["pdf:xmp/dc:identifier[1]"],
-                },
-                {
-                  scheme: "isbn-13",
-                  value: "9789577435064",
-                  locators: ["pdf:xmp/dc:identifier[2]"],
-                },
-              ],
-            },
+      recognizer.canRecognize({
+        ...single,
+        evidence: [single.evidence[0]!, single.evidence[0]!],
+      }),
+    ).toBe(false);
+    expect(
+      recognizer.canRecognize({
+        ...single,
+        basis: {
+          ...single.basis,
+          producer: {
+            ...single.basis.producer,
+            implementationVersion: "1",
+            capabilityVersion: "1",
           },
-        ],
-      }).ruleResults,
-    ).toMatchObject([{ ...trustedRuleCoordinate(), outcome: "contradicted" }]);
+        },
+      }),
+    ).toBe(false);
+    expect(() =>
+      recognizer.recognize({
+        ...single,
+        basis: {
+          ...single.basis,
+          producer: {
+            ...single.basis.producer,
+            implementationVersion: "1",
+            capabilityVersion: "1",
+          },
+        },
+      }),
+    ).toThrow("PDF 本地识别只接受格式检查确认的单一出版物修订版");
   });
 
   it("只从完整 XMP carrier 读取有效 ISBN，并在 Title 冲突时不任选", async () => {
@@ -473,9 +471,9 @@ function byteSource(bytes: Uint8Array, logicalLocation: string) {
 function trustedRuleCoordinate() {
   return {
     capabilityId: "pdf.local-publication-recognizer",
-    capabilityVersion: "2",
+    capabilityVersion: "3",
     ruleId: "pdf.valid-single-publication-revision",
-    ruleVersion: "2",
+    ruleVersion: "3",
   } as const;
 }
 

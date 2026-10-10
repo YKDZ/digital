@@ -565,8 +565,27 @@ describe("EPUB publication inspection", () => {
         },
       ],
     });
-    expect(recognizer.canRecognize(observedContext(withIsbn))).toBe(false);
-    expect(recognizer.canRecognize(observedContext(conflicting))).toBe(false);
+    expect(recognizer.canRecognize(observedContext(withIsbn))).toBe(true);
+    expect(recognizer.canRecognize(observedContext(conflicting))).toBe(true);
+    // 现行契约：可解析的单一修订版就建立本地出版物边界，ISBN 只是后续来源补充证据；
+    // 官方 ISBN 的取舍仍由检查层决定（见“explains invalid and conflicting ISBN
+    // declarations without choosing one”），本地提案不携带任何外部身份。
+    for (const isbnContext of [
+      observedContext(withIsbn),
+      observedContext(conflicting),
+    ]) {
+      const proposal = recognizer.recognize(isbnContext);
+      expect(proposal.ruleResults).toEqual([
+        expect.objectContaining({
+          ...trustedEpubLocalPublicationRule,
+          outcome: "satisfied",
+        }),
+      ]);
+      expect(
+        "identities" in proposal ||
+          proposal.ruleResults.some((rule) => "identities" in rule),
+      ).toBe(false);
+    }
     for (const forged of forgedCoordinates(noIsbn.producer)) {
       expect(
         recognizer.canRecognize({

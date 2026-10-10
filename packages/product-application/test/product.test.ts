@@ -10,24 +10,27 @@ it("产品只信任精确 EPUB 本地出版物规则坐标", () => {
   const policy = curatedInitialRecognitionPolicy();
   const result = {
     capabilityId: "epub.local-publication-recognizer",
-    capabilityVersion: "2",
+    capabilityVersion: "3",
     ruleId: "epub.valid-single-publication-revision",
-    ruleVersion: "2",
+    ruleVersion: "3",
     outcome: "satisfied" as const,
     explanation: "synthetic EPUB",
     evidence: [],
   };
 
   expect(policy.trustedRuleCoordinates).toContain(
-    "epub.local-publication-recognizer@2/epub.valid-single-publication-revision@2",
+    "epub.local-publication-recognizer@3/epub.valid-single-publication-revision@3",
   );
   expect(policy.accepts(result)).toBe(true);
   expect(policy.accepts({ ...result, ruleVersion: "1" })).toBe(false);
-  expect(policy.accepts({ ...result, capabilityVersion: "1" })).toBe(false);
+  expect(policy.accepts({ ...result, ruleVersion: "2" })).toBe(false);
+  expect(policy.accepts({ ...result, capabilityVersion: "2" })).toBe(false);
   const nbinet = {
     ...result,
     capabilityId: "nbinet.exact-isbn-recognizer",
+    capabilityVersion: "3",
     ruleId: "embedded-isbn-in-exact-official-record",
+    ruleVersion: "3",
   };
   expect(policy.accepts(nbinet)).toBe(true);
   expect(
@@ -40,25 +43,27 @@ it("产品只信任精确 EPUB 本地出版物规则坐标", () => {
   expect(policy.accepts({ ...nbinet, capabilityVersion: "1" })).toBe(false);
 });
 
-it("产品显式采用 PDF v2 规则坐标且不继承 v1 信任", () => {
+it("产品显式采用 PDF v3 规则坐标且不继承 v2/v1 信任", () => {
   const policy = curatedInitialRecognitionPolicy();
   const result = {
     capabilityId: "pdf.local-publication-recognizer",
-    capabilityVersion: "2",
+    capabilityVersion: "3",
     ruleId: "pdf.valid-single-publication-revision",
-    ruleVersion: "2",
+    ruleVersion: "3",
     outcome: "satisfied" as const,
     explanation: "synthetic PDF",
     evidence: [],
   };
 
   expect(policy.trustedRuleCoordinates).toContain(
-    "pdf.local-publication-recognizer@2/pdf.valid-single-publication-revision@2",
+    "pdf.local-publication-recognizer@3/pdf.valid-single-publication-revision@3",
   );
-  expect(policy.version).toBe("curated-initial-sources/7");
+  expect(policy.version).toBe("curated-initial-sources/8");
   expect(policy.accepts(result)).toBe(true);
   expect(policy.accepts({ ...result, ruleVersion: "1" })).toBe(false);
+  expect(policy.accepts({ ...result, ruleVersion: "2" })).toBe(false);
   expect(policy.accepts({ ...result, capabilityVersion: "1" })).toBe(false);
+  expect(policy.accepts({ ...result, capabilityVersion: "2" })).toBe(false);
   expect(
     workflowCompatibilityCanReuse(
       {

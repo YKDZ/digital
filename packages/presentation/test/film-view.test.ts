@@ -5,17 +5,28 @@ import {
   informationRequirementForAssetView,
   projectAssetView,
 } from "../src/index";
+import {
+  entityDescription,
+  relatedEntity,
+  viewFacts,
+  viewLocation,
+  viewRelationship,
+} from "./view-facts.ts";
 
 describe("Film View", () => {
   it("requests the neutral facts consumed by the formal film presentation", () => {
     expect(
-      informationRequirementForAssetView({
-        sourceAssociation: {
-          sourceIdentity: "tmdb",
-          nativeAddress: "https://www.themoviedb.org/movie/209764",
-        },
-        metadata: [],
-      }),
+      informationRequirementForAssetView(
+        viewFacts({
+          id: "film-209764",
+          sourceAssociations: [
+            {
+              sourceIdentity: "tmdb",
+              nativeAddress: "https://www.themoviedb.org/movie/209764",
+            },
+          ],
+        }),
+      ),
     ).toBe(filmViewInformationRequirement);
     expect(filmViewInformationRequirement.metadata).toEqual(
       expect.arrayContaining([
@@ -29,81 +40,88 @@ describe("Film View", () => {
   });
 
   it("selects a film component from its accepted source association and projects display roles", () => {
-    const view = projectAssetView({
-      id: "film-209764",
-      primaryCoverArtifactId: "poster",
-      sourceAssociations: [
-        {
+    const view = projectAssetView(
+      viewFacts({
+        id: "film-209764",
+        recognitionSourceAssociation: {
           sourceIdentity: "tmdb",
           nativeAddress: "https://www.themoviedb.org/movie/209764",
         },
-        {
-          sourceIdentity: "omdb",
-          nativeAddress: "omdb:imdb:tt2990738",
-        },
-      ],
-      sourceAssociation: {
-        sourceIdentity: "tmdb",
-        nativeAddress: "https://www.themoviedb.org/movie/209764",
-      },
-      metadata: [
-        { property: "asset.title", value: "恐怖直播" },
-        { property: "asset.introduction", value: "一场无法停止的直播。" },
-        { property: "asset.release-date", value: "2013-07-31" },
-        { property: "asset.runtime-minutes", value: "97" },
-        { property: "asset.genre", value: "惊悚" },
-        { property: "asset.genre", value: "犯罪" },
-        { property: "rating.imdb", value: "7.1/10" },
-        { property: "rating.rotten-tomatoes", value: "80%" },
-        { property: "asset.awards", value: "4 wins & 13 nominations" },
-        { property: "asset.box-office", value: "$4,133" },
-      ],
-      currentRelatedEntities: [
-        {
-          id: "director",
-          label: "金秉祐",
-          kind: { status: "ordinary" },
-        },
-        {
-          id: "cast-1",
-          label: "河正宇",
-          kind: { status: "ordinary" },
-        },
-        {
-          id: "cast-2",
-          label: "李璟荣",
-          kind: { status: "ordinary" },
-        },
-      ],
-      relationships: [
-        {
-          participants: [{ entityId: "director", role: "director" }],
-          type: "asset.contribution",
-        },
-        {
-          participants: [{ entityId: "cast-1", role: "cast" }],
-          type: "asset.contribution",
-        },
-        {
-          participants: [{ entityId: "cast-2", role: "cast" }],
-          type: "asset.contribution",
-        },
-      ],
-      artifactAssociations: [
-        {
-          target: { kind: "entity", entityId: "film-209764" },
-          artifactId: "poster",
-          role: "asset.primary-cover",
-        },
-      ],
-      locations: [
-        {
-          artifactId: "poster",
-          kind: "managed",
-          address: "/managed/poster.jpg",
-        },
-      ],
-    });
+        sourceAssociations: [
+          {
+            sourceIdentity: "tmdb",
+            nativeAddress: "https://www.themoviedb.org/movie/209764",
+          },
+          {
+            sourceIdentity: "omdb",
+            nativeAddress: "omdb:imdb:tt2990738",
+          },
+        ],
+        descriptions: [
+          entityDescription(
+            "film-209764",
+            [
+              ["asset.title", "恐怖直播"],
+              ["asset.introduction", "一场无法停止的直播。"],
+              ["asset.release-date", "2013-07-31"],
+              ["asset.runtime-minutes", "97"],
+              ["asset.genre", "惊悚"],
+              ["asset.genre", "犯罪"],
+              ["rating.imdb", "7.1/10"],
+              ["rating.rotten-tomatoes", "80%"],
+              ["asset.awards", "4 wins & 13 nominations"],
+              ["asset.box-office", "$4,133"],
+            ],
+            [["asset.primary-cover", "poster", "/managed/poster.jpg"]],
+          ),
+        ],
+        relatedEntities: [
+          relatedEntity({
+            id: "director",
+            label: "金秉祐",
+            sourceIdentity: "tmdb",
+            identityNamespace: "tmdb.person",
+            sourceKey: "director",
+          }),
+          relatedEntity({
+            id: "cast-1",
+            label: "河正宇",
+            sourceIdentity: "tmdb",
+            identityNamespace: "tmdb.person",
+            sourceKey: "cast-1",
+          }),
+          relatedEntity({
+            id: "cast-2",
+            label: "李璟荣",
+            sourceIdentity: "tmdb",
+            identityNamespace: "tmdb.person",
+            sourceKey: "cast-2",
+          }),
+        ],
+        relationships: [
+          viewRelationship("contribution-director", "asset.contribution", [
+            ["film-209764", "asset"],
+            ["director", "director"],
+          ]),
+          viewRelationship("contribution-cast-1", "asset.contribution", [
+            ["film-209764", "asset"],
+            ["cast-1", "cast"],
+          ]),
+          viewRelationship("contribution-cast-2", "asset.contribution", [
+            ["film-209764", "asset"],
+            ["cast-2", "cast"],
+          ]),
+        ],
+        locations: [
+          viewLocation({
+            id: "poster-location",
+            artifactId: "poster",
+            kind: "managed",
+            address: "/managed/poster.jpg",
+          }),
+        ],
+      }),
+    );
 
     expect(view).toMatchObject({
       cardComponent: "film",
