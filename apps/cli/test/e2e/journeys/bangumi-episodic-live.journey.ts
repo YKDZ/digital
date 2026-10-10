@@ -650,22 +650,17 @@ async function seedDisposableDigitalConnections(
       "Bangumi live journey Digital OAuth connection is unavailable",
     );
   }
-  // 这是把 Digital 自身授权短暂复制到两个一次性产品数据根中，每个来源/分发旅程各一个。
-  // 它随 `context.workDir` 一起删除，且绝不导入其他产品的 OAuth 导出内容。
-  await Promise.all(
-    ["bloom", "frieren"].map(async (name) => {
-      const privateDirectory = path.join(
-        context.workDir,
-        name,
-        "private-source-connections",
-      );
-      await mkdir(privateDirectory, { recursive: true, mode: 0o700 });
-      await chmod(privateDirectory, 0o700);
-      const destination = path.join(privateDirectory, "bangumi-oauth.json");
-      await copyFile(source, destination);
-      await chmod(destination, 0o600);
-    }),
+  // 复制到本次场景环境实际交给正式 CLI 的产品数据根：产品的来源连接按该根解析，
+  // 复制到其他位置的真实采集一律读不到授权。它随该世代一起被停止、保留或删除。
+  const privateDirectory = path.join(
+    context.productDataDirectory,
+    "private-source-connections",
   );
+  await mkdir(privateDirectory, { recursive: true, mode: 0o700 });
+  await chmod(privateDirectory, 0o700);
+  const destination = path.join(privateDirectory, "bangumi-oauth.json");
+  await copyFile(source, destination);
+  await chmod(destination, 0o600);
 }
 
 function corpusRoot(context: Parameters<CliJourney["setup"]>[0]): string {
@@ -782,6 +777,7 @@ function assertEpisodeRefresh(
 
 const journey: CliJourney = {
   name: "bangumi-episodic-live",
+  source: { mode: "real" },
   modes: ["source", "distribution"],
   async setup(context) {
     await seedDisposableDigitalConnections(context);
@@ -808,13 +804,11 @@ const journey: CliJourney = {
   },
   commands(context) {
     const state = currentState(context);
-    const env = (name: string) => ({
-      DIGITAL_PRODUCT_DATA: path.join(context.workDir, name),
-    });
+    // 产品数据根属于本次场景环境：旅程不再声明 DIGITAL_PRODUCT_DATA，正式 CLI 一律
+    // 按环境记录的世界运行，读取同一份来源连接。
     const scan = (
       rootResultIndex: number,
       name: string,
-      data: string,
       haltOnFailure = false,
     ) => ({
       name,
@@ -827,7 +821,6 @@ const journey: CliJourney = {
         "asset.primary-cover",
         "--json",
       ],
-      env: env(data),
       ...(haltOnFailure ? { haltOnFailure: true as const } : {}),
     });
     return [
@@ -840,7 +833,6 @@ const journey: CliJourney = {
           state.roots[0]!.directory,
           "--json",
         ],
-        env: env("bloom"),
         haltOnFailure: true,
       },
       {
@@ -852,11 +844,10 @@ const journey: CliJourney = {
           state.roots[1]!.directory,
           "--json",
         ],
-        env: env("frieren"),
         haltOnFailure: true,
       },
-      scan(0, "live accept Bloom", "bloom", true),
-      scan(0, "live no-change Bloom after SQLite reopen", "bloom", true),
+      scan(0, "live accept Bloom", true),
+      scan(0, "live no-change Bloom after SQLite reopen", true),
       {
         name: "live metadata refresh Bloom episode",
         args: (results) => [
@@ -867,11 +858,10 @@ const journey: CliJourney = {
           ),
           "--json",
         ],
-        env: env("bloom"),
         haltOnFailure: true,
       },
-      scan(1, "live accept Frieren", "frieren"),
-      scan(1, "live no-change Frieren after SQLite reopen", "frieren", true),
+      scan(1, "live accept Frieren"),
+      scan(1, "live no-change Frieren after SQLite reopen", true),
     ];
   },
   async assertions({ context, results: allResults }) {

@@ -144,7 +144,14 @@ async function syntheticJourney(
     }),
   );
 
-  const context = { mode: "source", packageRoot, workDir } as const;
+  const context = {
+    mode: "source",
+    packageRoot,
+    workDir,
+    productDataDirectory: path.join(workDir, "product-data"),
+    environmentName: "completion-02-fixture-context",
+    commandEnvironment: {},
+  } as const;
   await journey.setup(context);
   return {
     context,
