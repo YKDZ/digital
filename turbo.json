@@ -154,6 +154,23 @@
         "DIGITAL_BANGUMI_REDIRECT_URI"
       ]
     },
+    "test:e2e:managed-service": {
+      "dependsOn": ["@digital/web#build", "@digital/environment#build"],
+      "cache": false,
+      "passThroughEnv": [
+        "DIGITAL_ACCEPTANCE_LEDGER",
+        "DIGITAL_ACCEPTANCE_ARTIFACTS"
+      ]
+    },
+    "test:e2e:provided-service": {
+      "dependsOn": ["@digital/web#build"],
+      "cache": false,
+      "passThroughEnv": [
+        "DIGITAL_ACCEPTANCE_BASE_URL",
+        "DIGITAL_ACCEPTANCE_LEDGER",
+        "DIGITAL_ACCEPTANCE_ARTIFACTS"
+      ]
+    },
     "deployment": {
       "cache": false,
       "passThroughEnv": [
