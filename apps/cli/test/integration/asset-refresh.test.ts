@@ -558,23 +558,13 @@ describe("Asset Refresh CLI", () => {
 
     // PDF 精确文件图片是原始观察部件，按 ADR 0086 只经显式检查入口核验，
     // 不在普通消费投影里另开第二条旁路。
-    const initialInspection = runtime(
-      ["inspect", initialScanResult.execution.id, "--json"],
-      { cwd: source, env },
+    const initialAssociations = await inspectedArtifactAssociations(
+      initialScanResult.execution.id,
+      source,
+      env,
     );
-    const initialInspectionExit = await runCli(initialInspection.runtime);
-    expect(initialInspectionExit, initialInspection.stderr()).toBe(0);
     expect(
-      (
-        JSON.parse(initialInspection.stdout()) as {
-          accepted?: {
-            artifactAssociations: {
-              role: string;
-              observedArtifactPart?: { revisionId: string; locator: string };
-            }[];
-          };
-        }
-      ).accepted?.artifactAssociations.filter(
+      initialAssociations.filter(
         (association) => association.role === "asset.material-image",
       ),
     ).toEqual([
@@ -585,6 +575,9 @@ describe("Asset Refresh CLI", () => {
         }),
       }),
     ]);
+    const initialMaterialRevisionId = initialAssociations.find(
+      (association) => association.role === "asset.material-image",
+    )?.observedArtifactPart?.revisionId;
 
     const initialSurface = runtime(
       ["catalogue-surface", "--surface", "current-catalogue"],
@@ -596,7 +589,9 @@ describe("Asset Refresh CLI", () => {
       JSON.parse(initialSurface.stdout()) as {
         items: {
           id: string;
-          descriptions: { artifactRoles: { role: string }[] }[];
+          descriptions: {
+            artifactRoles: { role: string; artifactId: string }[];
+          }[];
           locations: unknown[];
         }[];
       }
@@ -609,6 +604,15 @@ describe("Asset Refresh CLI", () => {
     ).toEqual(
       expect.arrayContaining(["asset.primary-cover", "asset.material-image"]),
     );
+    // 主封面的“恰一项”在现行有界公开语义里由共同单值裁决表达：每个角色只
+    // 投影一条生效条目；未采用与历史关联的原始计数仍按上一条在显式 inspect 入口可查。
+    expect(
+      initial?.descriptions.flatMap((description) =>
+        description.artifactRoles.filter(
+          (entry) => entry.role === "asset.primary-cover",
+        ),
+      ),
+    ).toHaveLength(1);
     expect(initial?.locations.length).toBeGreaterThan(0);
 
     const defaultScan = runtime(["scan", rootId, "--json"], {
@@ -616,9 +620,10 @@ describe("Asset Refresh CLI", () => {
       env,
     });
     await expect(runCli(defaultScan.runtime)).resolves.toBe(0);
-    expect(JSON.parse(defaultScan.stdout())).toMatchObject({
-      execution: { outcome: "accepted" },
-    });
+    const defaultScanResult = JSON.parse(defaultScan.stdout()) as {
+      execution: { id: string; outcome?: string };
+    };
+    expect(defaultScanResult.execution.outcome).toBe("accepted");
     const reopenedSurface = runtime(
       ["catalogue-surface", "--surface", "current-catalogue"],
       { cwd: source, env },
@@ -632,15 +637,47 @@ describe("Asset Refresh CLI", () => {
     expect(reopened?.id).toBe(initial?.id);
     expect(reopened?.descriptions).toEqual(initial?.descriptions);
     expect(reopened?.locations).toEqual(initial?.locations);
+    expect(
+      reopened?.descriptions.flatMap((description) =>
+        description.artifactRoles.filter(
+          (entry) => entry.role === "asset.primary-cover",
+        ),
+      ),
+    ).toHaveLength(1);
+    // 普通重扫后必须重新经显式入口核验同一精确部件：普通 facts 的身份、角色与
+    // 位置一致不能替代它，部件丢失或改页在此处必须可见。
+    const reopenedAssociations = await inspectedArtifactAssociations(
+      defaultScanResult.execution.id,
+      source,
+      env,
+    );
+    expect(
+      reopenedAssociations.filter(
+        (association) => association.role === "asset.material-image",
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        observedArtifactPart: expect.objectContaining({
+          revisionId: expect.any(String),
+          locator: "pdf:page[1]",
+        }),
+      }),
+    ]);
+    expect(
+      reopenedAssociations.filter(
+        (association) => association.role === "asset.material-image",
+      )[0]?.observedArtifactPart?.revisionId,
+    ).toBe(initialMaterialRevisionId);
 
     const repeatedScan = runtime(["scan", rootId, "--json"], {
       cwd: source,
       env,
     });
     await expect(runCli(repeatedScan.runtime)).resolves.toBe(0);
-    expect(JSON.parse(repeatedScan.stdout())).toMatchObject({
-      execution: { outcome: "no-change" },
-    });
+    const repeatedScanResult = JSON.parse(repeatedScan.stdout()) as {
+      execution: { id: string; outcome?: string };
+    };
+    expect(repeatedScanResult.execution.outcome).toBe("no-change");
     const repeatedSurface = runtime(
       ["catalogue-surface", "--surface", "current-catalogue"],
       { cwd: source, env },
@@ -649,6 +686,14 @@ describe("Asset Refresh CLI", () => {
     expect(JSON.parse(repeatedSurface.stdout())).toEqual(
       JSON.parse(reopenedSurface.stdout()),
     );
+    // no-change 之后的稳定比较仍要覆盖同一材料语义：重读同一显式入口，精确部件
+    // 的载体修订与页定位必须与重扫时一致，才构成原断言要求的稳定证明。
+    const stableAssociations = await inspectedArtifactAssociations(
+      defaultScanResult.execution.id,
+      source,
+      env,
+    );
+    expect(stableAssociations).toEqual(reopenedAssociations);
   }, 30_000);
 
   it("starts, completes, and revokes a Bangumi OAuth connection without printing private grants", async () => {
@@ -1362,6 +1407,40 @@ async function currentCatalogueIds(
     readonly items: readonly { readonly id: string }[];
   };
   return page.items.map((item) => item.id);
+}
+
+// ADR 0086 的显式检查入口：原始观察部件只在这里公开，普通消费投影不另开旁路。
+async function inspectedArtifactAssociations(
+  executionId: string,
+  cwd: string,
+  env: Record<string, string>,
+): Promise<
+  readonly {
+    readonly role: string;
+    readonly observedArtifactPart?: {
+      readonly revisionId: string;
+      readonly locator: string;
+    };
+  }[]
+> {
+  const command = runtime(["inspect", executionId, "--json"], { cwd, env });
+  const exit = await runCli(command.runtime);
+  expect(exit, `${command.stderr()}\n${command.stdout()}`).toBe(0);
+  return (
+    (
+      JSON.parse(command.stdout()) as {
+        accepted?: {
+          readonly artifactAssociations: {
+            readonly role: string;
+            readonly observedArtifactPart?: {
+              readonly revisionId: string;
+              readonly locator: string;
+            };
+          }[];
+        };
+      }
+    ).accepted?.artifactAssociations ?? []
+  );
 }
 
 async function scanRoot(
