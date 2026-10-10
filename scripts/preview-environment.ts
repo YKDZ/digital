@@ -1171,6 +1171,7 @@ async function scenarioRestartRetention(
     enable.status >= 200 && enable.status < 300,
     `自动刷新设置由产品受理（HTTP ${String(enable.status)}）`,
   );
+  if (enable.status < 200 || enable.status >= 300) return;
   const detail = await client.get(`/catalogue/${subjectId}`, {
     library: library.id,
   });
@@ -1186,6 +1187,21 @@ async function scenarioRestartRetention(
     downloadUrl.includes("library=") ? "是" : "否",
   );
   const firstRead = await client.bytes(downloadUrl.replace(/^\/api/u, ""));
+  if (firstRead.status !== 200) {
+    try {
+      const response = asObject(
+        JSON.parse(new TextDecoder().decode(firstRead.bytes)) as JsonValue,
+      );
+      if (
+        response !== undefined &&
+        Object.keys(response).length === 1 &&
+        typeof response["error"] === "string"
+      )
+        reporter.fact("观察文件交付失败响应", response);
+    } catch {
+      reporter.say("观察文件交付失败响应不是业务 JSON，未将原始响应写入报告。");
+    }
+  }
   check(
     reporter,
     "restart-retention",
@@ -1215,6 +1231,7 @@ async function scenarioRestartRetention(
     interact.status >= 200 && interact.status < 300,
     `播放进度写入由产品受理（HTTP ${String(interact.status)}）`,
   );
+  if (interact.status < 200 || interact.status >= 300) return;
   await ownedStop(request, reporter);
   if (request.signal?.aborted === true) {
     reporter.say(
@@ -1225,6 +1242,7 @@ async function scenarioRestartRetention(
   const started = await startEnvironment({
     workspacePath: request.workspacePath,
     environment: request.environment,
+    signal: request.signal,
     ...(request.timeoutMs === 0 ? {} : { timeoutMs: request.timeoutMs }),
   });
   reporter.fact("重启结论", started.status);
@@ -1319,9 +1337,12 @@ async function scenarioRebuild(context: ScenarioContext): Promise<void> {
     rebuild.status === "rebuilt",
     "按相同输入与配置重新建立了新的数据世代",
   );
+  if (rebuild.status !== "rebuilt") return;
+  request.signal?.throwIfAborted();
   const started = await startEnvironment({
     workspacePath: request.workspacePath,
     environment: request.environment,
+    signal: request.signal,
     ...(request.timeoutMs === 0 ? {} : { timeoutMs: request.timeoutMs }),
   });
   reporter.fact("重建后就绪结论", started.status);
