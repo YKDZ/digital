@@ -35,6 +35,9 @@ describe("fixed corpus inventory baseline", () => {
       mode: "source",
       packageRoot: path.resolve(import.meta.dirname, "../.."),
       workDir: "/unused",
+      productDataDirectory: "/unused/product-data",
+      environmentName: "t11-fixture-context",
+      commandEnvironment: {},
     } as const;
     const [allRoots, ownershipGroups, historicallyReviewedRoots, safetyRoots] =
       await Promise.all([
@@ -133,6 +136,9 @@ describe("fixed corpus inventory baseline", () => {
       mode: "source",
       packageRoot: path.resolve(import.meta.dirname, "../.."),
       workDir: "/unused",
+      productDataDirectory: "/unused/product-data",
+      environmentName: "t11-fixture-context",
+      commandEnvironment: {},
     } as const;
     const [roots, rawOracle] = await Promise.all([
       fixedCorpusRoots(context),
@@ -165,6 +171,9 @@ describe("fixed corpus inventory baseline", () => {
       mode: "source",
       packageRoot: path.resolve(import.meta.dirname, "../.."),
       workDir: "/unused",
+      productDataDirectory: "/unused/product-data",
+      environmentName: "t11-fixture-context",
+      commandEnvironment: {},
     } as const;
     const [roots, rawOracle] = await Promise.all([
       fixedCorpusRoots(context),

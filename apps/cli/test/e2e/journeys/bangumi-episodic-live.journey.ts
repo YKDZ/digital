@@ -782,6 +782,7 @@ function assertEpisodeRefresh(
 
 const journey: CliJourney = {
   name: "bangumi-episodic-live",
+  source: { mode: "real" },
   modes: ["source", "distribution"],
   async setup(context) {
     await seedDisposableDigitalConnections(context);

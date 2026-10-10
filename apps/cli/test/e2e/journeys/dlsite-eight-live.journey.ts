@@ -97,6 +97,7 @@ async function regularFileSignature(root: string) {
 
 const journey: CliJourney = {
   name: "dlsite-eight-live",
+  source: { mode: "real" },
   modes: ["source", "distribution"],
   async setup(context) {
     const corpus = corpusRoot(context);
@@ -151,7 +152,7 @@ const journey: CliJourney = {
   },
   commands(context) {
     const corpus = corpusRoot(context);
-    const data = path.join(context.workDir, "product-data");
+    const data = context.productDataDirectory;
     return [
       ...works.map((work) => ({
         name: `register ${work.sourceNativeAddress} root`,

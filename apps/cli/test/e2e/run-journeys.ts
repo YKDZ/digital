@@ -1,19 +1,32 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { prepareCliProductData } from "../prepare-catalogue.ts";
+import {
+  mergeCommandEnvironment,
+  prepareScenarioEnvironment,
+  recycleOwnedEnvironment,
+  retainProvidedEnvironment,
+  scenarioEnvironmentName,
+  scenarioRunId,
+  type AcceptanceEnvironment,
+  type OwnedRecycling,
+  type ProvidedEnvironment,
+  type ScenarioSource,
+} from "./environment-runtime.ts";
 import type {
   CliJourney,
   CliJourneyCommand,
+  CliJourneyContext,
   CliJourneyMode,
   CliJourneyResult,
 } from "./journey.ts";
 
 const e2eRoot = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(e2eRoot, "..", "..");
+const workspaceRoot = path.resolve(packageRoot, "..", "..");
 
 function assertNever(value: never): never {
   throw new Error(`unsupported journey mode: ${String(value)}`);
@@ -248,6 +261,9 @@ async function runCommand(options: {
   readonly command: CliJourneyCommand;
   readonly previousResults: readonly CliJourneyResult[];
   readonly cwd: string;
+  /** 正式 CLI 子进程的环境完全来自本次场景环境；不继承父终端。 */
+  readonly environment: Readonly<Record<string, string>>;
+  readonly signal?: AbortSignal;
 }): Promise<CliJourneyResult> {
   const target = invocation(options.mode, options.packedBin);
   const args =
@@ -257,7 +273,7 @@ async function runCommand(options: {
   return await new Promise((resolve, reject) => {
     const child = spawn(target.executable, [...target.prefix, ...args], {
       cwd: options.cwd,
-      env: { ...process.env, ...options.command.env },
+      env: options.environment,
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -270,6 +286,17 @@ async function runCommand(options: {
     child.stderr.on("data", (chunk: string) => {
       stderr += chunk;
     });
+    const signal = options.signal;
+    if (signal !== undefined) {
+      const abort = () => {
+        child.kill("SIGINT");
+      };
+      if (signal.aborted) abort();
+      else signal.addEventListener("abort", abort, { once: true });
+      child.once("close", () => {
+        signal.removeEventListener("abort", abort);
+      });
+    }
     child.once("error", reject);
     child.once("close", (exitCode) => {
       resolve({
@@ -303,6 +330,10 @@ function formatJourneyLifecycleFailure(input: {
   readonly primaryError?: unknown;
   readonly teardownFailed: boolean;
   readonly teardownError?: unknown;
+  /** 信号中断独立可见：自有环境只停止并保留，绝不报告为成功。 */
+  readonly interrupted: boolean;
+  /** 自有环境收尾各环节的独立问题：与主失败并列，不替换首因。 */
+  readonly recyclingProblems: readonly string[];
   readonly cleanupFailed: boolean;
   readonly cleanupError?: unknown;
 }): Error {
@@ -317,6 +348,14 @@ function formatJourneyLifecycleFailure(input: {
       : [
           `teardown failure: ${errorDiagnostic(input.teardownError, input.commands)}`,
         ]),
+    ...(!input.interrupted
+      ? []
+      : [
+          "interruption failure: 场景被信号中断，自有环境只停止并保留可重启数据",
+        ]),
+    ...input.recyclingProblems.map(
+      (problem) => `environment recycling failure: ${problem}`,
+    ),
     ...(!input.cleanupFailed
       ? []
       : [
@@ -335,51 +374,207 @@ function formatJourneyLifecycleFailure(input: {
   );
 }
 
+/** 旅程未声明来源即离线：绝不因父终端遗留配置使用真实来源。 */
+function journeySource(journey: CliJourney): ScenarioSource {
+  return journey.source ?? { mode: "offline" };
+}
+
+/** 一次旅程世代的环境生命周期：准备由环境包公开接口完成，回收同样复用公开能力。 */
+export type JourneyEnvironmentLifecycle = {
+  open(options: {
+    readonly journey: CliJourney;
+    readonly mode: CliJourneyMode;
+    readonly runId: string;
+  }): Promise<AcceptanceEnvironment>;
+  close(options: {
+    readonly environment: AcceptanceEnvironment;
+    readonly outcome: OwnedRecycling["outcome"];
+  }): Promise<OwnedRecycling>;
+};
+
+const evidenceRoot = path.join(workspaceRoot, "run", "t11-evidence");
+
+/**
+ * 自有场景世代：环境容器由环境包公开布局放在本树工作区内（`.digital/environments/`），
+ * 名字始终带 t11- 前缀；调用方只在 `run/` 下保存证据，绝不把工作区当成临时目录删除。
+ */
+export function ownedEnvironmentLifecycle(): JourneyEnvironmentLifecycle {
+  return {
+    async open({ journey, mode, runId }) {
+      const environment = scenarioEnvironmentName({
+        purpose: `${journey.name}-${mode}`,
+        runId,
+      });
+      return await prepareScenarioEnvironment({
+        workspacePath: workspaceRoot,
+        environment,
+        source: journeySource(journey),
+      });
+    },
+    async close({ environment, outcome }) {
+      return await recycleOwnedEnvironment({
+        workspacePath: environment.workspacePath,
+        environment: environment.environment,
+        outcome,
+      });
+    },
+  };
+}
+
+/**
+ * 使用调用方提供的环境：场景操作与断言完全相同，但世代归属留在提供者。成功、失败
+ * 或中断都只执行公开查看，绝不停止、重建或删除；无法确认归属时才报告问题，
+ * 绝不把未确认写成已回收。
+ */
+export function providedEnvironmentLifecycle(
+  provided: ProvidedEnvironment,
+): JourneyEnvironmentLifecycle {
+  return {
+    async open() {
+      return provided;
+    },
+    async close({ outcome }) {
+      return await retainProvidedEnvironment({
+        workspacePath: provided.workspacePath,
+        environment: provided.environment,
+        outcome,
+      });
+    },
+  };
+}
+
+type JourneyEvidence = {
+  readonly journey: string;
+  readonly mode: CliJourneyMode;
+  readonly environment: string;
+  readonly workspacePath: string;
+  readonly productDataRoot: string;
+  readonly sourceMode: string;
+  readonly callerWorkDir: string;
+  readonly outcome: OwnedRecycling["outcome"];
+  readonly stopStatus: string | null;
+  readonly exitConfirmation: {
+    readonly confirmed: boolean;
+    readonly state: string;
+    readonly processLiveness: string;
+    readonly serviceReadiness: string;
+    readonly detail: string;
+  } | null;
+  readonly deleteStatus: string | null;
+  readonly recyclingProblems: readonly string[];
+  /** 公开环境操作给出的收尾叙述：如实记录，不据此判定失败。 */
+  readonly recyclingDiagnostics: readonly string[];
+  readonly retainedDataRoot: string | null;
+  readonly retainedLogs: readonly string[];
+  readonly overriddenAuthoritative: readonly string[];
+  readonly commands: readonly {
+    readonly name: string;
+    readonly exitCode: number;
+    readonly stdout: string;
+    readonly stderr: string;
+  }[];
+  readonly failures: readonly string[];
+};
+
+/** 保存结果早于任何收尾动作：失败诊断一律先脱敏再落盘。 */
+async function writeJourneyEvidence(
+  evidence: JourneyEvidence,
+  commands: readonly CliJourneyCommand[],
+  directory: string,
+): Promise<void> {
+  await mkdir(directory, { recursive: true });
+  const sanitized: JourneyEvidence = {
+    ...evidence,
+    commands: evidence.commands.map((command) => ({
+      ...command,
+      stdout: redactJourneyDiagnostic(command.stdout, commands),
+      stderr: redactJourneyDiagnostic(command.stderr, commands),
+    })),
+    failures: evidence.failures.map((failure) =>
+      redactJourneyDiagnostic(failure, commands),
+    ),
+    recyclingProblems: evidence.recyclingProblems.map((problem) =>
+      redactJourneyDiagnostic(problem, commands),
+    ),
+    recyclingDiagnostics: evidence.recyclingDiagnostics.map((diagnostic) =>
+      redactJourneyDiagnostic(diagnostic, commands),
+    ),
+  };
+  await writeFile(
+    path.join(directory, `${evidence.environment}.json`),
+    `${JSON.stringify(sanitized, null, 2)}\n`,
+    "utf8",
+  );
+}
+
 export async function runJourney(options: {
   readonly journey: CliJourney;
   readonly mode: CliJourneyMode;
   readonly packedBin?: string;
   readonly executeCommand?: JourneyCommandExecutor;
-  readonly prepareProductData?: typeof prepareCliProductData;
+  readonly lifecycle?: JourneyEnvironmentLifecycle;
+  readonly evidenceDirectory?: string;
+  readonly signal?: AbortSignal;
 }): Promise<string> {
+  const lifecycle = options.lifecycle ?? ownedEnvironmentLifecycle();
+  const evidenceDirectory = options.evidenceDirectory ?? evidenceRoot;
   const workDir = await mkdtemp(
     path.join(
       tmpdir(),
       `digital-disposable-cli-${options.journey.name}-${options.mode}-`,
     ),
   );
-  const context = { mode: options.mode, packageRoot, workDir };
+  const runId = scenarioRunId();
   const results: CliJourneyResult[] = [];
+  const overriddenAuthoritative: string[] = [];
   let commands: readonly CliJourneyCommand[] = [];
   let primaryFailed = false;
   let primaryError: unknown;
+  let interruptedDuringRun = false;
+  let environment: AcceptanceEnvironment | undefined;
+  let context: CliJourneyContext | undefined;
   try {
-    await options.journey.setup(context);
-    commands = options.journey.commands(context);
-    const preparedProductDataDirectories = new Set<string>();
+    environment = await lifecycle.open({
+      journey: options.journey,
+      mode: options.mode,
+      runId,
+    });
+    const scenario: CliJourneyContext = {
+      mode: options.mode,
+      packageRoot,
+      workDir,
+      productDataDirectory: environment.productDataRoot,
+      environmentName: environment.environment,
+      commandEnvironment: environment.baseEnvironment,
+    };
+    context = scenario;
+    await options.journey.setup(scenario);
+    commands = options.journey.commands(scenario);
     for (const command of commands) {
-      const productDataDirectory = command.env?.DIGITAL_PRODUCT_DATA;
-      if (
-        productDataDirectory !== undefined &&
-        productDataDirectory.trim().length > 0 &&
-        !preparedProductDataDirectories.has(productDataDirectory)
-      ) {
-        await (options.prepareProductData ?? prepareCliProductData)(
-          productDataDirectory,
-        );
-        preparedProductDataDirectories.add(productDataDirectory);
+      // 取消一旦到达就不再追加新的正式命令：中断结局由收尾与证据表达。
+      if (options.signal?.aborted === true) {
+        interruptedDuringRun = true;
+        break;
       }
+      const merged = mergeCommandEnvironment(environment, command.env);
+      for (const key of merged.overridden)
+        if (!overriddenAuthoritative.includes(key))
+          overriddenAuthoritative.push(key);
       const result = await (options.executeCommand ?? runCommand)({
         mode: options.mode,
         packedBin: options.packedBin,
         command,
         previousResults: results,
         cwd: workDir,
+        environment: merged.env,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
       });
       results.push(result);
       assertHaltedJourneyCommand(command, result);
     }
-    await options.journey.assertions({ context, results });
+    // 中断到达后不再执行断言：缺失的结果只会伪造出一个掩盖中断的“主失败”。
+    if (!interruptedDuringRun)
+      await options.journey.assertions({ context: scenario, results });
   } catch (error) {
     primaryFailed = true;
     primaryError = error;
@@ -387,23 +582,106 @@ export async function runJourney(options: {
 
   let teardownFailed = false;
   let teardownError: unknown;
-  try {
-    await options.journey.teardown?.({ context, results });
-  } catch (error) {
-    teardownFailed = true;
-    teardownError = error;
+  if (context !== undefined)
+    try {
+      await options.journey.teardown?.({ context, results });
+    } catch (error) {
+      teardownFailed = true;
+      teardownError = error;
+    }
+
+  const interrupted = options.signal?.aborted === true || interruptedDuringRun;
+  const succeeded = !primaryFailed && !teardownFailed && !interrupted;
+  const outcome: OwnedRecycling["outcome"] = interrupted
+    ? "interrupted"
+    : succeeded
+      ? "success"
+      : "failure";
+
+  // 先保存结果，再停止、由独立查看确认退出、按结局删除或保留。
+  const commandEvidence = commands.map((command, index) => ({
+    name: command.name,
+    exitCode: results[index]?.exitCode ?? -1,
+    stdout: results[index]?.stdout ?? "",
+    stderr: results[index]?.stderr ?? "",
+  }));
+  const failureEvidence = [
+    ...(!primaryFailed
+      ? []
+      : [`main failure: ${errorDiagnostic(primaryError, commands)}`]),
+    ...(!teardownFailed
+      ? []
+      : [`teardown failure: ${errorDiagnostic(teardownError, commands)}`]),
+    ...(interrupted ? ["journey interrupted by signal"] : []),
+  ];
+  let recycling: OwnedRecycling | undefined;
+  let recyclingError: unknown;
+  if (environment !== undefined) {
+    const draft: JourneyEvidence = {
+      journey: options.journey.name,
+      mode: options.mode,
+      environment: environment.environment,
+      workspacePath: environment.workspacePath,
+      productDataRoot: environment.productDataRoot,
+      sourceMode: environment.facts.sourceMode,
+      callerWorkDir: workDir,
+      outcome,
+      stopStatus: null,
+      exitConfirmation: null,
+      deleteStatus: null,
+      recyclingProblems: [],
+      recyclingDiagnostics: [],
+      retainedDataRoot: null,
+      retainedLogs: [],
+      overriddenAuthoritative,
+      commands: commandEvidence,
+      failures: failureEvidence,
+    };
+    await writeJourneyEvidence(draft, commands, evidenceDirectory);
+    try {
+      recycling = await lifecycle.close({ environment, outcome });
+      await writeJourneyEvidence(
+        {
+          ...draft,
+          stopStatus: recycling.stop?.status ?? null,
+          exitConfirmation: recycling.exitConfirmation ?? null,
+          deleteStatus: recycling.deletion?.status ?? null,
+          recyclingProblems: recycling.problems,
+          recyclingDiagnostics: recycling.recyclingDiagnostics,
+          retainedDataRoot: recycling.retainedDataRoot ?? null,
+          retainedLogs: recycling.retainedLogs,
+        },
+        commands,
+        evidenceDirectory,
+      );
+    } catch (error) {
+      recyclingError = error;
+    }
   }
 
   let cleanupFailed = false;
   let cleanupError: unknown;
   try {
+    // 只回收调用方自己的临时工作目录；环境容器由公开删除操作负责。
     await rm(workDir, { recursive: true, force: true });
   } catch (error) {
     cleanupFailed = true;
     cleanupError = error;
   }
 
-  if (primaryFailed || teardownFailed || cleanupFailed)
+  const recyclingProblems = [
+    ...(recycling === undefined ? [] : recycling.problems),
+    ...(recyclingError === undefined
+      ? []
+      : [`环境收尾抛出异常：${errorDiagnostic(recyclingError, commands)}`]),
+  ];
+  if (
+    primaryFailed ||
+    teardownFailed ||
+    cleanupFailed ||
+    interrupted ||
+    recyclingProblems.length > 0
+  )
     throw formatJourneyLifecycleFailure({
       mode: options.mode,
       journeyName: options.journey.name,
@@ -413,6 +691,8 @@ export async function runJourney(options: {
       primaryError,
       teardownFailed,
       teardownError,
+      interrupted,
+      recyclingProblems,
       cleanupFailed,
       cleanupError,
     });
@@ -422,6 +702,7 @@ export async function runJourney(options: {
 export async function runJourneys(options: {
   readonly mode: CliJourneyMode;
   readonly packedBin?: string;
+  readonly signal?: AbortSignal;
 }): Promise<readonly string[]> {
   const passed: string[] = [];
   for (const journey of await discoverJourneys()) {
@@ -433,6 +714,7 @@ export async function runJourneys(options: {
         ...(options.packedBin === undefined
           ? {}
           : { packedBin: options.packedBin }),
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
       }),
     );
   }
@@ -441,21 +723,29 @@ export async function runJourneys(options: {
 
 async function runJourneyTargets(
   targets: readonly JourneyRunTarget[],
+  signal: AbortSignal | undefined,
 ): Promise<readonly string[]> {
   const passed: string[] = [];
   for (const target of targets) {
+    const options =
+      target.packedBin === undefined ? {} : { packedBin: target.packedBin };
     switch (target.mode) {
       case "source":
       case "distribution":
-        passed.push(...(await runJourneys({ mode: target.mode })));
+        passed.push(
+          ...(await runJourneys({
+            mode: target.mode,
+            ...options,
+            ...(signal === undefined ? {} : { signal }),
+          })),
+        );
         break;
       case "packed":
         passed.push(
           ...(await runJourneys({
             mode: target.mode,
-            ...(target.packedBin === undefined
-              ? {}
-              : { packedBin: target.packedBin }),
+            ...options,
+            ...(signal === undefined ? {} : { signal }),
           })),
         );
         break;
@@ -467,11 +757,20 @@ async function runJourneyTargets(
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  const cancellation = new AbortController();
+  for (const signalName of ["SIGINT", "SIGTERM"] as const) {
+    process.on(signalName, () => {
+      // 中断只取消进行中的操作；自有环境的停止、确认与保留仍由收尾路径完成。
+      cancellation.abort(new Error(`received ${signalName}`));
+    });
+  }
   try {
     const passed = await runJourneyTargets(
       parseJourneyRunTargets(process.argv.slice(2)),
+      cancellation.signal,
     );
     process.stdout.write(`${passed.join("\n")}\n`);
+    if (cancellation.signal.aborted) process.exitCode = 1;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`error: ${message}\n`);

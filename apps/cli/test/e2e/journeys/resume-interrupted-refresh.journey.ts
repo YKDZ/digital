@@ -6,7 +6,6 @@ import { DatabaseSync } from "node:sqlite";
 
 import { captureRawFilesystemSnapshot } from "@digital/test-support";
 
-import { prepareCliProductData } from "../../prepare-catalogue.ts";
 import {
   registeredObservedRootId,
   type CliJourney,
@@ -166,7 +165,10 @@ async function interruptAtPersistedCheckpoint(
     ],
     {
       cwd: context.workDir,
-      env: { ...process.env, DIGITAL_PRODUCT_DATA: dataDirectory },
+      env: {
+        ...context.commandEnvironment,
+        DIGITAL_PRODUCT_DATA: dataDirectory,
+      },
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
@@ -249,7 +251,10 @@ async function registerObservedRoot(input: {
       ],
       {
         cwd: input.context.workDir,
-        env: { ...process.env, DIGITAL_PRODUCT_DATA: input.dataDirectory },
+        env: {
+          ...input.context.commandEnvironment,
+          DIGITAL_PRODUCT_DATA: input.dataDirectory,
+        },
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -288,14 +293,14 @@ function current(
 
 const journey: CliJourney = {
   name: "resume-interrupted-refresh",
+  source: { mode: "real" },
   modes: ["source", "distribution"],
   async setup(context) {
     const source = sourceDirectory(context);
     if (!(await stat(source)).isDirectory())
       throw new Error(`required live acceptance corpus is missing: ${source}`);
     const sourceBaseline = await fingerprintTree(source);
-    const dataDirectory = path.join(context.workDir, "product-data");
-    await prepareCliProductData(dataDirectory);
+    const dataDirectory = context.productDataDirectory;
     const terminalFailureSource = path.join(
       context.workDir,
       "terminal-failure-source",

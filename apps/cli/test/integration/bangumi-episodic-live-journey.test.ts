@@ -562,7 +562,14 @@ describe("Bangumi episodic live journey contract", () => {
     const packageRoot = path.resolve(import.meta.dirname, "../..");
     vi.stubEnv("DIGITAL_BANGUMI_LIVE_PRODUCT_DATA", "");
     await expect(
-      journey.setup({ mode: "source", packageRoot, workDir: "/unused" }),
+      journey.setup({
+        mode: "source",
+        packageRoot,
+        workDir: "/unused",
+        productDataDirectory: "/unused/product-data",
+        environmentName: "t11-fixture-context",
+        commandEnvironment: {},
+      }),
     ).rejects.toThrow(/authorized Bangumi connection/u);
 
     const temporary = await mkdtemp(
@@ -582,7 +589,14 @@ describe("Bangumi episodic live journey contract", () => {
     await chmod(connection, 0o600);
     const workDir = path.join(temporary, "runner-work");
     vi.stubEnv("DIGITAL_BANGUMI_LIVE_PRODUCT_DATA", productData);
-    const context = { mode: "source" as const, packageRoot, workDir };
+    const context = {
+      mode: "source" as const,
+      packageRoot,
+      workDir,
+      productDataDirectory: path.join(workDir, "product-data"),
+      environmentName: "t11-fixture-context",
+      commandEnvironment: {},
+    };
     await journey.setup(context);
 
     for (const name of ["bloom", "frieren"]) {
