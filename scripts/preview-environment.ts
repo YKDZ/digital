@@ -1158,6 +1158,38 @@ async function scenarioRestartRetention(
     reporter.fail("资产库没有观察根，无法建立自动刷新设置。");
     return;
   }
+  const enable = await client.post("/automation", {
+    action: "enable",
+    assetLibraryId: library.id,
+    observedRootId,
+    intervalMilliseconds: 86_400_000,
+    acceptTrusted: true,
+  });
+  check(
+    reporter,
+    "restart-retention",
+    enable.status >= 200 && enable.status < 300,
+    `自动刷新设置由产品受理（HTTP ${String(enable.status)}）`,
+  );
+  if (enable.status < 200 || enable.status >= 300) return;
+  const initialExecutionId = text(
+    asObject(asObject(enable.body)?.["initialExecution"])?.["id"],
+  );
+  if (initialExecutionId === undefined) {
+    reporter.fail("自动刷新没有返回初始执行，无法建立稳定的重启保留基线。");
+    return;
+  }
+  const initialExecution = await client.awaitExecution(
+    initialExecutionId,
+    request.workflowTimeoutMs,
+  );
+  check(
+    reporter,
+    "restart-retention",
+    initialExecution.status === "completed",
+    `自动刷新初始执行已完成（实际 ${initialExecution.status}）`,
+  );
+  if (initialExecution.status !== "completed") return;
   const detail = await client.get(`/catalogue/${subjectId}`, {
     library: library.id,
   });
@@ -1218,20 +1250,10 @@ async function scenarioRestartRetention(
     `播放进度写入由产品受理（HTTP ${String(interact.status)}）`,
   );
   if (interact.status < 200 || interact.status >= 300) return;
-  const enable = await client.post("/automation", {
-    action: "enable",
-    assetLibraryId: library.id,
-    observedRootId,
-    intervalMilliseconds: 86_400_000,
-    acceptTrusted: true,
-  });
-  check(
-    reporter,
-    "restart-retention",
-    enable.status >= 200 && enable.status < 300,
-    `自动刷新设置由产品受理（HTTP ${String(enable.status)}）`,
-  );
-  if (enable.status < 200 || enable.status >= 300) return;
+  // 初始刷新可能更新来源候选；重启核对本场景随后真实提交的当前决定。
+  const failuresBeforeEdit = reporter.failures.length;
+  await scenarioManualEdit(context);
+  if (reporter.failures.length > failuresBeforeEdit) return;
   await ownedStop(request, reporter);
   if (request.signal?.aborted === true) {
     reporter.say(
