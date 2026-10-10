@@ -100,10 +100,17 @@ describe("Observed Root authority", () => {
     const rootA = registration("root-a", ["root-b"]);
     const rootB = registration("root-b");
     const index = createObservedRootAuthorityIndex([rootA, rootB]);
+    // 周期计划属于库内目录：自动化范围必须自带库归属（observed-root-authority.ts:260
+    // 的 `isObservedRootAutomationScope` 严校三字段），不再指向可自由选择的全局根。
+    const assetLibraryId = "library-a";
 
     expect(
       isAutomationObservedRootAuthorizationCurrent({
-        scope: { observedRootId: rootA.id, relativeScope: "season-1" },
+        scope: {
+          assetLibraryId,
+          observedRootId: rootA.id,
+          relativeScope: "season-1",
+        },
         authorization: {
           observedRootId: rootA.id,
           configVersion: 1,
@@ -114,7 +121,11 @@ describe("Observed Root authority", () => {
     ).toBe(true);
     expect(
       isAutomationObservedRootAuthorizationCurrent({
-        scope: { observedRootId: rootA.id, relativeScope: "../outside" },
+        scope: {
+          assetLibraryId,
+          observedRootId: rootA.id,
+          relativeScope: "../outside",
+        },
         authorization: {
           observedRootId: rootA.id,
           configVersion: 1,
