@@ -1158,20 +1158,6 @@ async function scenarioRestartRetention(
     reporter.fail("资产库没有观察根，无法建立自动刷新设置。");
     return;
   }
-  const enable = await client.post("/automation", {
-    action: "enable",
-    assetLibraryId: library.id,
-    observedRootId,
-    intervalMilliseconds: 86_400_000,
-    acceptTrusted: true,
-  });
-  check(
-    reporter,
-    "restart-retention",
-    enable.status >= 200 && enable.status < 300,
-    `自动刷新设置由产品受理（HTTP ${String(enable.status)}）`,
-  );
-  if (enable.status < 200 || enable.status >= 300) return;
   const detail = await client.get(`/catalogue/${subjectId}`, {
     library: library.id,
   });
@@ -1232,6 +1218,20 @@ async function scenarioRestartRetention(
     `播放进度写入由产品受理（HTTP ${String(interact.status)}）`,
   );
   if (interact.status < 200 || interact.status >= 300) return;
+  const enable = await client.post("/automation", {
+    action: "enable",
+    assetLibraryId: library.id,
+    observedRootId,
+    intervalMilliseconds: 86_400_000,
+    acceptTrusted: true,
+  });
+  check(
+    reporter,
+    "restart-retention",
+    enable.status >= 200 && enable.status < 300,
+    `自动刷新设置由产品受理（HTTP ${String(enable.status)}）`,
+  );
+  if (enable.status < 200 || enable.status >= 300) return;
   await ownedStop(request, reporter);
   if (request.signal?.aborted === true) {
     reporter.say(
