@@ -62,7 +62,7 @@ async function digitalPackages(
 export async function packCli(options: {
   readonly runId: string;
 }): Promise<PackedCli> {
-  const outputRoot = path.join(workspaceRoot, "run", "t11-packed");
+  const outputRoot = path.join(workspaceRoot, "run", "02-packed");
   await mkdir(outputRoot, { recursive: true });
   const deployDirectory = await mkdtemp(
     path.join(outputRoot, `deploy-${options.runId}-`),

@@ -26,7 +26,7 @@ describe("TMDB and OMDb live journey contract", () => {
           packageRoot: path.resolve(import.meta.dirname, "../.."),
           workDir: "/unused",
           productDataDirectory: "/unused/product-data",
-          environmentName: "t11-fixture-context",
+          environmentName: "completion-02-fixture-context",
           commandEnvironment: {},
         }),
       ).rejects.toThrow(
@@ -44,7 +44,7 @@ describe("TMDB and OMDb live journey contract", () => {
       packageRoot: path.resolve(import.meta.dirname, "../.."),
       workDir: "/temporary-work",
       productDataDirectory: "/temporary-work/product-data",
-      environmentName: "t11-fixture-context",
+      environmentName: "completion-02-fixture-context",
       commandEnvironment: {},
     } as const;
     await journey.setup(context);

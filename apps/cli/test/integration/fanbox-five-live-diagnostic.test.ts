@@ -149,7 +149,7 @@ async function syntheticJourney(
     packageRoot,
     workDir,
     productDataDirectory: path.join(workDir, "product-data"),
-    environmentName: "t11-fixture-context",
+    environmentName: "completion-02-fixture-context",
     commandEnvironment: {},
   } as const;
   await journey.setup(context);

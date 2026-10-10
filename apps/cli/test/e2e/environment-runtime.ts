@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { appendFile, mkdir, readdir } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir } from "node:fs/promises";
 import net from "node:net";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
@@ -80,12 +80,12 @@ export function scenarioEnvironmentName(input: {
     value.toLowerCase().replace(/[^a-z0-9._-]/gu, "-");
   const runId = slug(input.runId);
   const purpose = slug(input.purpose);
-  const budget = 64 - `t11--${runId}`.length;
+  const budget = 64 - `completion-02--${runId}`.length;
   const kept =
     purpose.length <= budget
       ? purpose
       : `${purpose.slice(0, Math.max(1, budget - 9))}-${digest8(purpose)}`;
-  const candidate = `t11-${kept}-${runId}`;
+  const candidate = `completion-02-${kept}-${runId}`;
   if (candidate.length > 64)
     throw new Error(`环境名超出 64 个字符上限：${candidate}`);
   if (!environmentNamePattern.test(candidate))
@@ -483,7 +483,7 @@ export function fingerprintDifference(
   return differences;
 }
 
-export const reservedPortRange = { min: 50_001, max: 50_999 } as const;
+export const reservedPortRange = { min: 53_001, max: 53_999 } as const;
 
 /**
  * 端口只在真正要启动一个由本工单拥有的服务时按空闲结果选定：先真实 bind 再释放，
@@ -501,7 +501,9 @@ export async function reserveFreePort(input: {
     if (excluded.has(candidate)) continue;
     if (await portIsFree(candidate)) return candidate;
   }
-  throw new Error(`在 50001—50999 区间内找不到可用端口（轮次 ${input.runId}）`);
+  throw new Error(
+    `在 ${reservedPortRange.min}—${reservedPortRange.max} 区间内找不到可用端口（轮次 ${input.runId}）`,
+  );
 }
 
 function hashInt(value: string): number {
@@ -565,6 +567,8 @@ export async function recycleOwnedEnvironment(input: {
   readonly workspacePath: string;
   readonly environment: string;
   readonly outcome: OwnedRecycling["outcome"];
+  /** 清理上下文：取消在停止/确认之后到达时，删除一律不执行、现场保留。 */
+  readonly signal?: AbortSignal;
 }): Promise<OwnedRecycling> {
   const stopped = await stopScenarioEnvironment(input);
   const confirmation = await confirmOwnerExit(input);
@@ -591,6 +595,20 @@ export async function recycleOwnedEnvironment(input: {
       retainedDataRoot: stopped.environment.productDataRoot,
       retainedLogs,
     };
+  if (input.signal?.aborted === true) {
+    diagnostics.push(
+      "取消在收尾期间到达：自有服务已停止并确认退出，数据与日志按现场保留",
+    );
+    return {
+      outcome: input.outcome,
+      stop: stopped,
+      exitConfirmation: confirmation,
+      problems,
+      recyclingDiagnostics: diagnostics,
+      retainedDataRoot: stopped.environment.productDataRoot,
+      retainedLogs,
+    };
+  }
   const deletion = await deleteScenarioEnvironment(input);
   if (deletion.status !== "deleted" && deletion.status !== "already-deleted")
     problems.push(
@@ -619,12 +637,33 @@ export type StartLedgerRecord = {
   readonly runId?: string;
   readonly status?: string;
   readonly pid?: number | null;
+  readonly startTimeTicks?: number | null;
   readonly exitCode?: number | null;
 };
 
+/**
+ * 读取进程启动时刻（内核滴答）：与 PID 一起构成重启后不误认同一进程的依据。
+ * 非 Linux 或进程已退出时返回 null，登记仍保留 PID 供人工核对。
+ */
+export async function processStartTimeTicks(
+  pid: number,
+): Promise<number | null> {
+  try {
+    const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+    const fields = stat
+      .slice(stat.lastIndexOf(")") + 1)
+      .trim()
+      .split(/\s+/u);
+    const ticks = Number(fields[19]);
+    return Number.isSafeInteger(ticks) ? ticks : null;
+  } catch {
+    return null;
+  }
+}
+
 const runtimeRoot = path.dirname(fileURLToPath(import.meta.url));
 
-/** 本票独占的启动登记表：位于作者树 run/ 下，前缀 11-。 */
+/** 本票独占的启动登记表：位于作者树 run/ 下，前缀 02-。 */
 export const startLedgerPath = path.resolve(
   runtimeRoot,
   "..",
@@ -632,7 +671,7 @@ export const startLedgerPath = path.resolve(
   "..",
   "..",
   "run",
-  "11-start-ledger.ndjson",
+  "02-start-ledger.ndjson",
 );
 
 export async function appendStartLedger(
@@ -660,7 +699,7 @@ export function stubScenarioEnvironment(input: {
   readonly environment?: string;
   readonly sourceMode?: ScenarioSource["mode"];
 }): ScenarioEnvironment {
-  const environment = input.environment ?? "t11-stub";
+  const environment = input.environment ?? "completion-02-stub";
   const facts: EnvironmentFacts = {
     workspacePath: input.workspacePath,
     environment,

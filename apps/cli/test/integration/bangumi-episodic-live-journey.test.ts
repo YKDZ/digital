@@ -1,4 +1,12 @@
-import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -567,7 +575,7 @@ describe("Bangumi episodic live journey contract", () => {
         packageRoot,
         workDir: "/unused",
         productDataDirectory: "/unused/product-data",
-        environmentName: "t11-fixture-context",
+        environmentName: "completion-02-fixture-context",
         commandEnvironment: {},
       }),
     ).rejects.toThrow(/authorized Bangumi connection/u);
@@ -594,20 +602,19 @@ describe("Bangumi episodic live journey contract", () => {
       packageRoot,
       workDir,
       productDataDirectory: path.join(workDir, "product-data"),
-      environmentName: "t11-fixture-context",
+      environmentName: "completion-02-fixture-context",
       commandEnvironment: {},
     };
     await journey.setup(context);
 
-    for (const name of ["bloom", "frieren"]) {
-      const copied = path.join(
-        workDir,
-        name,
-        "private-source-connections",
-        "bangumi-oauth.json",
-      );
-      expect((await stat(copied)).mode & 0o777).toBe(0o600);
-    }
+    const seededDirectory = path.join(
+      context.productDataDirectory,
+      "private-source-connections",
+    );
+    const seeded = path.join(seededDirectory, "bangumi-oauth.json");
+    expect((await stat(seededDirectory)).mode & 0o777).toBe(0o700);
+    expect((await stat(seeded)).mode & 0o777).toBe(0o600);
+    expect(await readFile(seeded, "utf8")).toBe("dummy-private-contract-value");
     const commands = journey.commands(context);
     expect(commands.map((command) => command.name)).toEqual([
       "register live Bloom root",
@@ -621,10 +628,7 @@ describe("Bangumi episodic live journey contract", () => {
     expect(
       commands.every(
         (command) =>
-          command.env !== undefined &&
-          Object.keys(command.env).every(
-            (name) => name === "DIGITAL_PRODUCT_DATA",
-          ),
+          command.env === undefined || Object.keys(command.env).length === 0,
       ),
     ).toBe(true);
   });

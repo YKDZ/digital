@@ -8,6 +8,7 @@ import {
   mergeCommandEnvironment,
   prepareScenarioEnvironment,
   recycleOwnedEnvironment,
+  reserveFreePort,
   retainProvidedEnvironment,
   scenarioEnvironmentName,
   scenarioRunId,
@@ -334,6 +335,8 @@ function formatJourneyLifecycleFailure(input: {
   readonly interrupted: boolean;
   /** 自有环境收尾各环节的独立问题：与主失败并列，不替换首因。 */
   readonly recyclingProblems: readonly string[];
+  /** 证据保存环节自身的独立问题：与收尾错误可辨。 */
+  readonly evidenceProblems: readonly string[];
   readonly cleanupFailed: boolean;
   readonly cleanupError?: unknown;
 }): Error {
@@ -355,6 +358,9 @@ function formatJourneyLifecycleFailure(input: {
         ]),
     ...input.recyclingProblems.map(
       (problem) => `environment recycling failure: ${problem}`,
+    ),
+    ...input.evidenceProblems.map(
+      (problem) => `evidence persistence failure: ${problem}`,
     ),
     ...(!input.cleanupFailed
       ? []
@@ -389,16 +395,24 @@ export type JourneyEnvironmentLifecycle = {
   close(options: {
     readonly environment: AcceptanceEnvironment;
     readonly outcome: OwnedRecycling["outcome"];
+    /** 清理上下文：收尾期间的取消必须阻止删除，只停止并保留现场。 */
+    readonly signal?: AbortSignal;
   }): Promise<OwnedRecycling>;
 };
 
-const evidenceRoot = path.join(workspaceRoot, "run", "t11-evidence");
+const evidenceRoot = path.join(workspaceRoot, "run", "02-evidence");
 
 /**
  * 自有场景世代：环境容器由环境包公开布局放在本树工作区内（`.digital/environments/`），
- * 名字始终带 t11- 前缀；调用方只在 `run/` 下保存证据，绝不把工作区当成临时目录删除。
+ * 名字始终带 completion-02- 前缀；调用方只在 `run/` 下保存证据，绝不把工作区当成临时目录删除。
+ * 世代记录里的 Web 端口一律先在本票区间内实际探测空闲：宁可显式给一个探测过的端口，
+ * 也不让环境包按名字哈希算出区间外的监听口。
  */
-export function ownedEnvironmentLifecycle(): JourneyEnvironmentLifecycle {
+export function ownedEnvironmentLifecycle(
+  options: {
+    readonly webPort?: number;
+  } = {},
+): JourneyEnvironmentLifecycle {
   return {
     async open({ journey, mode, runId }) {
       const environment = scenarioEnvironmentName({
@@ -409,13 +423,15 @@ export function ownedEnvironmentLifecycle(): JourneyEnvironmentLifecycle {
         workspacePath: workspaceRoot,
         environment,
         source: journeySource(journey),
+        webPort: options.webPort ?? (await reserveFreePort({ runId })),
       });
     },
-    async close({ environment, outcome }) {
+    async close({ environment, outcome, signal }) {
       return await recycleOwnedEnvironment({
         workspacePath: environment.workspacePath,
         environment: environment.environment,
         outcome,
+        ...(signal === undefined ? {} : { signal }),
       });
     },
   };
@@ -590,6 +606,8 @@ export async function runJourney(options: {
       teardownError = error;
     }
 
+  // 先保存结果，再停止、由独立查看确认退出、按结局删除或保留。
+  // 取消可能在保存与收尾的等待期间到达：每个环节前重读，绝不沿用过期快照。
   const interrupted = options.signal?.aborted === true || interruptedDuringRun;
   const succeeded = !primaryFailed && !teardownFailed && !interrupted;
   const outcome: OwnedRecycling["outcome"] = interrupted
@@ -597,25 +615,24 @@ export async function runJourney(options: {
     : succeeded
       ? "success"
       : "failure";
-
-  // 先保存结果，再停止、由独立查看确认退出、按结局删除或保留。
   const commandEvidence = commands.map((command, index) => ({
     name: command.name,
     exitCode: results[index]?.exitCode ?? -1,
     stdout: results[index]?.stdout ?? "",
     stderr: results[index]?.stderr ?? "",
   }));
-  const failureEvidence = [
+  const buildFailureEvidence = (interruptedNow: boolean): string[] => [
     ...(!primaryFailed
       ? []
       : [`main failure: ${errorDiagnostic(primaryError, commands)}`]),
     ...(!teardownFailed
       ? []
       : [`teardown failure: ${errorDiagnostic(teardownError, commands)}`]),
-    ...(interrupted ? ["journey interrupted by signal"] : []),
+    ...(interruptedNow ? ["journey interrupted by signal"] : []),
   ];
   let recycling: OwnedRecycling | undefined;
   let recyclingError: unknown;
+  const evidenceSaveProblems: string[] = [];
   if (environment !== undefined) {
     const draft: JourneyEvidence = {
       journey: options.journey.name,
@@ -635,28 +652,48 @@ export async function runJourney(options: {
       retainedLogs: [],
       overriddenAuthoritative,
       commands: commandEvidence,
-      failures: failureEvidence,
+      failures: buildFailureEvidence(interrupted),
     };
-    await writeJourneyEvidence(draft, commands, evidenceDirectory);
+    const saveJourneyEvidence = async (
+      evidence: JourneyEvidence,
+    ): Promise<boolean> => {
+      try {
+        await writeJourneyEvidence(evidence, commands, evidenceDirectory);
+        return true;
+      } catch (error) {
+        evidenceSaveProblems.push(
+          `证据保存失败：${errorDiagnostic(error, commands)}`,
+        );
+        return false;
+      }
+    };
+    const savedDraft = await saveJourneyEvidence(draft);
+    // 结果未能落盘时绝不交出可删除的 success 结局：证据载体只停止并保留。
+    const outcomeAtClose =
+      savedDraft || outcome !== "success" ? outcome : "failure";
     try {
-      recycling = await lifecycle.close({ environment, outcome });
-      await writeJourneyEvidence(
-        {
-          ...draft,
-          stopStatus: recycling.stop?.status ?? null,
-          exitConfirmation: recycling.exitConfirmation ?? null,
-          deleteStatus: recycling.deletion?.status ?? null,
-          recyclingProblems: recycling.problems,
-          recyclingDiagnostics: recycling.recyclingDiagnostics,
-          retainedDataRoot: recycling.retainedDataRoot ?? null,
-          retainedLogs: recycling.retainedLogs,
-        },
-        commands,
-        evidenceDirectory,
-      );
+      recycling = await lifecycle.close({
+        environment,
+        outcome: outcomeAtClose,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      });
     } catch (error) {
       recyclingError = error;
     }
+    const interruptedNow =
+      options.signal?.aborted === true || interruptedDuringRun;
+    await saveJourneyEvidence({
+      ...draft,
+      outcome: interruptedNow ? "interrupted" : outcomeAtClose,
+      failures: buildFailureEvidence(interruptedNow),
+      stopStatus: recycling?.stop?.status ?? null,
+      exitConfirmation: recycling?.exitConfirmation ?? null,
+      deleteStatus: recycling?.deletion?.status ?? null,
+      recyclingProblems: recycling?.problems ?? [],
+      recyclingDiagnostics: recycling?.recyclingDiagnostics ?? [],
+      retainedDataRoot: recycling?.retainedDataRoot ?? null,
+      retainedLogs: recycling?.retainedLogs ?? [],
+    });
   }
 
   let cleanupFailed = false;
@@ -675,12 +712,16 @@ export async function runJourney(options: {
       ? []
       : [`环境收尾抛出异常：${errorDiagnostic(recyclingError, commands)}`]),
   ];
+  const evidenceProblems = [...new Set(evidenceSaveProblems)];
+  const interruptedFinal =
+    options.signal?.aborted === true || interruptedDuringRun;
   if (
     primaryFailed ||
     teardownFailed ||
     cleanupFailed ||
-    interrupted ||
-    recyclingProblems.length > 0
+    interruptedFinal ||
+    recyclingProblems.length > 0 ||
+    evidenceProblems.length > 0
   )
     throw formatJourneyLifecycleFailure({
       mode: options.mode,
@@ -691,8 +732,9 @@ export async function runJourney(options: {
       primaryError,
       teardownFailed,
       teardownError,
-      interrupted,
+      interrupted: interruptedFinal,
       recyclingProblems,
+      evidenceProblems,
       cleanupFailed,
       cleanupError,
     });

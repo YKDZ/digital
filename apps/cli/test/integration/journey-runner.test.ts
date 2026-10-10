@@ -29,7 +29,7 @@ import {
 
 /**
  * 单元层不重复支付真实环境准备：只核验调用方的归属与收尾分支。真实环境包的公开
- * 接口由 test/integration/environment-ownership.test.ts 覆盖。
+ * 接口由 test/e2e/environment-contracts.ts 的正式入口覆盖。
  */
 type UnitRecycle = (
   environment: AcceptanceEnvironment,
@@ -340,7 +340,7 @@ describe("CLI journey runner", () => {
     expect(unit.closed).toEqual(["success"]);
     const evidence = JSON.parse(
       await readFile(
-        path.join(unit.evidenceDirectory, "t11-stub.json"),
+        path.join(unit.evidenceDirectory, "completion-02-stub.json"),
         "utf8",
       ),
     ) as Record<string, unknown>;
@@ -395,7 +395,7 @@ describe("CLI journey runner", () => {
     expect(unit.closed).toEqual(["failure"]);
     const evidence = JSON.parse(
       await readFile(
-        path.join(unit.evidenceDirectory, "t11-stub.json"),
+        path.join(unit.evidenceDirectory, "completion-02-stub.json"),
         "utf8",
       ),
     ) as Record<string, unknown>;
@@ -475,5 +475,217 @@ describe("CLI journey runner", () => {
         },
       }),
     ).rejects.toThrow(/main failure[\s\S]*环境收尾抛出异常/u);
+  });
+
+  it("首次证据保存失败仍执行收尾，原始主失败与保存错误分别可辨", async () => {
+    const workspaceRoot = await mkdtemp(
+      path.join(tmpdir(), "digital-cli-journey-runner-evidence-blocked-"),
+    );
+    retained.add(workspaceRoot);
+    // 普通文件占据证据目录位置：mkdir/write 一律 ENOTDIR。
+    await writeFile(path.join(workspaceRoot, "occupied"), "占位");
+    const closed: OwnedRecycling["outcome"][] = [];
+    let capturedWorkDir = "";
+    const journey: CliJourney = {
+      name: "evidence-blocked",
+      modes: ["source"],
+      async setup(context) {
+        capturedWorkDir = context.workDir;
+      },
+      commands: () => [{ name: "no-op", args: [] }],
+      async assertions() {
+        throw new Error("ORIGINAL_BUSINESS_FAILURE");
+      },
+    };
+
+    const failure = await runJourney({
+      journey,
+      mode: "source",
+      lifecycle: {
+        async open() {
+          return stubScenarioEnvironment({ workspacePath: workspaceRoot });
+        },
+        async close({ environment, outcome }) {
+          closed.push(outcome);
+          return await confirmedRecycle(environment, outcome);
+        },
+      },
+      evidenceDirectory: path.join(workspaceRoot, "occupied", "evidence"),
+      async executeCommand({ command }) {
+        return {
+          commandName: command.name,
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+        };
+      },
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(Error);
+    const message = (failure as Error).message;
+    expect(message).toMatch(/main failure:[\s\S]*ORIGINAL_BUSINESS_FAILURE/u);
+    expect(message).toMatch(/证据保存失败/u);
+    expect(message).not.toMatch(/环境收尾抛出异常/u);
+    expect(closed).toEqual(["failure"]);
+    await expect(access(capturedWorkDir)).rejects.toThrow();
+  });
+
+  it("证据保存失败时成功结局降级为保留，绝不删除证据载体", async () => {
+    const workspaceRoot = await mkdtemp(
+      path.join(tmpdir(), "digital-cli-journey-runner-evidence-degrade-"),
+    );
+    retained.add(workspaceRoot);
+    await writeFile(path.join(workspaceRoot, "occupied"), "占位");
+    const closed: OwnedRecycling["outcome"][] = [];
+    const journey: CliJourney = {
+      name: "evidence-blocked-success",
+      modes: ["source"],
+      async setup() {},
+      commands: () => [{ name: "no-op", args: [] }],
+      async assertions() {},
+    };
+
+    await expect(
+      runJourney({
+        journey,
+        mode: "source",
+        lifecycle: {
+          async open() {
+            return stubScenarioEnvironment({ workspacePath: workspaceRoot });
+          },
+          async close({ environment, outcome }) {
+            closed.push(outcome);
+            // 公开收尾按结局决定删除：success 才删除，这里核验调用方不再交出 success。
+            return outcome === "success"
+              ? await confirmedRecycle(environment, outcome)
+              : stubRecycling(outcome, {
+                  retainedDataRoot: environment.productDataRoot,
+                  retainedLogs: ["logs/stop.log"],
+                });
+          },
+        },
+        evidenceDirectory: path.join(workspaceRoot, "occupied", "evidence"),
+        async executeCommand({ command }) {
+          return {
+            commandName: command.name,
+            exitCode: 0,
+            stdout: "",
+            stderr: "",
+          };
+        },
+      }),
+    ).rejects.toThrow(/证据保存失败/u);
+    expect(closed).toEqual(["failure"]);
+  });
+
+  it("收尾后的第二次证据保存失败报告为保存失败而非收尾异常", async () => {
+    const workspaceRoot = await mkdtemp(
+      path.join(tmpdir(), "digital-cli-journey-runner-evidence-second-"),
+    );
+    retained.add(workspaceRoot);
+    const evidenceDirectory = path.join(workspaceRoot, "evidence");
+    const journey: CliJourney = {
+      name: "evidence-second-fail",
+      modes: ["source"],
+      async setup() {},
+      commands: () => [{ name: "no-op", args: [] }],
+      async assertions() {},
+    };
+
+    const failure = await runJourney({
+      journey,
+      mode: "source",
+      lifecycle: {
+        async open() {
+          return stubScenarioEnvironment({ workspacePath: workspaceRoot });
+        },
+        async close({ environment, outcome }) {
+          const recycling = await confirmedRecycle(environment, outcome);
+          // 收尾成功后破坏证据文件位置：只让第二次保存失败。
+          await rm(path.join(evidenceDirectory, "completion-02-stub.json"), {
+            force: true,
+          });
+          await mkdir(path.join(evidenceDirectory, "completion-02-stub.json"));
+          return recycling;
+        },
+      },
+      evidenceDirectory,
+      async executeCommand({ command }) {
+        return {
+          commandName: command.name,
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+        };
+      },
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(Error);
+    const secondSaveMessage = (failure as Error).message;
+    expect(secondSaveMessage).toMatch(/证据保存失败/u);
+    expect(secondSaveMessage).not.toMatch(/环境收尾抛出异常/u);
+  });
+
+  it("收尾期间到达的取消不报告成功，最终证据记为 interrupted 且不删除", async () => {
+    const workspaceRoot = await mkdtemp(
+      path.join(tmpdir(), "digital-cli-journey-runner-late-cancel-"),
+    );
+    retained.add(workspaceRoot);
+    const evidenceDirectory = path.join(workspaceRoot, "evidence");
+    const cancellation = new AbortController();
+    const journey: CliJourney = {
+      name: "late-cancel",
+      modes: ["source"],
+      async setup() {},
+      commands: () => [{ name: "no-op", args: [] }],
+      async assertions() {},
+    };
+
+    await expect(
+      runJourney({
+        journey,
+        mode: "source",
+        signal: cancellation.signal,
+        lifecycle: {
+          async open() {
+            return stubScenarioEnvironment({ workspacePath: workspaceRoot });
+          },
+          async close({ environment }) {
+            // 取消在异步收尾期间到达：真实收尾据此停止而不删除。
+            cancellation.abort(new Error("received SIGTERM"));
+            return stubRecycling("success", {
+              exitConfirmation: {
+                confirmed: true,
+                state: "prepared",
+                processLiveness: "exited",
+                serviceReadiness: "not-evaluated",
+                detail: "unit stub",
+              },
+              retainedDataRoot: environment.productDataRoot,
+              retainedLogs: ["logs/stop.log"],
+            });
+          },
+        },
+        evidenceDirectory,
+        async executeCommand({ command }) {
+          return {
+            commandName: command.name,
+            exitCode: 0,
+            stdout: "",
+            stderr: "",
+          };
+        },
+      }),
+    ).rejects.toThrow(/interruption failure/u);
+    const evidence = JSON.parse(
+      await readFile(
+        path.join(evidenceDirectory, "completion-02-stub.json"),
+        "utf8",
+      ),
+    ) as Record<string, unknown>;
+    expect(evidence).toMatchObject({
+      outcome: "interrupted",
+      deleteStatus: null,
+    });
   });
 });
