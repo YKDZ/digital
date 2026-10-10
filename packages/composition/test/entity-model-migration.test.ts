@@ -32,17 +32,52 @@ type EntityE01Manifest = {
   }[];
 };
 
+/** 公开目录读取里的关系投影；本票只用它比较标识之外的业务语义。 */
+type CatalogueRelationshipView = {
+  readonly id: string;
+  readonly type: string;
+  readonly participants: readonly {
+    readonly entityId: string;
+    readonly role: string;
+  }[];
+  readonly qualifiers: readonly unknown[];
+  readonly sources: readonly {
+    readonly sourceIdentity: string;
+    readonly nativeAddress: string;
+  }[];
+};
+
 /** 同一固定点在 E02 硬迁移前的公开读取结果，含被移除的专门种类投影。 */
 type AudioEntitySnapshot = {
   readonly entity: { readonly id: string; readonly label: string };
   readonly metadata: readonly unknown[];
-  readonly relationships: readonly {
-    readonly participants: readonly {
-      readonly entityId: string;
-      readonly role: string;
-    }[];
-  }[];
+  readonly relationships: readonly CatalogueRelationshipView[];
 };
+
+/** 冻结 manifest 的一条生效资料投影中，本票要核对的字段。 */
+type FrozenMetadataFact = {
+  readonly property: string;
+  readonly value: string;
+  readonly sourceIdentity: string;
+  readonly sourceSlot: string;
+  readonly selectedAssertion: { readonly producer: unknown };
+};
+
+/**
+ * 关系的业务语义：类型、参与者及其序位、限定与来源依据。事实标识不参与比较，因为跨解释
+ * 版本的新派生必然换用新标识；字段全集由刷新前的整份深比较固定。
+ */
+function relationshipSemantics(relationship: CatalogueRelationshipView) {
+  return {
+    participants: relationship.participants.map(({ entityId, role }) => ({
+      entityId,
+      role,
+    })),
+    qualifiers: relationship.qualifiers,
+    sources: relationship.sources,
+    type: relationship.type,
+  };
+}
 
 type EntityE02Manifest = {
   readonly startCommit: string;
@@ -288,15 +323,18 @@ it("新装配的产品数据不引导人物节点，交互状态仍按稳定用�
       await workflow.inspectCurrentCatalogueEntity("person:local-user"),
     ).toBeUndefined();
 
-    const registration = await workflow.observedRootRegistrations.create({
+    // 现行合同的合法前置：登记不等于授权。观察目录先经正式资产库入口归属，扫描才有
+    // 恰好一个匹配的活动库。
+    const libraries = workflow.assetLibraries;
+    const library = await libraries.save({
       displayName: "新装配材料",
-      containerPath: media,
-      readOnly: true,
-      symlinkMode: "do-not-follow",
-      allowedTargetRootIds: [],
+      directories: [media],
+      recognitionProfileIds: libraries.recognitionProfiles.map(({ id }) => id),
+      sourceIdentities: libraries.sources.map(({ id }) => id),
     });
+    expect(library.rootIds).toHaveLength(1);
     const scan = await workflow.scanObservedScope({
-      registrationId: registration.id,
+      registrationId: library.rootIds[0]!,
       relativeScope: ".",
       acceptTrusted: false,
     });
@@ -315,6 +353,10 @@ it("新装配的产品数据不引导人物节点，交互状态仍按稳定用�
     );
     const confirmed = await application.confirmObservedFileRevision({
       observedFileSelectionId: selectionId!,
+      // 现行合同：观察位置的读取/确认沿该库自己的活动目录授权选根，省略库语境不得回退到
+      // 全局活动根（composition/src/artifact-byte-access.ts:48-51），因此确认必须带上
+      // 上面正式资产库入口给出的库 id。
+      assetLibraryId: library.id,
     });
     await application.interactions.save({
       artifactRevisionId: confirmed.artifactRevisionId,
@@ -612,17 +654,70 @@ it("人物与活动身份硬迁移后公开读取保全身份、资料、关系�
       },
       initiatedBy: "local-user",
     });
+    // 原断言保持不变：正式来源刷新应整体被接受。解释契约与实现版本演进后，同槽同值的
+    // 跨 producer 候选沿既有生命周期形成新的派生事实并显式前驱取代旧事实，而不是被要求
+    // 与旧出处一致；旧 producer 行与原来源记录都不被重写。
     expect(refresh.execution.outcome).toBe("accepted");
     expect(
       (await reopened.inspectCurrentCatalogueEntity(voice!.id))?.entity,
     ).toMatchObject({ kind: ordinaryKind });
+    const afterRefresh = await reopened.inspectCurrentCatalogueEntity(
+      manifest.audioEntity.entity.id,
+    );
+    // 六条关系的类型、参与者序位、限定与来源依据逐项等同刷新前读到的冻结投影；跨版本新
+    // 派生只更换事实标识，因此这里只比较标识之外的业务语义。
+    expect(afterRefresh?.relationships.map(relationshipSemantics)).toEqual(
+      manifest.afterAudioRefresh.relationships.map(relationshipSemantics),
+    );
+    const frozenTitle = (
+      manifest.afterAudioRefresh.metadata as readonly FrozenMetadataFact[]
+    ).find(({ property }) => property === "asset.title")!;
+    const refreshedTitle = afterRefresh?.metadata.find(
+      ({ property }) => property === "asset.title",
+    );
+    // 同一槽位的业务事实不变，但当前生效依据已换成新解释版本的派生事实（旧依据留在历史里）。
+    expect(refreshedTitle).toMatchObject({
+      property: "asset.title",
+      value: frozenTitle.value,
+      sourceIdentity: frozenTitle.sourceIdentity,
+      sourceSlot: frozenTitle.sourceSlot,
+      subjectId: manifest.audioEntity.entity.id,
+    });
+    expect(refreshedTitle?.selectedAssertion.producer).not.toEqual(
+      frozenTitle.selectedAssertion.producer,
+    );
+
+    // 同一当前解释版本再次正式刷新：同 producer、同槽、同值只推进来源记录谱系，既不再次
+    // 新派生也不累积事实——关系标识与全部业务语义都逐项不变。
+    const repeated = await reopened.refreshMetadata({
+      selection: {
+        version: "asset-refresh-selection/1",
+        subjects: [
+          {
+            subjectId: manifest.audioEntity.entity.id,
+            explanations: [{ path: ["同版本重放"] }],
+          },
+        ],
+        filesystemScopes: [],
+      },
+      initiatedBy: "local-user",
+    });
+    expect(repeated.execution.outcome).toBe("accepted");
+    const afterRepeat = await reopened.inspectCurrentCatalogueEntity(
+      manifest.audioEntity.entity.id,
+    );
+    expect(afterRepeat?.relationships).toEqual(afterRefresh?.relationships);
+    expect(
+      afterRepeat?.metadata.find(({ property }) => property === "asset.title")
+        ?.selectedAssertion.producer,
+    ).toEqual(refreshedTitle?.selectedAssertion.producer);
     expect(
       (
         await reopened.inspectCurrentCatalogueEntity(
           manifest.audioEntity.entity.id,
         )
-      )?.relationships,
-    ).toEqual(manifest.afterAudioRefresh.relationships);
+      )?.relationships.length,
+    ).toBe(manifest.afterAudioRefresh.relationships.length);
     expect(
       await product.result.interactions.read([
         stateA.artifactRevisionId,
@@ -720,6 +815,8 @@ it("迁移后的普通实体经正式公开操作贯通预演、合并、合并�
       },
       initiatedBy: "local-user",
     });
+    // 合并后刷新只改来源标题：新值沿同一条持久谱系写下新的派生事实并取代旧依据，
+    // 整体被接受；跨解释版本同值项（声优署名）也不再被旧出处一致性强行拒绝。
     expect(refresh.execution.outcome).toBe("accepted");
 
     // 合并后刷新写入新来源事实：资产标题改为第二版且仍归属来源。

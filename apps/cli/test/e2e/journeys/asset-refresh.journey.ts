@@ -59,7 +59,7 @@ const journey: CliJourney = {
   },
   commands(context) {
     const source = corpusRoot(context);
-    const data = path.join(context.workDir, "product-data");
+    const data = context.productDataDirectory;
     type IdOutput = {
       readonly execution?: { readonly id?: string };
       readonly changeImpactPreview?: { readonly id?: string };
@@ -846,7 +846,7 @@ const journey: CliJourney = {
       readonly projected: StoredImpactProjection;
     };
     const database = new DatabaseSync(
-      path.join(context.workDir, "product-data", "catalogue.sqlite"),
+      path.join(context.productDataDirectory, "catalogue.sqlite"),
       { readOnly: true },
     );
     const storedPreview = (id: string) => {

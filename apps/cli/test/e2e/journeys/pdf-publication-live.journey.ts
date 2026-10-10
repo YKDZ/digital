@@ -359,6 +359,7 @@ function stablePublicationProjection(value: AssetRefreshInspection): unknown {
 
 const journey: CliJourney = {
   name: "pdf-publication-live",
+  source: { mode: "real" },
   modes: ["source", "distribution"],
   async setup(context) {
     const untrustedOracle = JSON.parse(
@@ -413,7 +414,7 @@ const journey: CliJourney = {
   commands(context) {
     const state = currentState(context);
     const environment = {
-      DIGITAL_PRODUCT_DATA: path.join(context.workDir, "product-data"),
+      DIGITAL_PRODUCT_DATA: context.productDataDirectory,
     };
     const initialCommands: readonly CliJourneyCommand[] = [
       {
