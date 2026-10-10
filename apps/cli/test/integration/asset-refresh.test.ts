@@ -623,7 +623,8 @@ describe("Asset Refresh CLI", () => {
     const defaultScanResult = JSON.parse(defaultScan.stdout()) as {
       execution: { id: string; outcome?: string };
     };
-    expect(defaultScanResult.execution.outcome).toBe("accepted");
+    // 初次扫描已完成材料确认，未变化重扫保留同一结果。
+    expect(defaultScanResult.execution.outcome).toBe("no-change");
     const reopenedSurface = runtime(
       ["catalogue-surface", "--surface", "current-catalogue"],
       { cwd: source, env },
@@ -1426,21 +1427,22 @@ async function inspectedArtifactAssociations(
   const command = runtime(["inspect", executionId, "--json"], { cwd, env });
   const exit = await runCli(command.runtime);
   expect(exit, `${command.stderr()}\n${command.stdout()}`).toBe(0);
-  return (
-    (
-      JSON.parse(command.stdout()) as {
-        accepted?: {
-          readonly artifactAssociations: {
-            readonly role: string;
-            readonly observedArtifactPart?: {
-              readonly revisionId: string;
-              readonly locator: string;
-            };
-          }[];
-        };
-      }
-    ).accepted?.artifactAssociations ?? []
-  );
+  type Accepted = {
+    entity: { id: string };
+    artifactAssociations: {
+      role: string;
+      observedArtifactPart?: { revisionId: string; locator: string };
+    }[];
+  };
+  const inspected = JSON.parse(command.stdout()) as {
+    accepted?: Accepted;
+    itemResults?: { key: string; accepted?: Accepted }[];
+  };
+  return inspected.itemResults === undefined
+    ? (inspected.accepted?.artifactAssociations ?? [])
+    : inspected.itemResults.flatMap(
+        (item) => item.accepted?.artifactAssociations ?? [],
+      );
 }
 
 async function scanRoot(
