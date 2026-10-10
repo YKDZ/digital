@@ -695,15 +695,24 @@ describe("information fulfillment composition", () => {
         },
       ],
     };
-    const workflow = composeAssetRefresh(productData, {});
+    let workflow = composeAssetRefresh(productData, {});
     const verifier = SqliteCatalogue.forProductData(productData);
 
     try {
-      const recognized = await scanRegisteredScope(workflow, observed, {
+      const library = await workflow.assetLibraries.save({
+        displayName: "来源封面库",
+        directories: [observed],
+        recognitionProfileIds: ["dlsite-voice"],
+        sourceIdentities: ["dlsite"],
+      });
+      const recognized = await workflow.scanObservedScope({
+        registrationId: library.rootIds[0]!,
+        relativeScope: ".",
         acceptTrusted: true,
         informationRequirement: coverRequirement,
       });
-      const subjectId = recognized.accepted?.entity.id;
+      expect(recognized.itemResults).toHaveLength(1);
+      const subjectId = recognized.itemResults![0]!.accepted!.entity.id;
       if (subjectId === undefined)
         throw new Error(
           `DLsite subject was not accepted: ${JSON.stringify(recognized)}`,
@@ -711,8 +720,9 @@ describe("information fulfillment composition", () => {
       const before = await verifier.findAcceptedForSubjects([subjectId]);
       const recognitionDecisionId = before[0]?.accepted.recognitionDecision.id;
       const recognitionProposalId = before[0]?.accepted.proposal.id;
-      const sourceAssociationId =
-        before[0]?.accepted.recognitionSourceAssociation?.id;
+      const sourceAssociationId = before[0]?.accepted.sourceAssociations.find(
+        (association) => association.sourceIdentity === "dlsite",
+      )?.id;
       if (
         recognitionDecisionId === undefined ||
         recognitionProposalId === undefined ||
@@ -724,6 +734,61 @@ describe("information fulfillment composition", () => {
       )?.id;
       expect(oldAssociationId).toEqual(expect.any(String));
       expect(requested).toContain("https://img.dlsite.jp/old.jpg");
+
+      const initialCovers = await workflow.inspectArtifactRoleCovers({
+        entityId: subjectId,
+      });
+      const selectedReference = initialCovers.candidates[0]!.reference;
+      const manual = await workflow.prepareArtifactRoleDecision({
+        entityId: subjectId,
+        initiatedBy: "测试使用者",
+        candidateReference: selectedReference,
+      });
+      await workflow.applyChangeImpactPreview({
+        previewId: manual.id,
+        confirmedBy: "测试使用者",
+      });
+      const metadataOnly = await workflow.fulfillInformation({
+        selection: { subjectIds: [subjectId] },
+        assetLibraryId: library.id,
+        requirement: {
+          ...coverRequirement,
+          artifactRoles: [],
+          relationshipTypes: [
+            { type: "asset.membership", necessity: "optional" },
+          ],
+        },
+      });
+      const unchanged = await waitForTerminalExecution(
+        workflow,
+        metadataOnly.subjects[0]!.inputs[0]!.executionReferences![0]!
+          .workflowExecutionId,
+      );
+      expect(
+        unchanged.sourceRefreshRuns!.every((run) =>
+          run.scopes.every((scope) => scope.outcome === "unchanged"),
+        ),
+      ).toBe(true);
+      const retainedCovers = await workflow.inspectArtifactRoleCovers({
+        entityId: subjectId,
+      });
+      expect(retainedCovers.decision).toEqual({
+        kind: "select",
+        reference: selectedReference,
+      });
+      expect(retainedCovers.effectiveReference).toBe(selectedReference);
+      expect(
+        requested.filter(
+          (address) => address === "https://img.dlsite.jp/old.jpg",
+        ),
+      ).toHaveLength(1);
+
+      await workflow.close();
+      workflow = composeAssetRefresh(productData, {});
+      expect(
+        (await workflow.inspectArtifactRoleCovers({ entityId: subjectId }))
+          .decision,
+      ).toEqual({ kind: "select", reference: selectedReference });
 
       currentImage = "new";
       const refreshed = await workflow.refreshMetadata({
@@ -752,16 +817,16 @@ describe("information fulfillment composition", () => {
       const [staleFacts] = await verifier.readCurrentInformationSubjectFacts({
         subjectIds: [subjectId],
       });
-      expect(staleFacts?.artifactAssociations).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            id: oldAssociationId,
-            sourceAssociationId,
-            currentSourceArtifact: false,
-          }),
-        ]),
-      );
+      expect(
+        staleFacts!.basis.artifactAssociations.map(
+          (association) => association.id,
+        ),
+      ).not.toContain(oldAssociationId);
 
+      expect(
+        (await workflow.inspectArtifactRoleCovers({ entityId: subjectId }))
+          .decision,
+      ).toEqual({ kind: "select" });
       const readiness = await workflow.fulfillInformation({
         selection: { subjectIds: [subjectId] },
         requirement: coverRequirement,
