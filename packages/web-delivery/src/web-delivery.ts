@@ -1046,7 +1046,10 @@ function knownDeliveryErrorCode<Code extends string>(
   codes: readonly Code[],
 ): Code | undefined {
   if (typeof error !== "object" || error === null) return undefined;
-  const candidate = error as { readonly name?: unknown; readonly code?: unknown };
+  const candidate = error as {
+    readonly name?: unknown;
+    readonly code?: unknown;
+  };
   if (candidate.name !== name) return undefined;
   return codes.find((code) => code === candidate.code);
 }
