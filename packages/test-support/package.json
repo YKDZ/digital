@@ -11,6 +11,11 @@
       "digital-source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./source-io": {
+      "digital-source": "./src/source-io.ts",
+      "types": "./dist/source-io.d.ts",
+      "default": "./dist/source-io.js"
     }
   },
   "scripts": {

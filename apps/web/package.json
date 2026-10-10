@@ -51,6 +51,7 @@
   "dependencies": {
     "@digital/composition": "workspace:*",
     "@digital/presentation": "workspace:*",
+    "@digital/test-support": "workspace:*",
     "@digital/web-delivery": "workspace:*",
     "@lucide/vue": "^1.27.0",
     "@tanstack/vue-table": "^8.21.3",

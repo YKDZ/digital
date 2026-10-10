@@ -1,0 +1,29 @@
+{
+  "formatVersion": 1,
+  "ordinary": [
+    {
+      "id": "dlsite-product-ajax",
+      "url": "https://www.dlsite.com/maniax/product/info/ajax?product_id=RJ01668691",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/dlsite-product-ajax.json"
+    },
+    {
+      "id": "dlsite-product-page",
+      "url": "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "text/html",
+      "responseFile": "responses/dlsite-product-page.html"
+    },
+    {
+      "id": "dlsite-cover-image",
+      "url": "https://img.dlsite.jp/modpub/images2/work/doujin/RJ01669000/RJ01668691_img_main.png",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "image/png",
+      "responseFile": "responses/dlsite-cover.png"
+    }
+  ]
+}

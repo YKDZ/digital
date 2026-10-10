@@ -1,0 +1,7 @@
+{
+  "extends": ["//"],
+  "tags": ["environment"],
+  "tasks": {
+    "test": { "dependsOn": [] }
+  }
+}

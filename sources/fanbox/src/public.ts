@@ -12,3 +12,4 @@ export {
   type FanboxCollectionFailureCause,
   type FanboxProductAssembly,
 } from "./index.ts";
+export type { FanboxEndpointSessionTransport } from "./browser-session.ts";

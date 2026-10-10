@@ -1663,6 +1663,10 @@ function automationRecoveryReasonText(reason: string): string {
     return "这次刷新所用的功能版本已经更新，旧记录对不上，无法安全继续";
   if (reason.includes("版本化输入"))
     return "这次刷新的记录缺少继续所需的信息，无法安全继续";
+  // 受控来源在没有匹配条目时会拒绝请求；内部边界名、方法与请求地址只留在耐久
+  // 执行记录里供诊断，界面这里只说明来源内容当前取不到，不泄漏这些技术细节。
+  if (reason.includes("受控来源拒绝"))
+    return "这次刷新所需的外部来源内容尚未在当前环境准备，暂时无法取得";
   return reason;
 }
 
@@ -2031,8 +2035,13 @@ export async function inspectSourceEnrichment(executionId: string) {
       : { outcome: inspection.execution.outcome }),
     ...(inspection.execution.reason === undefined
       ? {}
-      : { reason: inspection.execution.reason }),
-    sourceEnrichments: inspection.sourceEnrichments,
+      : { reason: deliveryReasonText(inspection.execution.reason) }),
+    sourceEnrichments: inspection.sourceEnrichments.map((item) => ({
+      ...item,
+      ...(item.reason === undefined
+        ? {}
+        : { reason: deliveryReasonText(item.reason) }),
+    })),
     sourceAssociations: inspection.accepted?.sourceAssociations ?? [],
   };
 }

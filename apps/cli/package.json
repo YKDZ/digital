@@ -46,13 +46,13 @@
   },
   "dependencies": {
     "@digital/cli-delivery": "workspace:*",
-    "@digital/composition": "workspace:*"
+    "@digital/composition": "workspace:*",
+    "@digital/test-support": "workspace:*"
   },
   "devDependencies": {
     "@digital/application": "workspace:*",
     "@digital/db-migrations": "workspace:*",
     "@digital/fanbox": "workspace:*",
-    "@digital/test-support": "workspace:*",
     "@digital/typescript-config": "workspace:*",
     "@types/node": "catalog:",
     "oxfmt": "catalog:",

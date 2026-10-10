@@ -126,10 +126,17 @@ export type FanboxProductAssembly = {
   close(): Promise<void>;
 };
 
-/** 建立生产 FANBOX 能力闭包；factory 本身不启动 Chromium。 */
-export function createFanboxProductAssembly(): FanboxProductAssembly {
+/**
+ * 建立生产 FANBOX 能力闭包；factory 本身不启动 Chromium。
+ * 受控装配显式给出会话 transport，因此不会构造真实浏览器 transport。
+ */
+export function createFanboxProductAssembly(
+  input: {
+    readonly sessionTransport?: FanboxEndpointSessionTransport;
+  } = {},
+): FanboxProductAssembly {
   return createFanboxProductAssemblyWithTransport(
-    createPlaywrightFanboxSessionTransport(),
+    input.sessionTransport ?? createPlaywrightFanboxSessionTransport(),
   );
 }
 

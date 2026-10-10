@@ -1,0 +1,31 @@
+{
+  "status": "official-detail-reviewed",
+  "reviewedAt": "2026-09-04",
+  "reference": ".scratch/acceptance-corpus/references/reviewed-oracle.json#creatorPosts[sourceNativeAddress=7225781]",
+  "reviewMethod": "独立语料参考由当时产品的浏览器会话逐篇核对官方 detail 的身份、标题、发布时间、类型、访问状态、封面、正文结构与附件顺序；本地媒体只用于独立核对，不提供采集输入。本文件只摘录其中一条已审阅事实作为本夹具的预期依据。",
+  "selection": {
+    "logicalRoot": "media/animation/Custom Udon/23.12.31 コスプレ4",
+    "reducedRoot": "material/customudon/23.12.31 コスプレ4",
+    "reduction": [
+      "保留 Season 1/S01E01 - Cosplay4.mp4 的相对层级，字节替换为轻量有效载荷",
+      "删除 Specials/S00E01 - Voice.mp4",
+      "删除 poster.jpg",
+      "父目录 Custom Udon 改为 oracle 已确认的 creatorId customudon，因为既有创作者标识规则不接受空格"
+    ]
+  },
+  "projection": {
+    "creatorId": "customudon",
+    "sourceNativeAddress": "7225781",
+    "directoryDate": "2023-12-31",
+    "publishedDatetime": "2023-12-31T17:10:55+09:00",
+    "title": "Movie | コスプレ4",
+    "postType": "file",
+    "cover": "present"
+  },
+  "notClaimedByThisOracle": {
+    "attachmentBytes": "oracle 只记录一个附件的存在与名称，缩减夹具不下载附件，也不声称拥有原帖附件字节",
+    "coverAddressAndBytes": "oracle 只记录封面 present，未保留图片地址与字节；夹具中的封面地址与 PNG 字节是协议代表值",
+    "currentSessionOrEntitlement": "oracle 的 available 属于 2026-09-04 核对当时的状态，不代表本次运行时的真实会话或付费访问；夹具使用的合成凭据没有真实登录能力",
+    "fullCreatorHistory": "受控摘要只保留该日期的一条帖子，不声称完整创作者历史"
+  }
+}

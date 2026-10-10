@@ -130,6 +130,7 @@ import {
   InProcessObservedRootCleanupEmergencyJournal,
   type ObservedRootCleanupEmergencyJournal,
 } from "./observed-root-cleanup-journal.ts";
+import type { ProductOrdinaryRequest, ProductSourceIo } from "./source-io.ts";
 
 export {
   InProcessObservedRootCleanupEmergencyJournal,
@@ -207,6 +208,8 @@ export type AssetRefreshRuntimeOptions = {
   readonly pollIntervalMilliseconds?: number;
   readonly onError?: (error: unknown) => void;
   readonly configuration?: Readonly<Record<string, string | undefined>>;
+  /** 外部来源 I/O 的装配选择；缺席即真实默认装配。 */
+  readonly sourceIo?: ProductSourceIo;
   /**
    * 每个已接受主体建立后重建的交付层分派。回调只返回 Application 的中立信息需求契约。
    */
@@ -228,6 +231,8 @@ export type AssetRefreshCompositionOptions = {
   readonly automationInformationRequirementForAcceptedSubject?: AutomationInformationRequirementResolver;
   /** 由运行时持有、交付层和自动化子执行共享的监督器。 */
   readonly invocationSupervisor?: ExecutionHost;
+  /** 外部来源 I/O 的装配选择；缺席即真实默认装配。 */
+  readonly sourceIo?: ProductSourceIo;
 };
 
 export function composeAssetRefresh(
@@ -263,18 +268,36 @@ function composeAssetRefreshWithGeneration(
     );
     const privateState =
       ProductSourceConnectionPrivateState.forRoot(productDataDirectory);
+    // 注入装配（offline 与 controlled）下每个来源边界都拿到同一个窄 request；真实模式
+    // 沿用来源自身的默认网络实现。注入模式没有 undefined 可传，未预期的请求在实现内直接拒绝。
+    const injectedSourceIo =
+      options.sourceIo !== undefined && options.sourceIo.mode !== "real"
+        ? options.sourceIo
+        : undefined;
+    const ordinaryRequestArgs: readonly [] | readonly [ProductOrdinaryRequest] =
+      injectedSourceIo === undefined ? [] : [injectedSourceIo.request];
+    const ordinaryRequestOption: { readonly request?: ProductOrdinaryRequest } =
+      injectedSourceIo === undefined
+        ? {}
+        : { request: injectedSourceIo.request };
     const bangumiSourceConnection = new ProductBangumiSourceConnection({
       privateState,
       environment: configuration,
+      ...ordinaryRequestOption,
     });
-    const fanboxProductAssembly = createFanboxProductAssembly();
+    const fanboxProductAssembly = createFanboxProductAssembly(
+      injectedSourceIo === undefined
+        ? {}
+        : { sessionTransport: injectedSourceIo.sessionTransport },
+    );
     const sourceConnections = new ProductSourceConnections({
       privateState,
       environment: configuration,
       bangumi: {
         connection: bangumiSourceConnection,
         collectorCapability: bangumiOfficialCollectionCapability,
-        createCollector: (input) => new BangumiCollector(input),
+        createCollector: (input) =>
+          new BangumiCollector({ ...input, ...ordinaryRequestOption }),
       },
       fanbox: {
         connectionCapability: fanboxSourceConnectionCapability,
@@ -288,23 +311,30 @@ function composeAssetRefreshWithGeneration(
       tmdb: {
         connectionCapability: tmdbSourceConnectionCapability,
         collectorCapability: tmdbOfficialCollectionCapability,
-        verifyAccessToken: verifyTmdbAccessToken,
-        createCollector: (input) => new TmdbCollector(input),
+        verifyAccessToken: (accessToken) =>
+          verifyTmdbAccessToken(accessToken, ...ordinaryRequestArgs),
+        createCollector: (input) =>
+          new TmdbCollector({ ...input, ...ordinaryRequestOption }),
       },
       omdb: {
         connectionCapability: omdbSourceConnectionCapability,
         collectorCapability: omdbOfficialCollectionCapability,
-        verifyApiKey: verifyOmdbApiKey,
-        createCollector: (input) => new OmdbCollector(input),
+        verifyApiKey: (apiKey) =>
+          verifyOmdbApiKey(apiKey, ...ordinaryRequestArgs),
+        createCollector: (input) =>
+          new OmdbCollector({ ...input, ...ordinaryRequestOption }),
       },
     });
-    const fanbox = fanboxCapabilitiesFromProductConnections(sourceConnections);
+    const fanbox = fanboxCapabilitiesFromProductConnections(
+      sourceConnections,
+      ordinaryRequestArgs,
+    );
     const bangumi =
       bangumiCapabilitiesFromProductConnections(sourceConnections);
     const tmdb = tmdbCapabilitiesFromPrivateConfiguration(sourceConnections);
     const omdb = omdbCapabilitiesFromPrivateConfiguration(sourceConnections);
-    const taiwanKadokawa = createTaiwanKadokawaSource();
-    const kadokawaJapan = createKadokawaJapanSource();
+    const taiwanKadokawa = createTaiwanKadokawaSource(ordinaryRequestOption);
+    const kadokawaJapan = createKadokawaJapanSource(ordinaryRequestOption);
     const pdf = createPdfRecognitionCapabilities();
     const directoryInterpreters = [
       new DlsiteExactDirectoryInterpreter(),
@@ -322,9 +352,9 @@ function composeAssetRefreshWithGeneration(
       ...pdf.formatInspectors,
     ];
     const collectors = [
-      new DlsiteCollector(),
+      new DlsiteCollector(...ordinaryRequestArgs),
       bangumi.collector,
-      new NbinetCollector(),
+      new NbinetCollector(...ordinaryRequestArgs),
       taiwanKadokawa.collector,
       kadokawaJapan.collector,
       tmdb.collector,
@@ -372,10 +402,10 @@ function composeAssetRefreshWithGeneration(
       ...fanbox.recognizers,
     ];
     const acquirers = [
-      new DlsiteArtifactAcquirer(),
-      new BangumiArtifactAcquirer(),
-      new TmdbArtifactAcquirer(),
-      new OmdbArtifactAcquirer(),
+      new DlsiteArtifactAcquirer(...ordinaryRequestArgs),
+      new BangumiArtifactAcquirer(...ordinaryRequestArgs),
+      new TmdbArtifactAcquirer(...ordinaryRequestArgs),
+      new OmdbArtifactAcquirer(...ordinaryRequestArgs),
       taiwanKadokawa.artifactAcquirer,
       kadokawaJapan.artifactAcquirer,
       ...fanbox.acquirers,
@@ -749,6 +779,9 @@ export function composeAssetRefreshRuntime(
               automationInformationRequirementForAcceptedSubject:
                 options.automationInformationRequirementForAcceptedSubject,
             }),
+        ...(options.sourceIo === undefined
+          ? {}
+          : { sourceIo: options.sourceIo }),
         invocationSupervisor: executionHost,
       },
       runtimeLock,
@@ -812,6 +845,7 @@ function bangumiCapabilitiesFromProductConnections(
 
 function fanboxCapabilitiesFromProductConnections(
   sourceConnections: ProductSourceConnections,
+  artifactRequestArgs: readonly [] | readonly [ProductOrdinaryRequest],
 ): {
   readonly directoryInterpreters: readonly FanboxDateDirectoryInterpreter[];
   readonly collectors: readonly SourceCollector[];
@@ -824,7 +858,8 @@ function fanboxCapabilitiesFromProductConnections(
     collectors: [sourceConnections.fanboxCollector()],
     sourceInterpreters: [new FanboxSourceInterpreter()],
     recognizers: [new FanboxExactRecognizer()],
-    acquirers: [new FanboxArtifactAcquirer()],
+    // 会话验证/采集走 transport，独立图片仍是一条普通请求边界。
+    acquirers: [new FanboxArtifactAcquirer(...artifactRequestArgs)],
   };
 }
 
@@ -937,6 +972,7 @@ async function releaseOwnedResources(
 export function composeProductApplication(input: {
   readonly productDataDirectory?: string;
   readonly environment: Readonly<Record<string, string | undefined>>;
+  readonly sourceIo?: ProductSourceIo;
 }): { readonly application: ProductApplication; close(): Promise<void> } {
   const productDataDirectory = input.productDataDirectory?.trim() || undefined;
   const managedArtifacts =
@@ -1008,6 +1044,7 @@ export function composeProductApplication(input: {
   ): ComposedAssetRefreshRuntime =>
     (runtime ??= composeAssetRefreshRuntime(productDataDirectory, {
       configuration: input.environment,
+      ...(input.sourceIo === undefined ? {} : { sourceIo: input.sourceIo }),
       ...options,
       ...(automationInformationRequirementForAcceptedSubject === undefined
         ? {}

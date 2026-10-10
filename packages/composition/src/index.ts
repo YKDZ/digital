@@ -1,10 +1,15 @@
 import type { ProductDelivery } from "@digital/product-application";
 
 import { composeProductApplication } from "./runtime.ts";
+import type { ProductSourceIo } from "./source-io.ts";
+
+export type { ProductOrdinaryRequest, ProductSourceIo } from "./source-io.ts";
 
 export type ProductConfiguration = {
   readonly productDataDirectory?: string;
   readonly environment: Readonly<Record<string, string | undefined>>;
+  /** 缺席即真实默认装配；受控装配必须同时给出普通请求实现与会话 transport。 */
+  readonly sourceIo?: ProductSourceIo;
 };
 
 /** 可执行根保留组合资源的唯一关闭权；交付层永远不会取得该能力。 */

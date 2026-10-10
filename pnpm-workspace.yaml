@@ -28,9 +28,11 @@ catalog:
   "@playwright/test": ^1.61.1
   "@tailwindcss/vite": ^4.3.3
   "@types/node": ^24.13.3
+  "@valibot/to-json-schema": 1.7.1
   "@vikejs/hono": ^0.2.1
   "@vitejs/plugin-vue": ^6.0.8
   "@vue/tsconfig": ^0.9.1
+  "@ykdz/cli-contract": ^0.2.1
   "commander": ^15.0.0
   "drizzle-kit": 1.0.0-rc.4
   "drizzle-orm": ^1.0.0-rc.4

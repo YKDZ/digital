@@ -51,6 +51,11 @@
           "allow": ["domain", "test-support", "tooling"]
         }
       },
+      "environment": {
+        "dependencies": {
+          "allow": ["tooling"]
+        }
+      },
       "infrastructure": {
         "dependencies": {
           "allow": ["application", "domain", "test-support", "tooling"]

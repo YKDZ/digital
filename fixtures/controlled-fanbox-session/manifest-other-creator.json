@@ -1,0 +1,55 @@
+{
+  "formatVersion": 1,
+  "ordinary": [
+    {
+      "id": "fanbox-cover-image",
+      "url": "https://downloads.fanbox.cc/images/post/7225781/controlled-cover.png",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "image/png",
+      "responseFile": "responses/fanbox-cover.png"
+    }
+  ],
+  "session": [
+    {
+      "id": "fanbox-login-status",
+      "creatorId": "customudon-other",
+      "endpoint": "login-status",
+      "privateContextIdentity": "sha256:2ceb9d8131a38d5dff4b845ab507b2ad39aa2a04b3cb834901663c999c1e1efd",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/fanbox-login-status.json"
+    },
+    {
+      "id": "fanbox-verify-summaries",
+      "creatorId": "customudon-other",
+      "endpoint": "creator-summaries",
+      "limit": 1,
+      "privateContextIdentity": "sha256:2ceb9d8131a38d5dff4b845ab507b2ad39aa2a04b3cb834901663c999c1e1efd",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/fanbox-verify-summaries.json"
+    },
+    {
+      "id": "fanbox-collect-summaries",
+      "creatorId": "customudon-other",
+      "endpoint": "creator-summaries",
+      "limit": 300,
+      "privateContextIdentity": "sha256:2ceb9d8131a38d5dff4b845ab507b2ad39aa2a04b3cb834901663c999c1e1efd",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/fanbox-collect-summaries.json"
+    },
+    {
+      "id": "fanbox-post-detail",
+      "creatorId": "customudon-other",
+      "endpoint": "post-detail",
+      "postId": "7225781",
+      "access": "connected",
+      "privateContextIdentity": "sha256:2ceb9d8131a38d5dff4b845ab507b2ad39aa2a04b3cb834901663c999c1e1efd",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/fanbox-post-detail.json"
+    }
+  ]
+}

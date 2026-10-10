@@ -1,0 +1,48 @@
+{
+  "name": "@digital/environment",
+  "version": "0.0.0",
+  "private": true,
+  "bin": {
+    "digital-environment": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "digital-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json --pretty false",
+    "cli": "node --conditions=digital-source src/cli.ts",
+    "format:check": "oxfmt --list-different --config ../../oxfmt.config.ts .",
+    "format:write": "oxfmt --write --config ../../oxfmt.config.ts .",
+    "lint": "oxlint --quiet --format=unix --type-aware --config ../../oxlint.config.ts --ignore-pattern node_modules .",
+    "lint:fix": "oxlint --type-aware --format=unix --config ../../oxlint.config.ts . --fix",
+    "postbuild": "node -e \"if (process.platform !== 'win32') require('node:fs').chmodSync('dist/cli.js', 0o755)\"",
+    "prepack": "pnpm exec turbo run build --filter=.",
+    "test": "vitest run --reporter=verbose --passWithNoTests",
+    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false"
+  },
+  "dependencies": {
+    "@valibot/to-json-schema": "catalog:",
+    "@ykdz/cli-contract": "catalog:",
+    "valibot": "catalog:"
+  },
+  "devDependencies": {
+    "@digital/typescript-config": "workspace:*",
+    "@types/node": "catalog:",
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:",
+    "oxlint-tsgolint": "catalog:",
+    "typescript-7": "catalog:",
+    "vitest": "catalog:"
+  },
+  "engines": {
+    "node": "24"
+  }
+}

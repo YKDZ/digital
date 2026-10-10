@@ -1,0 +1,13 @@
+{
+  "formatVersion": 1,
+  "ordinary": [
+    {
+      "id": "fanbox-cover-image",
+      "url": "https://downloads.fanbox.cc/images/post/7225781/controlled-cover.png",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "image/png",
+      "responseFile": "responses/fanbox-cover.png"
+    }
+  ]
+}

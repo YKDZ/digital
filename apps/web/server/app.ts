@@ -4,6 +4,11 @@ import vike from "@vikejs/hono";
 import { Hono } from "hono";
 
 import {
+  readyAttestation,
+  readyNonceHeader,
+  type ReadyIdentity,
+} from "#/server/environment-ready-identity";
+import {
   processLifecycle,
   type ProcessLifecycleRegistry,
   type ProcessOwnerRegistration,
@@ -17,6 +22,8 @@ export type WebServerOptions = {
   readonly attachVike?: boolean;
   readonly createDelivery?: typeof createWebDelivery;
   readonly lifecycle?: ProcessLifecycleRegistry;
+  /** 由环境外层启动时才有；缺席时 ready 响应形状与独立部署完全一致。 */
+  readonly readyIdentity?: ReadyIdentity;
   /** 仅由可执行组合根持有；Web delivery 本身不能关闭产品资源。 */
   readonly closeProduct?: () => Promise<void>;
 };
@@ -133,6 +140,7 @@ async function createOwnedWebApp(
 
 function assembleApp(delivery: WebDelivery, options: WebServerOptions): Hono {
   const app = new Hono();
+  const readyIdentity = options.readyIdentity;
 
   // host 由进程持有且幂等，因此开发和测试中重复创建 Vike app 不会产生重复定时器。
   const start =
@@ -158,7 +166,18 @@ function assembleApp(delivery: WebDelivery, options: WebServerOptions): Hono {
       return _context.json({ ok: true, service: "digital-web" });
     }
     if (_context.req.path === "/api/ready") {
-      if (ready()) return _context.json({ ok: true, service: "digital-web" });
+      if (ready()) {
+        // 只有带一次性 nonce 的环境认证请求才追加签名；浏览器与其他调用看到的
+        // 响应与独立部署完全一致，身份与密钥都不进入普通响应。
+        const nonce = _context.req.header(readyNonceHeader);
+        return _context.json({
+          ok: true,
+          service: "digital-web",
+          ...(nonce === undefined || readyIdentity === undefined
+            ? {}
+            : readyAttestation(readyIdentity, nonce)),
+        });
+      }
       return _context.json(
         {
           ok: false,

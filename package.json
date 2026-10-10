@@ -6,6 +6,7 @@
   "scripts": {
     "boundaries": "turbo boundaries --no-color",
     "db:migrate": "pnpm --filter @digital/db-migrations prepare-only",
+    "environment": "pnpm --filter @digital/environment cli",
     "check": "pnpm boundaries && turbo run format:check lint typecheck build test test:e2e --continue=dependencies-successful --output-logs=errors-only --log-order=grouped --log-prefix=task",
     "check:deployment": "turbo run deployment --output-logs=errors-only --log-order=grouped --log-prefix=task",
     "fix": "turbo run lint:fix format:write --continue=dependencies-successful --output-logs=full --log-order=grouped --log-prefix=task",

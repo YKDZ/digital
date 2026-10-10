@@ -11,6 +11,7 @@ import {
   type Greeting,
 } from "@digital/cli-delivery";
 import { runProduct } from "@digital/composition";
+import { resolveSourceIoFromEnvironment } from "@digital/test-support/source-io";
 
 export { CliResources, createCliCommand, greet };
 export type { CliProductApplication, CliRuntime, Greeting };
@@ -30,10 +31,14 @@ export async function runCli(
   };
   if (application !== undefined)
     return await runCliDelivery(configuredRuntime, application);
+  // 来源装配在任何产品工作之前解析：受控清单无效时这条正式 CLI 入口直接失败，
+  // 不会带着真实默认值继续。
+  const sourceIo = await resolveSourceIoFromEnvironment(configuredRuntime.env);
   const product = runProduct(
     {
       productDataDirectory,
       environment: runtime.env,
+      sourceIo,
     },
     {
       start: (product) => runCliDelivery(configuredRuntime, product),
