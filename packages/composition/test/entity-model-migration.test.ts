@@ -288,15 +288,18 @@ it("新装配的产品数据不引导人物节点，交互状态仍按稳定用�
       await workflow.inspectCurrentCatalogueEntity("person:local-user"),
     ).toBeUndefined();
 
-    const registration = await workflow.observedRootRegistrations.create({
+    // 现行合同的合法前置：登记不等于授权。观察目录先经正式资产库入口归属，扫描才有
+    // 恰好一个匹配的活动库。
+    const libraries = workflow.assetLibraries;
+    const library = await libraries.save({
       displayName: "新装配材料",
-      containerPath: media,
-      readOnly: true,
-      symlinkMode: "do-not-follow",
-      allowedTargetRootIds: [],
+      directories: [media],
+      recognitionProfileIds: libraries.recognitionProfiles.map(({ id }) => id),
+      sourceIdentities: libraries.sources.map(({ id }) => id),
     });
+    expect(library.rootIds).toHaveLength(1);
     const scan = await workflow.scanObservedScope({
-      registrationId: registration.id,
+      registrationId: library.rootIds[0]!,
       relativeScope: ".",
       acceptTrusted: false,
     });
@@ -315,6 +318,10 @@ it("新装配的产品数据不引导人物节点，交互状态仍按稳定用�
     );
     const confirmed = await application.confirmObservedFileRevision({
       observedFileSelectionId: selectionId!,
+      // 现行合同：观察位置的读取/确认沿该库自己的活动目录授权选根，省略库语境不得回退到
+      // 全局活动根（composition/src/artifact-byte-access.ts:48-51），因此确认必须带上
+      // 上面正式资产库入口给出的库 id。
+      assetLibraryId: library.id,
     });
     await application.interactions.save({
       artifactRevisionId: confirmed.artifactRevisionId,
@@ -612,6 +619,10 @@ it("人物与活动身份硬迁移后公开读取保全身份、资料、关系�
       },
       initiatedBy: "local-user",
     });
+    // 原断言保持不变：正式来源刷新应整体被接受。当前生产在 `dlsite.product-json` 范围
+    // 终态失败（`Metadata Assertion conflicts with durable producer provenance`，
+    // `requiresReview:false`，故无公开审阅前置可转化），实际输出与归属见
+    // R/current/07/report.md 与 R/current/07/coordination.md。
     expect(refresh.execution.outcome).toBe("accepted");
     expect(
       (await reopened.inspectCurrentCatalogueEntity(voice!.id))?.entity,
@@ -720,6 +731,7 @@ it("迁移后的普通实体经正式公开操作贯通预演、合并、合并�
       },
       initiatedBy: "local-user",
     });
+    // 同上：合并后刷新沿用同一条持久谱系，实际公开输出与归属见本票报告/协作文件。
     expect(refresh.execution.outcome).toBe("accepted");
 
     // 合并后刷新写入新来源事实：资产标题改为第二版且仍归属来源。

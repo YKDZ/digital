@@ -14,9 +14,30 @@ import path from "node:path";
 import { runProduct } from "@digital/composition";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { runCli, type CliRuntime } from "../../src/main.ts";
+import { runCli as runCliEntry, type CliRuntime } from "../../src/main.ts";
 
 const cleanupPaths: string[] = [];
+/**
+ * 自有操作账本：被框架超时放弃的用例仍可能在写它自己的产品数据根。清理必须先等这些
+ * Promise 真正结束（且全局替身仍在位），否则 `rm -r` 与备份/恢复复制交错，留下与业务
+ * 无关的次生失败。
+ */
+const inFlightOperations = new Set<Promise<void>>();
+
+function trackOwnOperation<Value>(operation: Promise<Value>): Promise<Value> {
+  const settled = operation.then(
+    () => undefined,
+    () => undefined,
+  );
+  inFlightOperations.add(settled);
+  void settled.then(() => inFlightOperations.delete(settled));
+  return operation;
+}
+
+function runCli(runtime: CliRuntime): Promise<number> {
+  return trackOwnOperation(runCliEntry(runtime));
+}
+
 const repositoryRoot = path.resolve(import.meta.dirname, "../../..");
 
 async function temporaryDirectory(prefix: string): Promise<string> {
@@ -50,40 +71,127 @@ function runtime(
   };
 }
 
+/** `workflow-history` 公开面的最小可读形状。 */
+type SurfaceHistory = {
+  readonly items: readonly {
+    readonly execution: { readonly id: string; readonly outcome?: string };
+  }[];
+};
+
+/**
+ * `scan … --json` 的公开检查（`temporary-asset-refresh-inspection/v1`）在本用例里需要读到的
+ * 父子位置。已接受资产身份挂在 `itemResults[i].accepted.entity` 上；父执行顶层的
+ * `acceptedAssetId`／`reusedExecutionId` 仅在整执行级复用命中时发出，因此都是可选的。
+ */
+type ScanInspection = {
+  readonly executionId: string;
+  readonly execution: {
+    readonly outcome: string;
+    readonly status?: string;
+    readonly acceptedAssetId?: string;
+    readonly reusedExecutionId?: string;
+    readonly workItems?: readonly {
+      readonly key: string;
+      readonly relativePaths: readonly string[];
+      readonly outcome?: string;
+      readonly reason?: string;
+      readonly acceptedAssetId?: string;
+      readonly retainedAssetId?: string;
+      readonly reuseAcceptedBoundary?: boolean;
+    }[];
+  };
+  readonly itemResults?: readonly {
+    readonly key: string;
+    readonly relativePaths: readonly string[];
+    readonly outcome?: string;
+    readonly reason?: string;
+    readonly accepted?: {
+      readonly entity?: { readonly id: string; readonly kind: string };
+      readonly sourceAssociations?: readonly {
+        readonly sourceIdentity: string;
+        readonly nativeAddress: string;
+      }[];
+    };
+  }[];
+};
+
+/**
+ * 恢复后复扫的复用位置（真实脱敏公开 JSON 留档：
+ * `R/current/07/evidence/07-scan-inspection-reopened.json`／
+ * `07-scan-inspection-resumed.json`）：命中的是「按已接受边界逐项复用」这条终态，父执行顶层
+ * 不发出 `acceptedAssetId`／`reusedExecutionId`；被复用的资产身份挂在子项 `retainedAssetId`／
+ * `acceptedAssetId` 上，并与备份前按父子位置取到的同一条已接受资产互指，
+ * `itemResults[i].accepted.entity` 也仍在。
+ */
+function expectRetainedAcceptedAsset(
+  scan: ScanInspection,
+  acceptedAssetId: string,
+  backedUpSourceAssociation: {
+    readonly sourceIdentity: string;
+    readonly nativeAddress: string;
+  },
+) {
+  expect(scan.execution).toMatchObject({
+    outcome: "no-change",
+    status: "completed",
+  });
+  const [reusedWorkItem] = scan.execution.workItems ?? [];
+  expect(reusedWorkItem).toMatchObject({
+    relativePaths: ["track.wav"],
+    outcome: "no-change",
+    reason: "保留已经确认的资产范围",
+    reuseAcceptedBoundary: true,
+    retainedAssetId: acceptedAssetId,
+    acceptedAssetId,
+  });
+  const itemResult = scan.itemResults?.find(
+    ({ key }) => key === reusedWorkItem?.key,
+  );
+  expect(itemResult?.accepted?.entity).toMatchObject({
+    id: acceptedAssetId,
+    kind: "digital-asset",
+  });
+  expect(itemResult?.accepted?.sourceAssociations).toEqual([
+    backedUpSourceAssociation,
+  ]);
+}
+
 async function prepareWithFormalMigration(
   productDataDirectory: string,
 ): Promise<void> {
-  const result = await new Promise<number>((resolve, reject) => {
-    const child = spawn(
-      "pnpm",
-      ["--filter", "@digital/db-migrations", "prepare-only"],
-      {
-        cwd: repositoryRoot,
-        env: { ...process.env, DIGITAL_PRODUCT_DATA: productDataDirectory },
-        stdio: "pipe",
-      },
-    );
-    child.once("error", reject);
-    child.once("close", (code) => resolve(code ?? 1));
-  });
+  const result = await trackOwnOperation(
+    new Promise<number>((resolve, reject) => {
+      const child = spawn(
+        "pnpm",
+        ["--filter", "@digital/db-migrations", "prepare-only"],
+        {
+          cwd: repositoryRoot,
+          env: { ...process.env, DIGITAL_PRODUCT_DATA: productDataDirectory },
+          stdio: "pipe",
+        },
+      );
+      child.once("error", reject);
+      child.once("close", (code) => resolve(code ?? 1));
+    }),
+  );
   expect(result).toBe(0);
 }
 
+/**
+ * 清理顺序：先等自有操作（CLI 进程、备份/恢复复制）真正结束，再撤全局替身，最后删除自有
+ * 临时根。被超时放弃的用例仍可能在写自己的产品数据根，并发 `rm -r` 会留下与业务无关的
+ * ENOTEMPTY 次生失败。
+ */
 afterEach(async () => {
+  await Promise.allSettled(inFlightOperations);
   vi.unstubAllGlobals();
-  await Promise.all(
-    cleanupPaths
-      .splice(0)
-      .map(
-        async (directory) =>
-          await rm(directory, { recursive: true, force: true }),
-      ),
-  );
+  for (const directory of cleanupPaths.splice(0))
+    await rm(directory, { recursive: true, force: true });
 });
 
 describe("离线备份与恢复维护命令", () => {
   it("拒绝运行中产品的备份，并只恢复允许的产品数据区域", async () => {
-    const workspace = await temporaryDirectory("digital-offline-backup-");
+    const workspace = await temporaryDirectory("completion-07-offline-backup-");
     const sourceProductData = path.join(workspace, "source-product-data");
     const backupDirectory = path.join(workspace, "backup");
     const restoredProductData = path.join(workspace, "restored-product-data");
@@ -154,19 +262,39 @@ describe("离线备份与恢复维护命令", () => {
 
     const scanned = runtime(["scan", rootId, "--json"], sourceProductData);
     await expect(runCli(scanned.runtime)).resolves.toBe(0);
-    const initialScan = JSON.parse(scanned.stdout()) as {
-      readonly executionId: string;
-      readonly execution: {
-        readonly outcome: string;
-        readonly acceptedAssetId?: string;
-      };
-      readonly accepted?: { readonly entity?: { readonly id?: string } };
-    };
+    const initialScan = JSON.parse(scanned.stdout()) as ScanInspection;
     const executionId = initialScan.executionId;
     expect(initialScan.execution).toMatchObject({ outcome: "accepted" });
-    const acceptedAssetId =
-      initialScan.accepted?.entity?.id ?? initialScan.execution.acceptedAssetId;
+
+    // 真实公开 JSON（完整脱敏留档：R/current/07/evidence/07-scan-inspection-initial.json）
+    // 钉住这次目录包扫描的父子位置：父执行顶层没有 `accepted`，也没有
+    // `execution.acceptedAssetId`；子项已接受资产只落在同 key 的
+    // `execution.workItems[i].acceptedAssetId` 上，而 `accepted.entity` 只挂在
+    // `itemResults[i].accepted.entity` —— 父子里侧量必须互指同一个资产身份。
+    const [acceptedWorkItem] =
+      initialScan.execution.workItems?.filter(
+        ({ outcome, acceptedAssetId }) =>
+          outcome === "accepted" && acceptedAssetId !== undefined,
+      ) ?? [];
+    expect(acceptedWorkItem?.key).toBe("dlsite-directory:.");
+    expect(acceptedWorkItem?.relativePaths).toEqual(["track.wav"]);
+    const acceptedItemResult = initialScan.itemResults?.find(
+      ({ key }) => key === acceptedWorkItem?.key,
+    );
+    expect(acceptedItemResult?.accepted?.entity).toBeDefined();
+    const acceptedAssetId = acceptedItemResult!.accepted!.entity!.id;
     expect(acceptedAssetId).toEqual(expect.any(String));
+    expect(acceptedAssetId).toBe(acceptedWorkItem!.acceptedAssetId);
+    expect(acceptedItemResult!.accepted!.entity!.kind).toBe("digital-asset");
+    // 被备份的资产身份就是这条 DLsite 目录包所声明的数字资产及其来源关联。
+    const backedUpSourceAssociation = {
+      sourceIdentity: "dlsite",
+      nativeAddress:
+        "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html",
+    } as const;
+    expect(acceptedItemResult!.accepted!.sourceAssociations).toEqual([
+      backedUpSourceAssociation,
+    ]);
 
     const connections = runtime(["source-connection-list"], sourceProductData, {
       DIGITAL_TMDB_ACCESS_TOKEN: secret,
@@ -306,13 +434,13 @@ describe("离线备份与恢复维护命令", () => {
       restoredProductData,
     );
     await expect(runCli(restoredRoot.runtime)).resolves.toBe(0);
-    expect(
-      (
-        JSON.parse(restoredRoot.stdout()) as {
-          readonly execution: { readonly outcome: string };
-        }
-      ).execution,
-    ).toMatchObject({ outcome: "no-change" });
+    const reopenedScan = JSON.parse(restoredRoot.stdout()) as ScanInspection;
+    expectRetainedAcceptedAsset(
+      reopenedScan,
+      acceptedAssetId,
+      backedUpSourceAssociation,
+    );
+    const reopenedExecutionId = reopenedScan.executionId;
 
     const restoredExecution = runtime(
       ["inspect", executionId, "--json"],
@@ -324,7 +452,10 @@ describe("离线备份与恢复维护命令", () => {
       execution: { status: "completed" },
     });
 
-    for (const surface of surfaces) {
+    // 真实指纹（R/current/07/logs/07-batch-d-drift.log 的 SURFACE-FP 行）：恢复后的
+    // current-catalogue 与 current-attention 与源库逐字段相等；workflow-history 是只增
+    // 不减的执行台账，重开扫描自身追加一条 no-change 执行，源库那条已接受执行原样保留。
+    for (const surface of ["current-catalogue", "current-attention"] as const) {
       const restoredSurface = runtime(
         ["catalogue-surface", "--surface", surface],
         restoredProductData,
@@ -334,6 +465,34 @@ describe("离线备份与恢复维护命令", () => {
         sourceSurfaces.get(surface),
       );
     }
+
+    const restoredHistorySurface = runtime(
+      ["catalogue-surface", "--surface", "workflow-history"],
+      restoredProductData,
+    );
+    await expect(runCli(restoredHistorySurface.runtime)).resolves.toBe(0);
+    const restoredHistory = JSON.parse(
+      restoredHistorySurface.stdout(),
+    ) as SurfaceHistory;
+    const sourceHistory = sourceSurfaces.get(
+      "workflow-history",
+    ) as SurfaceHistory;
+    expect(sourceHistory.items).toHaveLength(1);
+    expect(
+      restoredHistory.items.map(({ execution }) => [
+        execution.id,
+        execution.outcome,
+      ]),
+    ).toEqual([
+      [reopenedExecutionId, "no-change"],
+      ...sourceHistory.items.map(({ execution }) => [
+        execution.id,
+        execution.outcome,
+      ]),
+    ]);
+    // 被备份的已接受执行本身逐字段不变（含 sourceRecords、recognitionResults、
+    // resultReferences 与 sourceRefreshRuns），历史面除重开自身外没有第二处新增。
+    expect(restoredHistory.items[1]).toEqual(sourceHistory.items[0]);
 
     const restoredConnections = runtime(
       ["source-connection-list"],
@@ -348,23 +507,14 @@ describe("离线备份与恢复维护命令", () => {
 
     const refreshed = runtime(["scan", rootId, "--json"], restoredProductData);
     await expect(runCli(refreshed.runtime)).resolves.toBe(0);
-    const resumedScan = JSON.parse(refreshed.stdout()) as {
-      readonly executionId: string;
-      readonly execution: {
-        readonly outcome: string;
-        readonly acceptedAssetId?: string;
-        readonly reusedExecutionId?: string;
-      };
-      readonly accepted?: { readonly entity?: { readonly id?: string } };
-    };
-    expect(resumedScan.execution).toMatchObject({
-      outcome: "no-change",
+    const resumedScan = JSON.parse(refreshed.stdout()) as ScanInspection;
+    // 逐项核对与公开面检查之后再次复扫仍是同一条被复用的已接受资产（没有第二次接受）。
+    expectRetainedAcceptedAsset(
+      resumedScan,
       acceptedAssetId,
-      reusedExecutionId: executionId,
-    });
-    expect(
-      resumedScan.accepted?.entity?.id ?? resumedScan.execution.acceptedAssetId,
-    ).toBe(acceptedAssetId);
+      backedUpSourceAssociation,
+    );
     expect(resumedScan.executionId).not.toBe(executionId);
+    expect(resumedScan.executionId).not.toBe(reopenedExecutionId);
   }, 120_000);
 });
