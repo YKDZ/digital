@@ -25,3 +25,4 @@ GLOSSARY*.md
 /docs
 /.agents
 skills-lock.json
+/.digital/

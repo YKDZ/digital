@@ -72,9 +72,11 @@ const defaultCoverResponse = path.join(
   "responses",
   "dlsite-cover.png",
 );
-const previewPortFirst = 49_001;
-const previewPortLast = 49_999;
+const previewPortFirst = 52_001;
+const previewPortLast = 52_999;
 const defaultWorkflowTimeoutMs = 300_000;
+const defaultPreviewEnvironment = "completion-01-preview";
+const defaultVerifyEnvironment = "completion-01-verify";
 
 /** 退出码只描述本入口的结论阶段；主错误与收尾错误始终分别可见。 */
 export const exitCodes = {
@@ -86,7 +88,54 @@ export const exitCodes = {
   environmentRejected: 5,
   intakeFailed: 6,
   interrupted: 130,
+  terminated: 143,
 } as const;
+
+/** 收到哪个信号就按哪个信号退：SIGINT→130、SIGTERM→143。 */
+export function interruptedExitCode(signal: NodeJS.Signals | null): number {
+  return signal === "SIGTERM" ? exitCodes.terminated : exitCodes.interrupted;
+}
+
+export type PreconditionKind = "absent" | "recover" | "provided" | "refuse";
+
+/**
+ * 归属的前提分类，按 `inspectEnvironment` 的真实状态词汇判定：`unprepared`（还没有任何环境
+ * 记录）才允许本入口从零自建；`failed`（上次准备失败）允许本入口恢复运行，但那条记录与它的
+ * 日志、数据载体是上一次运行留下的，不因此变成本次运行的私有财产（见 `planOwnership`）；
+ * `provided` 继续只读协调；其余状态（`prepared`／`preparing`／`config-incompatible`／
+ * `unmanaged`）都在本次运行之前由他人建立，本入口绝不复用、覆盖或删除它们。
+ */
+export function classifyEnvironmentPrecondition(
+  state: string,
+  provided: boolean,
+): PreconditionKind {
+  if (provided) return "provided";
+  if (state === "unprepared") return "absent";
+  return state === "failed" ? "recover" : "refuse";
+}
+
+/**
+ * 归属决定分两件事：本入口是否拥有自己启动的服务（失败与取消时要由它停止），以及成功路径
+ * 能不能连环境记录一起删除。只有本次运行之前连记录都不存在时，记录、数据与私有现场才是本次
+ * 运行建立的，可删除；恢复一条 `failed` 记录时本入口只拥有自己启动的服务，删除仍归原使用者
+ * 经公共生命周期命令决定——不能因为「不是 provided」就取得既有状态的删除权。
+ */
+export function planOwnership(kind: PreconditionKind): {
+  readonly ownsService: boolean;
+  readonly recycle: "delete" | "stop" | "none";
+} {
+  switch (kind) {
+    case "absent": {
+      return { ownsService: true, recycle: "delete" };
+    }
+    case "recover": {
+      return { ownsService: true, recycle: "stop" };
+    }
+    default: {
+      return { ownsService: false, recycle: "none" };
+    }
+  }
+}
 
 export type PreviewSourceMode = "controlled" | "real" | "offline";
 
@@ -105,17 +154,28 @@ export type PreviewRequest = {
   readonly workflowTimeoutMs: number;
   readonly libraryName: string;
   readonly provided: boolean;
+  readonly explicitMaterials: boolean;
   readonly skipIntake: boolean;
   readonly cases: readonly string[];
   readonly evidencePath?: string;
+  /** 信号取消条件：由入口持有，贯穿环境操作与产品 HTTP 轮询。 */
+  readonly signal?: AbortSignal | undefined;
 };
 
 export class PreviewUsageError extends Error {}
 
-export const usage = `用法：node scripts/preview-environment.ts <命令> [选项]
+/** 入口在一次运行内真正拥有与启动的服务，是失败收尾的作用域。 */
+export type RunningState = {
+  ownsService: boolean;
+  startedHere: boolean;
+  /** 失败/取消收尾只执行一次，避免业务出口与顶层出口重复停止。 */
+  failureFinished: boolean;
+};
 
-命令：
-  up        准备并启动预览，再通过产品入口完成目录接入（服务保持运行）
+export const usage = `用法：node scripts/preview-environment.ts [命令] [选项]
+
+命令（缺省为 up）：
+  up        无环境记录时准备并启动，已有就绪世代则原样复用；再通过产品入口完成目录接入
   prepare   只执行准备：记录普通输入目录与运行配置，建立产品数据
   start     只启动已准备的环境并等待产品就绪，报告实际地址与日志位置
   inspect   只查看环境的实际状态、输入、来源模式与就绪结论
@@ -128,7 +188,7 @@ export const usage = `用法：node scripts/preview-environment.ts <命令> [选
 
 选项：
   --workspace <目录>          代码检出根目录，默认本仓根；运行数据落在 <工作区>/.digital/environments/<环境>
-  --environment <名称>        环境名，默认 t07-preview
+  --environment <名称>        环境名，日常入口默认 completion-01-preview，verify 默认 completion-01-verify
   --material <目录>           普通资料目录，可重复；默认 06 代表目录
   --source-mode <模式>        controlled（默认）| real | offline
   --manifest <路径>           受控来源清单绝对路径，由使用者显式选择
@@ -180,8 +240,11 @@ const valueOptions = [
 ] as const;
 
 export function parseRequest(argv: readonly string[]): PreviewRequest {
-  const command = argv[0] === "--help" ? "help" : (argv[0] ?? "");
-  if (command.length === 0) throw new PreviewUsageError(usage);
+  // `--help` 是显式求助；空参数则按 README 承诺的默认入口执行 up，不再先失败。
+  const command = argv.includes("--help") ? "help" : (argv[0] ?? "up");
+  // 选项写在命令之前会被误读成命令名，明确告诉使用者顺序。
+  if (command.startsWith("--"))
+    throw new PreviewUsageError(`命令要写在选项之前：${command}\n\n${usage}`);
   if (!(commandNames as readonly string[]).includes(command))
     throw new PreviewUsageError(`未知命令：${command}\n\n${usage}`);
 
@@ -228,6 +291,7 @@ export function parseRequest(argv: readonly string[]): PreviewRequest {
     throw new PreviewUsageError(
       `来源模式只能是 controlled、real 或 offline：${sourceMode}`,
     );
+  const explicitMaterials = materials.length > 0;
   // 输入路径按用户给的字面值校验：静默 resolve 会把相对路径伪装成显式绝对选择。
   const requireAbsolute = (option: string, raw: string): string => {
     if (!path.isAbsolute(raw))
@@ -242,7 +306,11 @@ export function parseRequest(argv: readonly string[]): PreviewRequest {
   return {
     command,
     workspacePath: path.resolve(values["--workspace"] ?? defaultWorkspace),
-    environment: values["--environment"] ?? "t07-preview",
+    environment:
+      values["--environment"] ??
+      (command === "verify"
+        ? defaultVerifyEnvironment
+        : defaultPreviewEnvironment),
     materials:
       materials.length === 0
         ? [defaultMaterial]
@@ -264,6 +332,7 @@ export function parseRequest(argv: readonly string[]): PreviewRequest {
       defaultWorkflowTimeoutMs,
     libraryName: values["--library"] ?? "开发预览资料",
     provided: flags.has("--provided"),
+    explicitMaterials,
     skipIntake: flags.has("--no-intake"),
     cases,
     ...(values["--evidence"] === undefined
@@ -313,14 +382,10 @@ export function assertSourceSelection(request: {
       throw new PreviewUsageError(`资料目录必须是绝对路径：${material}`);
 }
 
-/** 收尾归属判断：只有自己建立且未声明 provided 的环境才被本入口回收。 */
-export function planRecycle(input: {
-  readonly provided: boolean;
-  readonly owned: boolean;
-}): boolean {
-  return input.owned && !input.provided;
-}
-
+/**
+ * 收尾归属判断：只有本次运行真正创建、且未声明 provided 的环境才归本入口回收。
+ * 复用他人早已准备的环境不构成归属——本次没有创建它，就不能取得删除其状态的权力。
+ */
 function portIsFree(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const server = createServer();
@@ -488,7 +553,7 @@ async function runPrepare(
     );
   const port = await resolvePreviewPort(request);
   const config: Record<string, JsonValue> = {
-    profile: "t07-preview",
+    profile: "completion-01-preview",
     webPort: port,
     ...(controlled === undefined
       ? {}
@@ -506,6 +571,7 @@ async function runPrepare(
     inputs: [...request.materials],
     sourceMode: request.sourceMode,
     config,
+    signal: request.signal,
     ...(request.timeoutMs === 0 ? {} : { timeoutMs: request.timeoutMs }),
   });
   for (const line of describeLifecycleResult(result)) reporter.say(line);
@@ -525,6 +591,7 @@ async function runStart(
   const result = await startEnvironment({
     workspacePath: request.workspacePath,
     environment: request.environment,
+    signal: request.signal,
     ...(request.timeoutMs === 0 ? {} : { timeoutMs: request.timeoutMs }),
   });
   reporter.fact("就绪结论", result.status);
@@ -581,24 +648,31 @@ async function readEnvironmentState(
       ? observedAddress(inspect.run.address)
       : undefined;
   if (address === undefined) return { inspect };
-  return { inspect, client: createProductClient(address) };
+  return {
+    inspect,
+    client: createProductClient(address, { signal: request.signal }),
+  };
 }
 
 async function runIntake(
   request: PreviewRequest,
   client: ProductClient,
   reporter: PreviewReporter,
-  directories: readonly string[] = request.materials,
-  libraryName = request.libraryName,
+  options: {
+    readonly directories?: readonly string[];
+    readonly libraryName?: string;
+  } = {},
 ): Promise<IntakeOutcome> {
   reporter.section("目录接入（正式产品入口）");
+  const directories = options.directories ?? request.materials;
+  reporter.fact("本次接入目录", [...directories]);
   const readiness = await client.readiness();
   reporter.fact(
     "产品 /api/ready",
     readiness.ready ? "已就绪" : `未就绪（HTTP ${String(readiness.status)}）`,
   );
   const intake = await intakeDirectories(client, {
-    displayName: libraryName,
+    displayName: options.libraryName ?? request.libraryName,
     directories,
     recognitionProfileIds: ["dlsite-voice"],
     sourceIdentities: ["dlsite"],
@@ -629,6 +703,51 @@ function asObject(value: JsonValue | undefined): JsonObject | undefined {
 
 function asArray(value: JsonValue | undefined): readonly JsonValue[] {
   return Array.isArray(value) ? value : [];
+}
+
+/** 在产品返回的投影 JSON 里递归找第一个给定键的非空字符串值（如文件视图的 revisionId）。 */
+function findFirstString(
+  value: JsonValue | undefined,
+  key: string,
+): string | undefined {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findFirstString(item, key);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+  const object = asObject(value);
+  if (object === undefined) return undefined;
+  const direct = text(object[key]);
+  if (direct !== undefined) return direct;
+  for (const child of Object.values(object)) {
+    const found = findFirstString(child, key);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+/** 递归取第一个 interaction 投影（浏览器读取播放进度的同一字段）。 */
+function findInteractionObject(
+  value: JsonValue | undefined,
+): JsonObject | undefined {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findInteractionObject(item);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+  const object = asObject(value);
+  if (object === undefined) return undefined;
+  const direct = asObject(object["interaction"]);
+  if (direct !== undefined) return direct;
+  for (const child of Object.values(object)) {
+    const found = findInteractionObject(child);
+    if (found !== undefined) return found;
+  }
+  return undefined;
 }
 
 function describeError(error: unknown): string {
@@ -674,10 +793,43 @@ async function recycleOwned(
     reporter.fail("无法确认自有数据已清理，保留现场而不宣称回收成功。");
 }
 
+/** 失败与取消共用的收尾：先停止自有服务，数据、日志与证据载体保持可重启。 */
+async function finishOwnedFailure(
+  request: PreviewRequest,
+  reporter: PreviewReporter,
+  ownsService: boolean,
+  startedHere: boolean,
+): Promise<readonly string[]> {
+  const cleanupErrors: string[] = [];
+  if (!ownsService) {
+    reporter.say("环境不归本入口所有（调用方提供或他人既有），未做任何收尾。");
+    return cleanupErrors;
+  }
+  if (startedHere) {
+    try {
+      const stop = await stopEnvironment({
+        workspacePath: request.workspacePath,
+        environment: request.environment,
+      });
+      for (const line of describeLifecycleResult(stop)) reporter.say(line);
+      if (["failed", "not-confirmed"].includes(stop.status))
+        cleanupErrors.push(`停止自有服务：${stop.status}`);
+    } catch (error) {
+      cleanupErrors.push(`停止自有服务异常：${describeError(error)}`);
+    }
+  } else reporter.say("服务不是本次启动的（复用或已停止），只保留现状。");
+  reporter.say(
+    "失败或取消现场的数据与日志已保留，可用 start 显式重启查看；本入口不宣称已回收，也不删除证据载体。",
+  );
+  return cleanupErrors;
+}
+
 type ScenarioContext = {
   readonly request: PreviewRequest;
   readonly reporter: PreviewReporter;
   readonly subsetDirectory: string;
+  readonly multiLeftDirectory: string;
+  readonly multiRightDirectory: string;
   client: ProductClient;
   subject?: string;
   manualCoverReference?: string;
@@ -815,7 +967,11 @@ async function scenarioManualEdit(context: ScenarioContext): Promise<void> {
     entityId: subjectId,
     candidateReference: reference,
   });
-  await client.applyPreview(preview.previewId, "开发预览");
+  const applied = await client.applyPreview(preview.previewId, "开发预览");
+  if (applied.kind === "already-current")
+    reporter.say(
+      `该候选已是当前人工选择（${applied.reason}），本次不重复应用；人工决定是否成立由下面的回读判定。`,
+    );
   const after = await client.coverCandidates(subjectId);
   check(
     reporter,
@@ -870,6 +1026,55 @@ async function scenarioSubset(context: ScenarioContext): Promise<void> {
   );
 }
 
+/**
+ * R06 正项：先只接入目录甲，再请求甲+乙。乙必须被正式并入持有甲的库并得到自己的
+ * 观察根，两个请求目录都要在资产库配置里可核对，不能被甲的旧结果冒充全部完成。
+ */
+async function scenarioMultiDirectory(context: ScenarioContext): Promise<void> {
+  const { client, reporter, request } = context;
+  reporter.section("多个普通目录一次接入");
+  const leftOnly = await intakeDirectories(client, {
+    displayName: "开发预览多目录甲",
+    directories: [context.multiLeftDirectory],
+    recognitionProfileIds: ["dlsite-voice"],
+    sourceIdentities: ["dlsite"],
+    workflowTimeoutMs: request.workflowTimeoutMs,
+  });
+  const intake = await intakeDirectories(client, {
+    displayName: "开发预览多目录",
+    directories: [context.multiLeftDirectory, context.multiRightDirectory],
+    recognitionProfileIds: ["dlsite-voice"],
+    sourceIdentities: ["dlsite"],
+    workflowTimeoutMs: request.workflowTimeoutMs,
+  });
+  const libraries = await client.libraries();
+  const held = (directory: string): boolean =>
+    libraries.some((library) => library.directories.includes(directory));
+  check(
+    reporter,
+    "multi-directory",
+    held(context.multiLeftDirectory) && held(context.multiRightDirectory),
+    "两个请求目录都在资产库配置中有明确归属，没有被静默丢弃",
+  );
+  const newRoots = intake.observedRootIds.filter(
+    (rootId) => !leftOnly.observedRootIds.includes(rootId),
+  );
+  check(
+    reporter,
+    "multi-directory",
+    newRoots.length > 0 &&
+      JSON.stringify(intake.observedRootIds) !==
+        JSON.stringify(leftOnly.observedRootIds),
+    `第二次接入为目录乙实际建立了新的观察根（${String(newRoots.length)} 个），而非只刷新甲的旧库结果`,
+  );
+  check(
+    reporter,
+    "multi-directory",
+    intake.assetIds.length > 0,
+    `两次接入累计由产品自然产生 ${String(intake.assetIds.length)} 个资产`,
+  );
+}
+
 async function scenarioRefusedSourceRequest(
   context: ScenarioContext,
 ): Promise<void> {
@@ -908,6 +1113,79 @@ async function scenarioRestartRetention(
     reporter.say("环境由调用方提供，本场景不停止也不重启对方的服务。");
     return;
   }
+  const subjectId = context.subject ?? (await resolveSubject(context));
+  const library = (await client.libraries()).find((item) =>
+    item.directories.some((directory) => request.materials.includes(directory)),
+  );
+  if (library === undefined) {
+    reporter.fail("重启保留场景找不到本预览登记的资产库，无法写入设置状态。");
+    return;
+  }
+  const renamedTo = "预览改名保留";
+  await client.saveLibrary({
+    id: library.id,
+    expectedVersion: library.configVersion,
+    displayName: renamedTo,
+    directories: library.directories,
+    recognitionProfileIds: ["dlsite-voice"],
+    sourceIdentities: ["dlsite"],
+  });
+  const observedRootId = library.observedRootIds[0];
+  if (observedRootId === undefined) {
+    reporter.fail("资产库没有观察根，无法建立自动刷新设置。");
+    return;
+  }
+  const enable = await client.post("/automation", {
+    action: "enable",
+    assetLibraryId: library.id,
+    observedRootId,
+    intervalMilliseconds: 86_400_000,
+    acceptTrusted: true,
+  });
+  check(
+    reporter,
+    "restart-retention",
+    enable.status >= 200 && enable.status < 300,
+    `自动刷新设置由产品受理（HTTP ${String(enable.status)}）`,
+  );
+  const detail = await client.get(`/catalogue/${subjectId}`);
+  const downloadUrl = findFirstString(detail.body, "downloadUrl");
+  if (downloadUrl === undefined) {
+    reporter.fail(
+      "内容目录详情没有给出可读取的观察文件交付地址，无法确认修订。",
+    );
+    return;
+  }
+  const firstRead = await client.bytes(downloadUrl.replace(/^\/api/u, ""));
+  check(
+    reporter,
+    "restart-retention",
+    firstRead.status === 200,
+    `观察文件由产品首次真实交付（HTTP ${String(firstRead.status)}，${String(firstRead.bytes.byteLength)} 字节，${firstRead.mediaType ?? "未知类型"}）`,
+  );
+  if (firstRead.status !== 200) return;
+  const revisionId = findFirstString(
+    (await client.get(`/catalogue/${subjectId}`)).body,
+    "revisionId",
+  );
+  if (revisionId === undefined) {
+    reporter.fail(
+      "首次真实读取之后目录详情仍未给出已确认修订，播放进度没有可依附的修订。",
+    );
+    return;
+  }
+  reporter.fact("已确认修订", revisionId);
+  const interact = await client.post("/playback-interactions", {
+    revisionId,
+    positionMilliseconds: 90_210,
+    completed: false,
+  });
+  check(
+    reporter,
+    "restart-retention",
+    interact.status >= 200 && interact.status < 300,
+    `播放进度写入由产品受理（HTTP ${String(interact.status)}）`,
+  );
   await ownedStop(request, reporter);
   const started = await startEnvironment({
     workspacePath: request.workspacePath,
@@ -923,23 +1201,49 @@ async function scenarioRestartRetention(
     return;
   }
   const libraries = await client.libraries();
+  const retained = libraries.find((item) =>
+    item.directories.some((directory) => request.materials.includes(directory)),
+  );
   check(
     reporter,
     "restart-retention",
-    libraries.some((library) =>
-      library.directories.some((directory) =>
-        request.materials.includes(directory),
-      ),
-    ),
+    retained !== undefined,
     "未重新接入即仍能在资产库里看到本预览的普通目录",
   );
-  const subjectId = context.subject ?? "";
+  check(
+    reporter,
+    "restart-retention",
+    retained?.displayName === renamedTo,
+    `资产库改名保留为「${renamedTo}」（实际 ${retained?.displayName ?? "缺失"}）`,
+  );
+  const settings = asObject((await client.get("/settings")).body);
+  const retainedAutomation = asArray(settings?.["automation"]).find(
+    (item) => asObject(item)?.["observedRootId"] === observedRootId,
+  );
+  const automationView = asObject(retainedAutomation);
+  check(
+    reporter,
+    "restart-retention",
+    automationView?.["enabled"] === true &&
+      automationView?.["intervalMilliseconds"] === 86_400_000,
+    "自动刷新意图重启后仍为开启且间隔不变",
+  );
   const subject = await client.inspectSubject(subjectId);
   check(
     reporter,
     "restart-retention",
     subject["recognitionState"] === "recognized",
     "重启后内容仍按既有识别结果可浏览",
+  );
+  const retainedInteraction = findInteractionObject(
+    (await client.get(`/catalogue/${subjectId}`)).body,
+  );
+  check(
+    reporter,
+    "restart-retention",
+    retainedInteraction?.["positionMilliseconds"] === 90_210 &&
+      retainedInteraction?.["completed"] === false,
+    "播放进度重启后由产品投影回读（90210 毫秒、未完成）",
   );
   if (context.manualCoverReference !== undefined) {
     const choice = await client.coverCandidates(subjectId);
@@ -1081,16 +1385,19 @@ export function requestValidationCases(): readonly {
     },
     {
       name: "命令与用法边界",
-      detail: "help 是正常命令；缺命令与未知命令按用法失败",
+      detail: "缺省命令是 up；help 正常；未知命令按用法失败",
       run: () => {
+        if (parseRequest([]).command !== "up")
+          throw new Error("默认入口没有按 README 承诺执行 up");
+        if (parseRequest(["up"]).command !== "up")
+          throw new Error("显式 up 解析结果不稳定");
         if (parseRequest(["help"]).command !== "help")
           throw new Error("help 没有被当作可正常收尾的命令");
         if (parseRequest(["--help"]).command !== "help")
           throw new Error("--help 没有归一到 help");
-        expectRefusal(() => parseRequest([]), "用法：node scripts");
         expectRefusal(() => parseRequest(["run"]), "未知命令：run");
         expectRefusal(
-          () => parseRequest(["up", "--port", "48999"]),
+          () => parseRequest(["up", "--port", "52000"]),
           "预览端口必须落在",
         );
         expectRefusal(
@@ -1102,22 +1409,51 @@ export function requestValidationCases(): readonly {
     },
     {
       name: "提供的环境不被收尾",
-      detail: "--provided 时回收路径必须整体关闭",
+      detail: "--provided 时服务归属与回收路径必须整体关闭",
       run: () => {
-        if (planRecycle({ provided: true, owned: true }))
-          throw new Error("计划回收了调用方提供的环境");
+        const provided = planOwnership("provided");
+        if (provided.ownsService || provided.recycle !== "none")
+          throw new Error("调用方提供的环境被安排停止或删除");
       },
     },
     {
-      name: "自建环境才回收",
-      detail: "只有 owned 且非 provided 才收尾",
+      name: "恢复失败记录不取得删除权",
+      detail:
+        "只有本次运行之前没有记录（unprepared）才排删除；failed 记录可恢复运行、可停自己启动的服务，但记录与载体仍归原使用者",
       run: () => {
-        if (!planRecycle({ provided: false, owned: true }))
-          throw new Error("自建环境没有被安排回收");
-        if (planRecycle({ provided: true, owned: false }))
-          throw new Error("没有归属却计划回收");
-        if (planRecycle({ provided: false, owned: false }))
-          throw new Error("没有归属却计划回收");
+        const built = planOwnership("absent");
+        if (!built.ownsService || built.recycle !== "delete")
+          throw new Error("本次自建环境没有被安排完整回收");
+        const recovered = planOwnership("recover");
+        if (!recovered.ownsService)
+          throw new Error(
+            "恢复运行的入口没有取得服务归属，失败时不会停止自有服务",
+          );
+        if (recovered.recycle !== "stop")
+          throw new Error("把上次失败留下的记录与载体当成私有财产删除或复用");
+        if (planOwnership("refuse").recycle !== "none")
+          throw new Error("他人既有状态被安排回收");
+      },
+    },
+    {
+      name: "已有环境按前提拒绝",
+      detail:
+        "自建与归属只按 inspect 的真实状态判定：无记录（unprepared）才自建，上次准备失败（failed）只按恢复处理，已有世代或他人接管的状态一律拒绝",
+      run: () => {
+        if (classifyEnvironmentPrecondition("unprepared", false) !== "absent")
+          throw new Error("无记录环境没有被判为可自建");
+        if (classifyEnvironmentPrecondition("failed", false) !== "recover")
+          throw new Error("上次失败的环境没有按恢复处理，删除权会被误取得");
+        for (const existing of [
+          "prepared",
+          "preparing",
+          "config-incompatible",
+          "unmanaged",
+        ] as const)
+          if (classifyEnvironmentPrecondition(existing, false) !== "refuse")
+            throw new Error(`既有环境 ${existing} 没有被拒绝，可能被删除`);
+        if (classifyEnvironmentPrecondition("prepared", true) !== "provided")
+          throw new Error("provided 环境被当成了自建环境");
       },
     },
   ];
@@ -1126,6 +1462,7 @@ export function requestValidationCases(): readonly {
 async function runVerify(
   request: PreviewRequest,
   reporter: PreviewReporter,
+  running: RunningState,
 ): Promise<number> {
   const selected = (name: string): boolean =>
     request.cases.length === 0 || request.cases.includes(name);
@@ -1146,43 +1483,80 @@ async function runVerify(
       ? exitCodes.okay
       : exitCodes.intakeFailed;
 
-  const subsetDirectory = path.join(
+  const staging = path.join(
     repositoryRoot,
     ".scratch",
-    "t07-subset",
-    "预览子集",
+    "completion-01-staging",
   );
-  const owned = planRecycle({ provided: request.provided, owned: true });
+  const subsetDirectory = path.join(staging, "预览子集");
+  const multiLeftDirectory = path.join(staging, "多目录甲");
+  const multiRightDirectory = path.join(staging, "多目录乙");
+  const precondition = await inspectEnvironment({
+    workspacePath: request.workspacePath,
+    environment: request.environment,
+  });
+  const kind = classifyEnvironmentPrecondition(
+    precondition.state,
+    request.provided,
+  );
+  if (kind === "refuse") {
+    reporter.section("归属前提");
+    reporter.fact("既有环境状态", precondition.state);
+    reporter.fail(
+      `环境 ${request.environment} 在本次运行之前已存在（状态 ${precondition.state}），不归本入口所有；verify 绝不复用并删除他人状态，请改用全新环境名，或显式以 --provided 只读协调它。停止与删除仍归原使用者经公共生命周期命令决定。`,
+    );
+    return exitCodes.operationFailed;
+  }
+  const ownership = planOwnership(kind);
+  running.ownsService = ownership.ownsService;
+  const recycle = ownership.recycle;
+  if (kind === "recover") {
+    reporter.section("归属前提");
+    reporter.fact("既有环境状态", precondition.state);
+    reporter.say(
+      `环境 ${request.environment} 在本次运行之前留下上次准备失败的记录（状态 failed）：本入口按恢复处理——重新准备并拥有本次启动的服务，但那条记录与它的日志、数据载体仍归原使用者，本次成功也不删除它。`,
+    );
+  }
   try {
-    await rm(path.dirname(subsetDirectory), { recursive: true, force: true });
+    await rm(staging, { recursive: true, force: true });
     await mkdir(path.dirname(subsetDirectory), { recursive: true });
     await copySubsetMaterial(subsetDirectory);
+    await copyMaterialForDirectory(multiLeftDirectory);
+    await copyMaterialForDirectory(multiRightDirectory);
     return await runLifecycleScenarios(
       request,
       reporter,
-      owned,
+      running,
+      recycle,
       lifecycleCases,
-      subsetDirectory,
+      { subsetDirectory, multiLeftDirectory, multiRightDirectory },
     );
   } finally {
-    await rm(path.dirname(subsetDirectory), { recursive: true, force: true });
+    await rm(staging, { recursive: true, force: true });
   }
 }
 
 async function runLifecycleScenarios(
   request: PreviewRequest,
   reporter: PreviewReporter,
-  owned: boolean,
+  running: RunningState,
+  recycle: "delete" | "stop" | "none",
   lifecycleCases: readonly string[],
-  subsetDirectory: string,
+  staging: {
+    readonly subsetDirectory: string;
+    readonly multiLeftDirectory: string;
+    readonly multiRightDirectory: string;
+  },
 ): Promise<number> {
   let address: string | undefined;
-  if (owned) {
+  const ownsService = running.ownsService;
+  if (ownsService) {
     reporter.section("建立一次性预览环境");
     const prepared = await runPrepare(request, reporter);
     if (mapEnvironmentStatus(prepared.status) !== exitCodes.okay)
       return mapEnvironmentStatus(prepared.status);
     const started = await runStart(request, reporter);
+    running.startedHere = started.status === "ready";
     if (mapEnvironmentStatus(started.status) !== exitCodes.okay)
       return mapEnvironmentStatus(started.status);
     address = observedAddress(started.run.address);
@@ -1204,9 +1578,10 @@ async function runLifecycleScenarios(
   const context: ScenarioContext = {
     request,
     reporter,
-    client: createProductClient(address),
-    subsetDirectory,
+    client: createProductClient(address, { signal: request.signal }),
+    ...staging,
   };
+  const assertionCountBefore = reporter.failures.length;
   try {
     if (lifecycleCases.length === 0 || lifecycleCases.includes("first-run"))
       await scenarioFirstRun(context);
@@ -1218,6 +1593,11 @@ async function runLifecycleScenarios(
       await scenarioManualEdit(context);
     if (lifecycleCases.length === 0 || lifecycleCases.includes("subset"))
       await scenarioSubset(context);
+    if (
+      lifecycleCases.length === 0 ||
+      lifecycleCases.includes("multi-directory")
+    )
+      await scenarioMultiDirectory(context);
     if (
       lifecycleCases.length === 0 ||
       lifecycleCases.includes("refused-source-request")
@@ -1233,29 +1613,36 @@ async function runLifecycleScenarios(
       lifecycleCases.includes("rebuild-inputs-preserved")
     )
       await scenarioRebuild(context);
-    if (owned) {
-      reporter.section("按归属收尾（自建环境）");
-      await recycleOwned(request, reporter);
-    } else reporter.say("环境由调用方提供，本入口未停止、重建或删除它。");
   } catch (error) {
-    if (owned) {
-      reporter.section("按归属收尾（失败保留现场）");
-      try {
-        await ownedStop(request, reporter);
-      } catch (cleanupError) {
-        reporter.fail(
-          `停止自有服务失败（不覆盖主错误）：${describeError(cleanupError)}`,
-        );
-      }
-      reporter.say(
-        "失败现场的数据与日志按调用方约定保留，可用 start 显式重启查看，不宣称已回收。",
-      );
-    }
-    throw error;
+    // 抛出的失败（含取消）与断言失败走同一个失败保留出口，见下统一判定。
+    reporter.fail(`场景执行中断：${describeError(error)}`);
   }
-  return reporter.failures.length === 0
-    ? exitCodes.okay
-    : exitCodes.intakeFailed;
+  const failed =
+    reporter.failures.length > assertionCountBefore ||
+    (request.signal?.aborted ?? false);
+  if (failed) {
+    reporter.section("按归属收尾（失败或取消保留现场）");
+    const cleanupErrors = await finishOwnedFailure(
+      request,
+      reporter,
+      ownsService,
+      running.startedHere,
+    );
+    running.failureFinished = true;
+    if (request.signal?.aborted ?? false) {
+      for (const error of cleanupErrors)
+        reporter.say(`收尾错误（不覆盖主错误）：${error}`);
+      // 主结论是被中断：保留现场，不把业务失败码覆盖信号退出码。
+      return 0;
+    }
+    return exitCodes.intakeFailed;
+  }
+  if (recycle) {
+    reporter.section("按归属收尾（自建环境）");
+    await recycleOwned(request, reporter);
+  } else if (!ownsService)
+    reporter.say("环境由调用方提供，本入口未停止、重建或删除它。");
+  return exitCodes.okay;
 }
 
 async function copySubsetMaterial(target: string): Promise<void> {
@@ -1265,6 +1652,21 @@ async function copySubsetMaterial(target: string): Promise<void> {
   await cp(path.join(defaultMaterial, entries[0] ?? ""), target, {
     recursive: true,
   });
+}
+
+/**
+ * 多目录场景的每个请求目录都必须让产品自己的目录解释器认得出来源标识：`dlsite.exact-directory`
+ * 只认 `RJ…`／`VJ…` 形状的目录名（可为被扫描根本身或其下一层）。把代表资料整体改名叫
+ * 「多目录甲」会让两级都不带编号，产品合理地什么都识别不出来，接入断言就成了假的失败，
+ * 因此这里保留编号那一层，只在其外面套一层普通目录。
+ */
+async function copyMaterialForDirectory(targetRoot: string): Promise<void> {
+  await mkdir(targetRoot, { recursive: true });
+  await cp(
+    defaultMaterial,
+    path.join(targetRoot, path.basename(defaultMaterial)),
+    { recursive: true },
+  );
 }
 
 function reportPreviewHandoff(
@@ -1292,6 +1694,7 @@ function reportPreviewHandoff(
 async function runSingleCommand(
   request: PreviewRequest,
   reporter: PreviewReporter,
+  running: RunningState,
 ): Promise<number> {
   switch (request.command) {
     case "prepare": {
@@ -1299,6 +1702,7 @@ async function runSingleCommand(
         throw new PreviewUsageError(
           "--provided 表示环境由调用方管理，本入口不准备",
         );
+      running.ownsService = true;
       const prepared = await runPrepare(request, reporter);
       return mapEnvironmentStatus(prepared.status);
     }
@@ -1307,7 +1711,10 @@ async function runSingleCommand(
         throw new PreviewUsageError(
           "--provided 表示环境由调用方管理，本入口不启动",
         );
-      return mapEnvironmentStatus((await runStart(request, reporter)).status);
+      running.ownsService = true;
+      const started = await runStart(request, reporter);
+      running.startedHere = started.status === "ready";
+      return mapEnvironmentStatus(started.status);
     }
     case "stop": {
       if (request.provided)
@@ -1344,49 +1751,131 @@ async function runSingleCommand(
         (await readEnvironmentState(request, reporter)).inspect.status ?? "ok",
       );
     case "intake": {
-      const { client } = await readEnvironmentState(request, reporter);
+      const { inspect, client } = await readEnvironmentState(request, reporter);
       if (client === undefined) {
         reporter.fail(
           "服务没有就绪结论，本入口不发起目录接入，也不代替产品判定成功。",
         );
         return exitCodes.operationFailed;
       }
-      const intake = await runIntake(request, client, reporter);
-      return intake.assetIds.length === 0
-        ? exitCodes.intakeFailed
-        : exitCodes.okay;
+      // 未显式给出资料目录时沿用环境保留的输入，重建之后接的是原内容。
+      const directories = request.explicitMaterials
+        ? undefined
+        : inspect.environment.inputs.length === 0
+          ? undefined
+          : inspect.environment.inputs;
+      const intake = await runIntake(
+        request,
+        client,
+        reporter,
+        directories === undefined ? {} : { directories },
+      );
+      if (intake.assetIds.length === 0) {
+        reporter.fail(
+          `产品对请求目录没有产生任何可浏览资产（资产库 ${intake.assetLibraryId}，工作流 ${intake.executionId}=${intake.executionStatus}／${intake.executionOutcome ?? "无"}），接入未成功。`,
+        );
+        return exitCodes.intakeFailed;
+      }
+      return exitCodes.okay;
     }
     case "up": {
       let client: ProductClient | undefined;
-      if (!request.provided) {
-        const prepared = await runPrepare(request, reporter);
-        if (mapEnvironmentStatus(prepared.status) !== exitCodes.okay)
-          return mapEnvironmentStatus(prepared.status);
-        const started = await runStart(request, reporter);
-        if (mapEnvironmentStatus(started.status) !== exitCodes.okay)
-          return mapEnvironmentStatus(started.status);
-        const address = observedAddress(started.run.address);
-        if (address === undefined) {
-          reporter.fail(
-            "环境报告就绪却没有给出可核验的服务地址，接入阶段未执行。",
-          );
-          return exitCodes.operationFailed;
-        }
-        client = createProductClient(address);
-      } else {
+      if (request.provided) {
         const state = await readEnvironmentState(request, reporter);
         client = state.client;
         if (client === undefined) {
           reporter.fail("提供的环境没有就绪结论，接入阶段未执行。");
           return exitCodes.operationFailed;
         }
+      } else {
+        const precondition = await inspectEnvironment({
+          workspacePath: request.workspacePath,
+          environment: request.environment,
+        });
+        const upOwnership = planOwnership(
+          classifyEnvironmentPrecondition(precondition.state, request.provided),
+        );
+        running.ownsService = upOwnership.ownsService;
+        if (precondition.state === "failed" && upOwnership.ownsService)
+          reporter.say(
+            `环境 ${request.environment} 留有上次准备失败的记录（状态 failed）：本次按恢复处理，重新准备并拥有本次启动的服务，失败时按归属停止；那条记录与它的日志载体不是本次运行的私有财产，删除仍由使用者决定。`,
+          );
+        if (!running.ownsService) {
+          if (precondition.state === "config-incompatible") {
+            reporter.fail(
+              `环境 ${request.environment} 的既有配置与当前运行配置不兼容：本入口不覆盖它，请由使用者显式执行 rebuild 后重试。`,
+            );
+            return exitCodes.configIncompatible;
+          }
+          if (precondition.state === "unmanaged") {
+            reporter.fail(
+              `环境 ${request.environment} 未被环境系统接管（状态 unmanaged），本入口不准备也不接管它。`,
+            );
+            return exitCodes.unmanaged;
+          }
+          reporter.say(
+            `复用既有环境 ${request.environment}（状态 ${precondition.state}）：本次归属仍归原使用者，不重新准备，失败只保留现状，不停止或删除它。`,
+          );
+        }
+        let address: string | undefined;
+        if (running.ownsService) {
+          const prepared = await runPrepare(request, reporter);
+          if (mapEnvironmentStatus(prepared.status) !== exitCodes.okay)
+            return mapEnvironmentStatus(prepared.status);
+        } else if (precondition.serviceReadiness === "ready") {
+          // 已有就绪世代：再次 up 不重新准备也不重启，保留手工编辑与交互状态。
+          address = observedAddress(precondition.run.address);
+          reporter.fact("复用运行世代", reportText(precondition.run.runId));
+          reporter.fact("实际地址", reportText(precondition.run.address));
+          reporter.fact("复用结论", "既有就绪世代原样保留，未重新准备也未重启");
+        }
+        if (address === undefined) {
+          const started = await runStart(request, reporter);
+          running.startedHere = started.status === "ready";
+          if (mapEnvironmentStatus(started.status) !== exitCodes.okay)
+            return mapEnvironmentStatus(started.status);
+          address = observedAddress(started.run.address);
+        }
+        if (address === undefined) {
+          reporter.fail(
+            "环境报告就绪却没有给出可核验的服务地址，接入阶段未执行。",
+          );
+          await finishOwnedFailure(
+            request,
+            reporter,
+            running.ownsService,
+            running.startedHere,
+          );
+          running.failureFinished = true;
+          running.startedHere = false;
+          return exitCodes.operationFailed;
+        }
+        client = createProductClient(address, { signal: request.signal });
       }
       if (request.skipIntake) return exitCodes.okay;
-      const intake = await runIntake(request, client, reporter);
-      reportPreviewHandoff(request, client, intake, reporter);
-      return intake.assetIds.length === 0
-        ? exitCodes.intakeFailed
-        : exitCodes.okay;
+      try {
+        const intake = await runIntake(request, client, reporter);
+        if (intake.assetIds.length === 0)
+          throw new Error(
+            `产品对接入请求没有产生任何可浏览资产（资产库 ${intake.assetLibraryId}，工作流 ${intake.executionId}=${intake.executionStatus}／${intake.executionOutcome ?? "无"}）`,
+          );
+        reportPreviewHandoff(request, client, intake, reporter);
+      } catch (error) {
+        // 主因先落账，再对本次真正启动的自有服务收尾；复用他人服务不动。
+        reporter.fail(`接入阶段失败：${describeError(error)}`);
+        await finishOwnedFailure(
+          request,
+          reporter,
+          running.ownsService,
+          running.startedHere,
+        );
+        running.failureFinished = true;
+        running.startedHere = false;
+        return request.signal?.aborted === true
+          ? exitCodes.okay
+          : exitCodes.intakeFailed;
+      }
+      return exitCodes.okay;
     }
     case "help":
       reporter.lines.push("", usage);
@@ -1424,7 +1913,12 @@ export async function writeEvidence(
   );
 }
 
-export async function main(argv: readonly string[]): Promise<number> {
+export async function main(
+  argv: readonly string[],
+  cancellation: { readonly signal: AbortSignal } = {
+    signal: new AbortController().signal,
+  },
+): Promise<number> {
   let request: PreviewRequest;
   try {
     request = parseRequest(argv);
@@ -1433,16 +1927,25 @@ export async function main(argv: readonly string[]): Promise<number> {
     return exitCodes.invalidUsage;
   }
   const reporter = new PreviewReporter();
+  const running: RunningState = {
+    ownsService: false,
+    startedHere: false,
+    failureFinished: false,
+  };
   reporter.say(
     `命令 ${request.command}｜环境 ${request.environment}｜工作区 ${request.workspacePath}`,
   );
+  const requestWithSignal: PreviewRequest = {
+    ...request,
+    signal: cancellation.signal,
+  };
   let exit: number = exitCodes.okay;
   let mainError: unknown;
   try {
     exit =
       request.command === "verify"
-        ? await runVerify(request, reporter)
-        : await runSingleCommand(request, reporter);
+        ? await runVerify(requestWithSignal, reporter, running)
+        : await runSingleCommand(requestWithSignal, reporter, running);
   } catch (error) {
     mainError = error;
     exit =
@@ -1450,8 +1953,28 @@ export async function main(argv: readonly string[]): Promise<number> {
         ? exitCodes.invalidUsage
         : exitCodes.operationFailed;
   }
+  // 取消之后业务立即停止，但仍以可用的清理上下文对自有服务收尾并保存证据。
+  if (cancellation.signal.aborted) {
+    const needsEntryCleanup =
+      !running.failureFinished &&
+      ["verify", "up", "prepare", "start"].includes(request.command);
+    if (needsEntryCleanup) {
+      const cleanupErrors = await finishOwnedFailure(
+        requestWithSignal,
+        reporter,
+        running.ownsService,
+        running.startedHere,
+      );
+      running.failureFinished = true;
+      for (const error of cleanupErrors)
+        reporter.say(`收尾错误（不覆盖主错误）：${error}`);
+    }
+    if (mainError === undefined)
+      mainError = new Error("收到中断信号，业务已取消");
+    exit = interruptedExitCode(cancellation.signal.reason as NodeJS.Signals);
+  }
   if (mainError !== undefined) reporter.fail(describeError(mainError));
-  await writeEvidence(request, reporter, exit, mainError);
+  await writeEvidence(requestWithSignal, reporter, exit, mainError);
   reporter.print();
   if (exit === exitCodes.okay && reporter.failures.length > 0) {
     process.stderr.write("存在未通过的断言或收尾告警\n");
@@ -1461,16 +1984,28 @@ export async function main(argv: readonly string[]): Promise<number> {
 }
 
 if (import.meta.url === `file://${process.argv[1] ?? ""}`) {
-  const signals = new Set<string>();
-  for (const name of ["SIGINT", "SIGTERM"] as const)
-    process.on(name, () => {
-      // 信号只中止本次尚未完成的等待：已完成并发布的环境世代继续由环境记录持有。
+  const controller = new AbortController();
+  const onSignal = (signal: NodeJS.Signals): void => {
+    if (controller.signal.aborted) {
+      // 收尾阶段仍被再次中断属于人工最后手段：如实打印后按最近信号立即退出。
       process.stdout.write(
-        `收到 ${name}：本入口不撤销已发布的服务；若需要停止自有服务请随后执行 stop\n`,
+        `收尾仍在进行，再次收到 ${signal}：立即退出（现场可能未收尾，请按归属手动处理）\n`,
       );
-      if (signals.has(name)) process.exit(exitCodes.interrupted);
-      signals.add(name);
-      process.exitCode = name === "SIGINT" ? exitCodes.interrupted : 143;
+      process.exit(interruptedExitCode(signal));
+    }
+    process.stdout.write(
+      `收到 ${signal}：中止进行中的等待，按归属停止本次自有服务并保留数据与日志\n`,
+    );
+    controller.abort(signal);
+  };
+  for (const name of ["SIGINT", "SIGTERM"] as const)
+    process.on(name, () => onSignal(name));
+  try {
+    process.exitCode = await main(process.argv.slice(2), {
+      signal: controller.signal,
     });
-  process.exitCode = await main(process.argv.slice(2));
+  } finally {
+    for (const name of ["SIGINT", "SIGTERM"] as const)
+      process.removeAllListeners(name);
+  }
 }

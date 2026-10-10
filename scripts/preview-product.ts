@@ -61,6 +61,8 @@ export type ProductClient = {
     readonly directories: readonly string[];
     readonly recognitionProfileIds: readonly string[];
     readonly sourceIdentities: readonly string[];
+    readonly id?: string;
+    readonly expectedVersion?: number;
   }): Promise<string>;
   startRefresh(assetLibraryId: string): Promise<string>;
   awaitExecution(
@@ -74,8 +76,18 @@ export type ProductClient = {
     readonly entityId: string;
     readonly candidateReference: string;
   }): Promise<{ readonly previewId: string }>;
-  applyPreview(previewId: string, actorId: string): Promise<JsonValue>;
+  applyPreview(previewId: string, actorId: string): Promise<PreviewApplyResult>;
 };
+
+/**
+ * 产品的封面决定应用带幂等守卫：同一候选再次被选为人工封面时以 400
+ * 「该封面已经是当前人工选择」拒绝（`packages/application/src/index.ts:13190-13200`）。这条无变化
+ * 不是业务失败——人工决定是否真的成立由调用方的回读断言判定，所以这里如实把它与应用成功分开，
+ * 其余 4xx/5xx 仍按未受理抛出。
+ */
+export type PreviewApplyResult =
+  | { readonly kind: "applied"; readonly body: JsonValue }
+  | { readonly kind: "already-current"; readonly reason: string };
 
 const text = (value: JsonValue | undefined): string | undefined =>
   typeof value === "string" ? value : undefined;
@@ -113,14 +125,38 @@ function requiredText(
   return value;
 }
 
-export function createProductClient(address: string): ProductClient {
+export type ProductClientOptions = {
+  /** 取消条件：信号中止后，进行中的请求与轮询都立即收尾，不再晚到。 */
+  readonly signal?: AbortSignal | undefined;
+};
+
+export function createProductClient(
+  address: string,
+  options: ProductClientOptions = {},
+): ProductClient {
   const base = address.replace(/\/+$/u, "");
+  const signal = options.signal;
   const url = (pathname: string, query?: Record<string, string | number>) => {
     const target = new URL(`${base}/api${pathname}`);
     for (const [key, value] of Object.entries(query ?? {}))
       target.searchParams.set(key, String(value));
     return target.toString();
   };
+
+  const sleep = (ms: number): Promise<void> =>
+    signal?.aborted === true
+      ? Promise.reject(new Error("等待已被取消"))
+      : new Promise((resolve) => {
+          const timer = setTimeout(resolve, ms);
+          signal?.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(timer);
+              resolve();
+            },
+            { once: true },
+          );
+        });
 
   async function json(
     method: "GET" | "POST",
@@ -130,8 +166,11 @@ export function createProductClient(address: string): ProductClient {
       readonly body?: JsonObject | undefined;
     } = {},
   ): Promise<ProductReply> {
+    if (signal?.aborted === true)
+      throw new Error(`产品请求 ${method} ${pathname} 未发出：已被取消`);
     const response = await fetch(url(pathname, options.query), {
       method,
+      ...(signal === undefined ? {} : { signal }),
       ...(options.body === undefined
         ? {}
         : {
@@ -160,7 +199,12 @@ export function createProductClient(address: string): ProductClient {
     post: (pathname, body) => json("POST", pathname, { body }),
 
     async bytes(pathname) {
-      const response = await fetch(url(pathname));
+      if (signal?.aborted === true)
+        throw new Error(`产物请求 GET ${pathname} 未发出：已被取消`);
+      const response = await fetch(
+        url(pathname),
+        signal === undefined ? {} : { signal },
+      );
       return {
         status: response.status,
         mediaType: response.headers.get("content-type"),
@@ -206,6 +250,10 @@ export function createProductClient(address: string): ProductClient {
           directories: input.directories,
           recognitionProfileIds: input.recognitionProfileIds,
           sourceIdentities: input.sourceIdentities,
+          ...(input.id === undefined ? {} : { id: input.id }),
+          ...(input.expectedVersion === undefined
+            ? {}
+            : { expectedVersion: input.expectedVersion }),
         },
       });
       expectAccepted(reply, "资产库登记");
@@ -243,7 +291,7 @@ export function createProductClient(address: string): ProductClient {
           throw new Error(
             `执行 ${executionId} 在 ${String(timeoutMs)} 毫秒内未进入终态（当前 ${status}）`,
           );
-        await new Promise((resolve) => setTimeout(resolve, pollMs));
+        await sleep(pollMs);
       }
     },
 
@@ -285,8 +333,11 @@ export function createProductClient(address: string): ProductClient {
       const reply = await json("POST", "/preview", {
         body: { action: "apply", actorId, previewId },
       });
+      const rejection = text(object(reply.body)?.["error"]);
+      if (reply.status === 400 && rejection === "该封面已经是当前人工选择")
+        return { kind: "already-current", reason: rejection };
       expectAccepted(reply, "封面决定应用");
-      return reply.body;
+      return { kind: "applied", body: reply.body };
     },
   };
 }
@@ -303,7 +354,11 @@ export type IntakeOutcome = {
 
 /**
  * 就绪之后的正式目录接入：登记普通目录→刷新→读取工作流终态→读取准入结果。
- * 同一目录已在库内时只复用并复核，不重复制造接入；接入结论与服务就绪结论分别返回。
+ *
+ * 每个请求目录都必须被明确覆盖：已被某个现有库登记的沿用该库；尚未接入的通过
+ * 正式保存并入首个命中的库（全无命中时新建库），绝不让部分交集冒充全部输入完成。
+ * 本次新登记或并入的目录会立即建立观察根；已在库内的目录按产品自身结论只复核。
+ * 接入结论与服务就绪结论分别返回。
  */
 export async function intakeDirectories(
   client: ProductClient,
@@ -317,48 +372,83 @@ export async function intakeDirectories(
   },
 ): Promise<IntakeOutcome> {
   const libraries = await client.libraries();
-  const wanted = new Set(input.directories);
-  const existing = libraries.find((library) =>
-    library.directories.some((directory) => wanted.has(directory)),
+  const wanted = [...new Set(input.directories)];
+  const covered = libraries.filter((library) =>
+    library.directories.some((directory) => wanted.includes(directory)),
   );
-  const assetLibraryId =
-    existing?.id ??
-    (await client.saveLibrary({
+  const missing = wanted.filter(
+    (directory) =>
+      !covered.some((library) => library.directories.includes(directory)),
+  );
+  let assetLibraryId: string;
+  const executionIds: string[] = [];
+  if (covered.length === 0) {
+    assetLibraryId = await client.saveLibrary({
       displayName: input.displayName,
-      directories: input.directories,
+      directories: wanted,
       recognitionProfileIds: input.recognitionProfileIds,
       sourceIdentities: input.sourceIdentities,
-    }));
-  const executionId = await client.startRefresh(assetLibraryId);
-  const execution = await client.awaitExecution(
-    executionId,
-    input.workflowTimeoutMs,
+    });
+  } else {
+    if (missing.length > 0) {
+      const target = covered[0]!;
+      assetLibraryId = await client.saveLibrary({
+        displayName: target.displayName,
+        directories: [...target.directories, ...missing],
+        recognitionProfileIds: input.recognitionProfileIds,
+        sourceIdentities: input.sourceIdentities,
+        id: target.id,
+        expectedVersion: target.configVersion,
+      });
+    } else {
+      assetLibraryId = covered[0]!.id;
+    }
+  }
+  const stillCovering = (await client.libraries()).filter((library) =>
+    library.directories.some((directory) => wanted.includes(directory)),
   );
-  if (execution.status !== "completed")
-    throw new Error(
-      `目录接入工作流未成功完成：执行 ${execution.id} 状态 ${execution.status}，结论 ${execution.outcome ?? "无"}`,
+  for (const library of stillCovering)
+    executionIds.push(await client.startRefresh(library.id));
+  const executions: ProductExecution[] = [];
+  for (const executionId of executionIds)
+    executions.push(
+      await client.awaitExecution(executionId, input.workflowTimeoutMs),
     );
-  const refreshed = (await client.libraries()).find(
-    (library) => library.id === assetLibraryId,
+  const failed = executions.find(
+    (execution) => execution.status !== "completed",
   );
-  if (refreshed === undefined)
-    throw new Error("刷新后找不到本预览登记的资产库");
+  if (failed !== undefined)
+    throw new Error(
+      `目录接入工作流未成功完成：执行 ${failed.id} 状态 ${failed.status}，结论 ${failed.outcome ?? "无"}`,
+    );
+  const refreshedLibraries = await client.libraries();
+  const refreshedIds = [
+    ...new Set([assetLibraryId, ...covered.map((library) => library.id)]),
+  ];
+  const observedRootIds: string[] = [];
   const assetIds: string[] = [];
-  for (const rootId of refreshed.observedRootIds) {
-    const reply = await client.get("/intake", { rootId });
-    for (const file of array(object(reply.body)?.["files"])) {
-      for (const assetId of array(object(file)?.["assetIds"]))
-        if (typeof assetId === "string") assetIds.push(assetId);
+  for (const id of refreshedIds) {
+    const refreshed = refreshedLibraries.find((library) => library.id === id);
+    if (refreshed === undefined)
+      throw new Error(`刷新后找不到接入涉及的资产库 ${id}`);
+    for (const rootId of refreshed.observedRootIds) {
+      if (!observedRootIds.includes(rootId)) observedRootIds.push(rootId);
+      const reply = await client.get("/intake", { rootId });
+      for (const file of array(object(reply.body)?.["files"])) {
+        for (const assetId of array(object(file)?.["assetIds"]))
+          if (typeof assetId === "string" && !assetIds.includes(assetId))
+            assetIds.push(assetId);
+      }
     }
   }
   return {
     assetLibraryId,
-    observedRootIds: refreshed.observedRootIds,
-    executionId: execution.id,
-    executionStatus: execution.status,
-    executionOutcome: execution.outcome,
+    observedRootIds,
+    executionId: executions[0]?.id ?? "",
+    executionStatus: "completed",
+    executionOutcome: executions[0]?.outcome,
     assetIds,
-    reused: existing !== undefined,
+    reused: covered.length > 0 && missing.length === 0,
   };
 }
 

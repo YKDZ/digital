@@ -1,4 +1,4 @@
-# 开发预览入口（票 07）
+# 开发预览入口（票 01，原 07）
 
 `scripts/preview-environment.ts` 是仓库唯一的开发预览入口：一条命令把公开的环境生命周期
 （`@digital/environment` 的 `prepare / start / inspect / stop / rebuild / delete`）与正式的
@@ -6,16 +6,18 @@
 数据库或来源装配。
 
 ```bash
-pnpm preview              # 准备 + 启动 + 目录接入，服务保持运行并打印浏览地址
+pnpm preview              # 等价于 node scripts/preview-environment.ts（缺省命令 up）：准备 + 启动 + 目录接入，服务保持运行并打印浏览地址
 pnpm preview:verify       # 用一次性自建环境跑完预览场景断言并按归属收尾
 pnpm preview help         # 用法说明（--help 等同）
 node scripts/preview-environment.ts --help
 ```
 
 `scripts/preview-product.ts` 是本入口使用的产品客户端：只走真实 HTTP 入口
-（`/api/ready`、`/api/settings/libraries`、`/api/refresh`、`/api/executions/:id`、
-`/api/intake`、`/api/correction-subjects/:id`、`/api/artifacts/:digest`、`/api/catalogue`、
-`/api/cover-decisions`、`/api/preview`），不接内部 Application、不灌库、不 mock 业务。
+（`/api/ready`、`/api/settings`、`/api/settings/libraries`、`/api/refresh`、`/api/executions/:id`、
+`/api/intake`、`/api/catalogue`、`/api/correction-subjects/:id`、`/api/cover-choice/:id`、
+`/api/cover-decisions`、`/api/preview`、`/api/artifacts/:digest`、`/api/automation`、
+`/api/playback-interactions`），不接内部 Application、不灌库、不 mock 业务。
+取消信号在客户端创建时注入：已经排队或进行中的请求都会随取消立即失败，不会留下晚到操作。
 
 ## 三个阶段分别报告
 
@@ -27,7 +29,9 @@ node scripts/preview-environment.ts --help
 ## 单独执行
 
 `prepare / start / inspect / intake / stop / rebuild / delete` 各自可单独执行，每次都会报告
-实际地址、实际端口与产品日志位置。`help`（或 `--help`）打印用法说明后以 0 结束。`--workspace`
+实际地址、实际端口与产品日志位置。`help`（或 `--help`）打印用法说明后以 0 结束。命令写在选项
+之前（`preview up --port 52010`，不是 `preview --port 52010 up`），顺序不对时在请求阶段以 2 拒绝，
+不触达任何环境操作。`--workspace`
 必须是一份代码检出目录（默认本仓根），运行数据落在 `<工作区>/.digital/environments/<环境>`；
 `--material` 与 `--manifest` 按字面值判定，必须是绝对路径，入口不按调用终端的工作目录猜测意图。
 
@@ -39,14 +43,26 @@ node scripts/preview-environment.ts --help
   核验后交给环境，产品根再复核一次。
 - **真实来源默认关闭**：必须同时给 `--allow-real-source` 与至少一条 `--real-condition`，
   条件会被原样报告；缺条件即拒绝，不静默落回真实装配。
-- 相对清单、相对资料目录、区间外端口（只允许 49001—49999）都在请求阶段被拒绝。
+- 相对清单、相对资料目录、区间外端口（只允许 52001—52999）都在请求阶段被拒绝。
+- 环境名默认 `completion-01-preview`（日常入口）与 `completion-01-verify`（verify），都可用
+  `--environment` 覆盖。
 
 ## 归属与收尾
 
-- **自建环境**（默认）：成功后停止并删除；失败后先停止，再保留可重启的数据与日志，不宣称已回收。
+- **自建环境**（默认）：成功后先保存证据，再停止并删除；任何断言失败或异常都改走失败保留分支——
+  先停止自有服务，再保留可重启的数据、日志与证据载体，不宣称已回收。
+- **恢复上次失败记录**：`failed` 记录（上次准备失败，带着它自己的日志与数据载体）按恢复处理——
+  本入口重新准备并拥有**本次启动的服务**，收尾只停止这个服务；那条记录与它的载体不属于本入口，
+  成功也不删除，停止与删除仍归原使用者决定。只有本次运行之前完全没有记录（`unprepared`）才取得删除权。
 - **`--provided`**：环境由调用方提供，本入口绝不准备、启动、停止、重建或删除它——成功、失败
-  与中断都一样，只做只读查看和业务断言。
-- 主错误与收尾错误始终分开打印，收尾错误不覆盖主错误；`SIGINT`/`SIGTERM` 走同样的归属规则。
+  与中断都一样，只做只读查看和业务断言，之后仍可被提供方独立使用。
+- **`up` 的复用前提**：只有本次运行之前没有任何环境记录（`unprepared`）或上次准备失败
+  （`failed`）时，`up` 才自建并取得归属；已有世代一律原样复用——就绪世代直接沿用它的运行地址，
+  不重新准备也不重启，归属仍归原使用者，失败也只保留现状。配置不兼容以 3 拒绝，未被接管以 4 拒绝。
+- **verify 前提**：环境在本次运行之前已存在且未给 `--provided` 时，只有 `failed` 记录允许按恢复
+  运行，其余状态直接拒绝，绝不复用并删除他人状态。
+- 主错误与收尾错误始终分开打印，收尾错误不覆盖主错误；`SIGINT`/`SIGTERM` 会中止进行中的
+  等待与晚到操作，自有服务按归属停止、现场保留后才退出（130/143），提供方环境原样留下。
 
 ## 退出码
 
@@ -59,14 +75,16 @@ node scripts/preview-environment.ts --help
 | 4   | 环境不受管理                               |
 | 5   | 环境拒绝请求                               |
 | 6   | 服务已就绪，但目录接入或业务断言未通过     |
-| 130 | 被中断；资源按归属处理后才退出             |
+| 130 | 被 SIGINT 中断；资源按归属处理后才退出     |
+| 143 | 被 SIGTERM 中断；资源按归属处理后才退出    |
 
 ## 覆盖与后续
 
 本入口取代了根上原来的便捷脚本 `prototype`（`pnpm --filter @digital/web dev`）：那个入口
 只起前端开发服务，不准备环境、不建产品数据、不做目录接入，也没有归属与收尾约定，因此这些
 逻辑过去散落在各人的手工命令里。`pnpm preview` 现在承担同一职责，`verify` 子命令把
-「从未接入 → 浏览 / 刷新 / 读取封面 / 人工编辑 → 重启保留 → 显式重建保持输入字节」做成
-可重复执行的断言。`apps/web` 自身的 `dev`（前端热更新开发服务）不在本票范围，保持不变。
+「从未接入 → 浏览 / 刷新 / 读取封面 / 人工编辑 / 子集与多目录接入 / 未列入来源请求失败 →
+改名、自动刷新、播放进度与人工封面在重启后保留 → 显式重建保持输入字节」做成可重复执行的断言。
+`apps/web` 自身的 `dev`（前端热更新开发服务）不在本票范围，保持不变。
 
 票 10 只需扩展本入口的默认输入集合（默认目录、默认识别配置），不必新增第二套准备逻辑。
