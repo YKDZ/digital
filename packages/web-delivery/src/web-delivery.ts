@@ -1046,7 +1046,10 @@ function knownDeliveryErrorCode<Code extends string>(
   codes: readonly Code[],
 ): Code | undefined {
   if (typeof error !== "object" || error === null) return undefined;
-  const candidate = error as { readonly name?: unknown; readonly code?: unknown };
+  const candidate = error as {
+    readonly name?: unknown;
+    readonly code?: unknown;
+  };
   if (candidate.name !== name) return undefined;
   return codes.find((code) => code === candidate.code);
 }
@@ -1409,12 +1412,20 @@ export async function catalogueSubject(
       (subject) => subject.subjectId === id,
     );
     const facts = await withCurrentFileDownloads(contextual, library);
+    const revisionIds = facts.locations.flatMap((location) =>
+      location.content.status === "confirmed"
+        ? [location.content.target.revisionId]
+        : [],
+    );
+    const interactionStates =
+      await configuredProductApplication().interactions.read(revisionIds);
     return {
       asset: deliveryAssetView(
         projectAssetView(
           deliveryFactAddresses(
             {
               ...facts,
+              interactionStates,
               ...(informationReadiness === undefined
                 ? {}
                 : { informationReadiness }),
