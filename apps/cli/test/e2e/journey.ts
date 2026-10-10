@@ -52,11 +52,28 @@ export type CliJourneyContext = {
   readonly mode: CliJourneyMode;
   readonly packageRoot: string;
   readonly workDir: string;
+  /**
+   * 本次场景的产品数据根：由环境包公开接口准备出来的自有世代根。旅程不再自建
+   * 迁移或写入，接入与刷新仍由被测 CLI 命令完成。
+   */
+  readonly productDataDirectory: string;
+  /** 本次场景环境的名字，用于把结果与归属证据对应到同一个环境。 */
+  readonly environmentName: string;
+  /** 交给正式 CLI 子进程的基础环境；旅程自管子进程时复用它，而不是继承父终端。 */
+  readonly commandEnvironment: Readonly<Record<string, string>>;
 };
 
 export type CliJourney = {
   readonly name: string;
   readonly modes: readonly CliJourneyMode[];
+  /**
+   * 旅程显式选定的来源装配。省略即离线：绝不因父终端遗留配置使用真实来源。
+   * `controlled` 的清单由旅程给出，环境只转达选择，不读取清单内容。
+   */
+  readonly source?:
+    | { readonly mode: "offline" }
+    | { readonly mode: "real" }
+    | { readonly mode: "controlled"; readonly manifestPath: string };
   setup(context: CliJourneyContext): Promise<void>;
   commands(context: CliJourneyContext): readonly CliJourneyCommand[];
   assertions(options: {
