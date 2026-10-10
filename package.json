@@ -16,6 +16,8 @@
     "lint": "oxlint --quiet --format=unix --type-aware --config oxlint.config.ts oxfmt.config.ts oxlint.config.ts scripts",
     "lint:fix": "oxlint --format=unix --type-aware --config oxlint.config.ts oxfmt.config.ts oxlint.config.ts scripts --fix",
     "prototype": "pnpm --filter @digital/web dev",
+    "verify:web:http": "turbo run test:e2e:managed-service",
+    "verify:web:http:provided": "turbo run test:e2e:provided-service",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false"
   },
   "devDependencies": {

@@ -42,10 +42,11 @@
     "lint:fix": "oxlint --type-aware --format=unix --config ../../oxlint.config.ts . --fix",
     "preview": "vike preview",
     "pretest": "pnpm --filter @digital/sqlite build",
-    "pretest:e2e": "node ../../scripts/build-production-workspace.ts",
     "start": "node ./dist/server/index.mjs",
     "test": "vitest run --reporter=agent --silent=passed-only --passWithNoTests",
     "test:e2e": "node scripts/run-playwright.ts",
+    "test:e2e:managed-service": "node scripts/run-managed-service-acceptance.ts --mode owned",
+    "test:e2e:provided-service": "node scripts/run-managed-service-acceptance.ts --mode provided",
     "typecheck": "node --conditions=digital-source scripts/run-vue-tsc.ts --build --noEmit --pretty false"
   },
   "dependencies": {
