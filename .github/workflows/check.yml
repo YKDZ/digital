@@ -4,7 +4,7 @@ on:
   pull_request:
   push:
     branches:
-      - main
+      - environment-completion/18-ci-timeout
   workflow_dispatch:
     inputs:
       deployment:
@@ -31,7 +31,6 @@ jobs:
         capability: [web]
     env:
       DIGITAL_CI_EVIDENCE: ${{ github.workspace }}/.scratch/ci/${{ matrix.capability }}
-      TMPDIR: ${{ runner.temp }}/d18-${{ matrix.capability }}
     steps:
       - name: 检出独立工作区
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -42,12 +41,16 @@ jobs:
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version-file: package.json
+          package-manager-cache: false
       - name: 设置 pnpm
         uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         with:
           cache: true
       - name: 准备本作业临时目录
-        run: mkdir -m 700 -p "$TMPDIR"
+        run: |
+          ci_tmp="$RUNNER_TEMP/d18-${{ matrix.capability }}"
+          mkdir -m 700 -p "$ci_tmp"
+          printf 'TMPDIR=%s\n' "$ci_tmp" >> "$GITHUB_ENV"
       - name: 安装锁定依赖
         run: pnpm install --frozen-lockfile
       - name: 安装 Chromium
@@ -105,6 +108,7 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version-file: package.json
+          package-manager-cache: false
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         with:
           cache: true
