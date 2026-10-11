@@ -1,4 +1,5 @@
 import { rm, stat } from "node:fs/promises";
+import { setImmediate as yieldToFilesystem } from "node:timers/promises";
 
 import { knownSourceAssociationEvidenceCapability } from "@digital/application";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -934,17 +935,8 @@ describe("FANBOX browser product assembly", () => {
         if (pending === "operation") {
           while (renderer.browserCloses === 0) await Promise.resolve();
           await expect(transaction).rejects.toThrow("FANBOX 来源连接验证失败");
-          let ownerRemoved = false;
-          for (let attempt = 0; attempt < 100; attempt += 1) {
-            try {
-              await stat(owner);
-            } catch {
-              ownerRemoved = true;
-              break;
-            }
-          }
-          expect(ownerRemoved).toBe(true);
-          while (vi.getTimerCount() === 0) await Promise.resolve();
+          // 关闭先完成真实文件清理，再建立迟到操作的有界等待；让出事件循环以便 rm 回调完成。
+          while (vi.getTimerCount() === 0) await yieldToFilesystem();
         } else {
           while (renderer.releaseContextClose === undefined)
             await Promise.resolve();
@@ -954,6 +946,8 @@ describe("FANBOX browser product assembly", () => {
         await expect(closing).rejects.toThrow(
           "FANBOX browser session transport failed",
         );
+        if (pending === "operation")
+          await expect(stat(owner)).rejects.toMatchObject({ code: "ENOENT" });
         if (pending === "disposer")
           await expect(transaction).rejects.toThrow("FANBOX 来源连接验证失败");
         if (pending === "operation") renderer.releaseNewContext();
@@ -1018,23 +1012,13 @@ describe("FANBOX browser product assembly", () => {
         await expect(transaction).rejects.toThrow(
           "FANBOX browser session transport failed",
         );
-        let ownerRemoved = false;
-        for (let attempt = 0; attempt < 100; attempt += 1) {
-          try {
-            await stat(owner);
-          } catch {
-            ownerRemoved = true;
-            break;
-          }
-        }
-        expect(ownerRemoved).toBe(true);
-        await Promise.resolve();
-        await Promise.resolve();
+        while (vi.getTimerCount() === 0) await yieldToFilesystem();
         await vi.advanceTimersByTimeAsync(30_000);
 
         await expect(closing).rejects.toThrow(
           "FANBOX browser session transport failed",
         );
+        await expect(stat(owner)).rejects.toMatchObject({ code: "ENOENT" });
       } finally {
         if (stage === "addCookies") renderer.releaseAddCookies?.();
         else if (stage === "goto") renderer.releaseGoto?.();

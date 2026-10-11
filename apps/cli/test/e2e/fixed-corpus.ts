@@ -72,7 +72,7 @@ export async function fixedCorpusRoots(
   const corpusDirectory = path.resolve(
     context.packageRoot,
     "../..",
-    ".scratch/acceptance-corpus",
+    "fixtures/live-corpus",
   );
   const selection = await readFile(
     path.join(corpusDirectory, "files-from.txt"),
@@ -86,9 +86,10 @@ export async function fixedCorpusRoots(
       const normalized = normalizeLogicalRoot(logicalRoot);
       return {
         logicalRoot: normalized,
-        directory: path.join(
-          corpusDirectory,
-          "assets",
+        directory: path.resolve(
+          context.packageRoot,
+          "../..",
+          ".scratch/acceptance-corpus/assets",
           ...normalized.split("/"),
         ),
       };
@@ -106,7 +107,7 @@ export async function assertFixedCorpusInventoryBaseline(
   const corpusDirectory = path.resolve(
     context.packageRoot,
     "../..",
-    ".scratch/acceptance-corpus",
+    "fixtures/live-corpus",
   );
   const baseline = JSON.parse(
     await readFile(
@@ -287,7 +288,7 @@ async function readFixedCorpusBaseline(
   const corpusDirectory = path.resolve(
     context.packageRoot,
     "../..",
-    ".scratch/acceptance-corpus",
+    "fixtures/live-corpus",
   );
   const baseline = JSON.parse(
     await readFile(
@@ -438,11 +439,7 @@ const dedicatedIntegrationOwnershipContractByTicket = new Map(
 );
 
 function fixedCorpusDirectory(context: CliJourneyContext): string {
-  return path.resolve(
-    context.packageRoot,
-    "../..",
-    ".scratch/acceptance-corpus",
-  );
+  return path.resolve(context.packageRoot, "../..", "fixtures/live-corpus");
 }
 
 function requiredRecord(

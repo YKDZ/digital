@@ -1,5 +1,6 @@
 import {
   chmod,
+  copyFile,
   mkdir,
   mkdtemp,
   readFile,
@@ -567,7 +568,7 @@ describe("Bangumi episodic live journey contract", () => {
   });
 
   it("fails without a Digital-owned connection and copies only a dummy connection at mode 0600", async () => {
-    const packageRoot = path.resolve(import.meta.dirname, "../..");
+    let packageRoot = path.resolve(import.meta.dirname, "../..");
     vi.stubEnv("DIGITAL_BANGUMI_LIVE_PRODUCT_DATA", "");
     await expect(
       journey.setup({
@@ -584,6 +585,37 @@ describe("Bangumi episodic live journey contract", () => {
       path.join(tmpdir(), "digital-bangumi-journey-contract-"),
     );
     temporaryDirectories.push(temporary);
+    const workspace = path.join(temporary, "workspace");
+    const references = path.join(workspace, "fixtures/live-corpus/references");
+    await mkdir(references, { recursive: true });
+    await copyFile(
+      path.resolve(
+        packageRoot,
+        "../../fixtures/live-corpus/references/reviewed-oracle.json",
+      ),
+      path.join(references, "reviewed-oracle.json"),
+    );
+    // 合成文件只供连接复制和命令计划契约使用，不运行真实来源采集。
+    for (const [logicalRoot, count] of [
+      ["media/番剧/终将成为你 (2018)", 13],
+      ["media/番剧/葬送的芙莉莲 (2023)", 38],
+    ] as const) {
+      const directory = path.join(
+        workspace,
+        ".scratch/acceptance-corpus/assets",
+        logicalRoot,
+      );
+      await mkdir(directory, { recursive: true });
+      await Promise.all(
+        Array.from({ length: count }, (_, index) =>
+          writeFile(
+            path.join(directory, `episode-${index + 1}.mkv`),
+            "synthetic-contract-input",
+          ),
+        ),
+      );
+    }
+    packageRoot = path.join(workspace, "apps/cli");
     const productData = path.join(temporary, "digital-product-data");
     const connectionDirectory = path.join(
       productData,

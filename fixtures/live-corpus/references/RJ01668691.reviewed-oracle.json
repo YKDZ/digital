@@ -1,0 +1,35 @@
+{
+  "status": "official-source-and-filesystem-reviewed",
+  "reviewedAt": "2026-07-29",
+  "selection": {
+    "logicalRoot": "kikoeru/VoiceWork/RJ01668691",
+    "identity": "RJ01668691",
+    "sourceNativeAddress": "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html",
+    "regularFileCount": 18,
+    "descendantDirectoryCount": 5,
+    "treeMetadataSha256": "09b2291ced7e8ec71559cc1861bb5b69788d660e6d4cee854155b1668f778930"
+  },
+  "projection": {
+    "title": "塩対応な義妹ちゃん、大好きな兄さんの濃厚快感責めでメロ堕ち♡〜逆転イチャあま同棲ASMR〜",
+    "introduction": "同居するクールな義妹・水瀬琴の意外な従順さに気づいてしまった兄。日常の裏側で、気持ちいいことに抗えない彼女を愛ある”やりすぎ”で攻め立てれば、冷ややかな態度は一変し、快感に溺れたメロメロの姿をさらけ出していく――「そんなの別に何も感じな……ふ、ぁ！?兄さん、それ、強すぎ……っ♡」",
+    "releaseDate": "2026-07-17 00:00:00",
+    "declaredLanguage": "JPN",
+    "contentClassification": "3",
+    "circle": { "sourceKey": "RG01023593", "label": "ぐらまらす工房" },
+    "credits": {
+      "voice": ["みたかりん"],
+      "scenario": ["しこみね"],
+      "illustration": ["どちゃしこ"]
+    },
+    "relationshipRoles": ["circle", "voice", "scenario", "illustration"],
+    "cover": {
+      "role": "asset.primary-cover",
+      "explicit": true,
+      "sourceCoverage": "dlsite.product-json"
+    },
+    "provenance": {
+      "titleReleaseLanguageClassificationCover": "dlsite.product-json",
+      "introductionCircleCredits": "dlsite.product-html"
+    }
+  }
+}

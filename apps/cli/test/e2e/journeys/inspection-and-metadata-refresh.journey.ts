@@ -57,6 +57,7 @@ function printedExecutionId(result: CliJourneyResult | undefined): string {
 
 const journey: CliJourney = {
   name: "inspection-and-metadata-refresh",
+  realCorpus: true,
   modes: ["source", "distribution"],
   async setup(context) {
     const source = sourceDirectory(context);

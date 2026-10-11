@@ -133,12 +133,35 @@
     },
     "test": {
       "dependsOn": ["build"],
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/fixtures/controlled-source-io/**",
+        "$TURBO_ROOT$/fixtures/controlled-fanbox-session/**",
+        "$TURBO_ROOT$/fixtures/live-corpus/**"
+      ],
       "outputs": []
     },
     "test:e2e": {
       "dependsOn": ["build"],
       "cache": false,
-      "passThroughEnv": ["DIGITAL_TMDB_ACCESS_TOKEN", "DIGITAL_OMDB_API_KEY"]
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP"]
+    },
+    "test:corpus-real": {
+      "dependsOn": ["build"],
+      "cache": false,
+      "passThroughEnv": [
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "DIGITAL_TMDB_ACCESS_TOKEN",
+        "DIGITAL_OMDB_API_KEY",
+        "DIGITAL_BANGUMI_LIVE_PRODUCT_DATA",
+        "DIGITAL_BANGUMI_CLIENT_ID",
+        "DIGITAL_BANGUMI_CLIENT_SECRET",
+        "DIGITAL_BANGUMI_REDIRECT_URI",
+        "DIGITAL_FANBOX_LIVE_FAILURE_EVIDENCE_PATH"
+      ]
     },
     "test:e2e:tmdb-omdb-live": {
       "dependsOn": ["build"],

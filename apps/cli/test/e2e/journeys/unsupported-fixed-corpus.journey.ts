@@ -115,6 +115,7 @@ function assertScopesBelongToCommonCorpusRoot(
 
 const journey: CliJourney = {
   name: "unsupported-fixed-corpus",
+  realCorpus: true,
   modes: ["source", "distribution"],
   async setup(context) {
     const [allRoots, unsupportedRoots] = await Promise.all([

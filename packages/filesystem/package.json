@@ -20,7 +20,8 @@
     "lint:fix": "oxlint --format=unix --config ../../oxlint.config.ts . --fix",
     "test:public-interface": "pnpm build && tsc -p tsconfig.public-interface.json --noEmit --pretty false",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
-    "test": "vitest run --reporter=verbose",
+    "test": "vitest run --reporter=verbose --exclude '**/*.live.test.ts'",
+    "test:corpus-real": "vitest run test/fixed-corpus-observation.live.test.ts --reporter=verbose",
     "build": "tsc -b tsconfig.build.json --force --pretty false"
   },
   "dependencies": {

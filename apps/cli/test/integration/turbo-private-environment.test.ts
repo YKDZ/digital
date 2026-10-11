@@ -33,7 +33,7 @@ describe("root Turbo private integration environment", () => {
     expect(configuration.tasks?.["test:e2e"]).toEqual({
       dependsOn: ["build"],
       cache: false,
-      passThroughEnv: ["DIGITAL_TMDB_ACCESS_TOKEN", "DIGITAL_OMDB_API_KEY"],
+      passThroughEnv: ["TMPDIR", "TMP", "TEMP"],
     });
     expect(configuration.tasks?.["test:e2e:tmdb-omdb-live"]).toEqual({
       dependsOn: ["build"],

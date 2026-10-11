@@ -39,12 +39,13 @@ function oraclePath(context: Parameters<CliJourney["setup"]>[0]): string {
   return path.resolve(
     context.packageRoot,
     "../..",
-    ".scratch/acceptance-corpus/references/RJ01668691.reviewed-oracle.json",
+    "fixtures/live-corpus/references/RJ01668691.reviewed-oracle.json",
   );
 }
 
 const journey: CliJourney = {
   name: "asset-refresh",
+  realCorpus: true,
   modes: ["source", "distribution"],
   async setup(context) {
     const source = corpusRoot(context);
