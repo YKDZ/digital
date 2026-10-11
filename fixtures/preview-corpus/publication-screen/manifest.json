@@ -1,0 +1,293 @@
+{
+  "formatVersion": 1,
+  "ordinary": [
+    {
+      "id": "epub-5-nbinet",
+      "url": "https://nbinet.primo.exlibrisgroup.com/primaws/rest/pub/pnxs?inst=886NCL_NBINET&vid=886NCL_NBINET%3ANBINET&lang=zh-tw&q=isbn%2Cexact%2C9789864738281&scope=MyInstitution&tab=NBINET&skipDelivery=Y",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/epub-5-nbinet.json"
+    },
+    {
+      "id": "epub-6-nbinet",
+      "url": "https://nbinet.primo.exlibrisgroup.com/primaws/rest/pub/pnxs?inst=886NCL_NBINET&vid=886NCL_NBINET%3ANBINET&lang=zh-tw&q=isbn%2Cexact%2C9789864738298&scope=MyInstitution&tab=NBINET&skipDelivery=Y",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/epub-6-nbinet.json"
+    },
+    {
+      "id": "bangumi-oauth",
+      "url": "https://bgm.tv/oauth/access_token",
+      "method": "POST",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/bangumi-oauth.json"
+    },
+    {
+      "id": "bangumi-subject-243981",
+      "url": "https://api.bgm.tv/v0/subjects/243981",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/bangumi-subject-243981.json"
+    },
+    {
+      "id": "bangumi-cover-243981",
+      "url": "https://lain.bgm.tv/pic/cover/l/corpus-243981.jpg",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "image/jpeg",
+      "responseFile": "responses/cover.jpg"
+    },
+    {
+      "id": "bangumi-relations-243981",
+      "url": "https://api.bgm.tv/v0/subjects/243981/subjects",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/bangumi-relations-243981.json"
+    },
+    {
+      "id": "bangumi-episodes-243981",
+      "url": "https://api.bgm.tv/v0/episodes?subject_id=243981&type=0&limit=100&offset=0",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/bangumi-episodes-243981.json"
+    },
+    {
+      "id": "bangumi-episode-831401",
+      "url": "https://api.bgm.tv/v0/episodes/831401",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/bangumi-episode-831401.json"
+    },
+    {
+      "id": "bangumi-episode-832691",
+      "url": "https://api.bgm.tv/v0/episodes/832691",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/bangumi-episode-832691.json"
+    },
+    {
+      "id": "bangumi-subject-400602",
+      "url": "https://api.bgm.tv/v0/subjects/400602",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/bangumi-subject-400602.json"
+    },
+    {
+      "id": "bangumi-cover-400602",
+      "url": "https://lain.bgm.tv/pic/cover/l/corpus-400602.jpg",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "image/jpeg",
+      "responseFile": "responses/cover.jpg"
+    },
+    {
+      "id": "bangumi-relations-400602",
+      "url": "https://api.bgm.tv/v0/subjects/400602/subjects",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/bangumi-relations-400602.json"
+    },
+    {
+      "id": "bangumi-episodes-400602",
+      "url": "https://api.bgm.tv/v0/episodes?subject_id=400602&type=0&limit=100&offset=0",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/bangumi-episodes-400602.json"
+    },
+    {
+      "id": "bangumi-episode-1227087",
+      "url": "https://api.bgm.tv/v0/episodes/1227087",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/bangumi-episode-1227087.json"
+    },
+    {
+      "id": "bangumi-episode-1257306",
+      "url": "https://api.bgm.tv/v0/episodes/1257306",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/bangumi-episode-1257306.json"
+    },
+    {
+      "id": "bangumi-subject-515759",
+      "url": "https://api.bgm.tv/v0/subjects/515759",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/bangumi-subject-515759.json"
+    },
+    {
+      "id": "bangumi-cover-515759",
+      "url": "https://lain.bgm.tv/pic/cover/l/corpus-515759.jpg",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "image/jpeg",
+      "responseFile": "responses/cover.jpg"
+    },
+    {
+      "id": "bangumi-relations-515759",
+      "url": "https://api.bgm.tv/v0/subjects/515759/subjects",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/bangumi-relations-515759.json"
+    },
+    {
+      "id": "bangumi-episodes-515759",
+      "url": "https://api.bgm.tv/v0/episodes?subject_id=515759&type=0&limit=100&offset=0",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/bangumi-episodes-515759.json"
+    },
+    {
+      "id": "bangumi-episode-1575936",
+      "url": "https://api.bgm.tv/v0/episodes/1575936",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/bangumi-episode-1575936.json"
+    },
+    {
+      "id": "bangumi-search",
+      "url": "https://api.bgm.tv/v0/search/subjects",
+      "method": "POST",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/bangumi-search.json"
+    },
+    {
+      "id": "tmdb-auth",
+      "url": "https://api.themoviedb.org/3/authentication",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/tmdb-auth.json"
+    },
+    {
+      "id": "omdb-auth",
+      "url": "https://www.omdbapi.com/?apikey=synthetic-omdb-key&i=tt3896198",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/omdb-auth.json"
+    },
+    {
+      "id": "tmdb-search-209764",
+      "url": "https://api.themoviedb.org/3/search/movie?query=%E6%81%90%E6%80%96%E7%9B%B4%E6%92%AD&primary_release_year=2013&language=zh-CN&page=1",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/tmdb-search-209764.json"
+    },
+    {
+      "id": "tmdb-movie-209764",
+      "url": "https://api.themoviedb.org/3/movie/209764?language=zh-CN&append_to_response=alternative_titles%2Cimages&include_image_language=zh%2Cnull%2Cen",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/tmdb-movie-209764.json"
+    },
+    {
+      "id": "tmdb-translations-209764",
+      "url": "https://api.themoviedb.org/3/movie/209764/translations",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/tmdb-translations-209764.json"
+    },
+    {
+      "id": "tmdb-credits-209764",
+      "url": "https://api.themoviedb.org/3/movie/209764/credits?language=zh-CN",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/tmdb-credits-209764.json"
+    },
+    {
+      "id": "tmdb-209764-poster",
+      "url": "https://image.tmdb.org/t/p/original/corpus-209764-poster.png",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "image/png",
+      "responseFile": "responses/cover.png"
+    },
+    {
+      "id": "tmdb-209764-backdrop",
+      "url": "https://image.tmdb.org/t/p/original/corpus-209764-backdrop.png",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "image/png",
+      "responseFile": "responses/cover.png"
+    },
+    {
+      "id": "omdb-tt2990738",
+      "url": "https://www.omdbapi.com/?apikey=synthetic-omdb-key&i=tt2990738&plot=full&r=json",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/omdb-tt2990738.json"
+    },
+    {
+      "id": "tmdb-movie-9509",
+      "url": "https://api.themoviedb.org/3/movie/9509?language=zh-CN&append_to_response=alternative_titles%2Cimages&include_image_language=zh%2Cnull%2Cen",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/tmdb-movie-9509.json"
+    },
+    {
+      "id": "tmdb-translations-9509",
+      "url": "https://api.themoviedb.org/3/movie/9509/translations",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/tmdb-translations-9509.json"
+    },
+    {
+      "id": "tmdb-credits-9509",
+      "url": "https://api.themoviedb.org/3/movie/9509/credits?language=zh-CN",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/tmdb-credits-9509.json"
+    },
+    {
+      "id": "tmdb-9509-poster",
+      "url": "https://image.tmdb.org/t/p/original/corpus-9509-poster.png",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "image/png",
+      "responseFile": "responses/cover.png"
+    },
+    {
+      "id": "tmdb-9509-backdrop",
+      "url": "https://image.tmdb.org/t/p/original/corpus-9509-backdrop.png",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "image/png",
+      "responseFile": "responses/cover.png"
+    },
+    {
+      "id": "omdb-tt0328107",
+      "url": "https://www.omdbapi.com/?apikey=synthetic-omdb-key&i=tt0328107&plot=full&r=json",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/omdb-tt0328107.json"
+    }
+  ]
+}

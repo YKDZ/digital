@@ -1,0 +1,5 @@
+{
+  "access_token": "synthetic-bangumi-access",
+  "refresh_token": "synthetic-bangumi-refresh",
+  "expires_in": 86400
+}
