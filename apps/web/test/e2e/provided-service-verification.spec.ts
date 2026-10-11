@@ -43,19 +43,29 @@ test("外部服务模式：确认目标产品真的就绪后，浏览器从同�
   const assets = asRecords(catalogue.assets);
   expect(assets.length).toBeGreaterThan(0);
   const subjectId = String(assets[0]!.id);
-  const detail = asRecord(
-    asRecord(
-      await requestJson(
-        page,
-        `/api/catalogue/${encodeURIComponent(subjectId)}?library=${encodeURIComponent(libraryId)}`,
-      ),
-    ).asset,
-  );
-  const coverAddress =
-    typeof detail.cover === "string" &&
-    detail.cover.startsWith("/api/artifacts/")
-      ? detail.cover
-      : undefined;
+  let coverAddress: string | undefined;
+  // 详情会沿正式满足入口启动尚未完成的资料采集；等待同一主体的真实封面。
+  await expect
+    .poll(
+      async () => {
+        const detail = asRecord(
+          asRecord(
+            await requestJson(
+              page,
+              `/api/catalogue/${encodeURIComponent(subjectId)}?library=${encodeURIComponent(libraryId)}`,
+            ),
+          ).asset,
+        );
+        coverAddress =
+          typeof detail.cover === "string" &&
+          detail.cover.startsWith("/api/artifacts/")
+            ? detail.cover
+            : undefined;
+        return coverAddress;
+      },
+      { timeout: 180_000 },
+    )
+    .toMatch(/^\/api\/artifacts\//u);
   if (coverAddress === undefined)
     throw new Error("目标服务的已收录内容没有真实封面地址");
   const response = await page.evaluate(async (address) => {

@@ -1,0 +1,35 @@
+{
+  "body": {
+    "post": {
+      "id": "7576910",
+      "creatorId": "customudon",
+      "title": "Movie | ひみつ",
+      "publishedDatetime": "2024-03-07T22:55:32+09:00",
+      "type": "file",
+      "feeRequired": 0,
+      "user": {
+        "name": "Custom Udon"
+      },
+      "coverImageUrl": "https://downloads.fanbox.cc/images/post/7576910/controlled-cover.png",
+      "body": {
+        "files": [
+          {
+            "id": "f0",
+            "name": "Himitsu1-1",
+            "size": 148551133,
+            "extension": "mp4",
+            "url": "https://downloads.fanbox.cc/files/post/7576910/f0.mp4"
+          },
+          {
+            "id": "f1",
+            "name": "Himitsu1-2",
+            "size": 228471686,
+            "extension": "mp4",
+            "url": "https://downloads.fanbox.cc/files/post/7576910/f1.mp4"
+          }
+        ],
+        "text": "動画形式 : mp4 (H.264) 1920x1080 30fps 1min47sec\n動画形式 : mp4 (H.264) 1920x1080 30fps 2min45sec\n(声無し、効果音付き)\n\n大変お待たせしました。\nサイズの関係で2分割になっています。\n\n次の動画は今回のような投稿間隔にならないように作成します。"
+      }
+    }
+  }
+}

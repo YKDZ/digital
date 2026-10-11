@@ -1,0 +1,15 @@
+{
+  "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/999.0.0.0 Safari/537.36 digital-controlled-fanbox-synthetic",
+  "cookies": [
+    {
+      "name": "FANBOXSESSID",
+      "value": "synthetic-controlled-session-not-a-real-credential",
+      "domain": ".fanbox.cc",
+      "path": "/",
+      "secure": true,
+      "httpOnly": true,
+      "sameSite": "Lax",
+      "expires": 1893456000
+    }
+  ]
+}

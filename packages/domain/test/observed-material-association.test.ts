@@ -9,8 +9,15 @@ import {
 } from "../src/index.ts";
 
 describe("observed material association", () => {
+  const boundary = {
+    kind: "discrete" as const,
+    scopeReference: "scope-materials",
+    materialReferences: ["book.pdf", "notes.txt"],
+  };
+
   const proposal: RecognitionProposal = {
     id: "proposal-materials",
+    boundaries: [boundary],
     basis: {
       kind: "manual-boundary",
       proposedBy: "person-1",
@@ -67,6 +74,7 @@ describe("observed material association", () => {
       id: "decision-materials",
       proposalId: proposal.id,
       assetId: "asset-existing",
+      boundaries: [boundary],
       acceptedRuleResults: [],
     },
     artifacts: [{ id: "artifact-pdf" }, { id: "artifact-text" }],
@@ -152,6 +160,31 @@ describe("observed material association", () => {
     expect(validateObservedMaterialAssociationSubmission(value)).toBe(value);
   });
 
+  it("rejects a decision that drops or narrows the proposal's declared scope", () => {
+    const value = submission();
+    expect(() =>
+      validateObservedMaterialAssociationSubmission({
+        ...value,
+        recognitionDecision: { ...value.recognitionDecision, boundaries: [] },
+      }),
+    ).toThrow("Observed material decision must accept the target proposal");
+    expect(() =>
+      validateObservedMaterialAssociationSubmission({
+        ...value,
+        recognitionDecision: {
+          ...value.recognitionDecision,
+          boundaries: [
+            {
+              kind: "discrete" as const,
+              scopeReference: "scope-materials",
+              materialReferences: ["book.pdf"],
+            },
+          ],
+        },
+      }),
+    ).toThrow("Observed material decision must accept the target proposal");
+  });
+
   it.each([
     [
       "a non-whole role",
@@ -203,6 +236,7 @@ describe("observed material association", () => {
             id: "decision-other",
             proposalId: "proposal-other",
             assetId: "asset-existing",
+            boundaries: [boundary],
             acceptedRuleResults: [],
           },
         ],

@@ -1,0 +1,28 @@
+{
+  "body": {
+    "post": {
+      "id": "7225781",
+      "creatorId": "customudon",
+      "title": "Movie | コスプレ4",
+      "publishedDatetime": "2023-12-31T17:10:55+09:00",
+      "type": "file",
+      "feeRequired": 0,
+      "user": {
+        "name": "Custom Udon"
+      },
+      "coverImageUrl": "https://downloads.fanbox.cc/images/post/7225781/controlled-cover.png",
+      "body": {
+        "files": [
+          {
+            "id": "f0",
+            "name": "Cosplay4",
+            "size": 234405430,
+            "extension": "mp4",
+            "url": "https://downloads.fanbox.cc/files/post/7225781/f0.mp4"
+          }
+        ],
+        "text": "動画形式 : mp4 (H.264) 1920x1080 30fps 2min49sec\n(声無し、効果音付き)\n\nお待たせしました。\nいつもより短めになってしまいましたが、年内最後の動画です。\n\n-------------------------------------------------------\n今年もCustom_Udonの動画を視聴してくださりありがとうございました。\n年末にブルースクリーンが2回も発生してしまったので、PCのチェックなどをして新しい動画の作成に備えたいと思います。"
+      }
+    }
+  }
+}

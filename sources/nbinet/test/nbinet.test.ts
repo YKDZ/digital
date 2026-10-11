@@ -164,8 +164,10 @@ describe("NBINet exact ISBN source", () => {
       metadata: [
         {
           property: "book.isbn-13",
+          sourceSlot: "book.isbn-13",
           value: "9786264151726",
           sourceRecordIds: ["local-record"],
+          target: { kind: "entity", entityId: "asset" },
         },
       ],
     };
@@ -183,6 +185,26 @@ describe("NBINet exact ISBN source", () => {
     expect(
       association.interpret({
         subject: { ...subject, metadata: [] },
+        evidence: addressing.evidence,
+        interpretation,
+      }),
+    ).toMatchObject({ status: "accepted" });
+    // 现行契约：只有明确指向实体的身份证据参与冲突判断，修订版本地的同值事实不冒充实体冲突。
+    expect(
+      association.interpret({
+        subject: {
+          ...subject,
+          metadata: [
+            {
+              ...subject.metadata[0],
+              target: {
+                kind: "artifact-revision",
+                artifactId: "artifact",
+                revisionId: "revision",
+              },
+            },
+          ],
+        },
         evidence: addressing.evidence,
         interpretation,
       }),
@@ -435,9 +457,10 @@ describe("NBINet exact ISBN source", () => {
         sourceRecords: [forgedRecord],
       }),
     ).toBe(false);
+    // 现行契约：伪造的生产者坐标不再计入唯一官方记录，解释入口稳定拒绝并声明坐标要求。
     expect(() =>
       interpreter.interpret({ evidence, sourceRecords: [forgedRecord] }),
-    ).toThrow(/producer|coordinate/u);
+    ).toThrow(/生产能力坐标准确/u);
     expect(
       interpreter.canInterpret({
         evidence: [{ ...evidence[0], producer: missingInterpretationContract }],
@@ -489,10 +512,10 @@ function sourceRecord(body: unknown) {
     body: JSON.stringify(body),
     producer: {
       capabilityId: "nbinet.exact-isbn-collection",
-      capabilityVersion: "1",
+      capabilityVersion: "2",
       contractVersion: "1",
       identity: "nbinet.exact-isbn-collection",
-      implementationVersion: "1",
+      implementationVersion: "2",
       kind: "source-collector",
       interpretationContractVersions: ["1"],
     },

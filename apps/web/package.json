@@ -71,6 +71,7 @@
   },
   "devDependencies": {
     "@digital/application": "workspace:*",
+    "@digital/environment": "workspace:*",
     "@digital/typescript-config": "workspace:*",
     "@playwright/test": "catalog:",
     "@tailwindcss/vite": "catalog:",
