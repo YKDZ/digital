@@ -12,7 +12,7 @@ test("文件树整理真实材料为无身份内容，重开预览后添加并�
   page,
 }) => {
   const temporary = await mkdtemp(
-    path.join(tmpdir(), "digital-disposable-intake-browser-"),
+    path.join(tmpdir(), "digital-disposable-completion-09-intake-browser-"),
   );
   const media = path.join(temporary, "media");
   const data = path.join(temporary, "data");
@@ -27,18 +27,29 @@ test("文件树整理真实材料为无身份内容，重开预览后添加并�
     { productDataDirectory: data, environment: {} },
     { start: createWebDelivery },
   );
+  let passed = false;
   try {
-    await product.result.api.request("/settings/roots", {
+    // 合法前置：接入区的可选目录来自资产库的活动目录，因此先按现行接口保存一个资产库。
+    const initial = (await (
+      await product.result.api.request("/settings")
+    ).json()) as {
+      readonly recognitionProfiles: readonly { readonly id: string }[];
+      readonly librarySources: readonly { readonly id: string }[];
+    };
+    const created = await product.result.api.request("/settings/libraries", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        action: "create",
+        action: "save",
         displayName: "本地手记",
-        containerPath: media,
-        symlinkMode: "do-not-follow",
-        allowedTargetRootIds: [],
+        directories: [media],
+        recognitionProfileIds: initial.recognitionProfiles.map(
+          (profile) => profile.id,
+        ),
+        sourceIdentities: initial.librarySources.map((source) => source.id),
       }),
     });
+    expect(created.status).toBe(200);
     // HTTP 请求交给完整产品，浏览器和真实 SQLite／文件系统之间没有领域替身。
     await page.route(/\/api\//u, async (route) => {
       const request = route.request();
@@ -56,9 +67,19 @@ test("文件树整理真实材料为无身份内容，重开预览后添加并�
       });
     });
     await page.goto("/intake");
+    // 服务端不替用户挑目录：先按产品给出的可选位置选定文件位置。
+    const intakeOptions = (await (
+      await product.result.api.request("/intake")
+    ).json()) as {
+      readonly roots: readonly { readonly displayName: string }[];
+    };
+    await page.getByLabel("文件位置").click();
     await page
+      .getByRole("option", { name: intakeOptions.roots[0]!.displayName })
+      .click();
+    await page
+      .locator("div.border-dashed")
       .getByRole("button", { name: "检查文件", exact: true })
-      .first()
       .click();
     await expect(
       page.getByRole("checkbox", { name: "选择 损坏.pdf", exact: true }),
@@ -69,12 +90,21 @@ test("文件树整理真实材料为无身份内容，重开预览后添加并�
     await page
       .getByRole("button", { name: "组成一项内容", exact: true })
       .click();
-    await page.getByLabel("名称", { exact: true }).fill("林间手记");
-    await page.getByRole("button", { name: "完成整理", exact: true }).click();
+    const group = page.getByRole("dialog");
+    await expect(
+      group.getByRole("heading", { name: "组成一项内容" }),
+    ).toBeVisible();
+    await group.getByLabel("名称", { exact: true }).fill("林间手记");
+    await group.getByRole("button", { name: "完成整理", exact: true }).click();
     await expect(
       page.getByRole("heading", { name: "林间手记", exact: true }),
     ).toBeVisible();
     await page.reload();
+    // 重开后仍由用户明确选择同一文件位置，读取已保存的整理预览；不再次检查或整理。
+    await page.getByLabel("文件位置").click();
+    await page
+      .getByRole("option", { name: intakeOptions.roots[0]!.displayName })
+      .click();
     await expect(
       page.getByRole("heading", { name: "林间手记", exact: true }),
     ).toBeVisible();
@@ -145,9 +175,11 @@ test("文件树整理真实材料为无身份内容，重开预览后添加并�
     await expect(
       page.getByRole("img", { name: "林间手记的封面", exact: true }),
     ).toHaveCount(0);
+    passed = true;
   } finally {
     await product.close();
-    await rm(temporary, { recursive: true, force: true });
+    if (passed) await rm(temporary, { recursive: true, force: true });
+    else console.error(`保留失败现场：${temporary}`);
   }
 });
 

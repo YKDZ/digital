@@ -107,6 +107,41 @@ function seedContent(
       )
       .run(result.lastInsertRowid, address, item.sourceSlot, record);
   }
+  if (!book) return;
+  /**
+   * 现行读取把「创作者」当作参与者关系事实而不是元数据属性：卡片上的贡献者来自
+   * asset.contribution 关系，因此按创作者筛选必须建立关系事实与它的当前来源账目。
+   */
+  const contributor = `person-${id}`;
+  const relationship = `relationship-${id}`;
+  database.prepare("INSERT INTO entities (id) VALUES (?)").run(contributor);
+  database
+    .prepare(
+      "INSERT INTO sourced_entities (id, source_identity, source_key, identity_namespace, label, source_record_ids_json) VALUES (?, 'fixture', ?, 'fixture.contributor', ?, ?)",
+    )
+    .run(contributor, contributor, "林一", JSON.stringify([record]));
+  database
+    .prepare(
+      "INSERT INTO entity_relationships (id, type, participants_json, source_record_ids_json) VALUES (?, 'asset.contribution', ?, ?)",
+    )
+    .run(
+      relationship,
+      JSON.stringify([
+        { entityId: id, role: "asset" },
+        { entityId: contributor, role: "book.contributor" },
+      ]),
+      JSON.stringify([record]),
+    );
+  const insertParticipant = database.prepare(
+    "INSERT INTO entity_relationship_participants (relationship_id, entity_id, role) VALUES (?, ?, ?)",
+  );
+  insertParticipant.run(relationship, id, "asset");
+  insertParticipant.run(relationship, contributor, "book.contributor");
+  database
+    .prepare(
+      "INSERT INTO relationship_lifecycles (relationship_id, source_subject_id, source_identity, native_address, coverage_id, source_record_id, source_slot) VALUES (?, ?, 'fixture', ?, 'complete', ?, 'book.contributor')",
+    )
+    .run(relationship, id, address, record);
 }
 
 it("在全库筛选创作者和浏览类别后按名称分页，不受首批内容或标识符顺序限制", async () => {

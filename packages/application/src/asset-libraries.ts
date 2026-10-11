@@ -710,6 +710,10 @@ export class AssetLibraries {
       this.roots.notifyLibraryDirectoryInvalidation({
         assetLibraryId: invalidation.assetLibraryId,
         observedRootId: invalidation.observedRootId,
+        // 事务给出的现行授权版本原样送达：旧代次继续被拒，本次提交后的新授权仍可绑定。
+        ...(invalidation.keepVersion === undefined
+          ? {}
+          : { keepVersion: invalidation.keepVersion }),
       });
   }
 
