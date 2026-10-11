@@ -1,0 +1,737 @@
+{
+  "reviews": {
+    "epub": {
+      "status": "reviewed-current-official-source",
+      "reviewedAt": "2026-08-30",
+      "reviewMethod": "逐本核对当前 EPUB 修订版的 OPF 格式事实；仅对两个严格有效 ISBN 使用 NBINet exact 公共地址并确认各返回一个明确包含该 ISBN 的完整官方记录。旧 Booklore 书目只用于发现，不提供格式或来源权威。"
+    },
+    "pdf": {
+      "status": "reviewed-local-format",
+      "reviewedAt": "2026-08-31",
+      "reviewMethod": "逐文件核对当前 PDF 修订版的摘要、字节数、页数与文档 Author；确认不存在可用 Title、XMP 或 ISBN，并由产品/领域所有者确认第一页确定性渲染为主封面。路径与旧 Booklore 书目不提供运行时身份或元数据。"
+    }
+  },
+  "epubPublications": [
+    {
+      "logicalRoot": "appdata/booklore/books/轻小说/入间人间/妹妹人生 上",
+      "revision": {
+        "digest": "0d775bf2e933b12d70bf04e57dea0c5bd4013d11a3494b88095574177a8496a6",
+        "mediaType": "application/epub+zip",
+        "byteLength": 5594914
+      },
+      "formatFacts": [
+        {
+          "property": "asset.title",
+          "value": "妹妹人生 上",
+          "locator": "epub:OEBPS/content.opf#/metadata/dc:title[1]"
+        },
+        {
+          "property": "asset.declared-language",
+          "value": "zh",
+          "locator": "epub:OEBPS/content.opf#/metadata/dc:language[1]"
+        },
+        {
+          "property": "book.contributor",
+          "value": "入间人间",
+          "locator": "epub:OEBPS/content.opf#/metadata/dc:creator[1]"
+        },
+        {
+          "property": "book.contributor-role",
+          "value": "aut",
+          "locator": "epub:OEBPS/content.opf#/metadata/dc:creator[1]/@opf:role"
+        },
+        {
+          "property": "book.publisher",
+          "value": "江火如画",
+          "locator": "epub:OEBPS/content.opf#/metadata/dc:publisher[1]"
+        },
+        {
+          "property": "book.publication-date",
+          "value": "2017-12-09",
+          "locator": "epub:OEBPS/content.opf#/metadata/dc:date[1]"
+        },
+        {
+          "property": "book.publication-date",
+          "value": "2018-01-12",
+          "locator": "epub:OEBPS/content.opf#/metadata/dc:date[2]"
+        }
+      ],
+      "cover": {
+        "locator": "epub:OEBPS/content.opf#/metadata/meta[@name='cover'][@content='cover.jpg']->manifest/item[@id='cover.jpg']->entry:OEBPS/Images/cover.jpg",
+        "mediaType": "image/jpeg"
+      }
+    },
+    {
+      "logicalRoot": "appdata/booklore/books/轻小说/入间人间/妹妹人生 下",
+      "revision": {
+        "digest": "30336c302685b86b761229a0fd965651205a4857fab1b4d0fc3a59f3bb892df3",
+        "mediaType": "application/epub+zip",
+        "byteLength": 4678004
+      },
+      "formatFacts": [
+        {
+          "property": "asset.title",
+          "value": "妹妹人生 下",
+          "locator": "epub:OEBPS/content.opf#/metadata/dc:title[1]"
+        },
+        {
+          "property": "asset.declared-language",
+          "value": "zh",
+          "locator": "epub:OEBPS/content.opf#/metadata/dc:language[1]"
+        },
+        {
+          "property": "book.contributor",
+          "value": "入间人间",
+          "locator": "epub:OEBPS/content.opf#/metadata/dc:creator[1]"
+        },
+        {
+          "property": "book.contributor-role",
+          "value": "aut",
+          "locator": "epub:OEBPS/content.opf#/metadata/dc:creator[1]/@opf:role"
+        },
+        {
+          "property": "book.publisher",
+          "value": "江火如画",
+          "locator": "epub:OEBPS/content.opf#/metadata/dc:publisher[1]"
+        },
+        {
+          "property": "book.publication-date",
+          "value": "2017-12-09",
+          "locator": "epub:OEBPS/content.opf#/metadata/dc:date[1]"
+        },
+        {
+          "property": "book.publication-date",
+          "value": "2018-08-05",
+          "locator": "epub:OEBPS/content.opf#/metadata/dc:date[2]"
+        }
+      ],
+      "cover": {
+        "locator": "epub:OEBPS/content.opf#/metadata/meta[@name='cover'][@content='cover.jpg']->manifest/item[@id='cover.jpg']->entry:OEBPS/Images/cover.jpg",
+        "mediaType": "image/jpeg"
+      }
+    },
+    {
+      "logicalRoot": "appdata/booklore/books/技术书/孙宇聪/架构整洁之道",
+      "revision": {
+        "digest": "34f7d9fbb3277d1112079c88af47fdcb41dd04ed68a8fa265e775daf9a125d5b",
+        "mediaType": "application/epub+zip",
+        "byteLength": 4156935
+      },
+      "formatFacts": [
+        {
+          "property": "asset.title",
+          "value": "架构整洁之道",
+          "locator": "epub:content.opf#/metadata/dc:title[1]"
+        },
+        {
+          "property": "asset.declared-language",
+          "value": "zh",
+          "locator": "epub:content.opf#/metadata/dc:language[1]"
+        },
+        {
+          "property": "book.contributor",
+          "value": "孙宇聪",
+          "locator": "epub:content.opf#/metadata/dc:creator[1]"
+        },
+        {
+          "property": "book.contributor",
+          "value": "calibre (5.32.0) [https://calibre-ebook.com]",
+          "locator": "epub:content.opf#/metadata/dc:contributor[1]"
+        },
+        {
+          "property": "book.contributor-role",
+          "value": "aut",
+          "locator": "epub:content.opf#/metadata/dc:creator[1]/@opf:role"
+        },
+        {
+          "property": "book.contributor-role",
+          "value": "bkp",
+          "locator": "epub:content.opf#/metadata/dc:contributor[1]/@opf:role"
+        },
+        {
+          "property": "book.publisher",
+          "value": "电子工业出版社",
+          "locator": "epub:content.opf#/metadata/dc:publisher[1]"
+        },
+        {
+          "property": "book.publication-date",
+          "value": "2018-08-31T16:00:00+00:00",
+          "locator": "epub:content.opf#/metadata/dc:date[1]"
+        }
+      ],
+      "cover": {
+        "locator": "epub:content.opf#/metadata/meta[@name='cover'][@content='cover']->manifest/item[@id='cover']->entry:cover.jpeg",
+        "mediaType": "image/jpeg"
+      }
+    },
+    {
+      "logicalRoot": "appdata/booklore/books/技术书/(美）David Thomas（大卫·托马斯），Andrew Hunt（安德鲁·亨特）/程序员修炼之道：通向务实的最高境界（第2版）",
+      "revision": {
+        "digest": "2e89a58cacd6cfea10ab5b234761cf67eba5ef28fadfbd4d30689830e980fdbb",
+        "mediaType": "application/epub+zip",
+        "byteLength": 12823168
+      },
+      "formatFacts": [
+        {
+          "property": "asset.title",
+          "value": "程序员修炼之道：通向务实的最高境界（第2版）",
+          "locator": "epub:content.opf#/metadata/dc:title[1]"
+        },
+        {
+          "property": "asset.declared-language",
+          "value": "zh",
+          "locator": "epub:content.opf#/metadata/dc:language[1]"
+        },
+        {
+          "property": "book.contributor",
+          "value": "(美）David Thomas（大卫·托马斯），Andrew Hunt（安德鲁·亨特）",
+          "locator": "epub:content.opf#/metadata/dc:creator[1]"
+        },
+        {
+          "property": "book.contributor",
+          "value": "calibre (4.18.0) [https://calibre-ebook.com]",
+          "locator": "epub:content.opf#/metadata/dc:contributor[1]"
+        },
+        {
+          "property": "book.contributor-role",
+          "value": "aut",
+          "locator": "epub:content.opf#/metadata/dc:creator[1]/@opf:role"
+        },
+        {
+          "property": "book.contributor-role",
+          "value": "bkp",
+          "locator": "epub:content.opf#/metadata/dc:contributor[1]/@opf:role"
+        },
+        {
+          "property": "book.publisher",
+          "value": "电子工业出版社",
+          "locator": "epub:content.opf#/metadata/dc:publisher[1]"
+        },
+        {
+          "property": "book.publication-date",
+          "value": "2020-03-31T16:00:00+00:00",
+          "locator": "epub:content.opf#/metadata/dc:date[1]"
+        }
+      ],
+      "cover": {
+        "locator": "epub:content.opf#/metadata/meta[@name='cover'][@content='cover']->manifest/item[@id='cover']->entry:cover.jpeg",
+        "mediaType": "image/jpeg"
+      }
+    },
+    {
+      "logicalRoot": "appdata/booklore/books/漫画/Carlo Zen 東條チカ/幼女战记(1)",
+      "revision": {
+        "digest": "d29198cb367a7338945db9b82057ccddcc1b37d687cb1e7b591485166e36e728",
+        "mediaType": "application/epub+zip",
+        "byteLength": 76706970
+      },
+      "formatFacts": [
+        {
+          "property": "asset.title",
+          "value": "幼女战记(1)",
+          "locator": "epub:item/standard.opf#/metadata/dc:title[1]"
+        },
+        {
+          "property": "asset.declared-language",
+          "value": "zh",
+          "locator": "epub:item/standard.opf#/metadata/dc:language[1]"
+        },
+        {
+          "property": "book.contributor",
+          "value": "Carlo Zen 東條チカ",
+          "locator": "epub:item/standard.opf#/metadata/dc:creator[1]"
+        },
+        {
+          "property": "book.publication-date",
+          "value": "2024-01-23",
+          "locator": "epub:item/standard.opf#/metadata/dc:date[1]"
+        },
+        {
+          "property": "book.collection-mention",
+          "value": "幼女戦記 [Youjo Senki] Manga",
+          "locator": "epub:item/standard.opf#/metadata/meta[@id='series-1'][@property='belongs-to-collection']"
+        },
+        {
+          "property": "book.collection-group-position",
+          "value": "1",
+          "locator": "epub:item/standard.opf#/metadata/meta[@refines='#series-1'][@property='group-position']"
+        }
+      ],
+      "cover": {
+        "locator": "epub:item/standard.opf#/manifest/item[@id='cover'][@properties~='cover-image']->entry:item/image/i-001.jpg",
+        "mediaType": "image/jpeg"
+      },
+      "official": {
+        "isbn": "9789864738281",
+        "requestAddress": "https://nbinet.primo.exlibrisgroup.com/primaws/rest/pub/pnxs?inst=886NCL_NBINET&vid=886NCL_NBINET%3ANBINET&lang=zh-tw&q=isbn%2Cexact%2C9789864738281&scope=MyInstitution&tab=NBINET&skipDelivery=Y",
+        "sourceAddress": "https://nbinet.primo.exlibrisgroup.com/discovery/search?inst=886NCL_NBINET&vid=886NCL_NBINET%3ANBINET&lang=zh-tw&q=isbn%2Cexact%2C9789864738281&scope=MyInstitution&tab=NBINET&skipDelivery=Y",
+        "metadata": [
+          {
+            "property": "book.isbn-13",
+            "value": "9789864738281"
+          },
+          {
+            "property": "asset.title",
+            "value": "幼女戰記 / 東條チカ漫畫 ; 一杞譯"
+          },
+          {
+            "property": "book.contributor",
+            "value": "東條チカ$$Q東條チカ"
+          },
+          {
+            "property": "book.publisher",
+            "value": "臺北市 : 臺灣角川"
+          },
+          {
+            "property": "book.publication-date",
+            "value": "2017.08-"
+          },
+          {
+            "property": "asset.declared-language",
+            "value": "chi"
+          }
+        ]
+      }
+    },
+    {
+      "logicalRoot": "appdata/booklore/books/漫画/Carlo Zen 東條チカ/幼女战记(2)",
+      "revision": {
+        "digest": "b003cd9b69519213ea0e110326667855209af11428c1a640b6638a60bac7d1d4",
+        "mediaType": "application/epub+zip",
+        "byteLength": 76338049
+      },
+      "formatFacts": [
+        {
+          "property": "asset.title",
+          "value": "幼女战记(2)",
+          "locator": "epub:item/standard.opf#/metadata/dc:title[1]"
+        },
+        {
+          "property": "asset.declared-language",
+          "value": "zh",
+          "locator": "epub:item/standard.opf#/metadata/dc:language[1]"
+        },
+        {
+          "property": "book.contributor",
+          "value": "Carlo Zen 東條チカ",
+          "locator": "epub:item/standard.opf#/metadata/dc:creator[1]"
+        },
+        {
+          "property": "book.publication-date",
+          "value": "2024-01-23",
+          "locator": "epub:item/standard.opf#/metadata/dc:date[1]"
+        },
+        {
+          "property": "book.collection-mention",
+          "value": "幼女戦記 [Youjo Senki] Manga",
+          "locator": "epub:item/standard.opf#/metadata/meta[@id='series-1'][@property='belongs-to-collection']"
+        },
+        {
+          "property": "book.collection-group-position",
+          "value": "2",
+          "locator": "epub:item/standard.opf#/metadata/meta[@refines='#series-1'][@property='group-position']"
+        }
+      ],
+      "cover": {
+        "locator": "epub:item/standard.opf#/manifest/item[@id='cover'][@properties~='cover-image']->entry:item/image/i-001.jpg",
+        "mediaType": "image/jpeg"
+      },
+      "official": {
+        "isbn": "9789864738298",
+        "requestAddress": "https://nbinet.primo.exlibrisgroup.com/primaws/rest/pub/pnxs?inst=886NCL_NBINET&vid=886NCL_NBINET%3ANBINET&lang=zh-tw&q=isbn%2Cexact%2C9789864738298&scope=MyInstitution&tab=NBINET&skipDelivery=Y",
+        "sourceAddress": "https://nbinet.primo.exlibrisgroup.com/discovery/search?inst=886NCL_NBINET&vid=886NCL_NBINET%3ANBINET&lang=zh-tw&q=isbn%2Cexact%2C9789864738298&scope=MyInstitution&tab=NBINET&skipDelivery=Y",
+        "metadata": [
+          {
+            "property": "book.isbn-13",
+            "value": "9789864738298"
+          },
+          {
+            "property": "asset.title",
+            "value": "幼女戰記 / 東條チカ漫畫 ; 一杞譯"
+          },
+          {
+            "property": "book.contributor",
+            "value": "東條チカ$$Q東條チカ"
+          },
+          {
+            "property": "book.publisher",
+            "value": "臺北市 : 臺灣角川"
+          },
+          {
+            "property": "book.publication-date",
+            "value": "2017.08-"
+          },
+          {
+            "property": "asset.declared-language",
+            "value": "chi"
+          }
+        ]
+      }
+    }
+  ],
+  "pdfPublications": [
+    {
+      "logicalRoot": "appdata/booklore/books/轻小说/入间人间/やがて君になる 佐伯沙弥香について",
+      "relativePath": "01. /终将成为你 佐伯沙弥香的追忆/终将成为你 佐伯沙弥香的追忆 - 入间人间 (2020).pdf",
+      "revision": {
+        "digest": "a594ec15d75e24d3889793499f0fc8d5c0f8c4dfbbfd4f5438f630cddca87c30",
+        "mediaType": "application/pdf",
+        "byteLength": 2814541
+      },
+      "pageCount": 119,
+      "documentAuthor": "水橋 松梨",
+      "cover": {
+        "locator": "pdf:page[1]",
+        "mediaType": "image/png"
+      }
+    },
+    {
+      "logicalRoot": "appdata/booklore/books/轻小说/入间人间/やがて君になる 佐伯沙弥香について",
+      "relativePath": "02. /终将成为你 佐伯沙弥香的追忆2/终将成为你 佐伯沙弥香的追忆2 - 入间人间 (2020).pdf",
+      "revision": {
+        "digest": "0c9db8d542aa489ce917818198f46dd1bbeafc35541bf96d9ab00d83be284d52",
+        "mediaType": "application/pdf",
+        "byteLength": 3039809
+      },
+      "pageCount": 114,
+      "documentAuthor": "水橋 松梨",
+      "cover": {
+        "locator": "pdf:page[1]",
+        "mediaType": "image/png"
+      }
+    },
+    {
+      "logicalRoot": "appdata/booklore/books/轻小说/入间人间/やがて君になる 佐伯沙弥香について",
+      "relativePath": "03. /终将成为你 佐伯沙弥香的追忆3/终将成为你 佐伯沙弥香的追忆3 - 入间人间 (2020).pdf",
+      "revision": {
+        "digest": "dbf79f261d8e14334de767610cad50b5d72076a8cb7740836f0d85ad8b3517d7",
+        "mediaType": "application/pdf",
+        "byteLength": 4147447
+      },
+      "pageCount": 131,
+      "documentAuthor": "水橋 松梨",
+      "cover": {
+        "locator": "pdf:page[1]",
+        "mediaType": "image/png"
+      }
+    }
+  ],
+  "video": {
+    "recognitionTrustPolicy": {
+      "trustedCoordinate": [
+        "recognizer capability identity",
+        "recognizer implementation version",
+        "named deterministic rule",
+        "rule version"
+      ],
+      "requiresRuleEvidenceAndExplanation": true,
+      "globalConfidenceScore": false,
+      "globalProviderIdentityPriority": false,
+      "metadataSourcePreferenceGrantsIdentityTrust": false,
+      "contradictoryTrustedResults": "Inspection Workspace",
+      "curationOwner": "product composition",
+      "pluginMaySelfTrust": false,
+      "firstReleaseUserModes": [
+        "apply curated trusted rules",
+        "inspect every proposal"
+      ],
+      "perRuleTrustEditor": "deny or restore an exact product-trusted coordinate only",
+      "userMayAddTrust": false,
+      "excludedRuleStillProducesProposals": true,
+      "exclusionAuditsOrRetractsExistingDecisions": false,
+      "changedCapabilityOrRuleVersionInheritsTrust": false,
+      "existingDecisionsReopenedByUpgrade": false,
+      "fullCatalogueRematchOnUpgrade": false,
+      "trustedRuleMayAutomaticallySupersedeExistingDecision": false,
+      "supersessionOrRetractionRequiresChangeImpactPreview": true
+    },
+    "multiSourceRatingOracle": {
+      "sources": [
+        "TMDB",
+        "IMDb via OMDb",
+        "Rotten Tomatoes via OMDb",
+        "Metacritic via OMDb"
+      ],
+      "ordinaryDisplay": "show source-labelled ratings with their native scale and vote population when available",
+      "singleValueConsumer": "select through the consumer's Metadata Usage Context and explainable Metadata Policy",
+      "forbidden": [
+        "implicit averaging",
+        "silent scale conversion",
+        "dropping source provenance"
+      ]
+    },
+    "filmOrdinaryDisplayPolicy": {
+      "preferTMDB": [
+        "localized name",
+        "original name",
+        "overview",
+        "release date",
+        "classifications",
+        "people",
+        "artwork",
+        "runtime"
+      ],
+      "contributeFromOMDb": ["awards", "box office", "source-labelled ratings"],
+      "fallbackToOMDbWhenTMDBMissing": ["overview", "runtime"],
+      "policyResolvedDisagreementRequiresAttention": false
+    },
+    "metadataLanguagePreference": {
+      "scope": "user",
+      "orderedPreferences": [
+        "Simplified Chinese",
+        "Traditional Chinese",
+        "source-original language",
+        "English",
+        "other available languages"
+      ],
+      "retainSourceOriginal": true,
+      "missingPreferredLanguageBlocksRecognition": false,
+      "languageDifferenceCreatesVariantAsset": false
+    },
+    "artworkAcquisitionPolicy": {
+      "scope": "first-release film composition ordinary display",
+      "trigger": "an outer consumer submits an Application-owned Information Requirement for the Artifact Role",
+      "preferredCandidateSource": "TMDB",
+      "fallbackCandidateSource": "OMDb",
+      "maximumCurrentArtifactsWhenRequested": {
+        "poster-role": 1,
+        "backdrop-role": 1
+      },
+      "coreArtifactRoleVocabularyIsClosed": false,
+      "assetCategoryImpliesRequiredRoles": false,
+      "sourceRecordRetainsDescriptorsOnly": true,
+      "downloadTarget": "product-controlled managed artifact root",
+      "writeObservedMediaTree": false,
+      "domainProjection": [
+        "Blob",
+        "Artifact",
+        "Location",
+        "Artifact Association"
+      ],
+      "refreshOverwritesBytesInPlace": false,
+      "targetLayoutExportIsSeparate": true
+    },
+    "informationRequirementExamples": {
+      "contractOwner": "Application",
+      "declarationAuthority": "one complete neutral requirement is supplied directly by each outer consumer; View Components do not contribute fragments",
+      "domainReceivesRequirement": false,
+      "persistentAutomation": {
+        "persist": ["Automation Intent", "Workflow Execution"],
+        "rebuild": ["Information Requirement", "Information Readiness"],
+        "backgroundWorkflowDependsOnAssetView": false,
+        "maximumActiveExecutionsPerIntent": 1,
+        "maximumPendingRetriggersPerIntent": 0,
+        "scanSnapshotIsFixed": true,
+        "triggerDuringExecution": "skip; the next ordinary schedule or explicit later scan discovers intervening changes",
+        "firstReleaseTriggers": [
+          "initial scan",
+          "configurable fixed interval",
+          "scan now"
+        ],
+        "triggeredWorkflow": "Asset Refresh Workflow",
+        "dropIsSeparateWorkflow": false,
+        "scheduledIngestionIsSeparateWorkflow": false,
+        "refreshAuditability": {
+          "requestedAndResolvedSelectionIsDurable": true,
+          "structuredWorkDispositions": [
+            "evaluated",
+            "reused",
+            "skipped",
+            "blocked",
+            "failed"
+          ],
+          "reuseAndNoOpAreInspectable": true,
+          "firstReleaseAutomaticAuditExpiration": false,
+          "firstReleaseAutomaticAuditCompaction": false,
+          "futureRetentionPolicyOwner": "Infrastructure",
+          "retentionPolicyMayDeleteDomainHistory": false,
+          "reviewGatedChangesAreVisibleBeforeApplication": true,
+          "trustedAutomaticallyAppliedChangesRemainInspectable": true,
+          "interactiveRefreshOpensLiveInspectionByDefault": true,
+          "inspectionNavigationAffectsDomainSemantics": false,
+          "universalBlobAndLocationCacheKey": false,
+          "opaqueFireAndForgetRefresh": false
+        },
+        "viewScopedRefresh": {
+          "applicationContract": "Asset Refresh Selection",
+          "assetViewOwnsVisibleCascadeExtent": true,
+          "viewComponentsContributeSelectionFragments": false,
+          "leafAndHigherLevelActionsUseSameWorkflow": true,
+          "syntheticViewNodesMayResolveProjectedSubjects": true,
+          "nodeRefreshUsesCompleteLogicalSubtree": true,
+          "primaryOperableProjectionIsFiniteAndAcyclic": true,
+          "crossLinksOrGraphCyclesParticipateInCascade": false,
+          "repeatedSubjectAppearancesAreDeduplicated": true,
+          "contributingViewPathsMayRemainExplanatory": true,
+          "paginationOrVirtualizationNarrowsNodeRefresh": false,
+          "transientDisplayFilterNarrowsNodeRefresh": false,
+          "explicitMultiSelectOrFilterResultMayNarrowSelection": true,
+          "applicationReceivesViewIdentityOrMediaLevel": false,
+          "selectionIsFrozenAtExecutionStart": true,
+          "domainInfersContainmentOrRefreshCascade": false
+        },
+        "periodicIntakeDeltaPolicy": {
+          "unchangedRecognizedMaterial": "may reuse accepted interpretation when the requested plan, evidence, and versioned contracts are unchanged; an explicit refresh may reevaluate it through the same workflow",
+          "newOrUnresolvedMaterial": "continue through ordinary Asset Refresh",
+          "pathOrByteChange": "update only with independently sufficient artifact continuity evidence",
+          "identityOrBoundaryContradiction": "produce an ordinary replacement Recognition Proposal",
+          "filesystemChangeTriggersBroadMetadataRefresh": false,
+          "missingLocationUnderCompleteCoverage": "mark that Location unavailable without deleting semantic or artifact history",
+          "missingLocationUnderIncompleteCoverage": "unknown; infer no disappearance",
+          "otherAccessibleLocationKeepsArtifactAvailable": true,
+          "absenceRequiresAttentionByDefault": false,
+          "sameBlobAtNewPath": "create another Artifact unless reliable observer-scoped filesystem-object identity evidence establishes Location continuity",
+          "reliableHardlinkOrMoveIdentity": "one Artifact may have several or moved Locations",
+          "rawInodeOrMountFieldsEnterDomain": false
+        },
+        "realTimeFilesystemNotifications": false,
+        "generalCronLanguage": false,
+        "disableIntent": {
+          "acceptFutureAutomaticTriggers": false,
+          "cancelActiveExecution": false,
+          "activeCancellationRequiresSeparateRequest": true
+        }
+      },
+      "ordinaryFilmView": {
+        "metadataProperties": ["source-labelled ratings"],
+        "artifactRoles": ["poster-role", "backdrop-role"]
+      },
+      "redistributionLayout": {
+        "metadataProperties": [],
+        "artifactRoles": [],
+        "ratingAcquisitionRequested": false,
+        "artworkAcquisitionRequested": false
+      },
+      "differentSubsetCreatesMetadataUsageContext": false
+    },
+    "multiSeasonSeries": {
+      "title": "葬送的芙莉莲",
+      "originalTitle": "葬送のフリーレン",
+      "sourceAssociations": {
+        "BangumiSeason1": "400602",
+        "BangumiSeason2": "515759"
+      },
+      "season1": {
+        "localEpisodeNumbers": [1, 28],
+        "officialEpisodeNumbers": [1, 28],
+        "officialSeriesSort": [1, 28],
+        "episodeSourceAddresses": [
+          "1227087",
+          "1227088",
+          "1227089",
+          "1227090",
+          "1227091",
+          "1227092",
+          "1227093",
+          "1227094",
+          "1227095",
+          "1227096",
+          "1227097",
+          "1227098",
+          "1253347",
+          "1253348",
+          "1253349",
+          "1253350",
+          "1253351",
+          "1253352",
+          "1253353",
+          "1253354",
+          "1253355",
+          "1253356",
+          "1253357",
+          "1253358",
+          "1257303",
+          "1257304",
+          "1257305",
+          "1257306"
+        ]
+      },
+      "season2": {
+        "localEpisodeNumbers": [1, 10],
+        "officialEpisodeNumbers": [1, 10],
+        "officialSeriesSort": [29, 38],
+        "episodeSourceAddresses": [
+          "1575936",
+          "1575937",
+          "1575938",
+          "1575939",
+          "1575940",
+          "1575941",
+          "1575942",
+          "1575943",
+          "1575944",
+          "1575945"
+        ]
+      },
+      "oracleRule": "Per-season episode number and cross-series sort are distinct valid ordering contexts. Season 2/S02E01 supplies season-scoped position evidence; a number without convention-defined scope must not be guessed. The parent directory is grouping evidence and does not manufacture an aggregate Digital Asset."
+    },
+    "series": {
+      "title": "终将成为你",
+      "originalTitle": "やがて君になる",
+      "productionYear": 2018,
+      "sourceAssociations": {
+        "Bangumi": "243981"
+      },
+      "seasonCount": 1,
+      "episodeCount": 13,
+      "episodeSourceAddresses": [
+        "831401",
+        "831402",
+        "831403",
+        "831404",
+        "831405",
+        "831406",
+        "831407",
+        "831408",
+        "831409",
+        "831410",
+        "831411",
+        "831412",
+        "832691"
+      ]
+    },
+    "film": {
+      "title": "恐怖直播",
+      "originalTitle": "더 테러 라이브",
+      "productionYear": 2013,
+      "legacyRecognitionPin": {
+        "carrier": "恐怖直播 (2013) - 1080p.nfo",
+        "authorship": "user",
+        "requiredForFirstRecognition": false,
+        "oracleRule": "Recognition must succeed without an NFO capability. If interpreted later, identifiers are user-authored evidence and do not transfer official-source authorship to the carrier's claims."
+      },
+      "sourceAssociations": {
+        "Tmdb": "209764",
+        "Imdb": "tt2990738",
+        "Tvdb": "143931"
+      },
+      "firstReleaseCollectors": ["TMDB", "OMDb"],
+      "requiredFirstReleaseSourceAddress": "209764",
+      "recognitionSource": "TMDB",
+      "informationRequirementEnrichmentSources": ["OMDb"],
+      "unconditionalPostRecognitionEnrichmentSources": [],
+      "optionalEnrichmentFailureBlocksRecognition": false
+    },
+    "collectorFilm": {
+      "title": "怒火救援",
+      "originalTitle": "Man on Fire",
+      "productionYear": 2004,
+      "sourceAssociations": {
+        "Tmdb": "9509",
+        "Imdb": "tt0328107",
+        "Tvdb": "1150"
+      },
+      "firstReleaseCollectors": ["TMDB", "OMDb"],
+      "requiredFirstReleaseSourceAddress": "9509",
+      "recognitionSource": "TMDB",
+      "informationRequirementEnrichmentSources": ["OMDb"],
+      "unconditionalPostRecognitionEnrichmentSources": [],
+      "optionalEnrichmentFailureBlocksRecognition": false,
+      "container": "Blu-ray package",
+      "packageFileCount": 105,
+      "transportStreamCount": 18,
+      "editionAssetExpected": false,
+      "oracleRule": "The package is one Artifact serving the identified film, with format-addressable parts by default. BDMV structure does not manufacture a Blu-ray-edition Digital Asset. A release realization or transport stream becomes a separate Digital Asset only when independent semantic identity and lifecycle evidence establish it. Unidentified parts remain inspectable technical structure and do not enter the Attention Inbox unless a requested operation requires their identity or role."
+    }
+  }
+}
