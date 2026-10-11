@@ -2183,16 +2183,14 @@ function refreshFixture(options?: {
       options?.observedEpubPartOnly === true
         ? [
             {
-              capability: {
-                capabilityId: "format.inspector",
-                get capabilityVersion() {
-                  return (
-                    options.formatCoordinateState?.capabilityVersion ?? "1"
-                  );
-                },
-                get contractVersion() {
-                  return options.formatCoordinateState?.contractVersion ?? "1";
-                },
+              get capability() {
+                return {
+                  capabilityId: "format.inspector",
+                  capabilityVersion:
+                    options.formatCoordinateState?.capabilityVersion ?? "1",
+                  contractVersion:
+                    options.formatCoordinateState?.contractVersion ?? "1",
+                };
               },
               inspect({ observedArtifactReference }) {
                 formatInspectionCalls += 1;
@@ -3373,19 +3371,15 @@ function refreshFixture(options?: {
       ? {
           observedArtifactPartAcquirers: [
             {
-              capability: {
-                capabilityId: "format.part",
-                get capabilityVersion() {
-                  return (
+              get capability() {
+                return {
+                  capabilityId: "format.part",
+                  capabilityVersion:
                     options.partAcquirerCoordinateState?.capabilityVersion ??
-                    "1"
-                  );
-                },
-                get contractVersion() {
-                  return (
-                    options.partAcquirerCoordinateState?.contractVersion ?? "1"
-                  );
-                },
+                    "1",
+                  contractVersion:
+                    options.partAcquirerCoordinateState?.contractVersion ?? "1",
+                };
               },
               canAcquire: () => true,
               async acquire(input) {
@@ -5008,7 +5002,16 @@ describe("Asset Refresh acceptance", () => {
 
     expect(repeated.execution.outcome).toBe("accepted");
     expect(subject.formatInspectionCalls()).toBe(2);
-    expect(subject.collectionCalls()).toBe(2);
+    expect(subject.collectionCalls()).toBe(1);
+    expect(subject.accepted.at(-1)?.artifactRevisions).toContainEqual(
+      expect.objectContaining({
+        producer: {
+          capabilityId: "format.inspector",
+          capabilityVersion: "1",
+          contractVersion: "2",
+        },
+      }),
+    );
   });
 
   it("does not reuse an ordinary scan when collector and interpreter contracts advance, and records their new provenance", async () => {
@@ -5152,6 +5155,14 @@ describe("Asset Refresh acceptance", () => {
       acceptTrusted: true,
       informationRequirement: primaryCoverRequirement,
     });
+    const initialPart = subject.accepted[0]!.artifactRevisions.find(
+      (revision) => revision.producer?.capabilityId === "format.part",
+    );
+    expect(initialPart?.producer).toEqual({
+      capabilityId: "format.part",
+      capabilityVersion: "1",
+      contractVersion: "1",
+    });
     coordinate.capabilityVersion = "2";
 
     const repeated = await scanFixtureObservedScope(subject.workflow, {
@@ -5159,9 +5170,28 @@ describe("Asset Refresh acceptance", () => {
       informationRequirement: primaryCoverRequirement,
     });
 
+    expect(initialPart?.producer?.capabilityVersion).toBe("1");
     expect(repeated.execution.outcome).toBe("accepted");
     expect(subject.observedPartAcquisitionCalls()).toBe(2);
-    expect(subject.managedStoreCalls()).toBe(4);
+    expect(subject.managedStoreCalls()).toBe(3);
+    expect(subject.collectionCalls()).toBe(1);
+    expect(subject.accepted.at(-1)?.artifactRevisions).toContainEqual(
+      expect.objectContaining({
+        producer: {
+          capabilityId: "format.part",
+          capabilityVersion: "2",
+          contractVersion: "1",
+        },
+      }),
+    );
+    const unchanged = await scanFixtureObservedScope(subject.workflow, {
+      acceptTrusted: true,
+      informationRequirement: primaryCoverRequirement,
+    });
+    expect(unchanged.execution.outcome).toBe("no-change");
+    expect(subject.observedPartAcquisitionCalls()).toBe(2);
+    expect(subject.managedStoreCalls()).toBe(3);
+    expect(subject.collectionCalls()).toBe(1);
   });
 
   it("materializes local format facts only with a persisted parent revision", async () => {

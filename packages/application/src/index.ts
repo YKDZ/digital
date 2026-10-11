@@ -18551,8 +18551,66 @@ export class AssetRefreshWorkflow {
           previousEvidence.length === 0 || baseline === undefined
             ? undefined
             : inspectedRevisionCoordinates(previousEvidence, baseline.root);
+        // 同字节的本地部件仍受其实际获取器的完整坐标约束。只重派生本次需求确实
+        // 消费、且当前父位置/locator/角色精确对应的部件；纯来源刷新不因此重取材料。
+        const partProposal = attachObservedFormatFacts(
+          {
+            id: id("recognition-proposal"),
+            boundaries: retained.accepted.recognitionDecision.boundaries,
+            observedArtifactAssociations: localAssociations,
+            basis: {
+              kind: "accepted-boundary",
+              recognitionDecisionId: retained.accepted.recognitionDecision.id,
+              observationSnapshotId: requiredFilesystemSnapshot(initial).id,
+              evidence: plan.evidence,
+              materialReferences: plan.relativePaths,
+            },
+            ruleResults: [],
+          },
+          plan.evidence,
+        );
+        const changedPartReferences = new Set(
+          selectObservedArtifactParts(
+            partProposal,
+            withObservedMaterialImageRequirement(requirement),
+          )
+            .filter((candidate) => {
+              const acquirer = this.ports.observedArtifactPartAcquirers?.find(
+                (item) => item.canAcquire(candidate),
+              );
+              if (acquirer === undefined) return false;
+              const parentAddress =
+                requiredFilesystemSnapshot(initial).root +
+                "/" +
+                candidate.observedArtifactReference;
+              return retained.accepted.artifactAssociations.some(
+                (association) =>
+                  association.role ===
+                    observedArtifactPartAssociationRole(
+                      partProposal,
+                      candidate,
+                    ) &&
+                  association.observedArtifactPart?.locator ===
+                    candidate.locator &&
+                  retained.accepted.locations.some(
+                    (location) =>
+                      location.kind === "observed" &&
+                      location.address === parentAddress &&
+                      location.artifactId ===
+                        association.observedArtifactPart?.artifactId,
+                  ) &&
+                  (association.producer === undefined ||
+                    !sameCapabilityCoordinate(
+                      association.producer,
+                      acquirer.capability,
+                    )),
+              );
+            })
+            .map((candidate) => candidate.observedArtifactReference),
+        );
         const changed =
           baseline === undefined ||
+          (refreshesHeadDecision && changedPartReferences.size > 0) ||
           // 冻结坐标属于正在刷新的那份决定：追加范围的比较只看该决定自己那次观察里
           // 的文件事实，绝不借主身份的运行坐标把未变的追加材料误判成需要修订。
           (refreshesHeadDecision &&
@@ -18672,6 +18730,7 @@ export class AssetRefreshWorkflow {
                   const previousFacts = baselineRevisionFacts.get(reference);
                   const currentFacts = currentRevisionFacts.get(reference);
                   return (
+                    changedPartReferences.has(reference) ||
                     file === undefined ||
                     previous === undefined ||
                     file.size !== previous.size ||
