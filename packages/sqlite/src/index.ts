@@ -16461,8 +16461,8 @@ export class SqliteCatalogue
         association.sourceAssociationId !== undefined
       )
         continue;
-      // 同一角色在这次清单里可能有多个文件：先用关联自身（或 part 的载体）唯一的
-      // 观察位置反推它对应的那份材料，绝不能把第一个同角色候选当成所有关联的证据。
+      // 同一角色可能服务不同产物，也可能包含同一产物的多个位置；先逐个钉住本关联
+      // 自身（或 part 载体）的声明坐标，不能用第一个同角色候选代替其他材料。
       const materialArtifactId =
         association.observedArtifactPart?.artifactId ?? association.artifactId;
       const ownAddresses = accepted.locations
@@ -16475,7 +16475,7 @@ export class SqliteCatalogue
         accepted.proposal.observedArtifactAssociations ?? []
       ).filter((item) => item.role === association.role);
       const pinnedCandidates =
-        carrier === undefined || ownAddresses.length !== 1
+        carrier === undefined
           ? []
           : sameRoleCandidates.filter((item) =>
               ownAddresses.includes(
@@ -16485,29 +16485,49 @@ export class SqliteCatalogue
                 ),
               ),
             );
-      const candidate =
-        pinnedCandidates.length === 1
-          ? pinnedCandidates[0]
-          : ownAddresses.length === 0 && sameRoleCandidates.length === 1
-            ? sameRoleCandidates[0]
-            : undefined;
-      const digests =
-        candidate === undefined
-          ? []
-          : [
-              ...new Set(
-                declaredRevisions
-                  .filter(
-                    (revision) =>
-                      revision.observedArtifactReference ===
-                      candidate.observedArtifactReference,
-                  )
-                  .map((revision) => revision.blob.digest),
+      if (
+        ownAddresses.length > 1 &&
+        !ownAddresses.every((address) =>
+          pinnedCandidates.some(
+            (candidate) =>
+              carrier !== undefined &&
+              path.resolve(
+                carrier.snapshotRoot,
+                candidate.observedArtifactReference,
+              ) === address,
+          ),
+        )
+      )
+        continue;
+      const candidates =
+        pinnedCandidates.length > 0
+          ? pinnedCandidates.toSorted((left, right) =>
+              left.observedArtifactReference.localeCompare(
+                right.observedArtifactReference,
               ),
+            )
+          : [
+              ownAddresses.length === 0 && sameRoleCandidates.length === 1
+                ? sameRoleCandidates[0]
+                : undefined,
             ];
-      const observation = this.localObservationEvidenceWithDrizzle(
-        transaction,
-        {
+      const observations = candidates.map((candidate) => {
+        const digests =
+          candidate === undefined
+            ? []
+            : [
+                ...new Set(
+                  declaredRevisions
+                    .filter(
+                      (revision) =>
+                        revision.observedArtifactReference ===
+                        candidate.observedArtifactReference,
+                    )
+                    .map((revision) => revision.blob.digest),
+                ),
+              ];
+        if (candidates.length > 1 && digests.length !== 1) return undefined;
+        return this.localObservationEvidenceWithDrizzle(transaction, {
           association,
           accepted,
           carrier,
@@ -16517,9 +16537,24 @@ export class SqliteCatalogue
                 observedArtifactReference: candidate.observedArtifactReference,
               }),
           ...(digests.length === 1 ? { revisionDigest: digests[0] } : {}),
-        },
-      );
-      if (observation === undefined) continue;
+        });
+      });
+      const observation = observations[0];
+      // 一行支持足以证明同一产物修订；多个位置必须各自证明同一载体和修订，
+      // 才能使用排序后的确定坐标。缺失或不同修订不能因有另一条成功而被吞掉。
+      if (
+        observation === undefined ||
+        (observations.length > 1 && observation.revisionId === undefined) ||
+        observations.some(
+          (item) =>
+            item === undefined ||
+            item.executionId !== observation.executionId ||
+            item.snapshotId !== observation.snapshotId ||
+            item.materialKind !== observation.materialKind ||
+            item.revisionId !== observation.revisionId,
+        )
+      )
+        continue;
       this.upsertLocalAssociationSupportWithDrizzle(transaction, {
         associationId: association.id,
         decisionId: accepted.recognitionDecision.id,

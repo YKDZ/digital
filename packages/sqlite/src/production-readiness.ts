@@ -1651,6 +1651,24 @@ function hasValidObservedMaterialSupports(database: DatabaseSync): boolean {
        AND association.source_record_ids_json = '[]'
        AND association.source_association_id IS NULL
        AND (expected.association_id IS NULL OR association.id = expected.association_id)
+       -- 已应用的范围修订只为其完整 projected 事实要求新决定支持；同址、同字节的
+       -- 旧交付关联仍由上面的历史支持校验，不能仅因新 head 而被强挂到新决定。
+       AND NOT EXISTS (
+         SELECT 1 FROM change_impact_previews AS preview
+         WHERE preview.execution_id = expected.execution_id
+           AND preview.asset_id = expected.asset_id
+           AND preview.status = 'applied'
+           AND json_extract(preview.preview_json, '$.change.kind') =
+               'recognition-scope-amendment'
+           AND json_extract(preview.preview_json, '$.change.proposal.id') =
+               expected.proposal_id
+           AND NOT EXISTS (
+             SELECT 1 FROM json_each(
+               json_extract(preview.preview_json, '$.projected.artifactAssociations'))
+               AS projected_association
+             WHERE json_extract(projected_association.value, '$.id') = association.id
+           )
+       )
       WHERE NOT EXISTS (
         SELECT 1 FROM artifact_association_retractions AS ending
         WHERE ending.association_id = association.id

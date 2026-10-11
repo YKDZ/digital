@@ -13895,11 +13895,22 @@ export class AssetRefreshWorkflow {
         )
         .flatMap((member) => memberMaterialAddresses(member, selectedSnapshot)),
     );
+    const deliveredArtifactIds = new Set(
+      target.accepted.artifactAssociations
+        .filter(
+          (association) =>
+            association.target.kind === "entity" &&
+            association.target.entityId === assetId &&
+            association.role === "asset.material-delivered",
+        )
+        .map((association) => association.artifactId),
+    );
     const deliveredAddresses = new Set(
       target.accepted.locations
         .filter(
           (location) =>
             location.kind === "observed" &&
+            deliveredArtifactIds.has(location.artifactId) &&
             retainedMaterialAddresses.has(location.address),
         )
         .map((location) => location.address),
