@@ -45,3 +45,9 @@ export {
   type ContainerOperationResult,
   type ContainerOperationOptions,
 } from "./container-environment.ts";
+
+export {
+  developEnvironment,
+  updateDevelopmentEnvironment,
+  type DevelopmentEnvironmentResult,
+} from "./development-environment.ts";

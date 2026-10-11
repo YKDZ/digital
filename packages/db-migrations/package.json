@@ -13,6 +13,7 @@
   "exports": {
     ".": {
       "digital-source": "./src/index.ts",
+      "digital-development": "./.turbo/development/dist/index.js",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
@@ -27,7 +28,8 @@
     "lint:fix": "oxlint --format=unix --config ../../oxlint.config.ts . --fix",
     "pretest": "pnpm build",
     "test": "vitest run --reporter=verbose",
-    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false"
+    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
+    "dev:build": "node --conditions=digital-source ../../scripts/build-development.ts"
   },
   "dependencies": {
     "@digital/product-data": "workspace:*",

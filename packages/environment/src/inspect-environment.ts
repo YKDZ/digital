@@ -1,5 +1,6 @@
 import { lstat, readdir, realpath } from "node:fs/promises";
 
+import type { DevelopmentSessionRecord } from "./internal/development-state.ts";
 import type {
   EnvironmentFacts,
   EnvironmentRunFacts,
@@ -11,6 +12,7 @@ import {
   verifyDataOwnership,
   type EnvironmentLayout,
 } from "./internal/paths.ts";
+import { observeProcessLifecycle } from "./internal/process-identity.ts";
 import {
   canonicalJson,
   readRecord,
@@ -40,6 +42,10 @@ export type ServiceReadiness =
   | "unknown";
 
 export type InspectEnvironmentResult = {
+  readonly development?: DevelopmentSessionRecord & {
+    readonly ownerLiveness: "alive" | "exited" | "unknown";
+    readonly watcherLiveness: "alive" | "exited" | "unknown" | "absent";
+  };
   readonly status: "ok" | "invalid-request";
   readonly state: EnvironmentState;
   readonly environment: EnvironmentFacts;
@@ -212,6 +218,18 @@ export async function inspectEnvironment(input: {
       config: record.config,
       dataGeneration: record.dataGeneration,
     },
+    ...(record.development === undefined
+      ? {}
+      : {
+          development: {
+            ...record.development,
+            ownerLiveness: observeProcessLifecycle(record.development.owner),
+            watcherLiveness:
+              record.development.watcher === undefined
+                ? ("absent" as const)
+                : observeProcessLifecycle(record.development.watcher),
+          },
+        }),
     preparation: {
       updatedAt: record.preparation.updatedAt,
       lastOperationId: record.preparation.lastOperationId,

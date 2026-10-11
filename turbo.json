@@ -185,6 +185,35 @@
     },
     "lint:fix": {
       "cache": false
+    },
+    "dev:build": {
+      "dependsOn": ["^dev:build"],
+      "cache": false,
+      "inputs": [
+        "src/**",
+        "tsconfig*.json",
+        "package.json",
+        "$TURBO_ROOT$/scripts/build-development.ts"
+      ],
+      "outputs": [".turbo/development/**"]
+    },
+    "dev:serve": {
+      "dependsOn": ["^dev:build"],
+      "cache": false,
+      "inputs": [
+        "package.json",
+        "vite.config.ts",
+        "+server.ts",
+        "scripts/start-development.ts",
+        "server/**",
+        "pages/**/+*.ts",
+        "$TURBO_ROOT$/scripts/development-task.ts"
+      ],
+      "passThroughEnv": [
+        "DIGITAL_DEVELOPMENT_SESSION",
+        "DIGITAL_DEVELOPMENT_WORKSPACE",
+        "DIGITAL_DEVELOPMENT_ENVIRONMENT"
+      ]
     }
   }
 }

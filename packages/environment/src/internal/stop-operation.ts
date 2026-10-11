@@ -115,7 +115,7 @@ export async function runStopOperation(
     );
   }
 
-  const record = read.record;
+  let record = read.record;
   const container = await directoryIdentity(layout.containerDirectory);
   if (
     container === undefined ||
@@ -134,6 +134,39 @@ export async function runStopOperation(
       recordedRunFacts(record),
     );
 
+  const development = record.development;
+  if (
+    request.developmentSession !== undefined &&
+    (development?.sessionId !== request.developmentSession ||
+      development.state !== "active")
+  )
+    return unconfirmed(
+      environmentFacts(record, layout),
+      record,
+      "generation",
+      "开发会话引用已失效，迟到包装不能改变当前会话",
+      observeLiveness(record.run?.processIdentity),
+    );
+  if (development !== undefined && development.state !== "ended") {
+    record = {
+      ...record,
+      development: {
+        ...development,
+        state: request.developmentSession === undefined ? "ending" : "active",
+        update: development.update === "failed" ? "failed" : "updating",
+        updatedAt: new Date().toISOString(),
+      },
+    };
+    const problem = await saveRecord(layout.recordPath, record);
+    if (problem !== undefined)
+      return unconfirmed(
+        environmentFacts(record, layout),
+        record,
+        "generation",
+        `开发停止意图无法保存：${problem}`,
+        observeLiveness(record.run?.processIdentity),
+      );
+  }
   const facts = environmentFacts(record, layout);
   const run = record.run;
   if (run === undefined)

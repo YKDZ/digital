@@ -93,6 +93,7 @@ type StartContext = {
   readonly layout: EnvironmentLayout;
   readonly facts: EnvironmentFacts;
   readonly runId: string;
+  readonly runtime: "production" | "development";
   readonly port: number;
   readonly address: string;
   readonly directory: string;
@@ -160,6 +161,30 @@ export async function runStartOperation(
       layout,
     );
   const facts = environmentFacts(record, layout);
+  if (request.developmentSession !== undefined) {
+    if (
+      record.development?.sessionId !== request.developmentSession ||
+      record.development.state !== "active" ||
+      request.runtime !== "development"
+    )
+      return simpleResult(
+        request,
+        "开发会话已结束或引用失效，拒绝迟到启动",
+        "generation",
+        layout,
+        facts,
+      );
+  } else if (
+    record.development !== undefined &&
+    record.development.state !== "ended"
+  )
+    return simpleResult(
+      request,
+      "现有开发会话尚未结束，普通启动不能创建另一世代",
+      "generation",
+      layout,
+      facts,
+    );
   // 半收敛的破坏性意图现场不属于任何可启动世代：只指出该用哪个显式命令继续。
   if (record.destructive !== undefined)
     return simpleResult(
@@ -185,6 +210,16 @@ export async function runStartOperation(
 
   const existing = await evaluateExistingRun(record);
   if (existing.kind === "already-ready") {
+    if (
+      (record.run?.runtime ?? "production") !==
+      (request.runtime ?? "production")
+    )
+      return refusedResult(
+        record,
+        layout,
+        "现有世代使用另一入口；请先显式停止再切换开发或生产入口",
+        existing.observation.processLiveness,
+      );
     const unrecovered = await restorePublication(
       existing.target,
       existing.observation,
@@ -200,7 +235,13 @@ export async function runStartOperation(
   }
   if (existing.kind === "refuse")
     return refusedResult(record, layout, existing.reason, existing.liveness);
-  return await startFreshGeneration(record, layout, facts, cancellation);
+  return await startFreshGeneration(
+    record,
+    layout,
+    facts,
+    cancellation,
+    request.runtime ?? "production",
+  );
 }
 
 /**
@@ -299,6 +340,7 @@ async function startFreshGeneration(
   layout: EnvironmentLayout,
   facts: EnvironmentFacts,
   cancellation: OperationCancellation,
+  runtime: "production" | "development",
 ): Promise<StartOperationResult> {
   const runId = randomUUID();
   const privateRun = createPrivateRunDirectory(
@@ -316,6 +358,7 @@ async function startFreshGeneration(
     layout,
     facts,
     runId,
+    runtime,
     port: 0,
     address: "",
     directory,
@@ -376,6 +419,7 @@ async function startFreshGeneration(
     };
     const intent = withRunRecord(withOperation(record, operation), {
       runId,
+      runtime,
       state: "starting",
       startedAt: context.startedAt,
       updatedAt: new Date().toISOString(),
@@ -409,16 +453,44 @@ async function startFreshGeneration(
       });
     progress.intent = intent;
 
-    const entry = webEntryPath(layout.workspacePath);
+    const entry =
+      runtime === "development"
+        ? path.join(
+            layout.workspacePath,
+            "apps",
+            "web",
+            "scripts",
+            "start-development.ts",
+          )
+        : webEntryPath(layout.workspacePath);
     const child = spawn(
       process.execPath,
-      ["--import", pathToFileURL(guideEntryPath()).href, entry],
+      [
+        ...(runtime === "development"
+          ? ["--conditions=digital-development"]
+          : []),
+        "--import",
+        pathToFileURL(guideEntryPath()).href,
+        entry,
+      ],
       {
         cwd: layout.workspacePath,
         detached: true,
         env: filteredEnvironment(process.env, {
           DIGITAL_PRODUCT_DATA: layout.productDataRoot,
           PORT: String(port),
+          ...(runtime === "development"
+            ? {
+                DIGITAL_DEVELOPMENT: "1",
+                DIGITAL_DEVELOPMENT_CACHE: path.join(
+                  layout.workspacePath,
+                  ".turbo",
+                  "development",
+                  "vite",
+                  record.environmentId,
+                ),
+              }
+            : {}),
           [launchConfigEnvironmentVariable]: context.launchConfigFile,
           // 世代只按记录里已核验的选择装配来源，父进程的来源变量不会渗入。
           ...requireSourceSelectionEnvironment({

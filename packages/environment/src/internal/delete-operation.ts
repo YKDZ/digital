@@ -655,6 +655,8 @@ async function removeFile(
 
 /** 删除与重建同样拒绝在收尾未确认的世代上破坏。 */
 function deleteBlockedByRun(record: EnvironmentRecord): string | undefined {
+  if (record.development !== undefined && record.development.state !== "ended")
+    return "开发会话尚未确认结束，请先独立 stop；不在更新或未知现场上重建、删除";
   const run = record.run;
   if (run === undefined) return undefined;
   const liveness = observeLiveness(run.processIdentity);
