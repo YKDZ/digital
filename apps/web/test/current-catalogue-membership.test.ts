@@ -326,6 +326,19 @@ it("keeps independently scanned overlapping-root material until its last root is
     await expect
       .poll(async () => intakeExecution(product, childRoot.id, childScan.id))
       .toMatchObject({ execution: { status: "completed" } });
+    // 独立观察不等于已确认关联；明确把子目录的这份材料归给原资产。
+    const association =
+      await product.result.workflow.prepareObservedMaterialAssociation({
+        targetAssetId: assetId,
+        registrationId: childRoot.id,
+        relativeScope: ".",
+        relativePaths: ["book.txt"],
+        initiatedBy: "current-catalogue-test",
+      });
+    await product.result.workflow.confirmObservedMaterialAssociation({
+      executionId: association.executionId,
+      confirmedBy: "current-catalogue-test",
+    });
     await removeLibrary(product, parentRoot.libraryId);
     await expect(currentCatalogue(product)).resolves.toMatchObject({
       assets: [expect.objectContaining({ id: assetId })],
