@@ -1,0 +1,315 @@
+{
+  "formatVersion": 1,
+  "ordinary": [
+    {
+      "id": "RJ01029383-json",
+      "url": "https://www.dlsite.com/maniax/product/info/ajax?product_id=RJ01029383",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/RJ01029383.json"
+    },
+    {
+      "id": "RJ01029383-html",
+      "url": "https://www.dlsite.com/maniax/work/=/product_id/RJ01029383.html",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "text/html",
+      "responseFile": "responses/RJ01029383.html"
+    },
+    {
+      "id": "RJ01029383-cover",
+      "url": "https://img.dlsite.jp/modpub/images2/work/doujin/RJ01029383_img_main.png",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "image/png",
+      "responseFile": "responses/cover.png"
+    },
+    {
+      "id": "RJ01049458-json",
+      "url": "https://www.dlsite.com/maniax/product/info/ajax?product_id=RJ01049458",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/RJ01049458.json"
+    },
+    {
+      "id": "RJ01049458-html",
+      "url": "https://www.dlsite.com/maniax/work/=/product_id/RJ01049458.html",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "text/html",
+      "responseFile": "responses/RJ01049458.html"
+    },
+    {
+      "id": "RJ01049458-cover",
+      "url": "https://img.dlsite.jp/modpub/images2/work/doujin/RJ01049458_img_main.png",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "image/png",
+      "responseFile": "responses/cover.png"
+    },
+    {
+      "id": "RJ01115164-json",
+      "url": "https://www.dlsite.com/maniax/product/info/ajax?product_id=RJ01115164",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/RJ01115164.json"
+    },
+    {
+      "id": "RJ01115164-html",
+      "url": "https://www.dlsite.com/maniax/work/=/product_id/RJ01115164.html",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "text/html",
+      "responseFile": "responses/RJ01115164.html"
+    },
+    {
+      "id": "RJ01115164-cover",
+      "url": "https://img.dlsite.jp/modpub/images2/work/doujin/RJ01115164_img_main.png",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "image/png",
+      "responseFile": "responses/cover.png"
+    },
+    {
+      "id": "RJ01131487-json",
+      "url": "https://www.dlsite.com/maniax/product/info/ajax?product_id=RJ01131487",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/RJ01131487.json"
+    },
+    {
+      "id": "RJ01131487-html",
+      "url": "https://www.dlsite.com/maniax/work/=/product_id/RJ01131487.html",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "text/html",
+      "responseFile": "responses/RJ01131487.html"
+    },
+    {
+      "id": "RJ01131487-cover",
+      "url": "https://img.dlsite.jp/modpub/images2/work/doujin/RJ01131487_img_main.png",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "image/png",
+      "responseFile": "responses/cover.png"
+    },
+    {
+      "id": "RJ01196709-json",
+      "url": "https://www.dlsite.com/maniax/product/info/ajax?product_id=RJ01196709",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/RJ01196709.json"
+    },
+    {
+      "id": "RJ01196709-html",
+      "url": "https://www.dlsite.com/maniax/work/=/product_id/RJ01196709.html",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "text/html",
+      "responseFile": "responses/RJ01196709.html"
+    },
+    {
+      "id": "RJ01196709-cover",
+      "url": "https://img.dlsite.jp/modpub/images2/work/doujin/RJ01196709_img_main.png",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "image/png",
+      "responseFile": "responses/cover.png"
+    },
+    {
+      "id": "RJ01497788-json",
+      "url": "https://www.dlsite.com/maniax/product/info/ajax?product_id=RJ01497788",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/RJ01497788.json"
+    },
+    {
+      "id": "RJ01497788-html",
+      "url": "https://www.dlsite.com/maniax/work/=/product_id/RJ01497788.html",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "text/html",
+      "responseFile": "responses/RJ01497788.html"
+    },
+    {
+      "id": "RJ01497788-cover",
+      "url": "https://img.dlsite.jp/modpub/images2/work/doujin/RJ01497788_img_main.png",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "image/png",
+      "responseFile": "responses/cover.png"
+    },
+    {
+      "id": "RJ01668691-json",
+      "url": "https://www.dlsite.com/maniax/product/info/ajax?product_id=RJ01668691",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/RJ01668691.json"
+    },
+    {
+      "id": "RJ01668691-html",
+      "url": "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "text/html",
+      "responseFile": "responses/RJ01668691.html"
+    },
+    {
+      "id": "RJ01668691-cover",
+      "url": "https://img.dlsite.jp/modpub/images2/work/doujin/RJ01668691_img_main.png",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "image/png",
+      "responseFile": "responses/cover.png"
+    },
+    {
+      "id": "VJ014635-json",
+      "url": "https://www.dlsite.com/maniax/product/info/ajax?product_id=VJ014635",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/VJ014635.json"
+    },
+    {
+      "id": "VJ014635-html",
+      "url": "https://www.dlsite.com/maniax/work/=/product_id/VJ014635.html",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "text/html",
+      "responseFile": "responses/VJ014635.html"
+    },
+    {
+      "id": "VJ014635-cover",
+      "url": "https://img.dlsite.jp/modpub/images2/work/doujin/VJ014635_img_main.png",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "image/png",
+      "responseFile": "responses/cover.png"
+    },
+    {
+      "id": "fanbox-cover-7576910",
+      "url": "https://downloads.fanbox.cc/images/post/7576910/controlled-cover.png",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "image/png",
+      "responseFile": "responses/cover.png"
+    },
+    {
+      "id": "fanbox-cover-7225781",
+      "url": "https://downloads.fanbox.cc/images/post/7225781/controlled-cover.png",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "image/png",
+      "responseFile": "responses/cover.png"
+    },
+    {
+      "id": "fanbox-cover-231859",
+      "url": "https://downloads.fanbox.cc/images/post/231859/controlled-cover.png",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "image/png",
+      "responseFile": "responses/cover.png"
+    },
+    {
+      "id": "fanbox-cover-1739441",
+      "url": "https://downloads.fanbox.cc/images/post/1739441/controlled-cover.png",
+      "method": "GET",
+      "status": 200,
+      "mediaType": "image/png",
+      "responseFile": "responses/cover.png"
+    }
+  ],
+  "session": [
+    {
+      "id": "fanbox-login",
+      "creatorId": "customudon",
+      "endpoint": "login-status",
+      "privateContextIdentity": "sha256:2ceb9d8131a38d5dff4b845ab507b2ad39aa2a04b3cb834901663c999c1e1efd",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/fanbox-login.json"
+    },
+    {
+      "id": "fanbox-verify",
+      "creatorId": "customudon",
+      "endpoint": "creator-summaries",
+      "privateContextIdentity": "sha256:2ceb9d8131a38d5dff4b845ab507b2ad39aa2a04b3cb834901663c999c1e1efd",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/fanbox-verify.json",
+      "limit": 1
+    },
+    {
+      "id": "fanbox-summaries",
+      "creatorId": "customudon",
+      "endpoint": "creator-summaries",
+      "privateContextIdentity": "sha256:2ceb9d8131a38d5dff4b845ab507b2ad39aa2a04b3cb834901663c999c1e1efd",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/fanbox-summaries.json",
+      "limit": 300
+    },
+    {
+      "id": "fanbox-detail-7576910",
+      "creatorId": "customudon",
+      "endpoint": "post-detail",
+      "postId": "7576910",
+      "access": "connected",
+      "privateContextIdentity": "sha256:2ceb9d8131a38d5dff4b845ab507b2ad39aa2a04b3cb834901663c999c1e1efd",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/fanbox-7576910.json"
+    },
+    {
+      "id": "fanbox-detail-7225781",
+      "creatorId": "customudon",
+      "endpoint": "post-detail",
+      "postId": "7225781",
+      "access": "connected",
+      "privateContextIdentity": "sha256:2ceb9d8131a38d5dff4b845ab507b2ad39aa2a04b3cb834901663c999c1e1efd",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/fanbox-7225781.json"
+    },
+    {
+      "id": "fanbox-detail-231859",
+      "creatorId": "customudon",
+      "endpoint": "post-detail",
+      "postId": "231859",
+      "access": "connected",
+      "privateContextIdentity": "sha256:2ceb9d8131a38d5dff4b845ab507b2ad39aa2a04b3cb834901663c999c1e1efd",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/fanbox-231859.json"
+    },
+    {
+      "id": "fanbox-detail-9135862",
+      "creatorId": "customudon",
+      "endpoint": "post-detail",
+      "postId": "9135862",
+      "access": "connected",
+      "privateContextIdentity": "sha256:2ceb9d8131a38d5dff4b845ab507b2ad39aa2a04b3cb834901663c999c1e1efd",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/fanbox-9135862.json"
+    },
+    {
+      "id": "fanbox-detail-1739441",
+      "creatorId": "customudon",
+      "endpoint": "post-detail",
+      "postId": "1739441",
+      "access": "connected",
+      "privateContextIdentity": "sha256:2ceb9d8131a38d5dff4b845ab507b2ad39aa2a04b3cb834901663c999c1e1efd",
+      "status": 200,
+      "mediaType": "application/json",
+      "responseFile": "responses/fanbox-1739441.json"
+    }
+  ]
+}
