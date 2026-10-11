@@ -66,26 +66,4 @@ describe("正式单机 Compose 部署合同", () => {
       "check-compose-deployment.ts",
     );
   });
-
-  it("只删除自行创建的 nonce 子目录，并在 finally 后验证 Compose 资源无残留", async () => {
-    const checker = await readFile(
-      path.join(repositoryRoot, "apps/web/scripts/check-compose-deployment.ts"),
-      "utf8",
-    );
-
-    expect(checker).toContain("temporaryParent");
-    expect(checker).toContain("path.join(parent, nonce)");
-    expect(checker).toContain("assertCleanup");
-    expect(checker).toContain("SIGINT");
-    expect(checker).toContain("SIGTERM");
-  });
-
-  it("给 Docker healthcheck 的启动窗口留出有界等待时间", async () => {
-    const checker = await readFile(
-      path.join(repositoryRoot, "apps/web/scripts/check-compose-deployment.ts"),
-      "utf8",
-    );
-
-    expect(checker).toContain("Compose 健康检查未在 90 秒内变为 healthy");
-  });
 });

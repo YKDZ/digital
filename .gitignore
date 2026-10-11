@@ -1,4 +1,6 @@
 node_modules/
+# pnpm 运行时在当前目录创建后移除的临时文件。
+_tmp_[0-9]*_[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]
 /.pnpm-store
 dist/
 .turbo/

@@ -484,6 +484,8 @@ async function purgeOwnedProductData(
  * 要求先经公开 stop 独立确认真实退出。
  */
 function rebuildBlockedByRun(record: EnvironmentRecord): string | undefined {
+  if (record.development !== undefined && record.development.state !== "ended")
+    return "开发会话尚未确认结束，请先独立 stop；不在更新或未知现场上重建、删除";
   const run = record.run;
   if (run === undefined) return undefined;
   const liveness = observeLiveness(run.processIdentity);

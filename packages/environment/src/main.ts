@@ -78,6 +78,7 @@ const lifecycleCleanupSchema = v.object({
 });
 
 const runFactsSchema = v.object({
+  runtime: v.optional(v.picklist(["production", "development"])),
   runId: v.nullable(v.string()),
   state: v.picklist(["absent", "starting", "ready", "stopping", "stopped"]),
   address: v.nullable(v.string()),
@@ -1529,6 +1530,29 @@ function createCliContract(version: string) {
                       }),
                     ),
                   ),
+                  development: v.optional(
+                    v.object({
+                      sessionId: v.string(),
+                      state: v.picklist(["active", "ending", "ended"]),
+                      update: v.picklist([
+                        "starting",
+                        "updating",
+                        "failed",
+                        "ready",
+                      ]),
+                      updatedAt: v.string(),
+                      logFile: v.string(),
+                      runId: v.optional(v.string()),
+                      failure: v.optional(v.string()),
+                      ownerLiveness: v.picklist(["alive", "exited", "unknown"]),
+                      watcherLiveness: v.picklist([
+                        "alive",
+                        "exited",
+                        "unknown",
+                        "absent",
+                      ]),
+                    }),
+                  ),
                   pendingIntent: v.optional(
                     v.object({
                       kind: v.picklist(["rebuild", "delete"]),
@@ -1554,6 +1578,7 @@ function createCliContract(version: string) {
                 preparation,
                 operations,
                 pendingIntent,
+                development,
                 run,
                 runProblem,
                 serviceReadiness,
@@ -1573,6 +1598,13 @@ function createCliContract(version: string) {
                       run.productLogFile ?? "未知"
                     }（健康 ${run.logHealth ?? "unknown"}）`,
                   );
+                }
+                if (development !== undefined) {
+                  lines.push(
+                    `开发会话：${development.state}；更新：${development.update}；日志：${development.logFile}`,
+                  );
+                  if (development.failure !== undefined)
+                    lines.push(`开发更新失败：${oneLine(development.failure)}`);
                 }
                 lines.push(describeOperations(operations));
                 if (pendingIntent !== undefined)
@@ -1645,6 +1677,25 @@ function createCliContract(version: string) {
             ...(result.pendingIntent === undefined
               ? {}
               : { pendingIntent: { ...result.pendingIntent } }),
+            ...(result.development === undefined
+              ? {}
+              : {
+                  development: {
+                    sessionId: result.development.sessionId,
+                    state: result.development.state,
+                    update: result.development.update,
+                    updatedAt: result.development.updatedAt,
+                    logFile: result.development.logFile,
+                    ownerLiveness: result.development.ownerLiveness,
+                    watcherLiveness: result.development.watcherLiveness,
+                    ...(result.development.runId === undefined
+                      ? {}
+                      : { runId: result.development.runId }),
+                    ...(result.development.failure === undefined
+                      ? {}
+                      : { failure: result.development.failure }),
+                  },
+                }),
             run: runPayload(result.run),
             ...(result.runProblem === undefined
               ? {}

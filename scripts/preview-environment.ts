@@ -628,6 +628,13 @@ async function readEnvironmentState(
   reporter.section("查看");
   reporter.fact("环境状态", inspect.state);
   reporter.fact("服务就绪结论", inspect.serviceReadiness);
+  if (inspect.development !== undefined) {
+    reporter.fact("开发会话", inspect.development.state);
+    reporter.fact("开发更新", inspect.development.update);
+    reporter.fact("开发日志", inspect.development.logFile);
+    if (inspect.development.failure !== undefined)
+      reporter.say(`开发更新失败：${inspect.development.failure}`);
+  }
   reporter.fact("运行世代", reportText(inspect.run.runId));
   reporter.fact("实际地址", reportText(inspect.run.address));
   reporter.fact("产品日志位置", reportText(inspect.run.productLogFile));

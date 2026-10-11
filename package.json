@@ -20,7 +20,8 @@
     "preview:verify": "node scripts/preview-environment.ts verify",
     "verify:web:http": "turbo run test:e2e:managed-service",
     "verify:web:http:provided": "turbo run test:e2e:provided-service",
-    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false"
+    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
+    "preview:dev": "node --conditions=digital-source scripts/development-environment.ts"
   },
   "devDependencies": {
     "@types/node": "catalog:",

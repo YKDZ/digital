@@ -21,6 +21,17 @@ export type ContainerMount = {
   readonly target: string;
   readonly readonly: true;
 };
+export type ComposeDeployment = {
+  readonly file: string;
+  readonly configuration: Readonly<Record<string, string>>;
+  readonly services: readonly {
+    readonly name: string;
+    readonly role: "service" | "task";
+  }[];
+  readonly dataVariable: string;
+  /** 仅为新建的自有空数据目录设置身份；不修改外部素材。 */
+  readonly dataOwner: { readonly uid: number; readonly gid: number };
+};
 export type ContainerObject = {
   readonly kind: "container" | "volume" | "network" | "image";
   readonly key: string;
@@ -31,6 +42,8 @@ export type ContainerObject = {
   readonly role?: "service" | "task" | "client";
   readonly usesData?: boolean;
   readonly image?: string;
+  readonly composeService?: string;
+  readonly composeNetwork?: string;
   readonly running?: boolean;
   readonly pid?: number;
   readonly exitCode?: number;
@@ -51,6 +64,9 @@ export type ContainerObservation = {
   readonly serviceReady: boolean;
   readonly objects: readonly ContainerObject[];
   readonly dataVolume?: string;
+  readonly composeProject?: string;
+  readonly dataDirectory?: string;
+  readonly dataPresent?: boolean;
   readonly recordPath: string;
 };
 export type ContainerOperationResult = {
@@ -83,6 +99,14 @@ export type ContainerRequest = ContainerReference &
         readonly configuration?: Readonly<Record<string, string>>;
       }
     | {
+        readonly action: "prepare-compose";
+        readonly endpoint: ContainerEndpoint;
+        readonly image: string;
+        readonly compose: ComposeDeployment;
+      }
+    | { readonly action: "compose-up"; readonly timeoutMilliseconds?: number }
+    | { readonly action: "compose-down" }
+    | {
         readonly action: "start";
         readonly image?: string;
         readonly role?: "service" | "task" | "client";
@@ -111,7 +135,7 @@ export type ContainerRequest = ContainerReference &
     | {
         readonly action: "wait";
         readonly objectId: string;
-        readonly condition: "ready" | "live" | "exit" | "running";
+        readonly condition: "ready" | "live" | "exit" | "running" | "healthy";
         readonly timeoutMilliseconds?: number;
       }
     | {
