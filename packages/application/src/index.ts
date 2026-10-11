@@ -11333,136 +11333,143 @@ export class AssetRefreshWorkflow {
         }
       | undefined;
   }): Promise<LibraryScanRun> {
-    const libraries = this.ports.assetLibraries;
-    if (libraries === undefined) throw new Error("当前部署没有资产库配置");
-    const automation = input.automation;
-    const frozen = await libraries.freezeLibraryScan(input.libraryId);
-    const snapshot = frozen.snapshot;
-    const candidates =
-      automation === undefined
-        ? frozen.candidates
-        : frozen.candidates.filter(
-            (candidate) => candidate.id === automation.observedRootId,
+    return await atPublicWorkflowBoundary(async () => {
+      const libraries = this.ports.assetLibraries;
+      if (libraries === undefined) throw new Error("当前部署没有资产库配置");
+      const automation = input.automation;
+      const frozen = await libraries.freezeLibraryScan(input.libraryId);
+      const snapshot = frozen.snapshot;
+      const candidates =
+        automation === undefined
+          ? frozen.candidates
+          : frozen.candidates.filter(
+              (candidate) => candidate.id === automation.observedRootId,
+            );
+      if (candidates.length === 0) {
+        if (automation !== undefined)
+          throw new ObservedRootUnavailable(
+            "该目录已不在此资产库中，请重新设置",
           );
-    if (candidates.length === 0) {
-      if (automation !== undefined)
-        throw new ObservedRootUnavailable("该目录已不在此资产库中，请重新设置");
-      throw new Error("资产库没有配置可扫描的目录");
-    }
-    if (automation !== undefined && candidates[0]?.unavailable !== undefined)
-      throw new ObservedRootUnavailable(
-        candidates[0].unavailable === "inactive"
-          ? "该目录已停用，无法自动刷新"
-          : "该目录当前不可观察，请检查后重试",
+        throw new Error("资产库没有配置可扫描的目录");
+      }
+      if (automation !== undefined && candidates[0]?.unavailable !== undefined)
+        throw new ObservedRootUnavailable(
+          candidates[0].unavailable === "inactive"
+            ? "该目录已停用，无法自动刷新"
+            : "该目录当前不可观察，请检查后重试",
+        );
+      const plan = planLibraryScanDirectories({
+        assetLibraryId: snapshot.id,
+        configVersion: snapshot.configVersion,
+        roots: candidates,
+      });
+      const scoped: LibraryScanPlan =
+        automation === undefined || automation.relativeScope === "."
+          ? plan
+          : {
+              ...plan,
+              // 意图的有限范围只落到它自己的目录条目，绝不放宽成整库观察。
+              directories: plan.directories.map((directory) =>
+                directory.mode === "execute" &&
+                directory.unavailable === undefined
+                  ? { ...directory, relativeScope: automation.relativeScope }
+                  : directory,
+              ),
+            };
+      const frozenRoots =
+        automation === undefined
+          ? frozen.frozenRoots
+          : frozen.frozenRoots.filter(
+              (root) => root.id === automation.observedRootId,
+            );
+      const directoryAuthorizations =
+        automation === undefined
+          ? frozen.directoryAuthorizations
+          : frozen.directoryAuthorizations.filter(
+              (entry) => entry.observedRootId === automation.observedRootId,
+            );
+      const parent: WorkflowExecution = {
+        id: id("execution"),
+        workflowInput: {
+          version: "asset-refresh-input/1",
+          trigger: automation?.trigger ?? "interactive",
+          initiatedBy:
+            input.initiatedBy?.trim() ||
+            (automation === undefined
+              ? "interactive"
+              : `automation:${automation.intentId}`),
+          acceptTrusted: input.acceptTrusted,
+          configurationReferences:
+            automation === undefined
+              ? [
+                  `asset-library/${snapshot.id}/config/${snapshot.configVersion}`,
+                ]
+              : [...automation.policyReferences],
+          assetLibrary: snapshot,
+          libraryScan: scoped,
+          // 冻结的可用观察根权威随父耐久写下；续跑与目录子都只重绑这一份快照。
+          observedRoots: frozenRoots,
+          // 本票的目录授权账目同样只冻结一次：后续每个效果、提交与恢复都复核这一份，
+          // 而不是回看今天的库配置。周期意图只带走它自己那一条目录授权。
+          directoryAuthorizations,
+        },
+        selection: {
+          intent: "scan-now",
+          informationRequirement:
+            input.informationRequirement ?? emptyInformationRequirement,
+        },
+        operationKind: "scan-asset-library",
+        filesystemSnapshots: [],
+        status: "running",
+        stage: "recognition",
+        sourceRecordIds: [],
+        compatibility: this.compatibility(),
+        dispositions: [{ key: "library-scan-directories", status: "running" }],
+        ...(automation === undefined
+          ? {}
+          : { automationIntentId: automation.intentId }),
+      };
+      const directoryRecords = scoped.directories.map(
+        libraryScanDirectoryFromPlan,
       );
-    const plan = planLibraryScanDirectories({
-      assetLibraryId: snapshot.id,
-      configVersion: snapshot.configVersion,
-      roots: candidates,
-    });
-    const scoped: LibraryScanPlan =
-      automation === undefined || automation.relativeScope === "."
-        ? plan
-        : {
-            ...plan,
-            // 意图的有限范围只落到它自己的目录条目，绝不放宽成整库观察。
-            directories: plan.directories.map((directory) =>
-              directory.mode === "execute" &&
-              directory.unavailable === undefined
-                ? { ...directory, relativeScope: automation.relativeScope }
-                : directory,
-            ),
-          };
-    const frozenRoots =
-      automation === undefined
-        ? frozen.frozenRoots
-        : frozen.frozenRoots.filter(
-            (root) => root.id === automation.observedRootId,
-          );
-    const directoryAuthorizations =
-      automation === undefined
-        ? frozen.directoryAuthorizations
-        : frozen.directoryAuthorizations.filter(
-            (entry) => entry.observedRootId === automation.observedRootId,
-          );
-    const parent: WorkflowExecution = {
-      id: id("execution"),
-      workflowInput: {
-        version: "asset-refresh-input/1",
-        trigger: automation?.trigger ?? "interactive",
-        initiatedBy:
-          input.initiatedBy?.trim() ||
-          (automation === undefined
-            ? "interactive"
-            : `automation:${automation.intentId}`),
+      const disposition = await this.ports.executionCommands.createLibraryScan({
+        execution: parent,
+        directories: directoryRecords,
+        ...(automation === undefined
+          ? {}
+          : { requestedAt: automation.requestedAt }),
+        // 批次壳只在自动化父且部署接好了账本时与现代父同事务落下：它的存在与否就是现代父与
+        // 历史无规划父的耐久分界，普通扫描与旧库因此保持原样。
+        ...(automation === undefined ||
+        this.ports.libraryScanFulfillment === undefined
+          ? {}
+          : {
+              fulfillmentPlannerCoordinate:
+                automatedInformationPlannerCoordinate(
+                  this.ports.informationPlanner,
+                ),
+            }),
+      });
+      if (disposition !== "started")
+        throw new AutomationExecutionNotStarted(disposition);
+      input.onExecutionStarted?.(parent);
+      return await this.executeLibraryScanDirectories({
+        parent,
+        snapshot,
+        plan: scoped,
+        frozenRoots,
+        ledger: directoryRecords,
         acceptTrusted: input.acceptTrusted,
-        configurationReferences:
-          automation === undefined
-            ? [`asset-library/${snapshot.id}/config/${snapshot.configVersion}`]
-            : [...automation.policyReferences],
-        assetLibrary: snapshot,
-        libraryScan: scoped,
-        // 冻结的可用观察根权威随父耐久写下；续跑与目录子都只重绑这一份快照。
-        observedRoots: frozenRoots,
-        // 本票的目录授权账目同样只冻结一次：后续每个效果、提交与恢复都复核这一份，
-        // 而不是回看今天的库配置。周期意图只带走它自己那一条目录授权。
-        directoryAuthorizations,
-      },
-      selection: {
-        intent: "scan-now",
-        informationRequirement:
-          input.informationRequirement ?? emptyInformationRequirement,
-      },
-      operationKind: "scan-asset-library",
-      filesystemSnapshots: [],
-      status: "running",
-      stage: "recognition",
-      sourceRecordIds: [],
-      compatibility: this.compatibility(),
-      dispositions: [{ key: "library-scan-directories", status: "running" }],
-      ...(automation === undefined
-        ? {}
-        : { automationIntentId: automation.intentId }),
-    };
-    const directoryRecords = scoped.directories.map(
-      libraryScanDirectoryFromPlan,
-    );
-    const disposition = await this.ports.executionCommands.createLibraryScan({
-      execution: parent,
-      directories: directoryRecords,
-      ...(automation === undefined
-        ? {}
-        : { requestedAt: automation.requestedAt }),
-      // 批次壳只在自动化父且部署接好了账本时与现代父同事务落下：它的存在与否就是现代父与
-      // 历史无规划父的耐久分界，普通扫描与旧库因此保持原样。
-      ...(automation === undefined ||
-      this.ports.libraryScanFulfillment === undefined
-        ? {}
-        : {
-            fulfillmentPlannerCoordinate: automatedInformationPlannerCoordinate(
-              this.ports.informationPlanner,
-            ),
-          }),
-    });
-    if (disposition !== "started")
-      throw new AutomationExecutionNotStarted(disposition);
-    input.onExecutionStarted?.(parent);
-    return await this.executeLibraryScanDirectories({
-      parent,
-      snapshot,
-      plan: scoped,
-      frozenRoots,
-      ledger: directoryRecords,
-      acceptTrusted: input.acceptTrusted,
-      ...(input.informationRequirement === undefined
-        ? {}
-        : { informationRequirement: input.informationRequirement }),
-      ...(input.onProgress === undefined
-        ? {}
-        : { onProgress: input.onProgress }),
-      ...(input.onHostCheckpoint === undefined
-        ? {}
-        : { onHostCheckpoint: input.onHostCheckpoint }),
+        ...(input.informationRequirement === undefined
+          ? {}
+          : { informationRequirement: input.informationRequirement }),
+        ...(input.onProgress === undefined
+          ? {}
+          : { onProgress: input.onProgress }),
+        ...(input.onHostCheckpoint === undefined
+          ? {}
+          : { onHostCheckpoint: input.onHostCheckpoint }),
+      });
     });
   }
 
