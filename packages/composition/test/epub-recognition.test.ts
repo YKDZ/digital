@@ -124,6 +124,11 @@ it("普通组合资产刷新保持 exact ISBN 的官方来源依据", async () =
       },
     ]);
     const officialTitle = subject!.descriptions
+      .filter(
+        (description) =>
+          description.target.kind === "entity" &&
+          description.target.entityId === accepted!.entity.id,
+      )
       .flatMap((description) => description.metadata)
       .filter((item) => item.property === "asset.title")
       .flatMap((item) =>
