@@ -1181,8 +1181,48 @@ export const currentLocalObservationSupportSql = `
           )
           AND (
             association.observed_artifact_part_json IS NULL
-            OR json_extract(association.observed_artifact_part_json, '$.revisionId') =
-               support.observation_revision_id
+            OR (
+              -- 当前文件确认只能证明父修订，不能替部件的角色与 locator 证明生成声明。
+              json_extract(association.observed_artifact_part_json, '$.revisionId') =
+                support.observation_revision_id
+              AND EXISTS (
+                SELECT 1
+                FROM workflow_executions AS declaring_execution
+                JOIN recognition_proposals AS declaring_proposal
+                  ON declaring_proposal.execution_id = declaring_execution.id
+                JOIN artifact_revisions AS parent_revision
+                  ON parent_revision.id = support.observation_revision_id
+                 AND parent_revision.artifact_id = material_location.artifact_id
+                JOIN blobs AS parent_blob ON parent_blob.digest = parent_revision.blob_digest
+                JOIN json_each(json_extract(declaring_proposal.observed_material_interpretation_json,
+                  '$.observedArtifactParts')) AS declared_part
+                JOIN json_each(json_extract(declaring_proposal.observed_material_interpretation_json,
+                  '$.observedArtifactRevisions')) AS declared_revision
+                  ON json_extract(declared_revision.value, '$.observedArtifactReference') =
+                     json_extract(declared_part.value, '$.observedArtifactReference')
+                WHERE declaring_execution.id = support.observation_execution_id
+                  AND (
+                    declaring_proposal.id = decision.proposal_id
+                    OR EXISTS (
+                      SELECT 1
+                      FROM json_each(COALESCE(declaring_execution.work_items_json, '[]')) AS declaring_item
+                      WHERE json_extract(declaring_item.value, '$.proposalId') = declaring_proposal.id
+                        AND json_extract(declaring_item.value, '$.acceptedAssetId') = decision.asset_id
+                    )
+                  )
+                  AND json_extract(declaring_execution.snapshot_json, '$.id') =
+                      support.observation_snapshot_id
+                  AND material_location.address =
+                    json_extract(declaring_execution.snapshot_json, '$.root') || '/' ||
+                    json_extract(declared_part.value, '$.observedArtifactReference')
+                  AND json_extract(declared_part.value, '$.role') = association.role
+                  AND json_extract(declared_part.value, '$.locator') =
+                      json_extract(association.observed_artifact_part_json, '$.locator')
+                  AND json_extract(declared_revision.value, '$.blob.digest') = parent_blob.digest
+                  AND json_extract(declared_revision.value, '$.blob.mediaType') = parent_blob.media_type
+                  AND json_extract(declared_revision.value, '$.blob.byteLength') = parent_blob.byte_length
+              )
+            )
           )
         )
       )
