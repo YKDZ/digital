@@ -363,7 +363,7 @@ export async function runContainerOperation(
     const object: ManagedObject = {
       kind,
       key,
-      name: `${request.environment.slice(0, 24)}-${record.runId.slice(0, 8)}-${kind === "container" ? `${role ?? "service"}-${key.slice(0, 8)}` : kind}${kind === "image" ? ":latest" : ""}`,
+      name: `${request.environment.slice(0, 24)}-${record.runId.slice(0, 8)}-${kind === "container" ? `${role ?? "service"}-${key.slice(0, 8)}` : kind === "image" ? `image-${key}` : kind}${kind === "image" ? ":latest" : ""}`,
       state: "intent",
       ...(role === undefined ? {} : { role }),
     };
