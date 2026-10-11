@@ -28,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        capability: [root, cli, web]
+        capability: [web]
     env:
       DIGITAL_CI_EVIDENCE: ${{ github.workspace }}/.scratch/ci/${{ matrix.capability }}
       TMPDIR: ${{ runner.temp }}/d18-${{ matrix.capability }}
@@ -69,9 +69,20 @@ jobs:
         uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4
         with:
           name: ci-${{ matrix.capability }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ env.DIGITAL_CI_EVIDENCE }}
+          path: ${{ github.workspace }}/.scratch/ci/intentionally-no-upload-files
           if-no-files-found: error
           retention-days: 7
+      - name: 上传失败后公开核对停止与保留载体
+        if: always()
+        run: |
+          node --conditions=digital-source --input-type=module <<'NODE'
+          import { stat } from 'node:fs/promises';
+          import { inspectEnvironment } from './packages/environment/src/index.ts';
+          const environment = 'completion-18-web-' + process.env.GITHUB_RUN_ID + '-' + process.env.GITHUB_RUN_ATTEMPT;
+          const observation = await inspectEnvironment({ workspacePath: process.cwd(), environment });
+          const dataExists = await stat(observation.environment.productDataRoot).then(() => true, () => false);
+          console.log(JSON.stringify({ environment, state: observation.state, runId: observation.run.runId, liveness: observation.run.processLiveness, readiness: observation.serviceReadiness, dataRoot: observation.environment.productDataRoot, dataExists }));
+          NODE
       - name: 核实上传产物后显式删除自有环境
         id: deletion
         if: always() && steps.collection.outcome == 'success' && steps.upload.outcome == 'success'
