@@ -64,7 +64,7 @@
     "hono": "catalog:",
     "reka-ui": "^2.10.1",
     "srvx": "catalog:",
-    "tailwind-merge": "^3.6.0",
+    "tailwind-merge": "^3.7.0",
     "vike": "catalog:",
     "vike-vue": "catalog:",
     "vue": "catalog:",
