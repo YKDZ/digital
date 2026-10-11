@@ -128,9 +128,6 @@
       "dependsOn": ["^build"],
       "outputs": ["dist/**"]
     },
-    "@digital/presentation#build": {
-      "outputs": []
-    },
     "test": {
       "dependsOn": ["build"],
       "passThroughEnv": ["TMPDIR", "TMP", "TEMP"],
