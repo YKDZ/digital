@@ -66,7 +66,7 @@ jobs:
       - name: 上传场景证据
         id: upload
         if: always()
-        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: ci-${{ matrix.capability }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.DIGITAL_CI_EVIDENCE }}
@@ -123,7 +123,7 @@ jobs:
         run: pnpm run check:deployment
       - name: 上传部署诊断
         if: always()
-        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: deployment-${{ github.run_id }}-${{ github.run_attempt }}
           path: .scratch/ci/deployment
