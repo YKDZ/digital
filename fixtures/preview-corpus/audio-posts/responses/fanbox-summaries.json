@@ -1,0 +1,46 @@
+{
+  "body": {
+    "posts": [
+      {
+        "id": "7576910",
+        "creatorId": "customudon",
+        "title": "Movie | ひみつ",
+        "publishedDatetime": "2024-03-07T22:55:32+09:00",
+        "type": "file",
+        "feeRequired": 0
+      },
+      {
+        "id": "7225781",
+        "creatorId": "customudon",
+        "title": "Movie | コスプレ4",
+        "publishedDatetime": "2023-12-31T17:10:55+09:00",
+        "type": "file",
+        "feeRequired": 0
+      },
+      {
+        "id": "231859",
+        "creatorId": "customudon",
+        "title": "プールで2",
+        "publishedDatetime": "2018-12-19T12:06:40+09:00",
+        "type": "file",
+        "feeRequired": 0
+      },
+      {
+        "id": "9135862",
+        "creatorId": "customudon",
+        "title": "年始の挨拶(おまけ動画付き)",
+        "publishedDatetime": "2025-01-01T00:11:17+09:00",
+        "type": "article",
+        "feeRequired": 0
+      },
+      {
+        "id": "1739441",
+        "creatorId": "customudon",
+        "title": "今年も一年ありがとうございました。",
+        "publishedDatetime": "2020-12-29T03:08:45+09:00",
+        "type": "article",
+        "feeRequired": 0
+      }
+    ]
+  }
+}

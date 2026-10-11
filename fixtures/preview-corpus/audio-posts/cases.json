@@ -1,0 +1,570 @@
+{
+  "formatVersion": 1,
+  "referenceReview": "2026-07-27（来源逐项审阅补充见references.json）",
+  "cases": [
+    {
+      "id": "RJ01029383",
+      "kind": "audio",
+      "logicalRoot": "kikoeru/VoiceWork/RJ01029383",
+      "directory": "material/RJ01029383",
+      "sourceIdentity": "dlsite",
+      "sourceNativeAddress": "RJ01029383",
+      "title": "クール系ヤンデレ少女の裏世界溺愛性交 AFTER",
+      "releaseDate": "2023-02-25",
+      "circle": "G線上の牡丹雪",
+      "credits": {
+        "voice": [
+          "逢坂成美",
+          "涼花みなせ"
+        ],
+        "scenario": [
+          "牡丹一"
+        ],
+        "illustration": [
+          "かふか"
+        ],
+        "author": []
+      },
+      "series": {
+        "entityKind": "entity",
+        "identityNamespace": "dlsite.series",
+        "sourceKey": "SRI0000036577",
+        "label": "裏世界少女",
+        "relationshipType": "asset.membership",
+        "relationshipRole": "dlsite.series.member",
+        "officialCoverage": "dlsite.product-json",
+        "officialIdField": "title_id",
+        "officialNameField": "title_name",
+        "officialWorkCount": 2
+      },
+      "cover": "present",
+      "files": [
+        {
+          "reference": "おまけ音声/12++_おまけ。30秒の寝息を30分ループ.wav",
+          "input": "おまけ音声/12++_おまけ。30秒の寝息を30分ループ.wav"
+        },
+        {
+          "reference": "おまけ音声/差分/MP3/12++_おまけ。30秒の寝息を30分ループ.mp3",
+          "input": "おまけ音声/差分/MP3/12++_おまけ。30秒の寝息を30分ループ_PCM縮減.wav"
+        },
+        {
+          "reference": "イラスト、台本/裏世界少女2_イラスト.jpg",
+          "input": "イラスト、台本/裏世界少女2_イラスト.png"
+        }
+      ]
+    },
+    {
+      "id": "RJ01049458",
+      "kind": "audio",
+      "logicalRoot": "kikoeru/VoiceWork/RJ01049458",
+      "directory": "material/RJ01049458",
+      "sourceIdentity": "dlsite",
+      "sourceNativeAddress": "RJ01049458",
+      "title": "気だるげ清楚で有能秘書っぽい後輩JKちゃんに、ゆるーくえっちに迫られまくる青春実行委員性交♪",
+      "releaseDate": "2023-04-29",
+      "circle": "G線上の牡丹雪",
+      "credits": {
+        "voice": [
+          "浅木式",
+          "涼花みなせ"
+        ],
+        "scenario": [
+          "牡丹一"
+        ],
+        "illustration": [
+          "かふか"
+        ],
+        "author": []
+      },
+      "cover": "present",
+      "files": [
+        {
+          "reference": "本編/01_告白.wav",
+          "input": "本編/01_告白.wav"
+        },
+        {
+          "reference": "差分/効果音大きめ/01_告白_SE大.mp3",
+          "input": "差分/効果音大きめ/01_告白_SE大_PCM縮減.wav"
+        },
+        {
+          "reference": "イラスト・台本/『秘書後輩』_パッケージイラスト.png",
+          "input": "イラスト・台本/『秘書後輩』_パッケージイラスト.png"
+        }
+      ]
+    },
+    {
+      "id": "RJ01115164",
+      "kind": "audio",
+      "logicalRoot": "kikoeru/VoiceWork/RJ01115164",
+      "directory": "material/RJ01115164",
+      "sourceIdentity": "dlsite",
+      "sourceNativeAddress": "RJ01115164",
+      "title": "底の知れないダークにエロい後輩の性依存禁足地探索【退廃×純愛共依存えっち】",
+      "releaseDate": "2023-11-18",
+      "circle": "G線上の牡丹雪",
+      "credits": {
+        "voice": [
+          "小花衣こっこ"
+        ],
+        "scenario": [
+          "牡丹一"
+        ],
+        "illustration": [
+          "かふか"
+        ],
+        "author": []
+      },
+      "series": {
+        "entityKind": "entity",
+        "identityNamespace": "dlsite.series",
+        "sourceKey": "SRI0000057117",
+        "label": "禁足地後輩",
+        "relationshipType": "asset.membership",
+        "relationshipRole": "dlsite.series.member",
+        "officialCoverage": "dlsite.product-json",
+        "officialIdField": "title_id",
+        "officialNameField": "title_name"
+      },
+      "cover": "present",
+      "files": [
+        {
+          "reference": "おまけ/EX_4トラのオナ二ー.wav",
+          "input": "おまけ/EX_4トラのオナ二ー.wav"
+        },
+        {
+          "reference": "差分/SE大きめ/01_春休み初日_SE大.mp3",
+          "input": "差分/SE大きめ/01_春休み初日_SE大_PCM縮減.wav"
+        },
+        {
+          "reference": "イラスト・台本/20230630_『禁足地後輩』パッケージイラスト_finish.png",
+          "input": "イラスト・台本/20230630_『禁足地後輩』パッケージイラスト_finish.png"
+        }
+      ]
+    },
+    {
+      "id": "RJ01131487",
+      "kind": "audio",
+      "logicalRoot": "kikoeru/VoiceWork/RJ01131487",
+      "directory": "material/RJ01131487",
+      "sourceIdentity": "dlsite",
+      "sourceNativeAddress": "RJ01131487",
+      "title": "しっとり依存してくるダウナー妹の、雨降り密着搾精えっち",
+      "releaseDate": "2023-12-27",
+      "circle": "G線上の牡丹雪",
+      "credits": {
+        "voice": [
+          "浅木式"
+        ],
+        "scenario": [
+          "牡丹一"
+        ],
+        "illustration": [
+          "睦月にゃふ"
+        ],
+        "author": []
+      },
+      "cover": "present",
+      "files": [
+        {
+          "reference": "本編/01_チェックでお迎え.wav",
+          "input": "本編/01_チェックでお迎え.wav"
+        },
+        {
+          "reference": "差分/効果音なし/01_チェックでお迎え_SE無.mp3",
+          "input": "差分/効果音なし/01_チェックでお迎え_SE無_PCM縮減.wav"
+        },
+        {
+          "reference": "イラスト・台本/1.jpg",
+          "input": "イラスト・台本/1.png"
+        }
+      ]
+    },
+    {
+      "id": "RJ01196709",
+      "kind": "audio",
+      "logicalRoot": "kikoeru/VoiceWork/RJ01196709",
+      "directory": "material/RJ01196709",
+      "sourceIdentity": "dlsite",
+      "sourceNativeAddress": "RJ01196709",
+      "title": "しとやか敬語な女優後輩と、日廻り共依存搾精えっち",
+      "releaseDate": "2024-06-01",
+      "circle": "G線上の牡丹雪",
+      "credits": {
+        "voice": [
+          "砂糖しお"
+        ],
+        "scenario": [
+          "牡丹一"
+        ],
+        "illustration": [
+          "かふか"
+        ],
+        "author": []
+      },
+      "cover": "present",
+      "files": [
+        {
+          "reference": "本編/01_天体観測.wav",
+          "input": "本編/01_天体観測.wav"
+        },
+        {
+          "reference": "差分/HシーンのみSE無し/01_天体観測.mp3",
+          "input": "差分/HシーンのみSE無し/01_天体観測_PCM縮減.wav"
+        },
+        {
+          "reference": "台本・イラスト/『向日葵後輩』パッケージイラスト（制作サイズ）.jpg",
+          "input": "台本・イラスト/『向日葵後輩』パッケージイラスト（制作サイズ）.png"
+        }
+      ]
+    },
+    {
+      "id": "RJ01497788",
+      "kind": "audio",
+      "logicalRoot": "kikoeru/VoiceWork/RJ01497788",
+      "directory": "material/RJ01497788",
+      "sourceIdentity": "dlsite",
+      "sourceNativeAddress": "RJ01497788",
+      "title": "【純愛×催眠】洗脳アプリをくれたJKと、洗脳ベロチューあまあまエッチ。～ダウナー×催眠×純愛H♡一途な誘い受けJKとドスケベ種付け交尾するお話♡～",
+      "releaseDate": "2025-11-30",
+      "circle": "ないしょ部",
+      "credits": {
+        "voice": [
+          "陽向葵ゅか"
+        ],
+        "scenario": [
+          "mizui"
+        ],
+        "illustration": [
+          "朱里 / shuri"
+        ],
+        "author": [
+          "ないしょ部"
+        ]
+      },
+      "cover": "present",
+      "files": [
+        {
+          "reference": "01 ダウナー少女と催眠アプリ.wav",
+          "input": "01 ダウナー少女と催眠アプリ.wav"
+        },
+        {
+          "reference": "MP3 （効果音無し ver.）/01 ダウナー少女と催眠アプリ（効果音無し）.mp3",
+          "input": "MP3 （効果音無し ver.）/01 ダウナー少女と催眠アプリ（効果音無し）_PCM縮減.wav"
+        },
+        {
+          "reference": "【早期限定購入特典】全裸差分、特典音声など/おはよう音声 01（「催眠アプリをくれたJK」）.wav",
+          "input": "【早期限定購入特典】全裸差分、特典音声など/おはよう音声 01（「催眠アプリをくれたJK」）.wav"
+        },
+        {
+          "reference": "【早期限定購入特典】全裸差分、特典音声など/催眠アプリをくれたJK_スマホ用壁紙.png",
+          "input": "【早期限定購入特典】全裸差分、特典音声など/催眠アプリをくれたJK_スマホ用壁紙.png"
+        }
+      ],
+      "creditLabels": [
+        "陽向葵ゅか",
+        "mizui",
+        "朱里 ",
+        " shuri",
+        "ないしょ部"
+      ]
+    },
+    {
+      "id": "RJ01668691",
+      "kind": "audio",
+      "logicalRoot": "kikoeru/VoiceWork/RJ01668691",
+      "directory": "material/RJ01668691",
+      "sourceIdentity": "dlsite",
+      "sourceNativeAddress": "RJ01668691",
+      "title": "塩対応な義妹ちゃん、大好きな兄さんの濃厚快感責めでメロ堕ち♡〜逆転イチャあま同棲ASMR〜",
+      "releaseDate": "2026-07-17",
+      "circle": "ぐらまらす工房",
+      "credits": {
+        "voice": [
+          "みたかりん"
+        ],
+        "scenario": [
+          "しこみね"
+        ],
+        "illustration": [
+          "どちゃしこ"
+        ],
+        "author": []
+      },
+      "cover": "present",
+      "files": [
+        {
+          "reference": "塩対応な義妹ちゃん、大好きな兄さんの濃厚快感責めでメロ堕ち♡〜逆転イチャあま同棲ASMR〜/01_本編/01_おかえり、兄さん…別に待ってないけど.wav",
+          "input": "塩対応な義妹ちゃん、大好きな兄さんの濃厚快感責めでメロ堕ち♡〜逆転イチャあま同棲ASMR〜/01_本編/01_おかえり、兄さん…別に待ってないけど.wav"
+        },
+        {
+          "reference": "塩対応な義妹ちゃん、大好きな兄さんの濃厚快感責めでメロ堕ち♡〜逆転イチャあま同棲ASMR〜/03_特典/04_特典音声01【左耳特化♡耳舐め耐久ループ音声】.wav",
+          "input": "塩対応な義妹ちゃん、大好きな兄さんの濃厚快感責めでメロ堕ち♡〜逆転イチャあま同棲ASMR〜/03_特典/04_特典音声01【左耳特化♡耳舐め耐久ループ音声】.wav"
+        },
+        {
+          "reference": "塩対応な義妹ちゃん、大好きな兄さんの濃厚快感責めでメロ堕ち♡〜逆転イチャあま同棲ASMR〜/03_特典/06_どちゃしこ先生描き下ろしパッケージイラスト&H差分/パッケージイラスト.jpg",
+          "input": "塩対応な義妹ちゃん、大好きな兄さんの濃厚快感責めでメロ堕ち♡〜逆転イチャあま同棲ASMR〜/03_特典/06_どちゃしこ先生描き下ろしパッケージイラスト&H差分/パッケージイラスト.png"
+        }
+      ]
+    },
+    {
+      "id": "VJ014635",
+      "kind": "audio",
+      "logicalRoot": "kikoeru/VoiceWork/VJ014635",
+      "directory": "material/VJ014635",
+      "sourceIdentity": "dlsite",
+      "sourceNativeAddress": "VJ014635",
+      "title": "しあわせおうちでーと・新海天 ～にぃに、恋人ごっこしよっ～",
+      "releaseDate": "2021-08-02",
+      "circle": "ぱれっと",
+      "credits": {
+        "voice": [
+          "種﨑敦美"
+        ],
+        "scenario": [
+          "速水漣"
+        ],
+        "illustration": [
+          "和泉つばす"
+        ],
+        "author": []
+      },
+      "cover": "present",
+      "files": [
+        {
+          "reference": "01.タイトルコール.wav",
+          "input": "01.タイトルコール.wav"
+        }
+      ]
+    },
+    {
+      "id": "fanbox-7576910",
+      "kind": "post",
+      "logicalRoot": "media/animation/Custom Udon/24.03.07 ひみつ",
+      "directory": "material/customudon/24.03.07 ひみつ",
+      "sourceIdentity": "fanbox",
+      "sourceNativeAddress": "7576910",
+      "title": "Movie | ひみつ",
+      "publishedDatetime": "2024-03-07T22:55:32+09:00",
+      "postType": "file",
+      "bodyText": "動画形式 : mp4 (H.264) 1920x1080 30fps 1min47sec\n動画形式 : mp4 (H.264) 1920x1080 30fps 2min45sec\n(声無し、効果音付き)\n\n大変お待たせしました。\nサイズの関係で2分割になっています。\n\n次の動画は今回のような投稿間隔にならないように作成します。",
+      "cover": "present",
+      "attachments": [
+        {
+          "ordinal": 0,
+          "kind": "file",
+          "name": "Himitsu1-1",
+          "byteLength": "148551133"
+        },
+        {
+          "ordinal": 1,
+          "kind": "file",
+          "name": "Himitsu1-2",
+          "byteLength": "228471686"
+        }
+      ],
+      "files": [
+        {
+          "reference": "Season 1/S01E01 - Himitsu1-1.mp4",
+          "input": "Season 1/S01E01 - Himitsu1-1.mp4"
+        },
+        {
+          "reference": "Specials/S00E01 - Voice 1.mp4",
+          "input": "Specials/S00E01 - Voice 1.mp4"
+        }
+      ]
+    },
+    {
+      "id": "fanbox-7225781",
+      "kind": "post",
+      "logicalRoot": "media/animation/Custom Udon/23.12.31 コスプレ4",
+      "directory": "material/customudon/23.12.31 コスプレ4",
+      "sourceIdentity": "fanbox",
+      "sourceNativeAddress": "7225781",
+      "title": "Movie | コスプレ4",
+      "publishedDatetime": "2023-12-31T17:10:55+09:00",
+      "postType": "file",
+      "bodyText": "動画形式 : mp4 (H.264) 1920x1080 30fps 2min49sec\n(声無し、効果音付き)\n\nお待たせしました。\nいつもより短めになってしまいましたが、年内最後の動画です。\n\n-------------------------------------------------------\n今年もCustom_Udonの動画を視聴してくださりありがとうございました。\n年末にブルースクリーンが2回も発生してしまったので、PCのチェックなどをして新しい動画の作成に備えたいと思います。",
+      "cover": "present",
+      "attachments": [
+        {
+          "ordinal": 0,
+          "kind": "file",
+          "name": "Cosplay4",
+          "byteLength": "234405430"
+        }
+      ],
+      "files": [
+        {
+          "reference": "Season 1/S01E01 - Cosplay4.mp4",
+          "input": "Season 1/S01E01 - Cosplay4.mp4"
+        },
+        {
+          "reference": "Specials/S00E01 - Voice.mp4",
+          "input": "Specials/S00E01 - Voice.mp4"
+        }
+      ]
+    },
+    {
+      "id": "fanbox-231859",
+      "kind": "post",
+      "logicalRoot": "media/animation/Custom Udon/18.12.19 プールで2",
+      "directory": "material/customudon/18.12.19 プールで2",
+      "sourceIdentity": "fanbox",
+      "sourceNativeAddress": "231859",
+      "title": "プールで2",
+      "publishedDatetime": "2018-12-19T12:06:40+09:00",
+      "postType": "file",
+      "bodyText": "動画形式:mp4 (H264) 1280x1920 30fps 1min30sec 音付き\n\nおまけでループ動画の音付きと無音バージョンも入れてあります。\n自分の再生環境では音付き動画がループ再生時にもたつくので、無音動画も入れました。\n\n半脱ぎと裸のバージョンも投稿予定です。",
+      "cover": "present",
+      "attachments": [
+        {
+          "ordinal": 0,
+          "kind": "file",
+          "name": "プールで2",
+          "byteLength": "243612552"
+        }
+      ],
+      "files": [
+        {
+          "reference": "No Sound/(No Sound)_Pool2_Half_Loop1.mp4",
+          "input": "No Sound/(No Sound)_Pool2_Half_Loop1.mp4"
+        }
+      ]
+    },
+    {
+      "id": "fanbox-9135862",
+      "kind": "post",
+      "logicalRoot": "media/animation/Custom Udon/25.01.01 年始の挨拶(おまけ動画付き)",
+      "directory": "material/customudon/25.01.01 年始の挨拶(おまけ動画付き)",
+      "sourceIdentity": "fanbox",
+      "sourceNativeAddress": "9135862",
+      "title": "年始の挨拶(おまけ動画付き)",
+      "publishedDatetime": "2025-01-01T00:11:17+09:00",
+      "postType": "article",
+      "bodyText": "明けましておめでとうございます。\n\nそして、昨年も動画をご視聴いただきありがとうございました。\n\n投稿ペースが今までより遅くなってしまった事が反省点でしたが、今年は頑張っていきたいところです。\n\n年末に色々試しながら作ったおまけ動画を投稿しておきます。\n\n展開も無く1シーンだけの触手動画です。いつもは30fpsですが、試しにツールで60fpsまで引き上げてみました。\n\n音はありません。\n\nそれでは皆様、インフルエンザが流行っていますが、体調にはお気を付けて年始をお過ごしください。\n\n今年もよろしくお願いいたします。",
+      "cover": "absent",
+      "attachments": [
+        {
+          "ordinal": 0,
+          "kind": "file",
+          "name": "Tentacle-a",
+          "byteLength": "80227714"
+        }
+      ],
+      "files": [
+        {
+          "reference": "Season 1/S01E01 - Tentacle-a.mp4",
+          "input": "Season 1/S01E01 - Tentacle-a.mp4"
+        }
+      ]
+    },
+    {
+      "id": "fanbox-1739441",
+      "kind": "post",
+      "logicalRoot": "media/animation/Custom Udon/20.12.29 今年も一年ありがとうございました。",
+      "directory": "material/customudon/20.12.29 今年も一年ありがとうございました。",
+      "sourceIdentity": "fanbox",
+      "sourceNativeAddress": "1739441",
+      "title": "今年も一年ありがとうございました。",
+      "publishedDatetime": "2020-12-29T03:08:45+09:00",
+      "postType": "article",
+      "bodyText": "新年まで残りわずかとなりました。\n\n今年も多くの方の応援やコメント、ご支援をいただきました。\n\n自分のペースではありますが、これまで活動を続けられたのも皆様の応援があってのことです。\n\n本当にありがどうございます。\n\n来年もより良い動画を作れるよう頑張っていきますので、よろしくお願いいたします。\n\n試しに作った1分ほどの動画ですが、せっかく作りましたので置いておきます。\n\n来年にはまた別の新しい動画を作成する予定です。\n\n色々あった一年ではありますが、年末年始も皆様お気をつけてお過ごしください。",
+      "cover": "present",
+      "attachments": [
+        {
+          "ordinal": 0,
+          "kind": "file",
+          "name": "Cosplay",
+          "byteLength": "96206252"
+        }
+      ],
+      "files": [
+        {
+          "reference": "Season 1/S01E01 - Cosplay-1.mp4",
+          "input": "Season 1/S01E01 - Cosplay-1.mp4"
+        }
+      ]
+    },
+    {
+      "id": "unrecognized-1",
+      "kind": "unrecognized",
+      "logicalRoot": "media/music/25時、ナイトコードで。 — 25時、ナイトコードで。 SEKAI ALBUM vol.3 (2025) {BRMM-10894} [CD-FLAC]",
+      "directory": "material/unrecognized/25時、ナイトコードで。 — 25時、ナイトコードで。 SEKAI ALBUM vol.3 (2025) {BRMM-10894} [CD-FLAC]",
+      "expected": "unresolved",
+      "files": [
+        {
+          "reference": "01. とても素敵な六月でした.flac",
+          "input": "01. とても素敵な六月でした_PCM縮減.wav"
+        },
+        {
+          "reference": "25時、ナイトコードで。 SEKAI ALBUM vol.3.cue",
+          "input": "25時、ナイトコードで。 SEKAI ALBUM vol.3.cue"
+        },
+        {
+          "reference": "25時、ナイトコードで。 SEKAI ALBUM vol.3.log",
+          "input": "25時、ナイトコードで。 SEKAI ALBUM vol.3.log"
+        }
+      ]
+    },
+    {
+      "id": "unrecognized-2",
+      "kind": "unrecognized",
+      "logicalRoot": "media/music/[EAC][110612][ボーマス16][同人][Baguettes Ensemble][The Vocaloid Jazz sessions Vol.3][FLAC+CUE+LOG]",
+      "directory": "material/unrecognized/[EAC][110612][ボーマス16][同人][Baguettes Ensemble][The Vocaloid Jazz sessions Vol.3][FLAC+CUE+LOG]",
+      "expected": "unresolved",
+      "files": [
+        {
+          "reference": "01 - トリノコシティ.flac",
+          "input": "01 - トリノコシティ_PCM縮減.wav"
+        },
+        {
+          "reference": "Baguettes Ensemble - The Vocaloid Jazz Sessions Vol.3.cue",
+          "input": "Baguettes Ensemble - The Vocaloid Jazz Sessions Vol.3.cue"
+        },
+        {
+          "reference": "Baguettes Ensemble - The Vocaloid Jazz Sessions Vol.3.log",
+          "input": "Baguettes Ensemble - The Vocaloid Jazz Sessions Vol.3.log"
+        }
+      ]
+    },
+    {
+      "id": "unrecognized-3",
+      "kind": "unrecognized",
+      "logicalRoot": "media/music/『プロジェクトセカイ カラフルステージ! feat. 初音ミク』25時、ナイトコードで。 8th Single「演劇／25時の情熱」[FLAC]",
+      "directory": "material/unrecognized/『プロジェクトセカイ カラフルステージ! feat. 初音ミク』25時、ナイトコードで。 8th Single「演劇／25時の情熱」[FLAC]",
+      "expected": "unresolved",
+      "files": [
+        {
+          "reference": "01.演劇.flac",
+          "input": "01.演劇_PCM縮減.wav"
+        }
+      ]
+    },
+    {
+      "id": "unrecognized-4",
+      "kind": "unrecognized",
+      "logicalRoot": "media/pics/プロジェクトセカイ カラフルステージ！ feat. 初音ミク 公式ビジュアルファンブック Vol.3[332P][JPG]",
+      "directory": "material/unrecognized/プロジェクトセカイ カラフルステージ！ feat. 初音ミク 公式ビジュアルファンブック Vol.3[332P][JPG]",
+      "expected": "unresolved",
+      "files": [
+        {
+          "reference": "001.jpg",
+          "input": "001.png"
+        }
+      ]
+    },
+    {
+      "id": "unrecognized-5",
+      "kind": "unrecognized",
+      "logicalRoot": "media/Boku no Risou no Isekai Seikatsu - 04",
+      "directory": "material/unrecognized/Boku no Risou no Isekai Seikatsu - 04",
+      "expected": "unresolved",
+      "files": [
+        {
+          "reference": "Boku no Risou no Isekai Seikatsu - 04/R_[260417][メリー・ジェーン] ボクの理想の異世界生活 第4話.mkv",
+          "input": "Boku no Risou no Isekai Seikatsu - 04/R_[260417][メリー・ジェーン] ボクの理想の異世界生活 第4話.png"
+        }
+      ]
+    }
+  ]
+}
