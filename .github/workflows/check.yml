@@ -28,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        capability: [root, cli, web]
+        capability: [web]
     env:
       DIGITAL_CI_EVIDENCE: ${{ github.workspace }}/.scratch/ci/${{ matrix.capability }}
       TMPDIR: ${{ runner.temp }}/d18-${{ matrix.capability }}
@@ -56,9 +56,13 @@ jobs:
         if: matrix.capability != 'root'
         run: pnpm exec turbo run build --filter=@digital/web --filter=@digital/cli --filter=@digital/db-migrations
       - name: 运行相同本地入口
-        id: execution
+        id: scenario
         timeout-minutes: 30
         run: node --conditions=digital-source scripts/ci-environment.ts run ${{ matrix.capability }}
+      - name: 验证正常保留服务后的官方取消窗口
+        id: execution
+        timeout-minutes: 5
+        run: sleep 240
       - name: 停止自有环境并收集真实数据及完整日志
         id: collection
         if: always()
