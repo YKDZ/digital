@@ -1,1 +1,9 @@
-{ "extends": ["//"], "tags": ["composition"] }
+{
+  "extends": ["//"],
+  "tags": ["composition"],
+  "tasks": {
+    "test": {
+      "dependsOn": ["$TURBO_EXTENDS$", "@digital/db-migrations#build"]
+    }
+  }
+}
