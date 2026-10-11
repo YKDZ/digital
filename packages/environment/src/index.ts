@@ -34,3 +34,14 @@ export {
   deleteEnvironment,
   type DeleteOperationResult,
 } from "./delete-environment.ts";
+export {
+  manageContainerEnvironment,
+  type ContainerEndpoint,
+  type ContainerReference,
+  type ContainerMount,
+  type ContainerObject,
+  type ContainerObservation,
+  type ContainerRequest,
+  type ContainerOperationResult,
+  type ContainerOperationOptions,
+} from "./container-environment.ts";

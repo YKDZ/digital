@@ -325,6 +325,9 @@ importers:
       '@digital/application':
         specifier: workspace:*
         version: link:../../packages/application
+      '@digital/environment':
+        specifier: workspace:*
+        version: link:../../packages/environment
       '@digital/typescript-config':
         specifier: workspace:*
         version: link:../../packages/typescript-config
