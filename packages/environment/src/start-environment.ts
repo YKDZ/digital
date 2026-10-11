@@ -25,6 +25,10 @@ export type {
 export async function startEnvironment(input: {
   readonly workspacePath: string;
   readonly environment: string;
+  /** 开发入口与生产入口明确区分；切换入口前必须显式停止现有世代。 */
+  readonly runtime?: "production" | "development";
+  /** 仅由当前开发会话包装持有，迟到包装不能复活已结束的会话。 */
+  readonly developmentSession?: string;
   /**
    * 本次启动的取消条件：`signal` 由调用方持有，`timeoutMs` 是本次操作的期限。
    * 取消只中止本次尚未发布的等待，绝不撤销已发布并成功应答的世代。
@@ -65,6 +69,10 @@ export async function startEnvironment(input: {
   }
   const request: StartRequest = {
     kind: "start",
+    runtime: input.runtime ?? "production",
+    ...(input.developmentSession === undefined
+      ? {}
+      : { developmentSession: input.developmentSession }),
     workspacePath,
     environment: input.environment,
   };

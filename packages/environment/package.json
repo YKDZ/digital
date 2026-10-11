@@ -12,11 +12,13 @@
   "exports": {
     ".": {
       "digital-source": "./src/index.ts",
+      "digital-development": "./.turbo/development/dist/index.js",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
     "./container": {
       "digital-source": "./src/container-environment.ts",
+      "digital-development": "./.turbo/development/dist/container-environment.js",
       "types": "./dist/container-environment.d.ts",
       "default": "./dist/container-environment.js"
     }
@@ -31,7 +33,8 @@
     "postbuild": "node -e \"if (process.platform !== 'win32') require('node:fs').chmodSync('dist/cli.js', 0o755)\"",
     "prepack": "pnpm exec turbo run build --filter=.",
     "test": "vitest run --reporter=verbose --passWithNoTests",
-    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false"
+    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
+    "dev:build": "node --conditions=digital-source ../../scripts/build-development.ts"
   },
   "dependencies": {
     "@valibot/to-json-schema": "catalog:",

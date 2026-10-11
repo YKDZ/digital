@@ -9,11 +9,13 @@
   "exports": {
     ".": {
       "digital-source": "./src/public.ts",
+      "digital-development": "./.turbo/development/dist/public.js",
       "types": "./dist/public.d.ts",
       "default": "./dist/public.js"
     },
     "./testing": {
       "digital-source": "./src/testing.ts",
+      "digital-development": "./.turbo/development/dist/testing.js",
       "types": "./dist/testing.d.ts",
       "default": "./dist/testing.js"
     }
@@ -25,7 +27,8 @@
     "lint:fix": "oxlint --format=unix --config ../../oxlint.config.ts . --fix",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
     "test": "vitest run --reporter=verbose",
-    "build": "tsc -b tsconfig.build.json --force --pretty false"
+    "build": "tsc -b tsconfig.build.json --force --pretty false",
+    "dev:build": "node --conditions=digital-source ../../scripts/build-development.ts"
   },
   "dependencies": {
     "@digital/application": "workspace:*",

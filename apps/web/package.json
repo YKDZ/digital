@@ -35,7 +35,7 @@
   "scripts": {
     "build": "vike build",
     "deployment": "node --conditions=digital-source scripts/check-standalone-deployment.ts && node --conditions=digital-source scripts/check-compose-deployment.ts",
-    "dev": "vike dev",
+    "dev": "node --conditions=digital-source ../../scripts/development-environment.ts",
     "format:check": "oxfmt --list-different --config ../../oxfmt.config.ts .",
     "format:write": "oxfmt --write --config ../../oxfmt.config.ts .",
     "lint": "oxlint --quiet --format=unix --type-aware --config ../../oxlint.config.ts .",
@@ -47,7 +47,8 @@
     "test:e2e": "node scripts/run-playwright.ts",
     "test:e2e:managed-service": "node scripts/run-managed-service-acceptance.ts --mode owned",
     "test:e2e:provided-service": "node scripts/run-managed-service-acceptance.ts --mode provided",
-    "typecheck": "node --conditions=digital-source scripts/run-vue-tsc.ts --build --noEmit --pretty false"
+    "typecheck": "node --conditions=digital-source scripts/run-vue-tsc.ts --build --noEmit --pretty false",
+    "dev:serve": "node --conditions=digital-source ../../scripts/development-task.ts"
   },
   "dependencies": {
     "@digital/composition": "workspace:*",

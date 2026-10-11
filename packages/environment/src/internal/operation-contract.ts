@@ -48,12 +48,15 @@ export type PrepareRequest = {
 
 export type StartRequest = {
   readonly kind: "start";
+  readonly runtime?: "production" | "development";
+  readonly developmentSession?: string;
   readonly workspacePath: string;
   readonly environment: string;
 } & DeadlineRequest;
 
 export type StopRequest = {
   readonly kind: "stop";
+  readonly developmentSession?: string;
   readonly workspacePath: string;
   readonly environment: string;
 } & DeadlineRequest;
@@ -237,6 +240,16 @@ export function validateStartOrStopRequest(
 ): { readonly reason: string; readonly stage: "request" } | undefined {
   const layout = createLayout(request.workspacePath, request.environment);
   if ("reason" in layout) return { reason: layout.reason, stage: "request" };
+  if (
+    request.kind === "start" &&
+    request.runtime !== undefined &&
+    request.runtime !== "production" &&
+    request.runtime !== "development"
+  )
+    return {
+      reason: "启动入口必须是 production 或 development",
+      stage: "request",
+    };
   return undefined;
 }
 
@@ -333,6 +346,18 @@ export function parseOperationPayload(
         kind,
         workspacePath,
         environment,
+        ...((kind === "start" || kind === "stop") &&
+        typeof value.developmentSession === "string"
+          ? { developmentSession: value.developmentSession }
+          : {}),
+        ...(kind === "start"
+          ? {
+              runtime:
+                value.runtime === undefined
+                  ? "production"
+                  : (value.runtime as "production" | "development"),
+            }
+          : {}),
         ...(deadline === undefined ? {} : { deadlineAt: deadline.deadlineAt }),
       },
     };
@@ -354,6 +379,7 @@ export type LifecycleCleanup = {
 /** 运行事实：记录内的事实加上本次可核验的实时观察，全部为非秘密引用。 */
 export type EnvironmentRunFacts = {
   readonly runId: string | null;
+  readonly runtime?: "production" | "development";
   readonly state: "absent" | EnvironmentRunRecord["state"];
   readonly address: string | null;
   readonly port: number | null;
@@ -539,6 +565,7 @@ export function recordedRunFacts(
   return {
     runId: run.runId,
     state: run.state,
+    runtime: run.runtime ?? "production",
     address: run.address,
     port: run.port,
     productLogFile: run.productLogFile,
