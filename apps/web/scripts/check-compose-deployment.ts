@@ -9,12 +9,12 @@ import {
   type ContainerReference,
   type ContainerRequest,
 } from "@digital/environment/container";
-
 import {
   createProductClient,
   digestDirectory,
   intakeDirectories,
-} from "../../../scripts/preview-product.ts";
+} from "@digital/test-support/product-client";
+
 import { fileCommandJournal, runCommand } from "./environment-lifecycle.ts";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../../..");
