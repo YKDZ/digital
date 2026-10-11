@@ -885,6 +885,14 @@ it("人工多文档的持久 support 投影被篡改后刷新不消费坏链", a
       ),
     ).toHaveLength(2);
     expect((await workflow.listCurrentAttentionPage()).items).toEqual([]);
+    expect(
+      (await workflow.listCurrentCataloguePage()).items.map(({ id }) => id),
+    ).toEqual([saved.content.entity.id]);
+    await expect(
+      SqliteCatalogue.inspectProductionReadiness({
+        productDataDirectory: data,
+      }),
+    ).resolves.toMatchObject({ state: "ready" });
     await workflow.close();
     const legacy = new DatabaseSync(path.join(data, "catalogue.sqlite"));
     const durableRowCount = (table: string) =>
@@ -895,25 +903,26 @@ it("人工多文档的持久 support 投影被篡改后刷新不消费坏链", a
       ).count;
     const beforeTamperAssociations = durableRowCount("artifact_associations");
     const beforeTamperRevisions = durableRowCount("artifact_revisions");
+    const beforeTamperEntities = durableRowCount("entities");
     expect(beforeTamperAssociations).toBeGreaterThan(0);
     expect(beforeTamperRevisions).toBeGreaterThan(0);
+    expect(beforeTamperEntities).toBe(1);
     legacy
       .prepare(
         "UPDATE artifact_associations SET role = 'asset.primary-cover' WHERE role = 'asset.material-image'",
       )
       .run();
     legacy.close();
+    // 正常人工多材料接受必须先是健康基底；仅篡改部件角色后便应拒绝坏链，
+    // 当前观察／确认仍相交也不能替代原提案对部件角色与父修订的真实声明。
+    await expect(
+      SqliteCatalogue.inspectProductionReadiness({
+        productDataDirectory: data,
+      }),
+    ).resolves.toMatchObject({ state: "catalogue-integrity-failed" });
     workflow = composeAssetRefresh(data, {});
-    // 原断言：篡改后重扫仍接受，并把当前目录读回为「未被坏链污染的六个关联、六个修订版」。
-    // 现断言：现行产品对损坏的持久支持链采用失败关闭——重开后的门控刷新直接拒绝，生产就绪
-    // 检查报「观察材料决定支持链损坏」，因此「刷新不消费坏链」由这次拒绝表达；原「不重复铸出
-    // 第二份关联/修订版」与「不另建主体」的保护改由拒绝前后的耐久行数逐项相等承担（拒绝路径
-    // 不得产生任何新的领域写入）。同一 precedent 见
-    // packages/composition/test/sqlite-catalogue.test.ts:5700–5760。
-    // 必须如实登记的因果缺口（current/06/coordination.md D2）：该库在被篡改之前就已经是
-    // catalogue-integrity-failed（人工多文档确认自身即损坏观察材料支持链，见
-    // current/06/probe-read-shapes.log 变体 C 的 readiness）。因此本节证明的是「损坏的支持链
-    // 不被刷新消费」，尚不能把这次拒绝单独归因于本次篡改；合法正项基线待 04/05 修复。
+    // 失败关闭保留原「刷新不消费坏链」意图；拒绝前后同一主体及关联／修订行数
+    // 不变，保留原「不重复铸出、不另建主体」。正常生成图不恢复旧错误的实体封面。
     await expect(
       workflow.scanObservedScope({
         registrationId: root.id,
@@ -941,6 +950,7 @@ it("人工多文档的持久 support 投影被篡改后刷新不消费坏链", a
       beforeTamperAssociations,
     );
     expect(refusalRowCount("artifact_revisions")).toBe(beforeTamperRevisions);
+    expect(refusalRowCount("entities")).toBe(beforeTamperEntities);
     afterRefusal.close();
   } finally {
     await workflow.close();
