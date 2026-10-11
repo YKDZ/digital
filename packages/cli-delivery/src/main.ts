@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import type {
   AssetRefreshInspection,
   AssetRefreshOutcome,
+  ChangeImpactPreviewFacts,
   ChangeImpactPreviewInspection,
   EffectiveSubjectRead,
   InformationRequirement,
@@ -495,9 +496,7 @@ function renderChangeImpactPreview(
 ): string {
   if (json)
     return `${JSON.stringify({ format: "temporary-change-impact-preview/v1", unstable: true, preview })}\n`;
-  const metadataLines = (
-    facts: import("@digital/application").EffectiveSubjectRead | undefined,
-  ) =>
+  const metadataLines = (facts: ChangeImpactPreviewFacts | undefined) =>
     facts?.descriptions.flatMap((description) =>
       description.metadata.flatMap((entry) =>
         entry.result.status === "resolved"

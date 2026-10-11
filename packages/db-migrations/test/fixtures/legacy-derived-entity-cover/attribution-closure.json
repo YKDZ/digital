@@ -1,0 +1,357 @@
+{
+  "artifact_association_recognition_supports": [
+    {
+      "association_id": "artifact-association_39a693d356f17e35ff8ad4dbd2a542711ac7c8c7d06c740abbcd4301d005085a",
+      "recognition_decision_id": "recognition-decision_bc6a2a76-8047-4f07-9061-665be91affda",
+      "observation_execution_id": "execution_f3798db5-3835-4c73-ba95-359b47018d69",
+      "observation_snapshot_id": "snapshot_b5d2d631-7691-4202-9137-a1025d71e616",
+      "observation_location_id": "location_651ac427419bcfb6432e4b7a97a4659858c30e1ae4092632c7812ae31416aee4",
+      "observation_material_kind": "file",
+      "observation_revision_id": "artifact-revision_c0d6b2518313a9b90aa75e287cbf9d4f478976511a74a2c3d2d68083ca08ba33"
+    },
+    {
+      "association_id": "artifact-association_ed8abfd7ab1f8cf17bc5f2f5820cab3e316f624ff43c4f28160500788d2505eb",
+      "recognition_decision_id": "recognition-decision_bc6a2a76-8047-4f07-9061-665be91affda",
+      "observation_execution_id": "execution_f3798db5-3835-4c73-ba95-359b47018d69",
+      "observation_snapshot_id": "snapshot_b5d2d631-7691-4202-9137-a1025d71e616",
+      "observation_location_id": "location_651ac427419bcfb6432e4b7a97a4659858c30e1ae4092632c7812ae31416aee4",
+      "observation_material_kind": "file",
+      "observation_revision_id": "artifact-revision_c0d6b2518313a9b90aa75e287cbf9d4f478976511a74a2c3d2d68083ca08ba33"
+    },
+    {
+      "association_id": "artifact-association_ed8abfd7ab1f8cf17bc5f2f5820cab3e316f624ff43c4f28160500788d2505eb_entity-cover",
+      "recognition_decision_id": "recognition-decision_bc6a2a76-8047-4f07-9061-665be91affda",
+      "observation_execution_id": "execution_f3798db5-3835-4c73-ba95-359b47018d69",
+      "observation_snapshot_id": "snapshot_b5d2d631-7691-4202-9137-a1025d71e616",
+      "observation_location_id": "location_651ac427419bcfb6432e4b7a97a4659858c30e1ae4092632c7812ae31416aee4",
+      "observation_material_kind": "file",
+      "observation_revision_id": "artifact-revision_c0d6b2518313a9b90aa75e287cbf9d4f478976511a74a2c3d2d68083ca08ba33"
+    }
+  ],
+  "artifact_associations": [
+    {
+      "id": "artifact-association_53e9f28f297efc5e685e8af15c678ed8dca5fc2bf669e51042cc0311c1371d61",
+      "target_kind": "entity",
+      "target_entity_id": "entity_20a4c474-c87a-462d-84eb-163b62d2f369",
+      "target_artifact_id": null,
+      "target_revision_id": null,
+      "subject_id": "entity_20a4c474-c87a-462d-84eb-163b62d2f369",
+      "artifact_id": "artifact_e68cc6a5-db34-4ef6-9419-00dbac500c34",
+      "role": "asset.material-delivered",
+      "source_record_ids_json": "[]",
+      "observed_artifact_part_json": null,
+      "producer_json": null,
+      "source_association_id": null
+    },
+    {
+      "id": "artifact-association_39a693d356f17e35ff8ad4dbd2a542711ac7c8c7d06c740abbcd4301d005085a",
+      "target_kind": "entity",
+      "target_entity_id": "entity_20a4c474-c87a-462d-84eb-163b62d2f369",
+      "target_artifact_id": null,
+      "target_revision_id": null,
+      "subject_id": "entity_20a4c474-c87a-462d-84eb-163b62d2f369",
+      "artifact_id": "artifact_3120e1a1-244b-4fb6-a972-34800ad403dd",
+      "role": "asset.material-delivered",
+      "source_record_ids_json": "[]",
+      "observed_artifact_part_json": null,
+      "producer_json": null,
+      "source_association_id": null
+    },
+    {
+      "id": "artifact-association_ed8abfd7ab1f8cf17bc5f2f5820cab3e316f624ff43c4f28160500788d2505eb",
+      "target_kind": "artifact-revision",
+      "target_entity_id": null,
+      "target_artifact_id": "artifact_3120e1a1-244b-4fb6-a972-34800ad403dd",
+      "target_revision_id": "artifact-revision_c0d6b2518313a9b90aa75e287cbf9d4f478976511a74a2c3d2d68083ca08ba33",
+      "subject_id": "entity_20a4c474-c87a-462d-84eb-163b62d2f369",
+      "artifact_id": "artifact_ed8abfd7ab1f8cf17bc5f2f5820cab3e316f624ff43c4f28160500788d2505eb",
+      "role": "asset.material-image",
+      "source_record_ids_json": "[]",
+      "observed_artifact_part_json": "{\"artifactId\":\"artifact_3120e1a1-244b-4fb6-a972-34800ad403dd\",\"revisionId\":\"artifact-revision_c0d6b2518313a9b90aa75e287cbf9d4f478976511a74a2c3d2d68083ca08ba33\",\"locator\":\"pdf:page[1]\"}",
+      "producer_json": "{\"capabilityId\":\"pdf.first-page-cover-acquirer\",\"capabilityVersion\":\"2\",\"contractVersion\":\"2\",\"identity\":\"pdf.first-page-cover-acquirer\",\"implementationVersion\":\"2\",\"kind\":\"observed-artifact-part-acquirer\",\"interpretationContractVersions\":[\"2\"]}",
+      "source_association_id": null
+    },
+    {
+      "id": "artifact-association_ed8abfd7ab1f8cf17bc5f2f5820cab3e316f624ff43c4f28160500788d2505eb_entity-cover",
+      "target_kind": "entity",
+      "target_entity_id": "entity_20a4c474-c87a-462d-84eb-163b62d2f369",
+      "target_artifact_id": null,
+      "target_revision_id": null,
+      "subject_id": "entity_20a4c474-c87a-462d-84eb-163b62d2f369",
+      "artifact_id": "artifact_ed8abfd7ab1f8cf17bc5f2f5820cab3e316f624ff43c4f28160500788d2505eb",
+      "role": "asset.primary-cover",
+      "source_record_ids_json": "[]",
+      "observed_artifact_part_json": "{\"artifactId\":\"artifact_3120e1a1-244b-4fb6-a972-34800ad403dd\",\"revisionId\":\"artifact-revision_c0d6b2518313a9b90aa75e287cbf9d4f478976511a74a2c3d2d68083ca08ba33\",\"locator\":\"pdf:page[1]\"}",
+      "producer_json": "{\"capabilityId\":\"pdf.first-page-cover-acquirer\",\"capabilityVersion\":\"2\",\"contractVersion\":\"2\",\"identity\":\"pdf.first-page-cover-acquirer\",\"implementationVersion\":\"2\",\"kind\":\"observed-artifact-part-acquirer\",\"interpretationContractVersions\":[\"2\"]}",
+      "source_association_id": null
+    },
+    {
+      "id": "artifact-association_4224f43a746c4a9609970d1d888cf497a566d1b62471858bfeb47e73beec8e6f",
+      "target_kind": "entity",
+      "target_entity_id": "entity_20a4c474-c87a-462d-84eb-163b62d2f369",
+      "target_artifact_id": null,
+      "target_revision_id": null,
+      "subject_id": "entity_20a4c474-c87a-462d-84eb-163b62d2f369",
+      "artifact_id": "artifact_4224f43a746c4a9609970d1d888cf497a566d1b62471858bfeb47e73beec8e6f",
+      "role": "asset.primary-cover",
+      "source_record_ids_json": "[\"source-record_e4954a5a-c0cb-4904-9cb2-02fd88b99bfa\"]",
+      "observed_artifact_part_json": null,
+      "producer_json": "{\"capabilityId\":\"dlsite.product-interpretation\",\"capabilityVersion\":\"2\",\"contractVersion\":\"1\",\"identity\":\"dlsite.product-interpretation\",\"implementationVersion\":\"2\",\"kind\":\"source-interpreter\",\"interpretationContractVersions\":[\"1\"]}",
+      "source_association_id": "source-association_2ec9139b-0f64-4e86-9d24-b07c743de0de"
+    }
+  ],
+  "recognition_decisions": [
+    {
+      "id": "recognition-decision_bc6a2a76-8047-4f07-9061-665be91affda",
+      "proposal_id": "recognition-proposal_c1a33de3-1a7f-4b1d-9997-ee123d8089f9",
+      "asset_id": "entity_20a4c474-c87a-462d-84eb-163b62d2f369",
+      "accepted_rule_results_json": "[{\"capabilityId\":\"dlsite.local-directory-recognizer\",\"capabilityVersion\":\"1\",\"ruleId\":\"dlsite.exact-local-product-directory\",\"ruleVersion\":\"1\",\"outcome\":\"satisfied\",\"explanation\":\"精确 RJ／VJ 目录声明了本地内容范围，官方身份和资料待补充\",\"evidence\":[{\"kind\":\"source-address\",\"sourceIdentity\":\"dlsite\",\"sourceAddress\":\"https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html\",\"explanation\":\"DLsite 精确目录规则匹配；普通下级文件服务同一作品\",\"producer\":{\"capabilityId\":\"dlsite.exact-directory\",\"capabilityVersion\":\"3\",\"contractVersion\":\"1\",\"identity\":\"dlsite.exact-directory\",\"implementationVersion\":\"3\",\"kind\":\"directory-interpreter\",\"interpretationContractVersions\":[\"1\"]}},{\"kind\":\"artifact-format-inspection\",\"explanation\":\"格式检查确认该 PDF 修订版可按本地出版物规则评估\",\"producer\":{\"capabilityId\":\"pdf.publication-inspection\",\"capabilityVersion\":\"2\",\"contractVersion\":\"2\",\"identity\":\"pdf.publication-inspection\",\"implementationVersion\":\"2\",\"kind\":\"artifact-format-inspector\",\"interpretationContractVersions\":[\"2\"]},\"inspection\":{\"identifiers\":[],\"observedArtifactReference\":\"台本/script.pdf\",\"revision\":{\"digest\":\"4f6420b173401ac277b9570bb3359b0bd1298a6c4a70b3b4f9f143ea0ef89680\",\"byteLength\":329,\"mediaType\":\"application/pdf\"},\"metadata\":[{\"property\":\"pdf.page-count\",\"sourceSlot\":\"pdf.page-count\",\"value\":\"1\",\"locator\":\"pdf:catalog/pages\"}],\"parts\":[{\"role\":\"asset.material-image\",\"locator\":\"pdf:page[1]\",\"mediaType\":\"image/png\"}]}}]}]",
+      "boundaries_json": "[{\"kind\":\"directory\",\"scopeReference\":\"observed_root_41e3e027-ceeb-4c06-9036-184f4dd76fca\",\"directoryReference\":\".\"}]"
+    }
+  ],
+  "recognition_proposals": [
+    {
+      "id": "recognition-proposal_c1a33de3-1a7f-4b1d-9997-ee123d8089f9",
+      "execution_id": "execution_f3798db5-3835-4c73-ba95-359b47018d69",
+      "basis_json": "{\"kind\":\"observed-evidence\",\"producer\":{\"capabilityId\":\"dlsite.exact-directory\",\"capabilityVersion\":\"3\",\"contractVersion\":\"1\",\"identity\":\"dlsite.exact-directory\",\"implementationVersion\":\"3\",\"kind\":\"directory-interpreter\",\"interpretationContractVersions\":[\"1\"]},\"evidence\":[{\"kind\":\"source-address\",\"sourceIdentity\":\"dlsite\",\"sourceAddress\":\"https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html\",\"explanation\":\"DLsite 精确目录规则匹配；普通下级文件服务同一作品\",\"producer\":{\"capabilityId\":\"dlsite.exact-directory\",\"capabilityVersion\":\"3\",\"contractVersion\":\"1\",\"identity\":\"dlsite.exact-directory\",\"implementationVersion\":\"3\",\"kind\":\"directory-interpreter\",\"interpretationContractVersions\":[\"1\"]}},{\"kind\":\"artifact-format-inspection\",\"explanation\":\"格式检查确认该 PDF 修订版可按本地出版物规则评估\",\"producer\":{\"capabilityId\":\"pdf.publication-inspection\",\"capabilityVersion\":\"2\",\"contractVersion\":\"2\",\"identity\":\"pdf.publication-inspection\",\"implementationVersion\":\"2\",\"kind\":\"artifact-format-inspector\",\"interpretationContractVersions\":[\"2\"]},\"inspection\":{\"identifiers\":[],\"observedArtifactReference\":\"台本/script.pdf\",\"revision\":{\"digest\":\"4f6420b173401ac277b9570bb3359b0bd1298a6c4a70b3b4f9f143ea0ef89680\",\"byteLength\":329,\"mediaType\":\"application/pdf\"},\"metadata\":[{\"property\":\"pdf.page-count\",\"sourceSlot\":\"pdf.page-count\",\"value\":\"1\",\"locator\":\"pdf:catalog/pages\"}],\"parts\":[{\"role\":\"asset.material-image\",\"locator\":\"pdf:page[1]\",\"mediaType\":\"image/png\"}]}}],\"artifactRevisions\":[{\"observedArtifactReference\":\"台本/script.pdf\",\"blob\":{\"digest\":\"4f6420b173401ac277b9570bb3359b0bd1298a6c4a70b3b4f9f143ea0ef89680\",\"byteLength\":329,\"mediaType\":\"application/pdf\"},\"producer\":{\"capabilityId\":\"pdf.publication-inspection\",\"capabilityVersion\":\"2\",\"contractVersion\":\"2\",\"identity\":\"pdf.publication-inspection\",\"implementationVersion\":\"2\",\"kind\":\"artifact-format-inspector\",\"interpretationContractVersions\":[\"2\"]}}]}",
+      "rule_results_json": "[{\"capabilityId\":\"dlsite.local-directory-recognizer\",\"capabilityVersion\":\"1\",\"ruleId\":\"dlsite.exact-local-product-directory\",\"ruleVersion\":\"1\",\"outcome\":\"satisfied\",\"explanation\":\"精确 RJ／VJ 目录声明了本地内容范围，官方身份和资料待补充\",\"evidence\":[{\"kind\":\"source-address\",\"sourceIdentity\":\"dlsite\",\"sourceAddress\":\"https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html\",\"explanation\":\"DLsite 精确目录规则匹配；普通下级文件服务同一作品\",\"producer\":{\"capabilityId\":\"dlsite.exact-directory\",\"capabilityVersion\":\"3\",\"contractVersion\":\"1\",\"identity\":\"dlsite.exact-directory\",\"implementationVersion\":\"3\",\"kind\":\"directory-interpreter\",\"interpretationContractVersions\":[\"1\"]}},{\"kind\":\"artifact-format-inspection\",\"explanation\":\"格式检查确认该 PDF 修订版可按本地出版物规则评估\",\"producer\":{\"capabilityId\":\"pdf.publication-inspection\",\"capabilityVersion\":\"2\",\"contractVersion\":\"2\",\"identity\":\"pdf.publication-inspection\",\"implementationVersion\":\"2\",\"kind\":\"artifact-format-inspector\",\"interpretationContractVersions\":[\"2\"]},\"inspection\":{\"identifiers\":[],\"observedArtifactReference\":\"台本/script.pdf\",\"revision\":{\"digest\":\"4f6420b173401ac277b9570bb3359b0bd1298a6c4a70b3b4f9f143ea0ef89680\",\"byteLength\":329,\"mediaType\":\"application/pdf\"},\"metadata\":[{\"property\":\"pdf.page-count\",\"sourceSlot\":\"pdf.page-count\",\"value\":\"1\",\"locator\":\"pdf:catalog/pages\"}],\"parts\":[{\"role\":\"asset.material-image\",\"locator\":\"pdf:page[1]\",\"mediaType\":\"image/png\"}]}}]}]",
+      "observed_material_interpretation_json": "{\"observedArtifactAssociations\":[{\"observedArtifactReference\":\"track.wav\",\"role\":\"asset.material-delivered\"},{\"observedArtifactReference\":\"台本/script.pdf\",\"role\":\"asset.material-delivered\"}],\"observedArtifactRevisions\":[{\"observedArtifactReference\":\"台本/script.pdf\",\"blob\":{\"digest\":\"4f6420b173401ac277b9570bb3359b0bd1298a6c4a70b3b4f9f143ea0ef89680\",\"byteLength\":329,\"mediaType\":\"application/pdf\"},\"producer\":{\"capabilityId\":\"pdf.publication-inspection\",\"capabilityVersion\":\"2\",\"contractVersion\":\"2\",\"identity\":\"pdf.publication-inspection\",\"implementationVersion\":\"2\",\"kind\":\"artifact-format-inspector\",\"interpretationContractVersions\":[\"2\"]}}],\"observedMetadata\":[{\"property\":\"pdf.page-count\",\"sourceSlot\":\"pdf.page-count\",\"value\":\"1\",\"locator\":\"pdf:catalog/pages\",\"observedArtifactReference\":\"台本/script.pdf\",\"producer\":{\"capabilityId\":\"pdf.publication-inspection\",\"capabilityVersion\":\"2\",\"contractVersion\":\"2\",\"identity\":\"pdf.publication-inspection\",\"implementationVersion\":\"2\",\"kind\":\"artifact-format-inspector\",\"interpretationContractVersions\":[\"2\"]}}],\"observedArtifactParts\":[{\"id\":\"observed-artifact-part_799a55a1-725e-4533-8ba5-26b10ad96855\",\"role\":\"asset.material-image\",\"locator\":\"pdf:page[1]\",\"mediaType\":\"image/png\",\"observedArtifactReference\":\"台本/script.pdf\",\"producer\":{\"capabilityId\":\"pdf.publication-inspection\",\"capabilityVersion\":\"2\",\"contractVersion\":\"2\",\"identity\":\"pdf.publication-inspection\",\"implementationVersion\":\"2\",\"kind\":\"artifact-format-inspector\",\"interpretationContractVersions\":[\"2\"]}}],\"observedEntityGraphs\":[]}",
+      "boundaries_json": "[{\"kind\":\"directory\",\"scopeReference\":\"observed_root_41e3e027-ceeb-4c06-9036-184f4dd76fca\",\"directoryReference\":\".\"}]"
+    }
+  ],
+  "workflow_executions": [
+    {
+      "id": "execution_f3798db5-3835-4c73-ba95-359b47018d69",
+      "selection_directory": "/workspaces/digital/.scratch/environment-system/run/16-readiness-attribution-worktree/run/rd16-attribution/RJ01668691",
+      "snapshot_json": "{\"id\":\"snapshot_b5d2d631-7691-4202-9137-a1025d71e616\",\"root\":\"/workspaces/digital/.scratch/environment-system/run/16-readiness-attribution-worktree/run/rd16-attribution/RJ01668691\",\"complete\":true,\"files\":[{\"relativePath\":\"track.wav\",\"size\":44,\"modifiedAt\":\"2026-10-09T12:40:34.417Z\",\"objectIdentity\":{\"version\":\"filesystem-object-identity/2\",\"kind\":\"snapshot-local\",\"value\":\"fd865cac71817426aaf2f5337a6f4e2237555e5db44e4ffd9b4ce36bd39f4298\"}},{\"relativePath\":\"台本/script.pdf\",\"size\":329,\"modifiedAt\":\"2026-10-09T12:40:34.417Z\",\"objectIdentity\":{\"version\":\"filesystem-object-identity/2\",\"kind\":\"snapshot-local\",\"value\":\"1397a205a32389ac8b377ae23982f2d85f45385ec43f063c25059f8f52f5629e\"}}],\"directories\":[{\"relativePath\":\".\",\"modifiedAt\":\"2026-10-09T12:40:34.417Z\"},{\"relativePath\":\"台本\",\"modifiedAt\":\"2026-10-09T12:40:34.417Z\"}],\"excluded\":[],\"observedAt\":\"2026-10-09T12:40:34.587Z\"}",
+      "status": "completed",
+      "stage": "completed",
+      "outcome": "accepted",
+      "source_record_ids_json": "[\"source-record_e4954a5a-c0cb-4904-9cb2-02fd88b99bfa\",\"source-record_2150e077-65a2-4e0c-8ebc-bc7965e01af6\"]",
+      "proposal_id": null,
+      "accepted_asset_id": null,
+      "reason": null,
+      "reused_execution_id": null,
+      "selection_intent": "scan-now",
+      "compatibility_json": "{\"workflowVersion\":\"asset-refresh/2\",\"policyVersion\":\"curated-initial-sources/8;metadata/curated-metadata/5\",\"capabilityCoordinates\":[\"bangumi.episodic-directory@2/1\",\"book.cover-image-inspection@1/1\",\"book.same-name-directory@3/1\",\"dlsite.exact-directory@3/1\",\"dlsite.exact-source-association@1/1\",\"dlsite.local-directory-recognizer@1/1\",\"dlsite.local-source-candidate@1/1\",\"dlsite.official-collection@2/1\",\"dlsite.product-interpretation@2/1\",\"dlsite.source-artifact-acquirer@2/1\",\"epub.publication-inspection@2/2\",\"fanbox.creator-date-directory@2/1\",\"filesystem.read-only-observer@1/1\",\"nbinet.local-publication-isbn-candidate@1/1\",\"omdb.source-association-candidate-interpretation@1/1\",\"pdf.first-page-cover-acquirer@2/2\",\"pdf.publication-inspection@2/2\",\"tmdb.strict-film-directory@2/1\"]}",
+      "dispositions_json": "[{\"key\":\"directory-interpretation\",\"status\":\"completed\"},{\"key\":\"work-item:dlsite-directory:.\",\"status\":\"completed\",\"effectReference\":\"entity_20a4c474-c87a-462d-84eb-163b62d2f369\"},{\"key\":\"source-enrichment:entity_20a4c474-c87a-462d-84eb-163b62d2f369:dlsite.local-source-candidate\",\"status\":\"completed\"}]",
+      "cover_acquisition_json": null,
+      "managed_cover_json": null,
+      "automation_intent_id": null,
+      "trigger_kind": null,
+      "information_requirement_json": "{\"metadataUsageContext\":\"asset.ordinary\",\"metadata\":[{\"property\":\"asset.title\",\"necessity\":\"optional\"},{\"property\":\"asset.introduction\",\"necessity\":\"optional\"},{\"property\":\"asset.summary\",\"necessity\":\"optional\"},{\"property\":\"asset.body\",\"necessity\":\"optional\"},{\"property\":\"asset.release-date\",\"necessity\":\"optional\"},{\"property\":\"asset.runtime-minutes\",\"necessity\":\"optional\"},{\"property\":\"asset.awards\",\"necessity\":\"optional\"},{\"property\":\"asset.box-office\",\"necessity\":\"optional\"},{\"property\":\"rating.*\",\"necessity\":\"optional\"},{\"property\":\"external.imdb-id\",\"necessity\":\"optional\"},{\"property\":\"asset.publication-datetime\",\"necessity\":\"optional\"},{\"property\":\"asset.declared-language\",\"necessity\":\"optional\"},{\"property\":\"asset.content-classification\",\"necessity\":\"optional\"}],\"artifactRoles\":[{\"role\":\"asset.primary-cover\",\"necessity\":\"required\",\"maximum\":1},{\"role\":\"asset.material-image\",\"necessity\":\"required\",\"maximum\":1}],\"relationshipTypes\":[{\"type\":\"asset.*\",\"necessity\":\"optional\"},{\"type\":\"bangumi.subject.related\",\"necessity\":\"optional\"}]}",
+      "resume_claim_token": null,
+      "resume_claim_expires_at": null,
+      "work_items_json": "[{\"key\":\"dlsite-directory:.\",\"relativePaths\":[\"track.wav\",\"台本/script.pdf\"],\"boundaries\":[{\"kind\":\"directory\",\"scopeReference\":\"observed_root_41e3e027-ceeb-4c06-9036-184f4dd76fca\",\"directoryReference\":\".\"}],\"materialBoundary\":{\"kind\":\"directory\",\"relativePath\":\".\"},\"independentIdentityDeclaredBy\":{\"capabilityId\":\"dlsite.exact-directory\",\"capabilityVersion\":\"3\",\"contractVersion\":\"1\",\"identity\":\"dlsite.exact-directory\",\"implementationVersion\":\"3\",\"kind\":\"directory-interpreter\",\"interpretationContractVersions\":[\"1\"]},\"planningEvidence\":[{\"kind\":\"source-address\",\"sourceIdentity\":\"dlsite\",\"sourceAddress\":\"https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html\",\"explanation\":\"DLsite 精确目录规则匹配；普通下级文件服务同一作品\",\"producer\":{\"capabilityId\":\"dlsite.exact-directory\",\"capabilityVersion\":\"3\",\"contractVersion\":\"1\",\"identity\":\"dlsite.exact-directory\",\"implementationVersion\":\"3\",\"kind\":\"directory-interpreter\",\"interpretationContractVersions\":[\"1\"]}},{\"kind\":\"artifact-format-inspection\",\"explanation\":\"格式检查确认该 PDF 修订版可按本地出版物规则评估\",\"producer\":{\"capabilityId\":\"pdf.publication-inspection\",\"capabilityVersion\":\"2\",\"contractVersion\":\"2\",\"identity\":\"pdf.publication-inspection\",\"implementationVersion\":\"2\",\"kind\":\"artifact-format-inspector\",\"interpretationContractVersions\":[\"2\"]},\"inspection\":{\"identifiers\":[],\"observedArtifactReference\":\"台本/script.pdf\",\"revision\":{\"digest\":\"4f6420b173401ac277b9570bb3359b0bd1298a6c4a70b3b4f9f143ea0ef89680\",\"byteLength\":329,\"mediaType\":\"application/pdf\"},\"metadata\":[{\"property\":\"pdf.page-count\",\"sourceSlot\":\"pdf.page-count\",\"value\":\"1\",\"locator\":\"pdf:catalog/pages\"}],\"parts\":[{\"role\":\"asset.material-image\",\"locator\":\"pdf:page[1]\",\"mediaType\":\"image/png\"}]}}],\"reuseFingerprint\":\"8f32d5def58edc8037a539229a30d30b6745328d0cd9825ee6856040261d1b84\",\"reuseCompatibility\":{\"workflowVersion\":\"asset-refresh/2\",\"policyVersion\":\"curated-initial-sources/8;metadata/curated-metadata/5\",\"capabilityCoordinates\":[\"dlsite.exact-directory@3/1\",\"dlsite.local-directory-recognizer@1/1\",\"filesystem.read-only-observer@1/1\",\"pdf.first-page-cover-acquirer@2/2\",\"pdf.publication-inspection@2/2\"]},\"sourceRecordIds\":[],\"proposalId\":\"recognition-proposal_c1a33de3-1a7f-4b1d-9997-ee123d8089f9\",\"plannedAssetId\":\"entity_20a4c474-c87a-462d-84eb-163b62d2f369\",\"acceptedAssetId\":\"entity_20a4c474-c87a-462d-84eb-163b62d2f369\",\"outcome\":\"accepted\"}]",
+      "operation_kind": "scan-filesystem",
+      "requested_selection_json": "{\"version\":\"asset-refresh-selection/1\",\"subjects\":[],\"filesystemScopes\":[{\"root\":\"/workspaces/digital/.scratch/environment-system/run/16-readiness-attribution-worktree/run/rd16-attribution/RJ01668691\",\"observedRoot\":{\"version\":\"observed-root-snapshot/1\",\"id\":\"observed_root_41e3e027-ceeb-4c06-9036-184f4dd76fca\",\"configVersion\":1,\"containerPath\":\"/workspaces/digital/.scratch/environment-system/run/16-readiness-attribution-worktree/run/rd16-attribution/RJ01668691\",\"canonicalPath\":\"/workspaces/digital/.scratch/environment-system/run/16-readiness-attribution-worktree/run/rd16-attribution/RJ01668691\",\"readOnly\":true,\"symlinkMode\":\"do-not-follow\",\"allowedTargetRootIds\":[],\"authorizedTargetRoots\":[]},\"relativeScope\":\".\",\"explanations\":[{\"path\":[\"observed-root-registration\",\"observed_root_41e3e027-ceeb-4c06-9036-184f4dd76fca\",\".\"]}]}]}",
+      "resolved_selection_json": "{\"version\":\"asset-refresh-selection/1\",\"subjects\":[],\"filesystemScopes\":[{\"root\":\"/workspaces/digital/.scratch/environment-system/run/16-readiness-attribution-worktree/run/rd16-attribution/RJ01668691\",\"observedRoot\":{\"version\":\"observed-root-snapshot/1\",\"id\":\"observed_root_41e3e027-ceeb-4c06-9036-184f4dd76fca\",\"configVersion\":1,\"containerPath\":\"/workspaces/digital/.scratch/environment-system/run/16-readiness-attribution-worktree/run/rd16-attribution/RJ01668691\",\"canonicalPath\":\"/workspaces/digital/.scratch/environment-system/run/16-readiness-attribution-worktree/run/rd16-attribution/RJ01668691\",\"readOnly\":true,\"symlinkMode\":\"do-not-follow\",\"allowedTargetRootIds\":[],\"authorizedTargetRoots\":[]},\"relativeScope\":\".\",\"explanations\":[{\"path\":[\"observed-root-registration\",\"observed_root_41e3e027-ceeb-4c06-9036-184f4dd76fca\",\".\"]}]}]}",
+      "target_dispositions_json": "[{\"key\":\"filesystem-scope:/workspaces/digital/.scratch/environment-system/run/16-readiness-attribution-worktree/run/rd16-attribution/RJ01668691\",\"target\":{\"kind\":\"filesystem-scope\",\"root\":\"/workspaces/digital/.scratch/environment-system/run/16-readiness-attribution-worktree/run/rd16-attribution/RJ01668691\"},\"status\":\"completed\"}]",
+      "filesystem_snapshots_json": "[{\"id\":\"snapshot_b5d2d631-7691-4202-9137-a1025d71e616\",\"root\":\"/workspaces/digital/.scratch/environment-system/run/16-readiness-attribution-worktree/run/rd16-attribution/RJ01668691\",\"complete\":true,\"files\":[{\"relativePath\":\"track.wav\",\"size\":44,\"modifiedAt\":\"2026-10-09T12:40:34.417Z\",\"objectIdentity\":{\"version\":\"filesystem-object-identity/2\",\"kind\":\"snapshot-local\",\"value\":\"fd865cac71817426aaf2f5337a6f4e2237555e5db44e4ffd9b4ce36bd39f4298\"}},{\"relativePath\":\"台本/script.pdf\",\"size\":329,\"modifiedAt\":\"2026-10-09T12:40:34.417Z\",\"objectIdentity\":{\"version\":\"filesystem-object-identity/2\",\"kind\":\"snapshot-local\",\"value\":\"1397a205a32389ac8b377ae23982f2d85f45385ec43f063c25059f8f52f5629e\"}}],\"directories\":[{\"relativePath\":\".\",\"modifiedAt\":\"2026-10-09T12:40:34.417Z\"},{\"relativePath\":\"台本\",\"modifiedAt\":\"2026-10-09T12:40:34.417Z\"}],\"excluded\":[],\"observedAt\":\"2026-10-09T12:40:34.587Z\"}]",
+      "workflow_input_json": "{\"version\":\"asset-refresh-input/1\",\"trigger\":\"interactive\",\"initiatedBy\":\"interactive\",\"acceptTrusted\":true,\"configurationReferences\":[\"recognition-policy/curated-initial-sources/8\"],\"observedRoots\":[{\"version\":\"observed-root-snapshot/1\",\"id\":\"observed_root_41e3e027-ceeb-4c06-9036-184f4dd76fca\",\"configVersion\":1,\"containerPath\":\"/workspaces/digital/.scratch/environment-system/run/16-readiness-attribution-worktree/run/rd16-attribution/RJ01668691\",\"canonicalPath\":\"/workspaces/digital/.scratch/environment-system/run/16-readiness-attribution-worktree/run/rd16-attribution/RJ01668691\",\"readOnly\":true,\"symlinkMode\":\"do-not-follow\",\"allowedTargetRootIds\":[],\"authorizedTargetRoots\":[]}],\"assetLibrary\":{\"id\":\"asset_library_219d7c79-1151-4f3b-ac39-57a307746d20\",\"configVersion\":1,\"rootIds\":[\"observed_root_41e3e027-ceeb-4c06-9036-184f4dd76fca\"],\"directoryInterpreters\":[{\"capabilityId\":\"bangumi.episodic-directory\",\"capabilityVersion\":\"2\",\"contractVersion\":\"1\"},{\"capabilityId\":\"book.same-name-directory\",\"capabilityVersion\":\"3\",\"contractVersion\":\"1\"},{\"capabilityId\":\"dlsite.exact-directory\",\"capabilityVersion\":\"3\",\"contractVersion\":\"1\"},{\"capabilityId\":\"fanbox.creator-date-directory\",\"capabilityVersion\":\"2\",\"contractVersion\":\"1\"},{\"capabilityId\":\"tmdb.strict-film-directory\",\"capabilityVersion\":\"2\",\"contractVersion\":\"1\"}],\"recognizers\":[{\"capabilityId\":\"bangumi.episodic-recognizer\",\"capabilityVersion\":\"2\",\"contractVersion\":\"1\"},{\"capabilityId\":\"book.local-directory-recognizer\",\"capabilityVersion\":\"1\",\"contractVersion\":\"1\"},{\"capabilityId\":\"dlsite.exact-recognizer\",\"capabilityVersion\":\"1\",\"contractVersion\":\"1\"},{\"capabilityId\":\"dlsite.local-directory-recognizer\",\"capabilityVersion\":\"1\",\"contractVersion\":\"1\"},{\"capabilityId\":\"epub.local-publication-recognizer\",\"capabilityVersion\":\"3\",\"contractVersion\":\"2\"},{\"capabilityId\":\"fanbox.creator-date-recognizer\",\"capabilityVersion\":\"2\",\"contractVersion\":\"1\"},{\"capabilityId\":\"nbinet.exact-isbn-recognizer\",\"capabilityVersion\":\"3\",\"contractVersion\":\"2\"},{\"capabilityId\":\"pdf.local-publication-recognizer\",\"capabilityVersion\":\"3\",\"contractVersion\":\"2\"},{\"capabilityId\":\"tmdb.strict-film-recognizer\",\"capabilityVersion\":\"2\",\"contractVersion\":\"1\"}],\"sources\":[{\"identity\":\"bangumi\",\"collectors\":[{\"capabilityId\":\"bangumi.official-collection\",\"capabilityVersion\":\"1\",\"contractVersion\":\"1\"}],\"sourceCandidateInterpreters\":[],\"sourceInterpreters\":[{\"capabilityId\":\"bangumi.episodic-interpretation\",\"capabilityVersion\":\"1\",\"contractVersion\":\"1\"}],\"sourceAssociationInterpreters\":[],\"acquirers\":[{\"capabilityId\":\"bangumi.source-artifact-acquirer\",\"capabilityVersion\":\"1\",\"contractVersion\":\"1\"}],\"informationFulfillments\":[]},{\"identity\":\"dlsite\",\"collectors\":[{\"capabilityId\":\"dlsite.official-collection\",\"capabilityVersion\":\"2\",\"contractVersion\":\"1\"}],\"sourceCandidateInterpreters\":[{\"capabilityId\":\"dlsite.local-source-candidate\",\"capabilityVersion\":\"1\",\"contractVersion\":\"1\"}],\"sourceInterpreters\":[{\"capabilityId\":\"dlsite.product-interpretation\",\"capabilityVersion\":\"2\",\"contractVersion\":\"1\"}],\"sourceAssociationInterpreters\":[{\"capabilityId\":\"dlsite.exact-source-association\",\"capabilityVersion\":\"1\",\"contractVersion\":\"1\"}],\"acquirers\":[{\"capabilityId\":\"dlsite.source-artifact-acquirer\",\"capabilityVersion\":\"2\",\"contractVersion\":\"1\"}],\"informationFulfillments\":[{\"capabilityId\":\"dlsite.official-collection\",\"capabilityVersion\":\"2\",\"contractVersion\":\"1\"},{\"capabilityId\":\"dlsite.source-artifact-acquirer\",\"capabilityVersion\":\"2\",\"contractVersion\":\"1\"}]},{\"identity\":\"fanbox\",\"collectors\":[{\"capabilityId\":\"fanbox.official-collection\",\"capabilityVersion\":\"2\",\"contractVersion\":\"1\"}],\"sourceCandidateInterpreters\":[],\"sourceInterpreters\":[{\"capabilityId\":\"fanbox.post-interpretation\",\"capabilityVersion\":\"1\",\"contractVersion\":\"1\"}],\"sourceAssociationInterpreters\":[],\"acquirers\":[{\"capabilityId\":\"fanbox.source-artifact-acquirer\",\"capabilityVersion\":\"1\",\"contractVersion\":\"1\"}],\"informationFulfillments\":[]},{\"identity\":\"kadokawa-jp\",\"collectors\":[{\"capabilityId\":\"kadokawa-jp.official-collection\",\"capabilityVersion\":\"1\",\"contractVersion\":\"1\"}],\"sourceCandidateInterpreters\":[],\"sourceInterpreters\":[{\"capabilityId\":\"kadokawa-jp.product-interpretation\",\"capabilityVersion\":\"1\",\"contractVersion\":\"1\"}],\"sourceAssociationInterpreters\":[{\"capabilityId\":\"kadokawa-jp.isbn-association-interpretation\",\"capabilityVersion\":\"1\",\"contractVersion\":\"1\"}],\"acquirers\":[{\"capabilityId\":\"kadokawa-jp.source-artifact-acquirer\",\"capabilityVersion\":\"1\",\"contractVersion\":\"1\"}],\"informationFulfillments\":[]},{\"identity\":\"nbinet\",\"collectors\":[{\"capabilityId\":\"nbinet.exact-isbn-collection\",\"capabilityVersion\":\"2\",\"contractVersion\":\"1\"}],\"sourceCandidateInterpreters\":[{\"capabilityId\":\"nbinet.local-publication-isbn-candidate\",\"capabilityVersion\":\"1\",\"contractVersion\":\"1\"}],\"sourceInterpreters\":[{\"capabilityId\":\"nbinet.exact-isbn-bibliographic-interpretation\",\"capabilityVersion\":\"1\",\"contractVersion\":\"1\"}],\"sourceAssociationInterpreters\":[{\"capabilityId\":\"nbinet.exact-isbn-association-interpretation\",\"capabilityVersion\":\"1\",\"contractVersion\":\"1\"}],\"acquirers\":[],\"informationFulfillments\":[]},{\"identity\":\"omdb\",\"collectors\":[{\"capabilityId\":\"omdb.film-enrichment-collection\",\"capabilityVersion\":\"2\",\"contractVersion\":\"1\"}],\"sourceCandidateInterpreters\":[{\"capabilityId\":\"omdb.source-association-candidate-interpretation\",\"capabilityVersion\":\"1\",\"contractVersion\":\"1\"}],\"sourceInterpreters\":[{\"capabilityId\":\"omdb.film-enrichment-interpretation\",\"capabilityVersion\":\"1\",\"contractVersion\":\"1\"}],\"sourceAssociationInterpreters\":[{\"capabilityId\":\"omdb.source-association-interpretation\",\"capabilityVersion\":\"1\",\"contractVersion\":\"1\"}],\"acquirers\":[{\"capabilityId\":\"omdb.source-artifact-acquirer\",\"capabilityVersion\":\"2\",\"contractVersion\":\"1\"}],\"informationFulfillments\":[]},{\"identity\":\"taiwan-kadokawa\",\"collectors\":[{\"capabilityId\":\"taiwan-kadokawa.official-product-collection\",\"capabilityVersion\":\"1\",\"contractVersion\":\"1\"}],\"sourceCandidateInterpreters\":[],\"sourceInterpreters\":[{\"capabilityId\":\"taiwan-kadokawa.product-interpretation\",\"capabilityVersion\":\"1\",\"contractVersion\":\"1\"}],\"sourceAssociationInterpreters\":[{\"capabilityId\":\"taiwan-kadokawa.isbn-association-interpretation\",\"capabilityVersion\":\"1\",\"contractVersion\":\"1\"}],\"acquirers\":[{\"capabilityId\":\"taiwan-kadokawa.source-artifact-acquirer\",\"capabilityVersion\":\"1\",\"contractVersion\":\"1\"}],\"informationFulfillments\":[]},{\"identity\":\"tmdb\",\"collectors\":[{\"capabilityId\":\"tmdb.official-film-collection\",\"capabilityVersion\":\"3\",\"contractVersion\":\"2\"}],\"sourceCandidateInterpreters\":[],\"sourceInterpreters\":[{\"capabilityId\":\"tmdb.film-interpretation\",\"capabilityVersion\":\"2\",\"contractVersion\":\"2\"}],\"sourceAssociationInterpreters\":[],\"acquirers\":[{\"capabilityId\":\"tmdb.source-artifact-acquirer\",\"capabilityVersion\":\"2\",\"contractVersion\":\"1\"}],\"informationFulfillments\":[]}]},\"directoryAuthorizations\":[{\"observedRootId\":\"observed_root_41e3e027-ceeb-4c06-9036-184f4dd76fca\",\"authorityVersion\":1}]}",
+      "cancellation_json": null,
+      "planned_asset_id": null,
+      "material_association_json": null,
+      "source_association_decision_json": null
+    }
+  ],
+  "observed_material_acceptances": [
+    {
+      "execution_id": "execution_f3798db5-3835-4c73-ba95-359b47018d69",
+      "proposal_id": "recognition-proposal_c1a33de3-1a7f-4b1d-9997-ee123d8089f9",
+      "work_item_key": "dlsite-directory:.",
+      "acceptance_kind": "a-work-item",
+      "asset_id": "entity_20a4c474-c87a-462d-84eb-163b62d2f369",
+      "artifact_id": "artifact_e68cc6a5-db34-4ef6-9419-00dbac500c34",
+      "location_id": "location_a915870f24ea166100fa0d812b0edbd048103b5c7621f44711628566a03dcd4a",
+      "association_id": "artifact-association_53e9f28f297efc5e685e8af15c678ed8dca5fc2bf669e51042cc0311c1371d61",
+      "snapshot_id": "snapshot_b5d2d631-7691-4202-9137-a1025d71e616",
+      "observed_reference": "track.wav"
+    },
+    {
+      "execution_id": "execution_f3798db5-3835-4c73-ba95-359b47018d69",
+      "proposal_id": "recognition-proposal_c1a33de3-1a7f-4b1d-9997-ee123d8089f9",
+      "work_item_key": "dlsite-directory:.",
+      "acceptance_kind": "a-work-item",
+      "asset_id": "entity_20a4c474-c87a-462d-84eb-163b62d2f369",
+      "artifact_id": "artifact_3120e1a1-244b-4fb6-a972-34800ad403dd",
+      "location_id": "location_651ac427419bcfb6432e4b7a97a4659858c30e1ae4092632c7812ae31416aee4",
+      "association_id": "artifact-association_39a693d356f17e35ff8ad4dbd2a542711ac7c8c7d06c740abbcd4301d005085a",
+      "snapshot_id": "snapshot_b5d2d631-7691-4202-9137-a1025d71e616",
+      "observed_reference": "台本/script.pdf"
+    }
+  ],
+  "observed_material_boundaries": [
+    {
+      "location_id": "location_a915870f24ea166100fa0d812b0edbd048103b5c7621f44711628566a03dcd4a",
+      "artifact_id": "artifact_e68cc6a5-db34-4ef6-9419-00dbac500c34",
+      "material_kind": "file",
+      "derivation_kind": "accepted-exact"
+    },
+    {
+      "location_id": "location_651ac427419bcfb6432e4b7a97a4659858c30e1ae4092632c7812ae31416aee4",
+      "artifact_id": "artifact_3120e1a1-244b-4fb6-a972-34800ad403dd",
+      "material_kind": "file",
+      "derivation_kind": "accepted-exact"
+    }
+  ],
+  "current_observed_material_supports": [
+    {
+      "location_id": "location_a915870f24ea166100fa0d812b0edbd048103b5c7621f44711628566a03dcd4a",
+      "observed_root_id": "observed_root_41e3e027-ceeb-4c06-9036-184f4dd76fca",
+      "observed_root_version": 1,
+      "material_kind": "file",
+      "snapshot_id": "snapshot_b5d2d631-7691-4202-9137-a1025d71e616",
+      "observed_at": "2026-10-09T12:40:34.587Z",
+      "observed_root_path": "/workspaces/digital/.scratch/environment-system/run/16-readiness-attribution-worktree/run/rd16-attribution/RJ01668691",
+      "authorized_targets_json": "[]"
+    },
+    {
+      "location_id": "location_651ac427419bcfb6432e4b7a97a4659858c30e1ae4092632c7812ae31416aee4",
+      "observed_root_id": "observed_root_41e3e027-ceeb-4c06-9036-184f4dd76fca",
+      "observed_root_version": 1,
+      "material_kind": "file",
+      "snapshot_id": "snapshot_b5d2d631-7691-4202-9137-a1025d71e616",
+      "observed_at": "2026-10-09T12:40:34.587Z",
+      "observed_root_path": "/workspaces/digital/.scratch/environment-system/run/16-readiness-attribution-worktree/run/rd16-attribution/RJ01668691",
+      "authorized_targets_json": "[]"
+    }
+  ],
+  "locations": [
+    {
+      "id": "location_a915870f24ea166100fa0d812b0edbd048103b5c7621f44711628566a03dcd4a",
+      "artifact_id": "artifact_e68cc6a5-db34-4ef6-9419-00dbac500c34",
+      "address": "/workspaces/digital/.scratch/environment-system/run/16-readiness-attribution-worktree/run/rd16-attribution/RJ01668691/track.wav",
+      "kind": "observed"
+    },
+    {
+      "id": "location_651ac427419bcfb6432e4b7a97a4659858c30e1ae4092632c7812ae31416aee4",
+      "artifact_id": "artifact_3120e1a1-244b-4fb6-a972-34800ad403dd",
+      "address": "/workspaces/digital/.scratch/environment-system/run/16-readiness-attribution-worktree/run/rd16-attribution/RJ01668691/台本/script.pdf",
+      "kind": "observed"
+    },
+    {
+      "id": "location_ed8abfd7ab1f8cf17bc5f2f5820cab3e316f624ff43c4f28160500788d2505eb",
+      "artifact_id": "artifact_ed8abfd7ab1f8cf17bc5f2f5820cab3e316f624ff43c4f28160500788d2505eb",
+      "address": "/workspaces/digital/.scratch/environment-system/run/16-readiness-attribution-worktree/run/rd16-attribution/product-data/managed-artifacts/84/84a2111079ed9a83551864db251cbe7e4d9066ecae6625cecf30ecf83e22e963",
+      "kind": "managed"
+    },
+    {
+      "id": "location_4224f43a746c4a9609970d1d888cf497a566d1b62471858bfeb47e73beec8e6f",
+      "artifact_id": "artifact_4224f43a746c4a9609970d1d888cf497a566d1b62471858bfeb47e73beec8e6f",
+      "address": "/workspaces/digital/.scratch/environment-system/run/16-readiness-attribution-worktree/run/rd16-attribution/product-data/managed-artifacts/db/dbfdc5f9d5fb78738f87ac86fa84114f3299cd6a6f0ed7ed52f9f3eb9f275453",
+      "kind": "managed"
+    }
+  ],
+  "artifact_revisions": [
+    {
+      "id": "artifact-revision_ed8abfd7ab1f8cf17bc5f2f5820cab3e316f624ff43c4f28160500788d2505eb",
+      "artifact_id": "artifact_ed8abfd7ab1f8cf17bc5f2f5820cab3e316f624ff43c4f28160500788d2505eb",
+      "blob_digest": "84a2111079ed9a83551864db251cbe7e4d9066ecae6625cecf30ecf83e22e963",
+      "producer_json": "{\"capabilityId\":\"pdf.first-page-cover-acquirer\",\"capabilityVersion\":\"2\",\"contractVersion\":\"2\",\"identity\":\"pdf.first-page-cover-acquirer\",\"implementationVersion\":\"2\",\"kind\":\"observed-artifact-part-acquirer\",\"interpretationContractVersions\":[\"2\"]}"
+    },
+    {
+      "id": "artifact-revision_c0d6b2518313a9b90aa75e287cbf9d4f478976511a74a2c3d2d68083ca08ba33",
+      "artifact_id": "artifact_3120e1a1-244b-4fb6-a972-34800ad403dd",
+      "blob_digest": "4f6420b173401ac277b9570bb3359b0bd1298a6c4a70b3b4f9f143ea0ef89680",
+      "producer_json": "{\"capabilityId\":\"pdf.publication-inspection\",\"capabilityVersion\":\"2\",\"contractVersion\":\"2\",\"identity\":\"pdf.publication-inspection\",\"implementationVersion\":\"2\",\"kind\":\"artifact-format-inspector\",\"interpretationContractVersions\":[\"2\"]}"
+    },
+    {
+      "id": "artifact-revision_4224f43a746c4a9609970d1d888cf497a566d1b62471858bfeb47e73beec8e6f",
+      "artifact_id": "artifact_4224f43a746c4a9609970d1d888cf497a566d1b62471858bfeb47e73beec8e6f",
+      "blob_digest": "dbfdc5f9d5fb78738f87ac86fa84114f3299cd6a6f0ed7ed52f9f3eb9f275453",
+      "producer_json": "{\"capabilityId\":\"dlsite.source-artifact-acquirer\",\"capabilityVersion\":\"2\",\"contractVersion\":\"1\",\"identity\":\"dlsite.source-artifact-acquirer\",\"implementationVersion\":\"2\",\"kind\":\"source-artifact-acquirer\",\"interpretationContractVersions\":[\"1\"]}"
+    }
+  ],
+  "blobs": [
+    {
+      "digest": "84a2111079ed9a83551864db251cbe7e4d9066ecae6625cecf30ecf83e22e963",
+      "media_type": "image/png",
+      "byte_length": 869
+    },
+    {
+      "digest": "4f6420b173401ac277b9570bb3359b0bd1298a6c4a70b3b4f9f143ea0ef89680",
+      "media_type": "application/pdf",
+      "byte_length": 329
+    },
+    {
+      "digest": "dbfdc5f9d5fb78738f87ac86fa84114f3299cd6a6f0ed7ed52f9f3eb9f275453",
+      "media_type": "image/png",
+      "byte_length": 186
+    }
+  ],
+  "current_file_observations": [
+    {
+      "location_id": "location_a915870f24ea166100fa0d812b0edbd048103b5c7621f44711628566a03dcd4a",
+      "address": "/workspaces/digital/.scratch/environment-system/run/16-readiness-attribution-worktree/run/rd16-attribution/RJ01668691/track.wav",
+      "snapshot_id": "snapshot_b5d2d631-7691-4202-9137-a1025d71e616",
+      "observed_at": "2026-10-09T12:40:34.587Z",
+      "size": 44,
+      "modified_at": "2026-10-09T12:40:34.417Z",
+      "conditional_baseline": "e476ad14d9222a887ffda51708ddc9bc6629c9444ba48b4f93d888e3b7de8418"
+    },
+    {
+      "location_id": "location_651ac427419bcfb6432e4b7a97a4659858c30e1ae4092632c7812ae31416aee4",
+      "address": "/workspaces/digital/.scratch/environment-system/run/16-readiness-attribution-worktree/run/rd16-attribution/RJ01668691/台本/script.pdf",
+      "snapshot_id": "snapshot_b5d2d631-7691-4202-9137-a1025d71e616",
+      "observed_at": "2026-10-09T12:40:34.587Z",
+      "size": 329,
+      "modified_at": "2026-10-09T12:40:34.417Z",
+      "conditional_baseline": "db46c0fabd3fff6039f174055591ca4942da7b189ab7d9d3fb6f63676cf0a462"
+    }
+  ],
+  "observed_revision_confirmations": [],
+  "current_file_observation_supports": [
+    {
+      "location_id": "location_a915870f24ea166100fa0d812b0edbd048103b5c7621f44711628566a03dcd4a",
+      "observed_root_id": "observed_root_41e3e027-ceeb-4c06-9036-184f4dd76fca",
+      "observed_root_version": 1,
+      "observed_root_path": "/workspaces/digital/.scratch/environment-system/run/16-readiness-attribution-worktree/run/rd16-attribution/RJ01668691",
+      "authorized_targets_json": "[]"
+    },
+    {
+      "location_id": "location_651ac427419bcfb6432e4b7a97a4659858c30e1ae4092632c7812ae31416aee4",
+      "observed_root_id": "observed_root_41e3e027-ceeb-4c06-9036-184f4dd76fca",
+      "observed_root_version": 1,
+      "observed_root_path": "/workspaces/digital/.scratch/environment-system/run/16-readiness-attribution-worktree/run/rd16-attribution/RJ01668691",
+      "authorized_targets_json": "[]"
+    }
+  ],
+  "artifact_content_proofs": [],
+  "observed_root_registrations": [
+    {
+      "id": "observed_root_41e3e027-ceeb-4c06-9036-184f4dd76fca",
+      "display_name": "测试文件位置",
+      "container_path": "/workspaces/digital/.scratch/environment-system/run/16-readiness-attribution-worktree/run/rd16-attribution/RJ01668691",
+      "canonical_path": "/workspaces/digital/.scratch/environment-system/run/16-readiness-attribution-worktree/run/rd16-attribution/RJ01668691",
+      "status": "active",
+      "config_version": 1,
+      "read_only": 1,
+      "symlink_mode": "do-not-follow",
+      "allowed_target_root_ids_json": "[]"
+    }
+  ],
+  "asset_libraries": [
+    {
+      "id": "asset_library_219d7c79-1151-4f3b-ac39-57a307746d20",
+      "display_name": "测试文件位置",
+      "config_version": 1,
+      "status": "active",
+      "root_ids_json": "[\"observed_root_41e3e027-ceeb-4c06-9036-184f4dd76fca\"]",
+      "recognition_profile_ids_json": "[\"anime\",\"books\",\"dlsite-voice\",\"fanbox\",\"movies\"]",
+      "source_identities_json": "[\"bangumi\",\"dlsite\",\"fanbox\",\"kadokawa-jp\",\"nbinet\",\"omdb\",\"taiwan-kadokawa\",\"tmdb\"]"
+    }
+  ],
+  "library_directory_grants": [
+    {
+      "id": "library_directory_grant_0c17de5d-6670-4833-aa7b-9e9c5ed2514e",
+      "library_id": "asset_library_219d7c79-1151-4f3b-ac39-57a307746d20",
+      "observed_root_id": "observed_root_41e3e027-ceeb-4c06-9036-184f4dd76fca",
+      "status": "active",
+      "authority_version": 1,
+      "symlink_mode": "do-not-follow",
+      "allowed_target_grant_ids_json": "[]",
+      "awaiting_observation": 0
+    }
+  ]
+}

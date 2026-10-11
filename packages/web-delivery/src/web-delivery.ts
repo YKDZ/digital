@@ -1412,12 +1412,20 @@ export async function catalogueSubject(
       (subject) => subject.subjectId === id,
     );
     const facts = await withCurrentFileDownloads(contextual, library);
+    const revisionIds = facts.locations.flatMap((location) =>
+      location.content.status === "confirmed"
+        ? [location.content.target.revisionId]
+        : [],
+    );
+    const interactionStates =
+      await configuredProductApplication().interactions.read(revisionIds);
     return {
       asset: deliveryAssetView(
         projectAssetView(
           deliveryFactAddresses(
             {
               ...facts,
+              interactionStates,
               ...(informationReadiness === undefined
                 ? {}
                 : { informationReadiness }),
@@ -1816,18 +1824,10 @@ export function deliveryExecution(
             blockingConditions:
               inspection.changeImpactPreview.blockingConditions,
             current: deliveryAssetView(
-              projectAssetView(
-                deliveryFactAddresses(
-                  inspection.changeImpactPreview.facts.current,
-                ),
-              ),
+              projectAssetView(inspection.changeImpactPreview.facts.current),
             ),
             proposed: deliveryAssetView(
-              projectAssetView(
-                deliveryFactAddresses(
-                  inspection.changeImpactPreview.facts.projected,
-                ),
-              ),
+              projectAssetView(inspection.changeImpactPreview.facts.projected),
             ),
           },
         }),
