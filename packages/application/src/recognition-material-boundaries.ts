@@ -645,12 +645,16 @@ export function reconcileRecognitionMaterialPlans(input: {
         (item) => item.observedArtifactAssociations ?? [],
       ),
       // 刷新只吸收普通材料，但被吸收候选仍有效的目录与来源依据必须留在耐久工作项上，
-      // 交由正常提案／修正处理，绝不因为范围合并而丢掉后补线索。
+      // 交由正常提案／修正处理，绝不因为范围合并而丢掉后补线索。格式解释与候选计划引用
+      // 同一批检查证据对象，并按集合而不是按拼接次数交给代表判断，否则一次检查会被算成
+      // 两条待协调的部分关联，让未变材料被误判成需要修订。
       evidence: [
-        ...input.formatInterpretation.flatMap((interpretation) =>
-          interpretation.workItems.flatMap((item) => item.evidence),
-        ),
-        ...absorbed.flatMap((item) => item.evidence),
+        ...new Set([
+          ...input.formatInterpretation.flatMap((interpretation) =>
+            interpretation.workItems.flatMap((item) => item.evidence),
+          ),
+          ...absorbed.flatMap((item) => item.evidence),
+        ]),
       ].filter((evidence) =>
         evidence.inspection === undefined
           ? absorbed.some((item) => item.evidence.includes(evidence))

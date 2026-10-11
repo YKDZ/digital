@@ -8,9 +8,16 @@ import {
   type RecognitionProposal,
 } from "../src/index.ts";
 
+const materialScope = {
+  kind: "discrete" as const,
+  scopeReference: "root-local",
+  materialReferences: ["book.epub"],
+};
+
 function accepted(): AcceptedRecognition {
   const proposal = {
     id: "proposal",
+    boundaries: [materialScope],
     basis: {
       kind: "source-interpretation" as const,
       interpretation: {
@@ -62,6 +69,7 @@ function accepted(): AcceptedRecognition {
       id: "decision",
       proposalId: "proposal",
       assetId: "asset",
+      boundaries: [materialScope],
       acceptedRuleResults: proposal.ruleResults,
     },
     artifacts: [{ id: "epub" }, { id: "cover" }],
@@ -362,6 +370,7 @@ describe("识别依据", () => {
   function observedProposal(): RecognitionProposal {
     return {
       id: "local-proposal",
+      boundaries: [],
       basis: {
         kind: "observed-evidence",
         producer: inspector,
@@ -401,6 +410,7 @@ describe("识别依据", () => {
       throw new Error("测试来源提案缺少来源解释依据");
     const source = {
       id: legacy.id,
+      boundaries: legacy.boundaries,
       basis: {
         kind: "source-interpretation",
         interpretation: {

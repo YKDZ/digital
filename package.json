@@ -15,7 +15,8 @@
     "format:write": "oxfmt --write --config oxfmt.config.ts package.json pnpm-workspace.yaml pnpm-lock.yaml turbo.json tsconfig.json tsconfig.config.json oxfmt.config.ts oxlint.config.ts .gitignore .vscode .github .devcontainer scripts",
     "lint": "oxlint --quiet --format=unix --type-aware --config oxlint.config.ts oxfmt.config.ts oxlint.config.ts scripts",
     "lint:fix": "oxlint --format=unix --type-aware --config oxlint.config.ts oxfmt.config.ts oxlint.config.ts scripts --fix",
-    "prototype": "pnpm --filter @digital/web dev",
+    "preview": "node scripts/preview-environment.ts",
+    "preview:verify": "node scripts/preview-environment.ts verify",
     "verify:web:http": "turbo run test:e2e:managed-service",
     "verify:web:http:provided": "turbo run test:e2e:provided-service",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false"

@@ -18,6 +18,17 @@ const snapshot = (root: string) => ({
   observedAt: "2026-07-29T00:00:00.000Z",
 });
 
+// 独立预期：精确目录能力的现行声明坐标（v3 实现、合同 1、解释合同 ["1"]）。
+const exactDirectoryCapability = {
+  capabilityId: "dlsite.exact-directory",
+  capabilityVersion: "3",
+  contractVersion: "1",
+  identity: "dlsite.exact-directory",
+  implementationVersion: "3",
+  kind: "directory-interpreter",
+  interpretationContractVersions: ["1"],
+};
+
 const evidence = {
   kind: "source-address",
   explanation: "exact",
@@ -41,18 +52,36 @@ const response = (body: string, mediaType: string) => ({
 describe("DLsite exact directory convention", () => {
   it("精确目录建立有限内容范围，普通文件名和范围之外的祖先名称不建立身份", () => {
     const interpreter = new DlsiteExactDirectoryInterpreter();
-    expect(
-      interpreter.interpret({
-        ...snapshot("/library/RJ01668691"),
-        files: [
-          {
-            relativePath: "audio/track.wav",
-            size: 1,
-            modifiedAt: "2026-07-29T00:00:00.000Z",
-          },
-        ],
-      }),
-    ).toEqual([expect.objectContaining({ sourceIdentity: "dlsite" })]);
+    const matched = interpreter.interpret({
+      ...snapshot("/library/RJ01668691"),
+      files: [
+        {
+          relativePath: "audio/track.wav",
+          size: 1,
+          modifiedAt: "2026-07-29T00:00:00.000Z",
+        },
+      ],
+    });
+    // 现行返回是资产刷新工作计划信封：精确目录自声明材料边界，身份仍来自本能力坐标。
+    if (!("workItems" in matched))
+      throw new Error("精确目录命中必须返回 workItems 信封，而不是裸证据数组");
+    expect(matched.workItems).toHaveLength(1);
+    expect(matched.workItems[0]).toEqual({
+      key: "dlsite-directory:.",
+      relativePaths: ["audio/track.wav"],
+      materialBoundary: { kind: "directory", relativePath: "." },
+      independentIdentityDeclaredBy: exactDirectoryCapability,
+      evidence: [
+        {
+          kind: "source-address",
+          sourceIdentity: "dlsite",
+          sourceAddress:
+            "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html",
+          explanation: "DLsite 精确目录规则匹配；普通下级文件服务同一作品",
+          producer: exactDirectoryCapability,
+        },
+      ],
+    });
     expect(
       interpreter.interpret(snapshot("/library/RJ01668691 notes")),
     ).toEqual([]);

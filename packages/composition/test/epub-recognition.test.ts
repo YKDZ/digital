@@ -55,6 +55,13 @@ it("普通组合资产刷新保持 exact ISBN 的官方来源依据", async () =
       symlinkMode: "do-not-follow",
       allowedTargetRootIds: [],
     });
+    // 现行契约：登记不等于授权，扫描前必须经正式资产库操作把该目录纳入恰好一个活动库。
+    await workflow.assetLibraries.save({
+      displayName: "exact ISBN EPUB 库",
+      directories: [observed],
+      recognitionProfileIds: ["books"],
+      sourceIdentities: ["nbinet"],
+    });
     const result = await workflow.scanObservedScope({
       registrationId: root.id,
       relativeScope: ".",
@@ -83,10 +90,6 @@ it("普通组合资产刷新保持 exact ISBN 的官方来源依据", async () =
           nativeAddress: expect.stringContaining("9780306406157"),
         },
       ],
-      recognitionSourceAssociation: {
-        sourceIdentity: "nbinet",
-        nativeAddress: expect.stringContaining("9780306406157"),
-      },
       metadata: expect.arrayContaining([
         expect.objectContaining({
           property: "asset.title",
@@ -103,13 +106,45 @@ it("普通组合资产刷新保持 exact ISBN 的官方来源依据", async () =
           ]),
         }),
       ]),
-      artifactAssociations: expect.arrayContaining([
-        expect.objectContaining({
-          role: "asset.primary-cover",
-          observedArtifactPart: expect.any(Object),
-        }),
-      ]),
     });
+    // 原断言：已接受工作项投影上同时给出 recognitionSourceAssociation 与
+    // artifactAssociations 里的 primary-cover 角色。
+    // 现断言：现行生效主体读取不再单独携带「识别来源依据」字段，而是给出来源关联本身，
+    // 以及每个已选值的来源身份与支撑记录标识——两者共同承担原断言的保护：官方 ISBN 的来源
+    // 依据必须精确指向该 nbinet 关联，且官方值必须由该 nbinet 记录支撑。
+    // 封面角色断言保留在本用例末尾（见下方固定反例注释），使来源依据与公开关系流程的断言
+    // 先真实到达。
+    const subject = await workflow.inspectCurrentCatalogueSubject(
+      accepted!.entity.id,
+    );
+    expect(subject?.sourceAssociations).toMatchObject([
+      {
+        sourceIdentity: "nbinet",
+        nativeAddress: expect.stringContaining("9780306406157"),
+      },
+    ]);
+    const officialTitle = subject!.descriptions
+      .filter(
+        (description) =>
+          description.target.kind === "entity" &&
+          description.target.entityId === accepted!.entity.id,
+      )
+      .flatMap((description) => description.metadata)
+      .filter((item) => item.property === "asset.title")
+      .flatMap((item) =>
+        item.result.status === "resolved" ? item.result.values : [],
+      );
+    expect(officialTitle).toHaveLength(1);
+    expect(officialTitle[0]).toMatchObject({
+      value: "官方合成出版物",
+      sourceIdentity: "nbinet",
+      sourceRecordIds: [expect.stringMatching(/^source-record_nbinet_/u)],
+    });
+    expect(officialTitle[0]!.assertions).toMatchObject([
+      {
+        sourceRecordIds: [expect.stringMatching(/^source-record_nbinet_/u)],
+      },
+    ]);
     const contributor = accepted?.currentRelatedEntities?.find(
       (entity) => entity.label === "官方原始贡献者文本",
     );
@@ -168,6 +203,38 @@ it("普通组合资产刷新保持 exact ISBN 的官方来源依据", async () =
       (await workflow.inspectCurrentCatalogueEntity(contributor!.id))!
         .relationships,
     ).toEqual(contributorFacts!.relationships);
+    // 原断言：扫描请求 asset.primary-cover 时，工作项投影直接给出该角色的观察产物部分关联。
+    // 现断言：同一事实保留在工作项投影上，并要求生效主体读取把这个角色解析到一个当前位置；
+    // 不在测试侧把「角色缺失」当作可接受结果。
+    // 固定反例（归属 04 资料确认生产修复，窄需求见 current/06/coordination.md）：可信扫描
+    // 请求封面角色后，持久提议仍含 asset.material-image 部分，却既不产出任何观察材料关联、
+    // 也不记录「材料预览尚未生成」处置，并使库进入「观察材料决定支持链损坏」。
+    // 证据：current/06/probe-persisted-parts.log、current/06/probe-run-06c.log。
+    expect(accepted).toMatchObject({
+      artifactAssociations: expect.arrayContaining([
+        expect.objectContaining({
+          role: "asset.primary-cover",
+          observedArtifactPart: expect.objectContaining({
+            locator:
+              "epub:OPS/book.opf#/metadata/meta[@name='cover'][@content='cover']->manifest/item[@id='cover']->entry:OPS/cover.png",
+          }),
+        }),
+      ]),
+    });
+    const coverRoles = (await workflow.inspectCurrentCatalogueSubject(
+      accepted!.entity.id,
+    ))!.descriptions.flatMap((description) =>
+      description.artifactRoles.filter(
+        (role) => role.role === "asset.primary-cover",
+      ),
+    );
+    expect(coverRoles).toHaveLength(1);
+    expect(coverRoles[0]!.associationIds).not.toHaveLength(0);
+    expect(
+      (await workflow.listCurrentCatalogue())[0]!.locations.map(
+        (location) => location.artifactId,
+      ),
+    ).toContain(coverRoles[0]!.artifactId);
   } finally {
     vi.unstubAllGlobals();
     await workflow.close();
@@ -192,6 +259,12 @@ it("普通组合资产刷新接受无 ISBN EPUB 并保留修订版格式事实",
       readOnly: true,
       symlinkMode: "do-not-follow",
       allowedTargetRootIds: [],
+    });
+    await workflow.assetLibraries.save({
+      displayName: "无 ISBN EPUB 库",
+      directories: [observed],
+      recognitionProfileIds: ["books"],
+      sourceIdentities: [],
     });
     const result = await workflow.scanObservedScope({
       registrationId: root.id,
@@ -218,7 +291,9 @@ it("普通组合资产刷新接受无 ISBN EPUB 并保留修订版格式事实",
     expect(accepted).toMatchObject({
       entity: { kind: "digital-asset" },
       sourceAssociations: [],
-      recognitionExplanation: expect.stringContaining("无有效 ISBN"),
+      // 现行契约：本地身份由格式检查确认的单一修订版规则说明，不再由 ISBN 缺失措辞承担。
+      recognitionExplanation:
+        "格式检查确认该单一 EPUB 修订版是独立本地出版物边界",
       metadata: expect.arrayContaining([
         expect.objectContaining({
           property: "asset.title",
@@ -237,21 +312,23 @@ it("普通组合资产刷新接受无 ISBN EPUB 并保留修订版格式事实",
           }),
         }),
       ]),
-      artifactAssociations: expect.arrayContaining([
-        expect.objectContaining({
-          role: "asset.primary-cover",
-          observedArtifactPart: expect.objectContaining({
-            locator:
-              "epub:OPS/book.opf#/metadata/meta[@name='cover'][@content='cover']->manifest/item[@id='cover']->entry:OPS/cover.png",
-          }),
-        }),
-      ]),
     });
+    // 原断言：投影上「没有识别来源依据」用 not.toHaveProperty 表达，随后在生效主体读取上
+    // 重放「标题观察 locator」与「封面角色关联」。
+    // 现断言：缺席项保留（本地接受不得伪造识别来源依据），并同时要求生效主体读取给出
+    // 「无来源关联、无识别来源依据」；本地观察的修订版格式事实保留在工作项投影 metadata 上
+    // （上方 arrayContaining 已锁 locator），主体读取按现行契约核对贡献者实体与本地关系。
+    // 封面角色与未变化重扫作为固定反例留在本用例末尾。
     expect(accepted).not.toHaveProperty("recognitionSourceAssociation");
     const currentSubject = await workflow.inspectCurrentCatalogueSubject(
       accepted!.entity.id,
     );
-    const contributor = currentSubject?.currentRelatedEntities?.find(
+    expect(currentSubject).toMatchObject({
+      id: accepted!.entity.id,
+      sourceAssociations: [],
+    });
+    expect(currentSubject!.recognitionSourceAssociation).toBeUndefined();
+    const contributor = currentSubject?.relatedEntities?.find(
       (entity) => entity.label === "Carlo Zen 東條チカ",
     );
     expect(contributor).toBeDefined();
@@ -266,47 +343,6 @@ it("普通组合资产刷新接受无 ISBN EPUB 并保留修订版格式事实",
         }),
       ],
     });
-    const subject = currentSubject;
-    expect(subject).toMatchObject({
-      sourceAssociations: [],
-      metadata: expect.arrayContaining([
-        expect.objectContaining({
-          property: "asset.title",
-          observedArtifactPart: expect.objectContaining({
-            locator: "epub:OPS/book.opf#/metadata/dc:title[1]",
-          }),
-        }),
-      ]),
-      artifactAssociations: expect.arrayContaining([
-        expect.objectContaining({
-          role: "asset.primary-cover",
-          observedArtifactPart: expect.objectContaining({
-            locator:
-              "epub:OPS/book.opf#/metadata/meta[@name='cover'][@content='cover']->manifest/item[@id='cover']->entry:OPS/cover.png",
-          }),
-        }),
-      ]),
-    });
-    const replay = await workflow.scanObservedScope({
-      registrationId: root.id,
-      relativeScope: ".",
-      acceptTrusted: true,
-      informationRequirement: {
-        metadataUsageContext: "asset.ordinary",
-        metadata: [{ property: "asset.title", necessity: "required" }],
-        relationshipTypes: [
-          { type: "asset.contribution", necessity: "required" },
-        ],
-        artifactRoles: [
-          {
-            role: "asset.primary-cover",
-            necessity: "required",
-            maximum: 1,
-          },
-        ],
-      },
-    });
-    expect(replay.itemResults?.[0]?.outcome).toBe("no-change");
     await workflow.close();
     const reopened = composeAssetRefresh(productData, {});
     try {
@@ -317,6 +353,70 @@ it("普通组合资产刷新接受无 ISBN EPUB 并保留修订版格式事实",
           expect.objectContaining({ type: "asset.contribution", sources: [] }),
         ],
       });
+      // 固定反例（归属 04「资料确认生产修复」与 05/07 支持链写入形状，窄需求见
+      // current/06/coordination.md）：可信扫描请求封面角色后，观察产物部分既不投影为工作项
+      // 材料关联，也不进入生效主体读取的角色与修订版描述；库同时进入
+      // 「观察材料决定支持链损坏」。证据：current/06/probe-persisted-parts.log、
+      // current/06/probe-epub-subject-facts.log、current/06/probe-read-shapes.log。
+      expect(accepted).toMatchObject({
+        artifactAssociations: expect.arrayContaining([
+          expect.objectContaining({
+            role: "asset.primary-cover",
+            observedArtifactPart: expect.objectContaining({
+              locator:
+                "epub:OPS/book.opf#/metadata/meta[@name='cover'][@content='cover']->manifest/item[@id='cover']->entry:OPS/cover.png",
+            }),
+          }),
+        ]),
+      });
+      const reopenedSubject = (await reopened.inspectCurrentCatalogueSubject(
+        accepted!.entity.id,
+      ))!;
+      const coverRoles = reopenedSubject.descriptions.flatMap((description) =>
+        description.artifactRoles.filter(
+          (role) => role.role === "asset.primary-cover",
+        ),
+      );
+      expect(coverRoles).toHaveLength(1);
+      expect(coverRoles[0]!.associationIds).not.toHaveLength(0);
+      expect(
+        reopenedSubject.locations.map((location) => location.artifactId),
+      ).toContain(coverRoles[0]!.artifactId);
+      // 「保留修订版格式事实」在现行读取上的另一半：观察到的标题必须挂在一个
+      // artifact-revision 描述上，并且该观察位置带有已确认的当前修订版内容。
+      expect(
+        reopenedSubject.descriptions.some(
+          (description) => description.target.kind === "artifact-revision",
+        ),
+      ).toBe(true);
+      const carrierArtifactId = accepted!.locations.find(
+        (location) => location.kind === "observed",
+      )!.artifactId;
+      const carrierLocation = reopenedSubject.locations.find(
+        (location) => location.artifactId === carrierArtifactId,
+      );
+      expect(carrierLocation?.content.status).toBe("confirmed");
+      // 同一范围未变化时保留已确认的载体、材料图和身份。
+      const replay = await reopened.scanObservedScope({
+        registrationId: root.id,
+        relativeScope: ".",
+        acceptTrusted: true,
+        informationRequirement: {
+          metadataUsageContext: "asset.ordinary",
+          metadata: [{ property: "asset.title", necessity: "required" }],
+          relationshipTypes: [
+            { type: "asset.contribution", necessity: "required" },
+          ],
+          artifactRoles: [
+            {
+              role: "asset.primary-cover",
+              necessity: "required",
+              maximum: 1,
+            },
+          ],
+        },
+      });
+      expect(replay.itemResults?.[0]?.outcome).toBe("no-change");
     } finally {
       await reopened.close();
     }
@@ -352,6 +452,12 @@ it("公开 EPUB 自动关系可被排除、重选并清除", async () => {
       readOnly: true,
       symlinkMode: "do-not-follow",
       allowedTargetRootIds: [],
+    });
+    await workflow.assetLibraries.save({
+      displayName: "EPUB 关系库",
+      directories: [observed],
+      recognitionProfileIds: ["books"],
+      sourceIdentities: [],
     });
     const result = await workflow.scanObservedScope({
       registrationId: root.id,

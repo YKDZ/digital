@@ -31,6 +31,7 @@ import {
   type OperationLease,
   OperationLeaseInvalidated,
 } from "./execution-host.ts";
+import type { ExpectedObservedRevisionConfirmationResult } from "./local-material-evidence.ts";
 import {
   type ConsumerPlaybackCapabilities,
   type PlaybackDeploymentCapabilities,
@@ -546,6 +547,66 @@ export class ApplicationArtifactByteAccess implements ArtifactByteAccess {
     selectionId: string,
     assetLibraryId?: string,
   ) {
+    const { revisionId } = await this.runObservedConfirmation({
+      selectionId,
+      ...(assetLibraryId === undefined ? {} : { assetLibraryId }),
+    });
+    return { artifactRevisionId: revisionId };
+  }
+
+  /**
+   * 协调入口与用户显式入口共享同一 open/build/submit/close 实现，但它只承认指定的已存在
+   * 载体修订：真实读取算出的摘要、长度、产物与确定性 revision ID 必须逐项相符，否则在提交
+   * 之前失败。绝不顺便建立一个不同修订再把旧图当成功。
+   */
+  async confirmExpectedObservedRevision(input: {
+    readonly selectionId: string;
+    readonly expectedArtifactId: string;
+    readonly expectedRevisionId: string;
+    readonly expectedDigest: string;
+    readonly expectedByteLength: number;
+    readonly assetLibraryId?: string;
+  }): Promise<ExpectedObservedRevisionConfirmationResult> {
+    try {
+      const confirmed = await this.runObservedConfirmation({
+        selectionId: input.selectionId,
+        ...(input.assetLibraryId === undefined
+          ? {}
+          : { assetLibraryId: input.assetLibraryId }),
+        expected: {
+          artifactId: input.expectedArtifactId,
+          revisionId: input.expectedRevisionId,
+          digest: input.expectedDigest,
+          byteLength: input.expectedByteLength,
+        },
+      });
+      return {
+        kind: confirmed.alreadyExact
+          ? ("already-exact" as const)
+          : ("exact-confirmed" as const),
+        revisionId: confirmed.revisionId,
+      };
+    } catch (error) {
+      if (error instanceof ObservedRevisionConfirmationError)
+        return { kind: "failed", failureCode: error.code };
+      if (error instanceof ArtifactByteAccessError) {
+        if (error.code === "application-shutting-down") throw error;
+        return { kind: "failed", failureCode: error.code };
+      }
+      throw error;
+    }
+  }
+
+  private async runObservedConfirmation(input: {
+    readonly selectionId: string;
+    readonly assetLibraryId?: string;
+    readonly expected?: {
+      readonly artifactId: string;
+      readonly revisionId: string;
+      readonly digest: string;
+      readonly byteLength: number;
+    };
+  }): Promise<{ readonly revisionId: string; readonly alreadyExact: boolean }> {
     const operation = this.operation();
     let source: ArtifactByteSource | undefined;
     let observedBinding: { release(): void } | undefined;
@@ -555,8 +616,9 @@ export class ApplicationArtifactByteAccess implements ArtifactByteAccess {
     let proofBuilt = false;
     let primaryError: unknown;
     try {
-      const facts =
-        await this.persistence.readObservedFileConfirmationFacts(selectionId);
+      const facts = await this.persistence.readObservedFileConfirmationFacts(
+        input.selectionId,
+      );
       if (facts === undefined)
         throw new ObservedRevisionConfirmationError("observed-selection-stale");
       const candidate = confirmationCandidate(facts);
@@ -565,7 +627,9 @@ export class ApplicationArtifactByteAccess implements ArtifactByteAccess {
         blobDigest: "",
         purpose: "confirmation",
         operation,
-        ...(assetLibraryId === undefined ? {} : { assetLibraryId }),
+        ...(input.assetLibraryId === undefined
+          ? {}
+          : { assetLibraryId: input.assetLibraryId }),
       });
       if (opened?.observedAuthority === undefined) {
         assertOperation(operation);
@@ -584,6 +648,15 @@ export class ApplicationArtifactByteAccess implements ArtifactByteAccess {
       const revisionId = `artifact-revision_${createHash("sha256")
         .update(`${facts.artifactId}\u0000${proof.blobDigest}`)
         .digest("hex")}`;
+      const expected = input.expected;
+      if (
+        expected !== undefined &&
+        (expected.artifactId !== facts.artifactId ||
+          expected.digest !== proof.blobDigest ||
+          expected.byteLength !== proof.byteLength ||
+          expected.revisionId !== revisionId)
+      )
+        throw new ObservedRevisionConfirmationError("artifact-bytes-changed");
       const result = await this.persistence.submitConfirmedObservedRevision({
         expected: facts,
         observedAuthority: opened.observedAuthority,
@@ -602,7 +675,10 @@ export class ApplicationArtifactByteAccess implements ArtifactByteAccess {
       if (result === "stale")
         throw new ObservedRevisionConfirmationError("confirmation-stale");
       assertOperation(operation);
-      const confirmation = { artifactRevisionId: revisionId };
+      const confirmation = {
+        revisionId,
+        alreadyExact: result === "already-committed",
+      };
       sourceCloseAttempted = true;
       sourceClosed = await this.closeSource(source, undefined, operation).then(
         () => true,

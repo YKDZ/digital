@@ -1014,6 +1014,46 @@ export async function confirmedObservedArtifactDownloadResponse(
   );
 }
 
+/** Application 交付错误已公开的业务码：分类只认识这份封闭清单。 */
+const artifactByteAccessErrorCodes = [
+  "artifact-revision-not-found",
+  "artifact-bytes-unavailable",
+  "artifact-location-revoked",
+  "artifact-bytes-changed",
+  "artifact-integrity-failed",
+  "client-cancelled",
+  "application-shutting-down",
+  "byte-read-in-progress",
+] as const satisfies readonly ArtifactByteAccessError["code"][];
+
+const observedRevisionConfirmationErrorCodes = [
+  "observed-selection-stale",
+  "confirmation-stale",
+  "confirmation-commit-failed",
+  "artifact-bytes-changed",
+  "artifact-location-revoked",
+] as const satisfies readonly ObservedRevisionConfirmationError["code"][];
+
+/**
+ * 服务端 SSR 分包会把这两个 Application 错误类再内联一份，而产品经外部 `@digital/composition`
+ * 载入的是另一构造器身份，`instanceof` 因此跨不过两边，业务错误会被统一压成兜底 409。
+ * 分类沿既有合同改为「错误名 + 封闭业务码表」判定：只有下面清单里的码会被原样外送，
+ * 未知名称、未知码与非错误对象仍走既有兜底，绝不外送 message、堆栈或私有路径。
+ */
+function knownDeliveryErrorCode<Code extends string>(
+  error: unknown,
+  name: string,
+  codes: readonly Code[],
+): Code | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const candidate = error as {
+    readonly name?: unknown;
+    readonly code?: unknown;
+  };
+  if (candidate.name !== name) return undefined;
+  return codes.find((code) => code === candidate.code);
+}
+
 export function artifactDeliveryErrorResponse(error: unknown): Response {
   if (
     error instanceof SyntaxError ||
@@ -1025,19 +1065,29 @@ export function artifactDeliveryErrorResponse(error: unknown): Response {
     return Response.json({ error: "播放计划输入无效" }, { status: 400 });
   if (error instanceof Error && error.message === "产物修订版身份无效")
     return Response.json({ error: error.message }, { status: 400 });
-  if (error instanceof ArtifactByteAccessError) {
+  const byteAccessCode = knownDeliveryErrorCode(
+    error,
+    "ArtifactByteAccessError",
+    artifactByteAccessErrorCodes,
+  );
+  if (byteAccessCode !== undefined) {
     const status =
-      error.code === "artifact-revision-not-found"
+      byteAccessCode === "artifact-revision-not-found"
         ? 404
-        : error.code === "application-shutting-down"
+        : byteAccessCode === "application-shutting-down"
           ? 503
           : 409;
-    return Response.json({ error: error.code }, { status });
+    return Response.json({ error: byteAccessCode }, { status });
   }
-  if (error instanceof ObservedRevisionConfirmationError) {
+  const confirmationCode = knownDeliveryErrorCode(
+    error,
+    "ObservedRevisionConfirmationError",
+    observedRevisionConfirmationErrorCodes,
+  );
+  if (confirmationCode !== undefined) {
     return Response.json(
-      { error: error.code },
-      { status: error.code === "confirmation-commit-failed" ? 503 : 409 },
+      { error: confirmationCode },
+      { status: confirmationCode === "confirmation-commit-failed" ? 503 : 409 },
     );
   }
   return Response.json(
@@ -1362,12 +1412,20 @@ export async function catalogueSubject(
       (subject) => subject.subjectId === id,
     );
     const facts = await withCurrentFileDownloads(contextual, library);
+    const revisionIds = facts.locations.flatMap((location) =>
+      location.content.status === "confirmed"
+        ? [location.content.target.revisionId]
+        : [],
+    );
+    const interactionStates =
+      await configuredProductApplication().interactions.read(revisionIds);
     return {
       asset: deliveryAssetView(
         projectAssetView(
           deliveryFactAddresses(
             {
               ...facts,
+              interactionStates,
               ...(informationReadiness === undefined
                 ? {}
                 : { informationReadiness }),
@@ -1766,18 +1824,10 @@ export function deliveryExecution(
             blockingConditions:
               inspection.changeImpactPreview.blockingConditions,
             current: deliveryAssetView(
-              projectAssetView(
-                deliveryFactAddresses(
-                  inspection.changeImpactPreview.facts.current,
-                ),
-              ),
+              projectAssetView(inspection.changeImpactPreview.facts.current),
             ),
             proposed: deliveryAssetView(
-              projectAssetView(
-                deliveryFactAddresses(
-                  inspection.changeImpactPreview.facts.projected,
-                ),
-              ),
+              projectAssetView(inspection.changeImpactPreview.facts.projected),
             ),
           },
         }),

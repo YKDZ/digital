@@ -4,6 +4,7 @@ import {
   dlsiteAssetViewInformationRequirement,
   informationRequirementForAssetView,
 } from "../src/index";
+import { viewFacts } from "./view-facts.ts";
 
 describe("DLsite Asset View information requirement", () => {
   it("declares its complete neutral input demand at the view boundary", () => {
@@ -16,6 +17,7 @@ describe("DLsite Asset View information requirement", () => {
         { property: "asset.declared-language", necessity: "optional" },
         { property: "asset.content-classification", necessity: "optional" },
         { property: "dlsite.product.price-jpy", necessity: "optional" },
+        { property: "dlsite.product.genre", necessity: "optional" },
       ],
       artifactRoles: [
         {
@@ -32,16 +34,18 @@ describe("DLsite Asset View information requirement", () => {
   });
 
   it("selects that demand through presentation dispatch instead of a global union", () => {
-    const requirement = informationRequirementForAssetView({
-      sourceAssociations: [
-        {
-          sourceIdentity: "dlsite",
-          nativeAddress:
-            "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html",
-        },
-      ],
-      metadata: [],
-    });
+    const requirement = informationRequirementForAssetView(
+      viewFacts({
+        id: "asset-dlsite",
+        sourceAssociations: [
+          {
+            sourceIdentity: "dlsite",
+            nativeAddress:
+              "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html",
+          },
+        ],
+      }),
+    );
 
     expect(requirement).toBe(dlsiteAssetViewInformationRequirement);
     expect(requirement.metadata).not.toContainEqual({
