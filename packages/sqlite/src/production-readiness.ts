@@ -1181,8 +1181,48 @@ export const currentLocalObservationSupportSql = `
           )
           AND (
             association.observed_artifact_part_json IS NULL
-            OR json_extract(association.observed_artifact_part_json, '$.revisionId') =
-               support.observation_revision_id
+            OR (
+              -- 当前文件确认只能证明父修订，不能替部件的角色与 locator 证明生成声明。
+              json_extract(association.observed_artifact_part_json, '$.revisionId') =
+                support.observation_revision_id
+              AND EXISTS (
+                SELECT 1
+                FROM workflow_executions AS declaring_execution
+                JOIN recognition_proposals AS declaring_proposal
+                  ON declaring_proposal.execution_id = declaring_execution.id
+                JOIN artifact_revisions AS parent_revision
+                  ON parent_revision.id = support.observation_revision_id
+                 AND parent_revision.artifact_id = material_location.artifact_id
+                JOIN blobs AS parent_blob ON parent_blob.digest = parent_revision.blob_digest
+                JOIN json_each(json_extract(declaring_proposal.observed_material_interpretation_json,
+                  '$.observedArtifactParts')) AS declared_part
+                JOIN json_each(json_extract(declaring_proposal.observed_material_interpretation_json,
+                  '$.observedArtifactRevisions')) AS declared_revision
+                  ON json_extract(declared_revision.value, '$.observedArtifactReference') =
+                     json_extract(declared_part.value, '$.observedArtifactReference')
+                WHERE declaring_execution.id = support.observation_execution_id
+                  AND (
+                    declaring_proposal.id = decision.proposal_id
+                    OR EXISTS (
+                      SELECT 1
+                      FROM json_each(COALESCE(declaring_execution.work_items_json, '[]')) AS declaring_item
+                      WHERE json_extract(declaring_item.value, '$.proposalId') = declaring_proposal.id
+                        AND json_extract(declaring_item.value, '$.acceptedAssetId') = decision.asset_id
+                    )
+                  )
+                  AND json_extract(declaring_execution.snapshot_json, '$.id') =
+                      support.observation_snapshot_id
+                  AND material_location.address =
+                    json_extract(declaring_execution.snapshot_json, '$.root') || '/' ||
+                    json_extract(declared_part.value, '$.observedArtifactReference')
+                  AND json_extract(declared_part.value, '$.role') = association.role
+                  AND json_extract(declared_part.value, '$.locator') =
+                      json_extract(association.observed_artifact_part_json, '$.locator')
+                  AND json_extract(declared_revision.value, '$.blob.digest') = parent_blob.digest
+                  AND json_extract(declared_revision.value, '$.blob.mediaType') = parent_blob.media_type
+                  AND json_extract(declared_revision.value, '$.blob.byteLength') = parent_blob.byte_length
+              )
+            )
           )
         )
       )
@@ -1651,6 +1691,24 @@ function hasValidObservedMaterialSupports(database: DatabaseSync): boolean {
        AND association.source_record_ids_json = '[]'
        AND association.source_association_id IS NULL
        AND (expected.association_id IS NULL OR association.id = expected.association_id)
+       -- 已应用的范围修订只为其完整 projected 事实要求新决定支持；同址、同字节的
+       -- 旧交付关联仍由上面的历史支持校验，不能仅因新 head 而被强挂到新决定。
+       AND NOT EXISTS (
+         SELECT 1 FROM change_impact_previews AS preview
+         WHERE preview.execution_id = expected.execution_id
+           AND preview.asset_id = expected.asset_id
+           AND preview.status = 'applied'
+           AND json_extract(preview.preview_json, '$.change.kind') =
+               'recognition-scope-amendment'
+           AND json_extract(preview.preview_json, '$.change.proposal.id') =
+               expected.proposal_id
+           AND NOT EXISTS (
+             SELECT 1 FROM json_each(
+               json_extract(preview.preview_json, '$.projected.artifactAssociations'))
+               AS projected_association
+             WHERE json_extract(projected_association.value, '$.id') = association.id
+           )
+       )
       WHERE NOT EXISTS (
         SELECT 1 FROM artifact_association_retractions AS ending
         WHERE ending.association_id = association.id

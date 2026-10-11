@@ -15,6 +15,26 @@ const fulfillmentInput = {
   initiatedBy: "information-fulfillment",
   acceptTrusted: false,
   configurationReferences: [],
+  // 派生履行输入必须自带冻结的库归属（生产 index.ts:1149「信息履行输入缺少资产库归属」），
+  // 这里按本次工作实际选中的库与目录如实声明，不从今日配置补齐。
+  assetLibrary: {
+    id: "library",
+    configVersion: 1,
+    rootIds: ["root"],
+    directoryInterpreters: [],
+    recognizers: [],
+    sources: [
+      {
+        identity: "source",
+        collectors: [],
+        sourceCandidateInterpreters: [],
+        sourceInterpreters: [],
+        sourceAssociationInterpreters: [],
+        acquirers: [],
+        informationFulfillments: [],
+      },
+    ],
+  },
   operation: {
     version: "information-fulfillment-operation/1",
     kind: "source-artifact-acquisition",

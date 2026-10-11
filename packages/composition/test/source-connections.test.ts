@@ -11,7 +11,10 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { assetRefreshSelectionVersion } from "@digital/application";
+import {
+  assetRefreshSelectionVersion,
+  type EffectiveSubjectRead,
+} from "@digital/application";
 import { ProductBangumiSourceConnection } from "@digital/bangumi";
 import { ProductSourceConnectionPrivateState } from "@digital/product-data";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
@@ -121,15 +124,13 @@ describe("static source registration", () => {
     });
     let workflow = composeAssetRefresh(productDataDirectory);
     try {
-      const registered = await workflow.observedRootRegistrations.create({
-        displayName: "KADOKAWA 本地材料",
-        containerPath: observed,
-        readOnly: true,
-        symlinkMode: "do-not-follow",
-        allowedTargetRootIds: [],
-      });
+      const { rootId } = await seedLibraryDirectory(
+        workflow,
+        "KADOKAWA 本地材料",
+        observed,
+      );
       const scanned = await workflow.scanObservedScope({
-        registrationId: registered.id,
+        registrationId: rootId,
         relativeScope: ".",
         acceptTrusted: false,
       });
@@ -248,18 +249,18 @@ describe("static source registration", () => {
         accepted.content.entity.id,
       );
       expect(
-        current?.effectiveMetadata.find(
+        durablePreview?.projected.metadata.filter(
           (item) => item.property === "asset.title",
-        )?.alternatives,
+        ),
       ).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            sourceIdentity: "kadokawa-jp",
+            sourceSlot: "kadokawa-jp.og-title",
             value: "第二册",
           }),
         ]),
       );
-      expect(current?.effectiveMetadata).toEqual(
+      expect(effectiveMetadata(current)).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             property: "book.isbn-13",
@@ -1817,15 +1818,14 @@ describe("product-managed film source connections", () => {
     let workflow = composeAssetRefresh(productDataDirectory, {});
     let workflowClosed = false;
     try {
-      const registration = await workflow.observedRootRegistrations.create({
-        displayName: "unavailable automation film",
-        containerPath: observed,
-        readOnly: true,
-        symlinkMode: "do-not-follow",
-        allowedTargetRootIds: [],
-      });
+      const { libraryId, rootId } = await seedLibraryDirectory(
+        workflow,
+        "unavailable automation film",
+        observed,
+      );
       const automation = await workflow.enableAutomation({
-        observedRootId: registration.id,
+        assetLibraryId: libraryId,
+        observedRootId: rootId,
         relativeScope: ".",
         intervalMilliseconds: 60_000,
         acceptTrusted: true,
@@ -1834,10 +1834,29 @@ describe("product-managed film source connections", () => {
       const [triggered] = await workflow.triggerDueAutomation(
         new Date("2026-08-20T00:00:00Z"),
       );
-      expect(triggered).toMatchObject({
+      expect(triggered?.status).toBe("started");
+      if (triggered?.status !== "started")
+        throw new Error("missing automatic execution");
+      await vi.waitFor(async () => {
+        expect(
+          (await workflow.inspect(triggered.execution.execution.id)).execution
+            .status,
+        ).not.toBe("running");
+      });
+      const completed = await workflow.inspect(
+        triggered.execution.execution.id,
+      );
+      const scan = await workflow.inspectAssetLibraryScan(
+        completed.execution.id,
+      );
+      expect(scan?.directories).toHaveLength(1);
+      const child = await workflow.inspect(
+        scan!.directories[0]!.childExecutionId!,
+      );
+      expect({ execution: child }).toMatchObject({
         execution: {
           execution: {
-            dispositions: expect.arrayContaining([
+            workItems: expect.arrayContaining([
               expect.objectContaining({
                 failureClassification: { kind: "prerequisite-unavailable" },
               }),
@@ -1861,8 +1880,21 @@ describe("product-managed film source connections", () => {
           },
         ],
       });
+      const executionIds = [
+        completed.execution.id,
+        child.execution.id,
+      ].toSorted();
+      expect(
+        (await workflow.listWorkflowHistoryPage()).items
+          .map(({ execution }) => execution.id)
+          .toSorted(),
+      ).toEqual(executionIds);
       await workflow.triggerDueAutomation(new Date("2026-08-20T00:01:00Z"));
-      expect((await workflow.listWorkflowHistoryPage()).items).toHaveLength(1);
+      expect(
+        (await workflow.listWorkflowHistoryPage()).items
+          .map(({ execution }) => execution.id)
+          .toSorted(),
+      ).toEqual(executionIds);
       await workflow.close();
       workflowClosed = true;
 
@@ -1876,7 +1908,11 @@ describe("product-managed film source connections", () => {
         }),
       ]);
       await workflow.triggerDueAutomation(new Date("2026-08-20T00:02:00Z"));
-      expect((await workflow.listWorkflowHistoryPage()).items).toHaveLength(1);
+      expect(
+        (await workflow.listWorkflowHistoryPage()).items
+          .map(({ execution }) => execution.id)
+          .toSorted(),
+      ).toEqual(executionIds);
     } finally {
       if (!workflowClosed) await workflow.close();
     }
@@ -2052,7 +2088,13 @@ describe("product-managed film source connections", () => {
           }),
         ]),
       );
-      expect(result.accepted?.effectiveMetadata).toEqual(
+      expect(
+        effectiveMetadata(
+          await workflow.inspectCurrentCatalogueSubject(
+            result.accepted!.entity.id,
+          ),
+        ),
+      ).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             property: "asset.title",
@@ -2249,7 +2291,11 @@ describe("product-managed film source connections", () => {
       if (subjectId === undefined)
         throw new Error("initial film was not accepted");
       expect(omdbRequests).toBe(1);
-      expect(initial.accepted?.effectiveMetadata).toEqual(
+      expect(
+        effectiveMetadata(
+          await workflow.inspectCurrentCatalogueSubject(subjectId),
+        ),
+      ).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             property: "asset.awards",
@@ -2282,18 +2328,18 @@ describe("product-managed film source connections", () => {
         ]),
       );
       expect(omdbRequests).toBe(1);
-      await expect(
-        workflow.inspectCurrentCatalogueSubject(subjectId),
-      ).resolves.toEqual(
-        expect.objectContaining({
-          effectiveMetadata: expect.arrayContaining([
-            expect.objectContaining({
-              property: "asset.awards",
-              value: "Won 1 award.",
-              sourceIdentity: "omdb",
-            }),
-          ]),
-        }),
+      expect(
+        effectiveMetadata(
+          await workflow.inspectCurrentCatalogueSubject(subjectId),
+        ),
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            property: "asset.awards",
+            value: "Won 1 award.",
+            sourceIdentity: "omdb",
+          }),
+        ]),
       );
       expect(JSON.stringify(refreshed)).not.toContain("degradation-key");
       expect(JSON.stringify(refreshed)).not.toContain("degradation-token");
@@ -2375,7 +2421,11 @@ describe("product-managed film source connections", () => {
           expect.objectContaining({ sourceIdentity: "omdb" }),
         ]),
       );
-      expect(initial.accepted?.effectiveMetadata).toEqual(
+      expect(
+        effectiveMetadata(
+          await workflow.inspectCurrentCatalogueSubject(subjectId),
+        ),
+      ).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             property: "asset.awards",
@@ -2407,18 +2457,18 @@ describe("product-managed film source connections", () => {
       expect(observable).not.toContain(omdbCredential);
       expect(observable).not.toContain("Invalid key");
       expect(observable).not.toContain("www.omdbapi.com");
-      await expect(
-        workflow.inspectCurrentCatalogueSubject(subjectId),
-      ).resolves.toEqual(
-        expect.objectContaining({
-          effectiveMetadata: expect.arrayContaining([
-            expect.objectContaining({
-              property: "asset.awards",
-              value: "Won 1 award.",
-              sourceIdentity: "omdb",
-            }),
-          ]),
-        }),
+      expect(
+        effectiveMetadata(
+          await workflow.inspectCurrentCatalogueSubject(subjectId),
+        ),
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            property: "asset.awards",
+            value: "Won 1 award.",
+            sourceIdentity: "omdb",
+          }),
+        ]),
       );
     } finally {
       await workflow.close();
@@ -2458,17 +2508,66 @@ async function scanStrictFilm(
 ) {
   await mkdir(directory, { recursive: true });
   await writeFile(path.join(directory, "video.mkv"), "fixture");
-  const registration = await workflow.observedRootRegistrations.create({
-    displayName: path.basename(directory),
-    containerPath: directory,
-    readOnly: true,
-    symlinkMode: "do-not-follow",
-    allowedTargetRootIds: [],
-  });
-  return await workflow.scanObservedScope({
-    registrationId: registration.id,
+  const { rootId } = await seedLibraryDirectory(
+    workflow,
+    path.basename(directory),
+    directory,
+  );
+  const result = await workflow.scanObservedScope({
+    registrationId: rootId,
     relativeScope: ".",
     acceptTrusted: true,
     informationRequirement,
   });
+  const accepted = (result.itemResults ?? []).flatMap((item) =>
+    item.accepted === undefined ? [] : [item.accepted],
+  );
+  expect(accepted.length).toBeLessThanOrEqual(1);
+  return { ...result, accepted: result.accepted ?? accepted[0] };
+}
+
+/**
+ * 通过公开资产库入口为一个目录建立授权，返回库编号与该目录对应的观察根编号。
+ * 只登记目录而不属于任何活动库，现行产品不会给出读取或自动刷新的权威。
+ * 同一目录复用同一份库授权：把同一目录点名进两个库会让扫描无法确定归属资产库。
+ */
+const libraryDirectorySeeds = new Map<
+  string,
+  { readonly libraryId: string; readonly rootId: string }
+>();
+
+async function seedLibraryDirectory(
+  workflow: ReturnType<typeof composeAssetRefresh>,
+  displayName: string,
+  directory: string,
+): Promise<{ readonly libraryId: string; readonly rootId: string }> {
+  const seeded = libraryDirectorySeeds.get(directory);
+  if (seeded !== undefined) return seeded;
+  const libraries = workflow.assetLibraries;
+  const saved = await libraries.save({
+    displayName,
+    directories: [directory],
+    recognitionProfileIds: libraries.recognitionProfiles.map(
+      (profile) => profile.id,
+    ),
+    sourceIdentities: libraries.sources.map((source) => source.id),
+  });
+  const seed = { libraryId: saved.id, rootId: saved.rootIds[0]! };
+  libraryDirectorySeeds.set(directory, seed);
+  return seed;
+}
+
+/** 普通事实从当前主体的实体描述读取；不从识别提交猜测生效资料。 */
+function effectiveMetadata(subject: EffectiveSubjectRead | undefined) {
+  expect(subject).toBeDefined();
+  const description = subject!.descriptions.find(
+    (item) =>
+      item.target.kind === "entity" &&
+      item.target.entityId === subject!.id &&
+      item.metadataUsageContext === "asset.ordinary",
+  );
+  expect(description).toBeDefined();
+  return description!.metadata.flatMap((item) =>
+    item.result.status === "resolved" ? item.result.values : [],
+  );
 }

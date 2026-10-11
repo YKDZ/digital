@@ -1759,7 +1759,12 @@ export function validateReevaluatedRecognition(input: {
       );
   }
   validateRecognitionIdentityBaseline(identityBaseline);
-  validateRecognitionFactShape(input.accepted);
+  validateRecognitionFactShape(
+    input.accepted,
+    input.accepted.proposal.basis.kind === "accepted-boundary"
+      ? input.current
+      : undefined,
+  );
   if (input.current.entity.id !== input.accepted.entity.id) {
     throw new Error(
       "Identity-preserving refresh must retain the accepted Digital Asset",
@@ -1811,7 +1816,60 @@ export function validateReevaluatedRecognition(input: {
   return input.accepted;
 }
 
-function validateRecognitionFactShape(accepted: AcceptedRecognition): void {
+/** 范围材料刷新沿用既有来源图片；出处与完整图片图必须都逐字不变。 */
+function retainedSourceArtifactIsUnchanged(
+  association: ArtifactAssociation,
+  accepted: AcceptedRecognition,
+  retained: AcceptedRecognition | undefined,
+): boolean {
+  if (
+    retained === undefined ||
+    association.sourceRecordIds?.length === 0 ||
+    association.sourceAssociationId === undefined ||
+    !retained.sourceAssociations.some(
+      ({ id }) => id === association.sourceAssociationId,
+    ) ||
+    !accepted.sourceAssociations.some(
+      (source) =>
+        source.id === association.sourceAssociationId &&
+        retained.sourceAssociations.some(
+          (old) => canonicalJson(old) === canonicalJson(source),
+        ),
+    ) ||
+    !retained.artifactAssociations.some(
+      (old) => canonicalJson(old) === canonicalJson(association),
+    )
+  )
+    return false;
+  const graph = (value: AcceptedRecognition) => {
+    const artifactRevisions = value.artifactRevisions.filter(
+      ({ artifactId }) => artifactId === association.artifactId,
+    );
+    const digests = new Set(
+      artifactRevisions.map(({ blobDigest }) => blobDigest),
+    );
+    const sorted = <T>(items: readonly T[]) =>
+      items.map(canonicalJson).toSorted();
+    return {
+      artifacts: sorted(
+        value.artifacts.filter(({ id }) => id === association.artifactId),
+      ),
+      locations: sorted(
+        value.locations.filter(
+          ({ artifactId }) => artifactId === association.artifactId,
+        ),
+      ),
+      revisions: sorted(artifactRevisions),
+      blobs: sorted(value.blobs.filter(({ digest }) => digests.has(digest))),
+    };
+  };
+  return canonicalJson(graph(accepted)) === canonicalJson(graph(retained));
+}
+
+function validateRecognitionFactShape(
+  accepted: AcceptedRecognition,
+  retained?: AcceptedRecognition,
+): void {
   validateRecognitionProposal(accepted.proposal);
   validateRecognitionMaterialBoundaries(
     accepted.recognitionDecision.boundaries,
@@ -1914,7 +1972,8 @@ function validateRecognitionFactShape(accepted: AcceptedRecognition): void {
     }
     if (
       association.sourceRecordIds !== undefined &&
-      !hasKnownProvenance(association.sourceRecordIds)
+      !hasKnownProvenance(association.sourceRecordIds) &&
+      !retainedSourceArtifactIsUnchanged(association, accepted, retained)
     ) {
       throw new Error("Artifact Association has unknown source provenance");
     }

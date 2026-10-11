@@ -253,7 +253,10 @@ describe("Information Fulfillment", () => {
       ],
       async start(plan, initiation) {
         starts.push({ plan, initiation });
-        return { status: "pending", workflowExecutionId: "shared-execution" };
+        return {
+          status: "pending" as const,
+          workflowExecutionId: `shared-execution-${starts.length}`,
+        };
       },
     });
     const request = {
@@ -270,18 +273,37 @@ describe("Information Fulfillment", () => {
     });
     const background = await fulfillment.fulfill(request);
 
+    // 在途复用按发起父隔离（information-fulfillment.ts:576-577 与 pendingKey :782-797）：
+    // 自动化父的耐久子登记必须原样保留，后台轮询既不命中它也不改写它的发起归属。
     expect(starts).toEqual([
       expect.objectContaining({
+        plan: expect.objectContaining({
+          subjectId: "asset",
+          sourceIdentity: "source",
+          operation: "source-refresh",
+        }),
         initiation: {
           version: "information-fulfillment-initiation/1",
           parentExecutionId: "automatic-parent",
         },
       }),
+      expect.objectContaining({
+        initiation: undefined,
+      }),
     ]);
-    expect(background).toEqual(automatic);
-    expect(background.subjects[0]?.inputs[0]).toMatchObject({
-      executionReferences: [{ workflowExecutionId: "shared-execution" }],
+    expect(automatic.subjects[0]?.inputs[0]).toMatchObject({
+      status: "pending",
+      executionReferences: [{ workflowExecutionId: "shared-execution-1" }],
     });
+    expect(background.subjects[0]?.inputs[0]).toMatchObject({
+      status: "pending",
+      executionReferences: [{ workflowExecutionId: "shared-execution-2" }],
+    });
+
+    // 同一发起者（这里都是无父的后台轮询）的重复请求仍复用那一份在途工作，不产生第二份效果。
+    const repeated = await fulfillment.fulfill(request);
+    expect(starts).toHaveLength(2);
+    expect(repeated).toEqual(background);
   });
 
   it("deduplicates concurrent callers before the durable execution reference is returned", async () => {
