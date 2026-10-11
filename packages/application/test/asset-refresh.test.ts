@@ -10169,18 +10169,50 @@ describe("Asset Refresh acceptance", () => {
     expect(JSON.stringify(prepared)).not.toContain('"interpretation"');
     expect(JSON.stringify(prepared)).not.toContain('"producer"');
     expect(JSON.stringify(prepared)).not.toContain('"capabilityId"');
-    // 范围修正（非删除）：ADR-0086 后 ChangeImpactPreviewInspection.facts 刻意暴露可解释的
-    // sourceRecordIds（index.ts:8519），因此禁止项只应收窄到仍被 safeProjection 剥离的
-    // current/projected 表面，而不是整份 prepared。
-    expect(JSON.stringify(prepared.preview?.current)).not.toContain(
-      '"sourceRecordIds"',
+    // 公共预演同时保留可解释来源标签与真实候选事实；内部记录标识只留在耐久审计。
+    expect(JSON.stringify(prepared)).not.toContain('"sourceRecordIds"');
+    const currentTitle = prepared.preview?.facts?.current.descriptions
+      .find(
+        (description) => description.metadataUsageContext === "asset.ordinary",
+      )
+      ?.metadata.find((entry) => entry.property === "asset.title")?.result;
+    const projectedTitle = prepared.preview?.facts?.projected.descriptions
+      .find(
+        (description) => description.metadataUsageContext === "asset.ordinary",
+      )
+      ?.metadata.find((entry) => entry.property === "asset.title")?.result;
+    const sourceTitle = (value: string) =>
+      expect.objectContaining({
+        value,
+        sourceIdentity: "source",
+        sourceSlot: "source.title",
+        assertions: [expect.objectContaining({ sourceSlot: "source.title" })],
+      });
+    expect(prepared.preview?.facts?.current.id).toBe(
+      subject.accepted[0].entity.id,
     );
-    expect(JSON.stringify(prepared.preview?.projected)).not.toContain(
-      '"sourceRecordIds"',
+    expect(prepared.preview?.facts?.projected.id).toBe(
+      subject.accepted[0].entity.id,
     );
-    // 同时正向确认 facts 表面确实携带可解释来源记录，保证覆盖真实而非空断言。
-    expect(JSON.stringify(prepared.preview?.facts)).toContain(
-      '"sourceRecordIds"',
+    expect(currentTitle).toMatchObject({
+      status: "resolved",
+      values: [sourceTitle("Work")],
+    });
+    expect(projectedTitle).toMatchObject({
+      status: "resolved",
+      values: expect.arrayContaining([
+        sourceTitle("Other Work"),
+        sourceTitle("Work"),
+      ]),
+    });
+    expect(
+      subject.changePreviews.get(prepared.preview!.id)?.projected.metadata,
+    ).toContainEqual(
+      expect.objectContaining({
+        property: "asset.title",
+        value: "Other Work",
+        sourceRecordIds: ["record"],
+      }),
     );
     expect(prepared.preview?.projected.metadata).toEqual(
       expect.arrayContaining([
