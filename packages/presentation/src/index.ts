@@ -1,5 +1,7 @@
 import type {
+  ChangeImpactPreviewFacts,
   EffectiveSubjectRead,
+  PublicSelectedMetadataRead,
   SelectedMetadataRead,
   InformationRequirement,
 } from "@digital/application";
@@ -167,7 +169,7 @@ export type AssetViewModel = {
   readonly factProblems?: readonly {
     readonly target: EffectiveSubjectRead["descriptions"][number]["target"];
     readonly message: string;
-    readonly conflicts: EffectiveSubjectRead["descriptions"][number]["conflicts"];
+    readonly conflicts: ChangeImpactPreviewFacts["descriptions"][number]["conflicts"];
   }[];
   /**
    * 被请求且必需的坐标在生效描述里确定为 missing 的坐标集。它与 informationReadiness
@@ -284,10 +286,38 @@ export type AssetViewFacts = Omit<EffectiveSubjectRead, "locations"> & {
   }[];
 };
 
+/** 展示只消费公开生效事实；普通读取可另带交付地址和用户交互。 */
+export type AssetViewProjectionFacts = Omit<
+  ChangeImpactPreviewFacts,
+  "descriptions" | "locations"
+> & {
+  readonly descriptions: readonly (Omit<
+    ChangeImpactPreviewFacts["descriptions"][number],
+    "artifactRoles"
+  > & {
+    readonly artifactRoles: readonly (ChangeImpactPreviewFacts["descriptions"][number]["artifactRoles"][number] & {
+      readonly address?: string;
+    })[];
+  })[];
+  readonly locations: readonly (ChangeImpactPreviewFacts["locations"][number] & {
+    readonly address?: string;
+    readonly downloadUrl?: string;
+  })[];
+  readonly interactionStates?: AssetViewFacts["interactionStates"];
+};
+
 export function subjectMetadata(
   input: Pick<EffectiveSubjectRead, "id" | "descriptions">,
+  subjectId?: string,
+): readonly SelectedMetadataRead[];
+export function subjectMetadata(
+  input: Pick<AssetViewProjectionFacts, "id" | "descriptions">,
+  subjectId?: string,
+): readonly PublicSelectedMetadataRead[];
+export function subjectMetadata(
+  input: Pick<AssetViewProjectionFacts, "id" | "descriptions">,
   subjectId = input.id,
-): readonly SelectedMetadataRead[] {
+): readonly PublicSelectedMetadataRead[] {
   return (
     input.descriptions
       .find(
@@ -302,7 +332,7 @@ export function subjectMetadata(
 }
 
 export function subjectArtwork(
-  input: Pick<EffectiveSubjectRead, "descriptions">,
+  input: Pick<AssetViewProjectionFacts, "descriptions">,
   subjectId: string,
 ): string | undefined {
   return input.descriptions
@@ -330,7 +360,7 @@ export type TargetArtworkResult = {
  * `factProblems` 逐项呈现），读取之间绝不按先后取首个地址。
  */
 export function targetArtwork(
-  inputs: readonly Pick<EffectiveSubjectRead, "descriptions">[],
+  inputs: readonly Pick<AssetViewProjectionFacts, "descriptions">[],
   subjectId: string,
 ): TargetArtworkResult {
   const role = "asset.primary-cover";
@@ -396,7 +426,7 @@ export function targetArtwork(
 }
 
 export function factProblems(
-  input: AssetViewFacts,
+  input: AssetViewProjectionFacts,
 ): NonNullable<AssetViewModel["factProblems"]> {
   return input.descriptions.flatMap((description) =>
     description.conflicts.length === 0
@@ -416,7 +446,7 @@ export function factProblems(
  * 可选坐标缺失或没有就绪信息时不制造缺失，绝不把未请求坐标计为缺失。
  */
 export function descriptiveMissingFacts(
-  input: AssetViewFacts,
+  input: AssetViewProjectionFacts,
 ): readonly string[] {
   const required = new Set(
     (input.informationReadiness?.inputs ?? [])
@@ -438,7 +468,7 @@ export function descriptiveMissingFacts(
 }
 
 function singleMetadata(
-  metadata: readonly SelectedMetadataRead[],
+  metadata: readonly PublicSelectedMetadataRead[],
   property: string,
 ): string | undefined {
   const values = metadataValues(metadata, property);
@@ -446,7 +476,7 @@ function singleMetadata(
 }
 
 function metadataValues(
-  metadata: readonly SelectedMetadataRead[],
+  metadata: readonly PublicSelectedMetadataRead[],
   property: string,
 ): readonly string[] {
   return metadata
@@ -460,7 +490,7 @@ function metadataValues(
  */
 export function assetViewComponent(
   input: Pick<
-    AssetViewFacts,
+    AssetViewProjectionFacts,
     | "id"
     | "sourceAssociations"
     | "recognitionSourceAssociation"
@@ -499,7 +529,7 @@ export function assetViewComponent(
  */
 export function informationRequirementForAssetView(
   input: Pick<
-    AssetViewFacts,
+    AssetViewProjectionFacts,
     | "id"
     | "sourceAssociations"
     | "recognitionSourceAssociation"
@@ -534,7 +564,7 @@ function sourceLabel(identity: string | undefined): string | undefined {
 }
 
 function relationshipLabels(
-  input: AssetViewFacts,
+  input: AssetViewProjectionFacts,
   role: string,
 ): readonly string[] {
   const entities = new Map(
@@ -556,7 +586,7 @@ function relationshipLabels(
 }
 
 function joinedRelationshipLabels(
-  input: AssetViewFacts,
+  input: AssetViewProjectionFacts,
   role: string,
 ): string | undefined {
   const labels = [...new Set(relationshipLabels(input, role))];
@@ -568,8 +598,8 @@ function fileFormat(name: string): string {
 }
 
 function currentRevisionId(
-  _input: AssetViewFacts,
-  location: AssetViewFacts["locations"][number],
+  _input: AssetViewProjectionFacts,
+  location: AssetViewProjectionFacts["locations"][number],
 ): string | undefined {
   return location.content.status === "confirmed"
     ? location.content.target.revisionId
@@ -577,7 +607,7 @@ function currentRevisionId(
 }
 
 function interactionFor(
-  input: AssetViewFacts,
+  input: AssetViewProjectionFacts,
   revisionId: string | undefined,
 ): ArtifactFileView["interaction"] | undefined {
   if (revisionId === undefined) return undefined;
@@ -592,9 +622,12 @@ function interactionFor(
       };
 }
 
-function observedFileTree(input: AssetViewFacts): readonly AssetFileTreeNode[] {
+function observedFileTree(
+  input: AssetViewProjectionFacts,
+): readonly AssetFileTreeNode[] {
   const files = input.locations.filter(
-    (location) => location.kind === "observed",
+    (location): location is typeof location & { readonly address: string } =>
+      location.kind === "observed" && location.address !== undefined,
   );
   const paths = files.map((file) =>
     file.address.split(/[\\/]/u).filter(Boolean),
@@ -683,12 +716,12 @@ function observedFileTree(input: AssetViewFacts): readonly AssetFileTreeNode[] {
 
 /** 从观察材料投影消费者可见的文件；同集多技术与字幕都作为独立材料保留。 */
 export function observedArtifactFiles(
-  input: AssetViewFacts,
+  input: AssetViewProjectionFacts,
 ): readonly ArtifactFileView[] {
   return input.locations
     .filter((location) => location.kind === "observed")
     .map((location) => {
-      const name = location.address.split(/[\\/]/u).at(-1) ?? "文件";
+      const name = location.address?.split(/[\\/]/u).at(-1) ?? "文件";
       const extension = /\.([^.]+)$/u.exec(name)?.[1]?.toUpperCase();
       const revisionId = currentRevisionId(input, location);
       const image =
@@ -723,7 +756,7 @@ export function observedArtifactFiles(
 }
 
 function fanboxAttachments(
-  candidates: AssetViewFacts["sourceArtifacts"],
+  candidates: AssetViewProjectionFacts["sourceArtifacts"],
 ): readonly {
   readonly name?: string;
   readonly byteLength?: string;
@@ -748,7 +781,7 @@ function fanboxAttachments(
 }
 
 function dlsiteCredits(
-  input: AssetViewFacts,
+  input: AssetViewProjectionFacts,
 ): readonly DlsiteViewCreditGroup[] {
   return [
     { heading: "配音", role: "voice" },
@@ -765,7 +798,9 @@ function dlsiteCredits(
  * 通过同一个视图投影已应用事实和提议事实。角色字符串仍属于证据词汇，
  * 绝不跨越该消费者边界。
  */
-export function projectAssetView(input: AssetViewFacts): AssetViewModel {
+export function projectAssetView(
+  input: AssetViewProjectionFacts,
+): AssetViewModel {
   const component = assetViewComponent(input);
   const cover = subjectArtwork(input, input.id);
 
@@ -1075,7 +1110,9 @@ export function projectAssetView(input: AssetViewFacts): AssetViewModel {
   };
 }
 
-function contributionLabels(input: AssetViewFacts): readonly string[] {
+function contributionLabels(
+  input: AssetViewProjectionFacts,
+): readonly string[] {
   const entities = new Map(
     input.relatedEntities.map((entity) => [entity.id, entity.label]),
   );

@@ -19,6 +19,7 @@ import {
   ArtifactByteAccessError,
   ExecutionHost,
   type EffectiveDescriptionRead,
+  type InformationRequirement,
 } from "@digital/application";
 import { runProduct } from "@digital/composition";
 import {
@@ -85,13 +86,48 @@ const acceptedDescription = (
   conflicts: [],
 });
 
-function bindWebDelivery() {
+function bindWebDelivery(
+  observeAutomationRequirement?: (
+    facts: AssetViewFacts,
+    requirement: InformationRequirement,
+  ) => void,
+) {
   const product = runProduct(
     {
       productDataDirectory: process.env.DIGITAL_PRODUCT_DATA,
       environment: process.env,
     },
-    { start: createWebDelivery },
+    {
+      start: (application) => {
+        // 只观察 delivery 交给真实产品的公开规划规则，输入、结果与效果均原样委托。
+        const deliveryApplication =
+          observeAutomationRequirement === undefined
+            ? application
+            : Object.assign(Object.create(application) as typeof application, {
+                setAutomationInformationRequirementForAcceptedSubject(
+                  resolver: Parameters<
+                    typeof application.setAutomationInformationRequirementForAcceptedSubject
+                  >[0],
+                ) {
+                  application.setAutomationInformationRequirementForAcceptedSubject(
+                    {
+                      ...resolver,
+                      requirementForAcceptedSubject(facts) {
+                        const requirement =
+                          resolver.requirementForAcceptedSubject(facts);
+                        observeAutomationRequirement(facts, requirement);
+                        return requirement;
+                      },
+                    },
+                  );
+                },
+              });
+        return {
+          ...createWebDelivery(deliveryApplication),
+          workflow: application.workflow,
+        };
+      },
+    },
   );
   closeBoundWebProduct = async () => await product.close();
   return product.result;
@@ -851,7 +887,10 @@ describe("asset delivery view", () => {
 
   it("rebuilds each automated DLsite subject's exact Presentation requirement instead of using the general fallback", async () => {
     const root = await mkdtemp(
-      path.join(tmpdir(), "digital-disposable-web-dlsite-automation-"),
+      path.join(
+        tmpdir(),
+        "digital-disposable-completion-09-dlsite-automation-",
+      ),
     );
     const productData = path.join(root, "product-data");
     const observed = path.join(root, "RJ01668691");
@@ -860,23 +899,14 @@ describe("asset delivery view", () => {
     const requested: string[] = [];
     let coverBytes = new Uint8Array([1, 2, 3, 4]);
     let sourceTitle = "Exact automated work";
-    const fulfillInformation = vi.spyOn(
-      AssetRefreshWorkflow.prototype,
-      "fulfillInformation",
-    );
-    const scanFilesystem = vi.spyOn(
-      AssetRefreshWorkflow.prototype,
-      "scanObservedScope",
-    );
-    const listCurrentCataloguePage = vi.spyOn(
-      AssetRefreshWorkflow.prototype,
-      "listCurrentCataloguePage",
-    );
     await mkdir(observed, { recursive: true });
     await writeFile(path.join(observed, "track.wav"), "observed bytes");
     await prepareWebProductData(productData);
     process.env.DIGITAL_PRODUCT_DATA = productData;
-    bindWebDelivery();
+    const automationRequirements: {
+      readonly facts: AssetViewFacts;
+      readonly requirement: InformationRequirement;
+    }[] = [];
     process.env.DIGITAL_WEB_OBSERVED_ROOTS = observed;
     vi.stubGlobal("fetch", async (input: string | URL | Request) => {
       const address =
@@ -922,7 +952,11 @@ describe("asset delivery view", () => {
       return new Response("not found", { status: 404 });
     });
 
+    let passed = false;
     try {
+      const delivery = bindWebDelivery((facts, requirement) => {
+        automationRequirements.push({ facts, requirement });
+      });
       const configuration = await settingsSnapshot();
       await updateSettingsLibrary({
         action: "save",
@@ -935,6 +969,9 @@ describe("asset delivery view", () => {
           (source) => source.id,
         ),
       });
+      const [automationLibrary] = (await settingsSnapshot()).libraries;
+      if (automationLibrary === undefined)
+        throw new Error("自动刷新测试资产库未落定");
       const configuredRoots = await catalogueSnapshot();
       const [registration] = configuredRoots.observedRoots;
       if (registration === undefined)
@@ -947,36 +984,50 @@ describe("asset delivery view", () => {
       );
       const enabled = await updateAutomation({
         action: "enable",
+        assetLibraryId: automationLibrary.id,
         observedRootId: registration.id,
         relativeScope: ".",
         intervalMilliseconds: 60_000,
         acceptTrusted: true,
       });
       expect(enabled).toMatchObject({ initialStatus: "started" });
-      if (!("intent" in enabled)) throw new Error("自动刷新未创建意图");
+      if (!("intent" in enabled) || enabled.initialExecution === undefined)
+        throw new Error("自动刷新未创建意图与初始记录");
 
-      const automatedScan = scanFilesystem.mock.calls.find(
-        ([input]) => input.automationIntentId === enabled.intent.id,
-      )?.[0];
-      expect(automatedScan).toMatchObject({
+      const parent = await delivery.workflow.inspect(
+        enabled.initialExecution.id,
+      );
+      expect(parent?.execution).toMatchObject({
         automationIntentId: enabled.intent.id,
+        operationKind: "scan-asset-library",
+        workflowInput: {
+          assetLibrary: { id: automationLibrary.id },
+          observedRoots: [expect.objectContaining({ id: registration.id })],
+          libraryScan: {
+            directories: [expect.objectContaining({ relativeScope: "." })],
+          },
+        },
       });
-      // 周期意图及其扫描执行只保留中立自动化坐标；完整展示需求在接受后重建，
-      // 而不会成为持久化输入。
-      expect(automatedScan).not.toHaveProperty("informationRequirement");
+      // 周期意图及其扫描只保留中立自动化坐标：某个主题的完整展示需求在接受后按批次重建，
+      // 绝不会被预先烤进扫描输入或耐久意图里。
+      expect(
+        JSON.stringify(
+          parent?.execution.selection.informationRequirement ?? {},
+        ),
+      ).not.toContain("dlsite.product.price-jpy");
       expect(enabled.intent).not.toHaveProperty("informationRequirement");
 
-      await vi.waitFor(() => {
-        expect(fulfillInformation).toHaveBeenCalled();
-      });
-
-      const automatedRequirement = fulfillInformation.mock.calls
-        .map(([input]) => input.requirement)
-        .find((requirement) =>
+      // 完整需求在公开 delivery→application 规则边界观察；派生 child 只保留缺项子集。
+      const plannedRequirement = () =>
+        automationRequirements.find(({ requirement }) =>
           requirement.metadata.some(
             (item) => item.property === "dlsite.product.price-jpy",
           ),
-        );
+        )?.requirement;
+      await expect
+        .poll(plannedRequirement)
+        .toEqual(dlsiteAssetViewInformationRequirement);
+      const automatedRequirement = plannedRequirement();
       expect(automatedRequirement).toEqual(
         dlsiteAssetViewInformationRequirement,
       );
@@ -1012,7 +1063,6 @@ describe("asset delivery view", () => {
       }
       expect(requested).toContain("https://img.dlsite.jp/primary.jpg");
       expect(coverStored).toBe(true);
-      expect(listCurrentCataloguePage).toHaveBeenCalled();
       expect(latestSnapshot?.assets).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -1054,10 +1104,8 @@ describe("asset delivery view", () => {
         .toMatchObject({
           cover: expect.stringMatching(/^\/api\/artifacts\//u),
         });
+      passed = true;
     } finally {
-      listCurrentCataloguePage.mockRestore();
-      scanFilesystem.mockRestore();
-      fulfillInformation.mockRestore();
       vi.unstubAllGlobals();
       await shutdownBoundWebProduct();
       if (previousProductData === undefined)
@@ -1066,7 +1114,8 @@ describe("asset delivery view", () => {
       if (previousRoots === undefined)
         delete process.env.DIGITAL_WEB_OBSERVED_ROOTS;
       else process.env.DIGITAL_WEB_OBSERVED_ROOTS = previousRoots;
-      await rm(root, { recursive: true, force: true });
+      if (passed) await rm(root, { recursive: true, force: true });
+      else console.error(`09 自动刷新失败数据保留：${root}`);
     }
   });
 
@@ -1450,9 +1499,14 @@ describe("asset delivery view", () => {
     process.env.DIGITAL_PRODUCT_DATA = directory;
     await mkdir(databasePath);
     try {
-      bindWebDelivery();
+      const delivery = bindWebDelivery();
       await expect(startCatalogueAutomation()).rejects.toThrow();
-      await expect(shutdownBoundWebProduct()).rejects.toThrow();
+      // 启动失败仍由公开就绪面报告，且不含私有目录。
+      const failure = delivery.catalogueReadinessFailure();
+      expect(typeof failure).toBe("string");
+      expect(failure).not.toContain(directory);
+      // 关闭只负责释放失败的所有者：抛出过的启动错误不再二次抛出，后续普通重启才可能成功。
+      await shutdownBoundWebProduct();
       await rm(databasePath, { recursive: true, force: true });
       await prepareWebProductData(directory);
       bindWebDelivery();
@@ -2210,18 +2264,23 @@ describe("asset delivery view", () => {
     }
   }, 20_000);
 
-  it("首次选择在同字节已有更具体媒体类型时确认观察文件并下载", async () => {
+  it("同字节已有更具体媒体类型时按本库目录授权确认观察文件并下载，登记与撤权都不给字节", async () => {
     const root = await mkdtemp(
-      path.join(tmpdir(), "digital-disposable-observed-download-"),
+      path.join(
+        tmpdir(),
+        "digital-disposable-completion-09-observed-download-",
+      ),
     );
     const productData = path.join(root, "product-data");
     const observedRoot = path.join(root, "observed");
+    const unrelatedRoot = path.join(root, "unrelated");
     const observedFile = path.join(observedRoot, "poster.jpg");
     const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
     const blobDigest = createHash("sha256").update(bytes).digest("hex");
     let closeProduct: (() => Promise<void>) | undefined;
     try {
       await mkdir(observedRoot, { recursive: true });
+      await mkdir(unrelatedRoot, { recursive: true });
       await writeFile(observedFile, bytes);
       const details = await stat(observedFile);
       const observationBaseline = createHash("sha256")
@@ -2296,21 +2355,29 @@ describe("asset delivery view", () => {
       closeProduct = async () => await product.close();
       const application = product.result.application as {
         readonly workflow: {
+          readonly assetLibraries: {
+            directoryViews(id: string): Promise<
+              readonly {
+                readonly directoryId: string;
+                readonly observedRootId: string;
+                readonly containerPath: string;
+                readonly status: string;
+                readonly reachable: boolean;
+                readonly symlinkMode: string;
+                readonly allowedTargetDirectoryIds: readonly string[];
+                readonly authorityVersion: number;
+              }[]
+            >;
+          };
           readonly observedRootRegistrations: {
-            create(input: {
-              readonly displayName: string;
-              readonly containerPath: string;
-              readonly readOnly: true;
-              readonly symlinkMode: "do-not-follow";
-              readonly allowedTargetRootIds: readonly string[];
-            }): Promise<{
-              readonly id: string;
-              readonly configVersion: number;
-            }>;
-            deactivate(input: {
-              readonly id: string;
-              readonly expectedVersion: number;
-            }): Promise<unknown>;
+            get(id: string): Promise<
+              | {
+                  readonly id: string;
+                  readonly status: string;
+                  readonly readOnly: boolean;
+                }
+              | undefined
+            >;
           };
         };
         observedFileSelectionForLocation(
@@ -2318,12 +2385,17 @@ describe("asset delivery view", () => {
         ): Promise<string | undefined>;
         prepareArtifactDownload(input: {
           readonly artifactRevisionId: string;
+          readonly assetLibraryId: string;
         }): Promise<{
           readonly blobDigest: string;
           readonly byteLength: number;
+          readonly mediaType: string;
         }>;
         openArtifactBytes(input: {
-          readonly selection: { readonly artifactRevisionId: string };
+          readonly selection: {
+            readonly artifactRevisionId: string;
+            readonly assetLibraryId: string;
+          };
           readonly expectedBlobDigest: string;
           readonly interval: {
             readonly startInclusive: number;
@@ -2342,34 +2414,89 @@ describe("asset delivery view", () => {
           ): Promise<void>;
         }>;
       };
-      const registration =
-        await application.workflow.observedRootRegistrations.create({
-          displayName: "观察文件",
-          containerPath: observedRoot,
-          readOnly: true,
-          symlinkMode: "do-not-follow",
-          allowedTargetRootIds: [],
+      const librarySettings = async () =>
+        (await (await product.result.api.request("/settings")).json()) as {
+          readonly recognitionProfiles: readonly { readonly id: string }[];
+          readonly librarySources: readonly { readonly id: string }[];
+        };
+      const saveLibrary = async (body: Record<string, unknown>) =>
+        await product.result.api.request("/settings/libraries", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
         });
+
       const selectionId = await application.observedFileSelectionForLocation(
         "location-observed-download",
       );
       expect(selectionId).toMatch(/^observed-file-selection_1_[a-f0-9]{64}$/u);
 
-      const response = await product.result.api.request(
+      // 登记一个物理位置不等于授权：没有库语境时观察字节必须被拒绝，且不泄露私有路径。
+      const unlibraryed = await product.result.api.request(
         `/observed-file-downloads/${selectionId}`,
+      );
+      expect(unlibraryed.status).toBe(409);
+      const unlibraryedBody = await unlibraryed.json();
+      expect(unlibraryedBody).toEqual({ error: "artifact-location-revoked" });
+      expect(JSON.stringify(unlibraryedBody)).not.toContain(observedRoot);
+
+      const configuration = await librarySettings();
+      const recognitionProfileIds = configuration.recognitionProfiles.map(
+        (profile) => profile.id,
+      );
+      const sourceIdentities = configuration.librarySources.map(
+        (source) => source.id,
+      );
+      const created = await saveLibrary({
+        action: "save",
+        displayName: "观察文件",
+        directories: [observedRoot],
+        recognitionProfileIds,
+        sourceIdentities,
+      });
+      expect(created.status).toBe(200);
+      const library = (await created.json()) as {
+        readonly id: string;
+        readonly configVersion: number;
+        readonly rootIds: readonly string[];
+      };
+      const withLibrary = (address: string) =>
+        `${address}?library=${encodeURIComponent(library.id)}`;
+
+      // 精确观察授权：本库这一条目录活动、只读、do-not-follow 且没有借来的链接目标。
+      const granted = (
+        await application.workflow.assetLibraries.directoryViews(library.id)
+      ).find((state) => state.containerPath === observedRoot)!;
+      expect(granted).toMatchObject({
+        observedRootId: library.rootIds[0],
+        status: "active",
+        reachable: true,
+        symlinkMode: "do-not-follow",
+        allowedTargetDirectoryIds: [],
+        authorityVersion: 1,
+      });
+      expect(
+        await application.workflow.observedRootRegistrations.get(
+          granted.observedRootId,
+        ),
+      ).toMatchObject({ status: "active", readOnly: true });
+
+      const response = await product.result.api.request(
+        withLibrary(`/observed-file-downloads/${selectionId}`),
       );
 
       expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("image/jpeg");
       await expect(response.bytes()).resolves.toEqual(bytes);
       const retried = await product.result.api.request(
-        `/observed-file-downloads/${selectionId}`,
+        withLibrary(`/observed-file-downloads/${selectionId}`),
       );
       expect(retried.status).toBe(200);
       await expect(retried.bytes()).resolves.toEqual(bytes);
 
       await writeFile(observedFile, new TextEncoder().encode("内容已经改变"));
       const changed = await product.result.api.request(
-        `/observed-file-downloads/${selectionId}`,
+        withLibrary(`/observed-file-downloads/${selectionId}`),
       );
       expect(changed.status).toBe(409);
       await expect(changed.json()).resolves.toEqual({
@@ -2383,7 +2510,9 @@ describe("asset delivery view", () => {
         .digest("hex")}`;
       const descriptor = await application.prepareArtifactDownload({
         artifactRevisionId,
+        assetLibraryId: library.id,
       });
+      expect(descriptor.mediaType).toBe("image/jpeg");
 
       const changedSameLength = bytes.slice();
       changedSameLength[0] = changedSameLength[0]! ^ 1;
@@ -2392,7 +2521,7 @@ describe("asset delivery view", () => {
       await utimes(changedReplacement, details.atime, details.mtime);
       await rename(changedReplacement, observedFile);
       const swappedRange = await product.result.api.request(
-        `/artifact-downloads/${artifactRevisionId}`,
+        withLibrary(`/artifact-downloads/${artifactRevisionId}`),
         { headers: { range: "bytes=0-2" } },
       );
       expect(swappedRange.status).toBe(409);
@@ -2402,7 +2531,7 @@ describe("asset delivery view", () => {
       await utimes(restoredReplacement, details.atime, details.mtime);
       await rename(restoredReplacement, observedFile);
       const restoredRange = await product.result.api.request(
-        `/artifact-downloads/${artifactRevisionId}`,
+        withLibrary(`/artifact-downloads/${artifactRevisionId}`),
         { headers: { range: "bytes=1-3" } },
       );
       expect(restoredRange.status).toBe(206);
@@ -2411,7 +2540,7 @@ describe("asset delivery view", () => {
       await writeFile(observedFile, changedSameLength);
       await utimes(observedFile, details.atime, details.mtime);
       const rewrittenRange = await product.result.api.request(
-        `/artifact-downloads/${artifactRevisionId}`,
+        withLibrary(`/artifact-downloads/${artifactRevisionId}`),
         { headers: { range: "bytes=0-2" } },
       );
       expect(rewrittenRange.status).toBe(409);
@@ -2419,7 +2548,7 @@ describe("asset delivery view", () => {
       await utimes(observedFile, details.atime, details.mtime);
 
       const lease = await application.openArtifactBytes({
-        selection: { artifactRevisionId },
+        selection: { artifactRevisionId, assetLibraryId: library.id },
         expectedBlobDigest: descriptor.blobDigest,
         interval: {
           startInclusive: 0,
@@ -2444,7 +2573,7 @@ describe("asset delivery view", () => {
       await lease.close("failed");
 
       const revokeLease = await application.openArtifactBytes({
-        selection: { artifactRevisionId },
+        selection: { artifactRevisionId, assetLibraryId: library.id },
         expectedBlobDigest: descriptor.blobDigest,
         interval: {
           startInclusive: 0,
@@ -2452,10 +2581,22 @@ describe("asset delivery view", () => {
         },
       });
 
-      await application.workflow.observedRootRegistrations.deactivate({
-        id: registration.id,
-        expectedVersion: registration.configVersion,
+      // 撤权走现行库目录授权：从本库去掉这条目录，历史位置立即停读但文件本身不动。
+      const revokedGrant = await saveLibrary({
+        action: "save",
+        id: library.id,
+        expectedVersion: library.configVersion,
+        displayName: "观察文件",
+        directories: [unrelatedRoot],
+        recognitionProfileIds,
+        sourceIdentities,
       });
+      expect(revokedGrant.status).toBe(200);
+      expect(
+        (
+          await application.workflow.assetLibraries.directoryViews(library.id)
+        ).find((state) => state.directoryId === granted.directoryId),
+      ).toMatchObject({ status: "removed", authorityVersion: 2 });
       await expect(
         revokeLease.read({
           maximumBytes: 1,
@@ -2465,12 +2606,13 @@ describe("asset delivery view", () => {
       await revokeLease.close("failed");
       await revokeLease.close("failed");
       const revoked = await product.result.api.request(
-        `/observed-file-downloads/${selectionId}`,
+        withLibrary(`/observed-file-downloads/${selectionId}`),
       );
       expect(revoked.status).toBe(409);
-      await expect(revoked.json()).resolves.toEqual({
-        error: "artifact-location-revoked",
-      });
+      const revokedBody = await revoked.json();
+      expect(revokedBody).toEqual({ error: "artifact-location-revoked" });
+      expect(JSON.stringify(revokedBody)).not.toContain(observedFile);
+      await expect(readFile(observedFile)).resolves.toEqual(Buffer.from(bytes));
     } finally {
       await closeProduct?.();
       await rm(root, { recursive: true, force: true });

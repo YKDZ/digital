@@ -8,7 +8,66 @@ import { expect, it, vi } from "vitest";
 
 import { prepareWebProductData } from "./prepare-catalogue";
 
-it("出版物详情提供首次确认后可下载的当前文件", async () => {
+type WebApi = ReturnType<typeof createWebDelivery>["api"];
+
+type LibraryRoot = {
+  readonly libraryId: string;
+  readonly observedRootId: string;
+  readonly directoryId: string;
+};
+
+/**
+ * 现行设置入口以资产库为目录身份的来源：一处实际资产目录保存后，观察根编号来自库投影，
+ * 字节读取也必须带上这份库语境，因此这里同时交出库与目录身份。
+ */
+async function createLibraryRoot(
+  api: WebApi,
+  displayName: string,
+  directory: string,
+): Promise<LibraryRoot> {
+  const configuration = (await (await api.request("/settings")).json()) as {
+    recognitionProfiles: { id: string }[];
+    librarySources: { id: string }[];
+  };
+  const response = await api.request("/settings/libraries", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      action: "save",
+      displayName,
+      directories: [directory],
+      recognitionProfileIds: configuration.recognitionProfiles.map(
+        (profile) => profile.id,
+      ),
+      sourceIdentities: configuration.librarySources.map((source) => source.id),
+    }),
+  });
+  expect(response.status).toBe(200);
+  const library = (await response.json()) as { id: string; rootIds: string[] };
+  expect(library.rootIds).toHaveLength(1);
+  const [observedRootId] = library.rootIds;
+  if (observedRootId === undefined) throw new Error("资产库未建立观察根");
+  const settings = (await (await api.request("/settings")).json()) as {
+    libraries: {
+      id: string;
+      directoryViews: { directoryId: string; observedRootId: string }[];
+    }[];
+  };
+  const views =
+    settings.libraries.find((candidate) => candidate.id === library.id)
+      ?.directoryViews ?? [];
+  const [view] = views.filter(
+    (candidate) => candidate.observedRootId === observedRootId,
+  );
+  if (view === undefined) throw new Error("资产库目录未投影出目录身份");
+  return {
+    libraryId: library.id,
+    observedRootId,
+    directoryId: view.directoryId,
+  };
+}
+
+it("出版物详情在所属库授权下提供首次确认后可下载的当前文件", async () => {
   const temporary = await mkdtemp(
     path.join(tmpdir(), "digital-disposable-publication-download-"),
   );
@@ -30,18 +89,10 @@ it("出版物详情提供首次确认后可下载的当前文件", async () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });
-    const root = await (
-      await post("/settings/roots", {
-        action: "create",
-        displayName: "出版物",
-        containerPath: observed,
-        symlinkMode: "do-not-follow",
-        allowedTargetRootIds: [],
-      })
-    ).json();
+    const library = await createLibraryRoot(api, "出版物", observed);
     const refresh = await (
       await post("/refresh", {
-        observedRootId: root.id,
+        observedRootId: library.observedRootId,
         relativeScope: ".",
       })
     ).json();
@@ -51,7 +102,7 @@ it("出版物详情提供首次确认后可下载的当前文件", async () => {
           (
             await (
               await api.request(
-                `/intake?rootId=${root.id}&executionId=${refresh.id}`,
+                `/intake?rootId=${library.observedRootId}&executionId=${refresh.id}`,
               )
             ).json()
           ).execution?.status,
@@ -74,7 +125,9 @@ it("出版物详情提供首次确认后可下载的当前文件", async () => {
     ).json();
 
     const detail = await (
-      await api.request(`/catalogue/${saved.asset.id}`)
+      await api.request(
+        `/catalogue/${saved.asset.id}?library=${library.libraryId}`,
+      )
     ).json();
     expect(detail.asset.book.files).toEqual([
       expect.objectContaining({
@@ -82,7 +135,10 @@ it("出版物详情提供首次确认后可下载的当前文件", async () => {
         format: "TXT",
         byteLength: bytes.byteLength,
         downloadUrl: expect.stringMatching(
-          /^\/api\/observed-file-downloads\/observed-file-selection_1_[a-f0-9]{64}$/u,
+          new RegExp(
+            `^/api/observed-file-downloads/observed-file-selection_1_[a-f0-9]{64}\\?library=${library.libraryId}$`,
+            "u",
+          ),
         ),
       }),
     ]);
@@ -92,6 +148,12 @@ it("出版物详情提供首次确认后可下载的当前文件", async () => {
     );
     expect(download.status).toBe(200);
     await expect(download.bytes()).resolves.toEqual(bytes);
+    // 同一选择重复读取仍交付同一份已确认字节。
+    const repeated = await api.request(
+      detail.asset.book.files[0].downloadUrl.replace(/^\/api/u, ""),
+    );
+    expect(repeated.status).toBe(200);
+    await expect(repeated.bytes()).resolves.toEqual(bytes);
   } finally {
     await product.close();
     await rm(temporary, { recursive: true, force: true });
@@ -125,20 +187,10 @@ it("Web HTTP 通过同一产品接口准备、检查并确认观察材料关联"
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });
-    const createRoot = async (displayName: string, containerPath: string) =>
-      await (
-        await post("/settings/roots", {
-          action: "create",
-          displayName,
-          containerPath,
-          symlinkMode: "do-not-follow",
-          allowedTargetRootIds: [],
-        })
-      ).json();
-    const initialRoot = await createRoot("Initial", initial);
+    const initialRoot = await createLibraryRoot(api, "Initial", initial);
     const scan = await (
       await post("/refresh", {
-        observedRootId: initialRoot.id,
+        observedRootId: initialRoot.observedRootId,
         relativeScope: ".",
       })
     ).json();
@@ -148,7 +200,7 @@ it("Web HTTP 通过同一产品接口准备、检查并确认观察材料关联"
           (
             await (
               await api.request(
-                `/intake?rootId=${initialRoot.id}&executionId=${scan.id}`,
+                `/intake?rootId=${initialRoot.observedRootId}&executionId=${scan.id}`,
               )
             ).json()
           ).execution?.status,
@@ -168,10 +220,14 @@ it("Web HTTP 通过同一产品接口准备、检查并确认观察材料关联"
         executionId: preview.executionId,
       })
     ).json();
-    const supplementalRoot = await createRoot("Supplemental", supplemental);
+    const supplementalRoot = await createLibraryRoot(
+      api,
+      "Supplemental",
+      supplemental,
+    );
     const preparing = await post("/observed-material-associations", {
       targetAssetId: saved.asset.id,
-      registrationId: supplementalRoot.id,
+      registrationId: supplementalRoot.observedRootId,
       relativeScope: ".",
       relativePaths: ["more.txt"],
       initiatedBy: "web-prepare",
@@ -203,7 +259,7 @@ it("Web HTTP 通过同一产品接口准备、检查并确认观察材料关联"
     expect(JSON.stringify(interrupted)).not.toContain(supplemental);
     const retryResponse = await post("/observed-material-associations", {
       targetAssetId: saved.asset.id,
-      registrationId: supplementalRoot.id,
+      registrationId: supplementalRoot.observedRootId,
       relativeScope: ".",
       relativePaths: ["more.txt"],
       initiatedBy: "web-retry",
@@ -280,21 +336,18 @@ it("接入区从真实检查中整理文件，预览与添加后的普通详情�
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });
-    const root = await (
-      await post("/settings/roots", {
-        action: "create",
-        displayName: "材料",
-        containerPath: media,
-        symlinkMode: "do-not-follow",
-        allowedTargetRootIds: [],
-      })
-    ).json();
+    const root = await createLibraryRoot(api, "材料", media);
     const scan = await (
-      await post("/refresh", { observedRootId: root.id, relativeScope: "." })
+      await post("/refresh", {
+        observedRootId: root.observedRootId,
+        relativeScope: ".",
+      })
     ).json();
     const read = async () =>
       await (
-        await api.request(`/intake?rootId=${root.id}&executionId=${scan.id}`)
+        await api.request(
+          `/intake?rootId=${root.observedRootId}&executionId=${scan.id}`,
+        )
       ).json();
     await expect.poll(read).toMatchObject({
       execution: {
@@ -444,24 +497,19 @@ it("HTTP 交付公开真实来源要求并通过产品用例补充来源", async
         fields: [expect.objectContaining({ key: "isbn", required: true })],
       }),
     ]);
-    const root = await (
-      await post("/settings/roots", {
-        action: "create",
-        displayName: "本地内容",
-        containerPath: media,
-        symlinkMode: "do-not-follow",
-        allowedTargetRootIds: [],
-      })
-    ).json();
+    const root = await createLibraryRoot(api, "本地内容", media);
     const scan = await (
-      await post("/refresh", { observedRootId: root.id, relativeScope: "." })
+      await post("/refresh", {
+        observedRootId: root.observedRootId,
+        relativeScope: ".",
+      })
     ).json();
     await expect
       .poll(
         async () =>
           await (
             await api.request(
-              `/intake?rootId=${root.id}&executionId=${scan.id}`,
+              `/intake?rootId=${root.observedRootId}&executionId=${scan.id}`,
             )
           ).json(),
       )

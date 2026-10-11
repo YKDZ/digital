@@ -626,6 +626,19 @@ function composeAssetRefreshWithGeneration(
       ...observedArtifactPartAcquirers.map(({ capability }) => capability),
       ...sourceConnections.capabilityDeclarations,
     ]);
+    const artifactByteAccess = new ApplicationArtifactByteAccess({
+      persistence,
+      sources: new ComposedArtifactLocationByteSources(
+        observedRootRegistrations,
+        new ContentAddressedManagedArtifactStore(managedDirectory),
+      ),
+      proofStore: new ArtifactFrameProofStore(productDataDirectory),
+      executionHost: invocationSupervisor,
+      playbackInspector: boundedPlaybackFormatInspector,
+      cleanupReporter: new ComposedArtifactByteCleanupReporter(
+        observedRootRegistrations,
+      ),
+    });
     const workflow = new AssetRefreshWorkflow({
       assetLibraries,
       observedRootRegistrations,
@@ -678,6 +691,8 @@ function composeAssetRefreshWithGeneration(
       changeImpactCommands: persistence,
       informationFulfillmentCapabilities:
         dlsiteInformationFulfillmentCapabilities,
+      localMaterialEvidence: persistence,
+      expectedObservedRevisionConfirmation: artifactByteAccess,
       invocationSupervisor,
     });
     const automated = attachAssetRefreshAutomation(
@@ -698,19 +713,7 @@ function composeAssetRefreshWithGeneration(
         observedRootRegistrations,
         observedRootCleanupEmergencyJournal,
         sourceConnections,
-        artifactByteAccess: new ApplicationArtifactByteAccess({
-          persistence,
-          sources: new ComposedArtifactLocationByteSources(
-            observedRootRegistrations,
-            new ContentAddressedManagedArtifactStore(managedDirectory),
-          ),
-          proofStore: new ArtifactFrameProofStore(productDataDirectory),
-          executionHost: invocationSupervisor,
-          playbackInspector: boundedPlaybackFormatInspector,
-          cleanupReporter: new ComposedArtifactByteCleanupReporter(
-            observedRootRegistrations,
-          ),
-        }),
+        artifactByteAccess,
         interactionPersistence: persistence,
       }),
       persistence,

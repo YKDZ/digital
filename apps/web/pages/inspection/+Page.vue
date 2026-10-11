@@ -51,7 +51,7 @@ onMounted(() => {
   <section class="grid gap-6">
     <template v-if="recordId">
       <p
-        v-if="targetStatus === 'loading'"
+        v-if="targetStatus === 'loading' && !target"
         role="status"
         class="text-muted-foreground"
       >

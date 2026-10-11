@@ -158,22 +158,27 @@ test("初次失败可重试，续页失败保留内容且不自动反复请求",
     );
   });
   await page.goto("/");
+  const failure = page.getByRole("alert");
   await expect(
     page.getByRole("heading", { name: "暂时无法加载内容" }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "重试", exact: true }).click();
+  await expect(failure).toContainText("暂不可用");
+  await failure.getByRole("button", { name: "重试", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "查看 内容 1", exact: true }),
   ).toBeVisible();
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-  await expect(page.getByRole("alert")).toHaveText("下一页未能加载");
+  const nextPage = page.locator('[aria-live="polite"]');
+  await expect(nextPage.getByRole("alert")).toHaveText(
+    "下一页未能加载：暂不可用",
+  );
   await expect(page.getByRole("button", { name: /^查看 内容 / })).toHaveCount(
     24,
   );
   await page.getByRole("button", { name: "切换为列表模式" }).click();
   await expect(page.getByRole("table")).toBeVisible();
   expect(nextAttempts).toBe(1);
-  await page.getByRole("button", { name: "重试", exact: true }).click();
+  await nextPage.getByRole("button", { name: "重试", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "查看 内容 25", exact: true }),
   ).toBeVisible();
