@@ -12,7 +12,8 @@ test("创建应答丢失后停止已创建的自有容器，保留产品数据�
     path.join(tmpdir(), "digital-container-response-loss-"),
   );
   const state = path.join(root, "daemon.json");
-  const cli = path.join(root, "docker.ts");
+  // 夹具内容是纯 JavaScript；明确 ESM 扩展名，避免每条 Docker 命令重复处理 TypeScript 入口。
+  const cli = path.join(root, "docker.mjs");
   await writeFile(
     state,
     JSON.stringify({
