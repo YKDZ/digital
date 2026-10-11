@@ -66,6 +66,8 @@ export type CliJourneyContext = {
 export type CliJourney = {
   readonly name: string;
   readonly modes: readonly CliJourneyMode[];
+  /** 私有真实语料旅程只在显式入口运行，普通受控检查保留独立业务覆盖。 */
+  readonly realCorpus?: boolean;
   /**
    * 旅程显式选定的来源装配。省略即离线：绝不因父终端遗留配置使用真实来源。
    * `controlled` 的清单由旅程给出，环境只转达选择，不读取清单内容。

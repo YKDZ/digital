@@ -1772,7 +1772,11 @@ const journey: CliJourney = {
     const corpus = corpusRoot(context);
     const rawOracle = parseSensitiveJson(
       await readFile(
-        path.join(corpus, "references/reviewed-oracle.json"),
+        path.resolve(
+          context.packageRoot,
+          "../..",
+          "fixtures/live-corpus/references/reviewed-oracle.json",
+        ),
         "utf8",
       ),
       "FANBOX reviewed oracle JSON is invalid",

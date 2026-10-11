@@ -65,7 +65,8 @@ async function syntheticJourney(
   cleanup.push(directory);
   const packageRoot = path.join(directory, "apps", "cli");
   const corpus = path.join(directory, ".scratch", "acceptance-corpus");
-  const references = path.join(corpus, "references");
+  const reviewedCorpus = path.join(directory, "fixtures", "live-corpus");
+  const references = path.join(reviewedCorpus, "references");
   const assets = path.join(corpus, "assets");
   const evidenceParent = path.join(directory, "evidence");
   const workDir = path.join(directory, "work");
@@ -99,7 +100,7 @@ async function syntheticJourney(
     await writeFile(path.join(root, "media.bin"), `media-${post.logicalRoot}`);
   }
   await writeFile(
-    path.join(corpus, "files-from.txt"),
+    path.join(reviewedCorpus, "files-from.txt"),
     `${logicalRoots.join("\n")}\n`,
   );
   let ownedOffset = 0;

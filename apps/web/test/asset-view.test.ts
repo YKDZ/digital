@@ -84,7 +84,6 @@ describe("formal asset view", () => {
       relationships: [
         {
           id: "relationship-1",
-          sourceRecordIds: ["record-1"],
           participants: [
             { entityId: "asset-1", role: "asset" },
             { entityId: "creator", role: "fanbox.post.creator" },
@@ -160,7 +159,6 @@ describe("formal asset view", () => {
       relationships: [
         {
           id: "relationship-1",
-          sourceRecordIds: ["record-1"],
           participants: [
             { entityId: "asset-fanbox", role: "asset" },
             { entityId: "creator", role: "fanbox.post.creator" },
@@ -278,7 +276,6 @@ describe("formal asset view", () => {
       relationships: [
         {
           id: "relationship-circle",
-          sourceRecordIds: ["record-1"],
           participants: [
             { entityId: "asset-dlsite", role: "asset" },
             { entityId: "circle", role: "circle" },
@@ -287,7 +284,6 @@ describe("formal asset view", () => {
         },
         {
           id: "relationship-voice",
-          sourceRecordIds: ["record-1"],
           participants: [
             { entityId: "asset-dlsite", role: "asset" },
             { entityId: "voice", role: "voice" },
@@ -296,7 +292,6 @@ describe("formal asset view", () => {
         },
         {
           id: "relationship-series",
-          sourceRecordIds: ["record-1"],
           participants: [
             { entityId: "asset-dlsite", role: "asset" },
             { entityId: "series", role: "dlsite.series.member" },
@@ -366,7 +361,6 @@ describe("formal asset view", () => {
       relationships: [
         {
           id: "relationship-contributor",
-          sourceRecordIds: ["record-1"],
           participants: [
             { entityId: "asset-book", role: "asset" },
             { entityId: "contributor", role: "book.contributor" },

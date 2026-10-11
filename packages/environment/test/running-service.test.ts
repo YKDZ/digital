@@ -372,7 +372,21 @@ beforeAll(async () => {
     environment: name,
     config: { profile: "running-service", webPort: port },
   });
-  expect(prepared.status).toBe("prepared");
+  const preparationDiagnostic =
+    prepared.status === "prepared"
+      ? ""
+      : JSON.stringify({
+          preparation: prepared,
+          ownerLogs: await Promise.all(
+            prepared.logs.files.map(async (file) => ({
+              file,
+              content: await readFile(file, "utf8").catch((error: unknown) =>
+                String(error),
+              ),
+            })),
+          ),
+        });
+  expect(prepared.status, preparationDiagnostic).toBe("prepared");
   env = {
     name,
     port,

@@ -1,4 +1,9 @@
 {
   "extends": ["//"],
-  "tags": ["presentation"]
+  "tags": ["presentation"],
+  "tasks": {
+    "build": {
+      "outputs": []
+    }
+  }
 }

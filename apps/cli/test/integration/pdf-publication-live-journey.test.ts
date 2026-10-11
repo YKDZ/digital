@@ -11,7 +11,7 @@ it("PDF live journey 只接受已审核的本地格式 oracle 切片", async () 
       path.resolve(
         import.meta.dirname,
         "../../../..",
-        ".scratch/acceptance-corpus/references/reviewed-oracle.json",
+        "fixtures/live-corpus/references/reviewed-oracle.json",
       ),
       "utf8",
     ),

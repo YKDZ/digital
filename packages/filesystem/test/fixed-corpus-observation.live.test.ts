@@ -30,7 +30,7 @@ function logicalRootDirectory(logicalRoot: string): string {
 
 async function fixedLogicalRoots(): Promise<readonly string[]> {
   const manifest = await readFile(
-    path.join(corpusDirectory, "files-from.txt"),
+    path.join(workspaceRoot, "fixtures/live-corpus/files-from.txt"),
     "utf8",
   );
   return manifest
@@ -99,7 +99,7 @@ function compareCodeUnits(left: string, right: string): number {
 }
 
 /**
- * 这项普通验收检查刻意避免在每次根检查时哈希 123 GiB 私有语料。它围绕一次只读观察，
+ * 这项显式真实验收避免哈希全部 123 GiB 私有语料。它围绕一次只读观察，
  * 冻结每个条目的类型、路径、可用时的设备/inode、模式、大小、修改时间和状态变化时间。
  * 普通写入会更改状态变化时间（通常也会更改大小或修改时间）；独立 CLI 深度完整性任务
  * 才会选择完整哈希。

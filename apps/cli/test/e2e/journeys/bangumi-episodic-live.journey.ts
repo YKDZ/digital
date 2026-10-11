@@ -123,7 +123,7 @@ async function readBangumiOracles(
         path.resolve(
           context.packageRoot,
           "../..",
-          ".scratch/acceptance-corpus/references/reviewed-oracle.json",
+          "fixtures/live-corpus/references/reviewed-oracle.json",
         ),
         "utf8",
       ),

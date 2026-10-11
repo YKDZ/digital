@@ -404,9 +404,14 @@ describe("asset delivery view", () => {
     expect(triggerAutomation).not.toHaveBeenCalled();
   });
 
-  it("delivers a managed book cover without exposing its filesystem address", () => {
+  it("delivers a managed book cover without exposing its filesystem address", async () => {
+    const temporary = await mkdtemp(
+      path.join(tmpdir(), "digital-disposable-web-cover-projection-"),
+    );
+    const productData = path.join(temporary, "data");
     const previous = process.env.DIGITAL_PRODUCT_DATA;
-    process.env.DIGITAL_PRODUCT_DATA = "/product";
+    await prepareWebProductData(productData);
+    process.env.DIGITAL_PRODUCT_DATA = productData;
     try {
       bindWebDelivery();
       const view = deliveryAssetView({
@@ -418,12 +423,10 @@ describe("asset delivery view", () => {
         classifications: [],
         available: true,
         relationships: [],
-        cover:
-          "/product/managed-artifacts/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        cover: `${productData}/managed-artifacts/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`,
         book: {
           title: "书",
-          cover:
-            "/product/managed-artifacts/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          cover: `${productData}/managed-artifacts/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`,
           contributors: [],
           files: [],
         },
@@ -432,8 +435,10 @@ describe("asset delivery view", () => {
         "/api/artifacts/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       );
     } finally {
+      await shutdownBoundWebProduct();
       if (previous === undefined) delete process.env.DIGITAL_PRODUCT_DATA;
       else process.env.DIGITAL_PRODUCT_DATA = previous;
+      await rm(temporary, { recursive: true, force: true });
     }
   });
 
@@ -1548,9 +1553,14 @@ describe("asset delivery view", () => {
     }
   });
 
-  it("serves managed covers through the Web API instead of exposing workspace paths", () => {
+  it("serves managed covers through the Web API instead of exposing workspace paths", async () => {
+    const temporary = await mkdtemp(
+      path.join(tmpdir(), "digital-disposable-web-cover-projection-"),
+    );
+    const productData = path.join(temporary, "data");
     const previous = process.env.DIGITAL_PRODUCT_DATA;
-    process.env.DIGITAL_PRODUCT_DATA = "/workspaces/digital/.scratch/product";
+    await prepareWebProductData(productData);
+    process.env.DIGITAL_PRODUCT_DATA = productData;
     try {
       bindWebDelivery();
       const digest =
@@ -1561,13 +1571,13 @@ describe("asset delivery view", () => {
         cardComponent: "generic",
         detailComponent: "generic",
         title: "带封面的内容",
-        cover: `/workspaces/digital/.scratch/product/managed-artifacts/e3/${digest}`,
+        cover: `${productData}/managed-artifacts/e3/${digest}`,
         files: [
           {
             name: "台本.pdf",
             format: "PDF",
             revisionId: "artifact-revision_script",
-            image: `/workspaces/digital/.scratch/product/managed-artifacts/e3/${digest}`,
+            image: `${productData}/managed-artifacts/e3/${digest}`,
           },
         ],
         book: {
@@ -1578,7 +1588,7 @@ describe("asset delivery view", () => {
               name: "台本.pdf",
               format: "PDF",
               revisionId: "artifact-revision_script",
-              image: `/workspaces/digital/.scratch/product/managed-artifacts/e3/${digest}`,
+              image: `${productData}/managed-artifacts/e3/${digest}`,
             },
           ],
         },
@@ -1598,14 +1608,21 @@ describe("asset delivery view", () => {
       ]);
       expect(view.book?.files).toEqual(view.files);
     } finally {
+      await shutdownBoundWebProduct();
       if (previous === undefined) delete process.env.DIGITAL_PRODUCT_DATA;
       else process.env.DIGITAL_PRODUCT_DATA = previous;
+      await rm(temporary, { recursive: true, force: true });
     }
   });
 
-  it("serves source-specific managed covers through the Web API", () => {
+  it("serves source-specific managed covers through the Web API", async () => {
+    const temporary = await mkdtemp(
+      path.join(tmpdir(), "digital-disposable-web-cover-projection-"),
+    );
+    const productData = path.join(temporary, "data");
     const previous = process.env.DIGITAL_PRODUCT_DATA;
-    process.env.DIGITAL_PRODUCT_DATA = "/workspaces/digital/.scratch/product";
+    await prepareWebProductData(productData);
+    process.env.DIGITAL_PRODUCT_DATA = productData;
     try {
       bindWebDelivery();
       const digest =
@@ -1616,13 +1633,13 @@ describe("asset delivery view", () => {
         cardComponent: "dlsite",
         detailComponent: "dlsite",
         title: "来源视图内容",
-        cover: `/workspaces/digital/.scratch/product/managed-artifacts/fd/${digest}`,
+        cover: `${productData}/managed-artifacts/fd/${digest}`,
         classifications: [],
         available: true,
         relationships: [],
         dlsite: {
           title: "来源视图内容",
-          cover: `/workspaces/digital/.scratch/product/managed-artifacts/fd/${digest}`,
+          cover: `${productData}/managed-artifacts/fd/${digest}`,
           languages: [],
           classifications: [],
           credits: [],
@@ -1635,19 +1652,26 @@ describe("asset delivery view", () => {
       expect(view.dlsite?.cover).toBe(`/api/artifacts/${digest}`);
       expect(JSON.stringify(view)).not.toContain("/workspaces/digital");
     } finally {
+      await shutdownBoundWebProduct();
       if (previous === undefined) delete process.env.DIGITAL_PRODUCT_DATA;
       else process.env.DIGITAL_PRODUCT_DATA = previous;
+      await rm(temporary, { recursive: true, force: true });
     }
   });
 
-  it("serves film poster paths through the Web API", () => {
+  it("serves film poster paths through the Web API", async () => {
+    const temporary = await mkdtemp(
+      path.join(tmpdir(), "digital-disposable-web-cover-projection-"),
+    );
+    const productData = path.join(temporary, "data");
     const previous = process.env.DIGITAL_PRODUCT_DATA;
-    process.env.DIGITAL_PRODUCT_DATA = "/workspaces/digital/.scratch/product";
+    await prepareWebProductData(productData);
+    process.env.DIGITAL_PRODUCT_DATA = productData;
     try {
       bindWebDelivery();
       const digest =
         "ad04989ea8a6c584fddd9347aa1930afbac3b248465f027c7e387dba0d140f55";
-      const address = `/workspaces/digital/.scratch/product/managed-artifacts/ad/${digest}`;
+      const address = `${productData}/managed-artifacts/ad/${digest}`;
       const view = deliveryAssetView({
         id: "film-1",
         refreshTarget: { subjectId: "film-1" },
@@ -1673,8 +1697,10 @@ describe("asset delivery view", () => {
       expect(view.film?.cover).toBe(`/api/artifacts/${digest}`);
       expect(JSON.stringify(view)).not.toContain("/workspaces/digital");
     } finally {
+      await shutdownBoundWebProduct();
       if (previous === undefined) delete process.env.DIGITAL_PRODUCT_DATA;
       else process.env.DIGITAL_PRODUCT_DATA = previous;
+      await rm(temporary, { recursive: true, force: true });
     }
   });
 

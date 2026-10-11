@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -17,6 +17,7 @@ import {
   type ProvidedEnvironment,
   type ScenarioSource,
 } from "./environment-runtime.ts";
+import { fixedCorpusRoots } from "./fixed-corpus.ts";
 import type {
   CliJourney,
   CliJourneyCommand,
@@ -198,7 +199,9 @@ function parseJourneyRunTargets(
   return targets;
 }
 
-async function discoverJourneys(): Promise<readonly CliJourney[]> {
+async function discoverJourneys(
+  selection?: "default" | "real",
+): Promise<readonly CliJourney[]> {
   const journeyRoot = path.join(e2eRoot, "journeys");
   const entries = await readdir(journeyRoot, { withFileTypes: true });
   const journeyFiles = entries
@@ -218,11 +221,20 @@ async function discoverJourneys(): Promise<readonly CliJourney[]> {
       return loaded.default;
     }),
   );
-  const selection = process.env.DIGITAL_E2E_JOURNEY;
-  if (selection === undefined) return journeys;
-  const selected = journeys.filter((journey) => journey.name === selection);
+  const requiresRealInputs = (journey: CliJourney): boolean =>
+    journey.realCorpus === true || journey.source?.mode === "real";
+  if (selection !== undefined)
+    return journeys.filter((journey) =>
+      selection === "real"
+        ? requiresRealInputs(journey)
+        : !requiresRealInputs(journey),
+    );
+  const named = process.env.DIGITAL_E2E_JOURNEY;
+  if (named === undefined)
+    return journeys.filter((journey) => !requiresRealInputs(journey));
+  const selected = journeys.filter((journey) => journey.name === named);
   if (selected.length === 0)
-    throw new Error(`unknown DIGITAL_E2E_JOURNEY ${JSON.stringify(selection)}`);
+    throw new Error(`unknown DIGITAL_E2E_JOURNEY ${JSON.stringify(named)}`);
   return selected;
 }
 
@@ -770,54 +782,130 @@ export async function runJourneys(options: {
   readonly mode: CliJourneyMode;
   readonly packedBin?: string;
   readonly signal?: AbortSignal;
+  readonly selection?: "default" | "real";
 }): Promise<readonly string[]> {
   const passed: string[] = [];
-  for (const journey of await discoverJourneys()) {
-    if (!journey.modes.includes(options.mode)) continue;
-    passed.push(
-      await runJourney({
-        journey,
-        mode: options.mode,
-        ...(options.packedBin === undefined
-          ? {}
-          : { packedBin: options.packedBin }),
-        ...(options.signal === undefined ? {} : { signal: options.signal }),
-      }),
-    );
+  const journeys = (await discoverJourneys(options.selection)).filter(
+    (journey) => journey.modes.includes(options.mode),
+  );
+  for (const [index, journey] of journeys.entries()) {
+    try {
+      passed.push(
+        await runJourney({
+          journey,
+          mode: options.mode,
+          ...(options.packedBin === undefined
+            ? {}
+            : { packedBin: options.packedBin }),
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
+        }),
+      );
+    } catch (error) {
+      if (options.selection === "real")
+        process.stderr.write(
+          `${JSON.stringify({
+            mode: options.mode,
+            status: "failed",
+            journey: journey.name,
+            sourceMode: journeySource(journey).mode,
+            passed,
+            notExecuted: journeys.slice(index + 1).map((entry) => entry.name),
+          })}\n`,
+        );
+      throw error;
+    }
   }
   return passed;
+}
+
+/** 显式全量真实入口先报告缺失素材；不准备无从执行的世代，也不把未执行计为通过。 */
+async function requireRealCorpus(
+  targets: readonly JourneyRunTarget[],
+): Promise<void> {
+  const roots = await fixedCorpusRoots({
+    mode: targets[0]!.mode,
+    packageRoot,
+    workDir: "",
+    productDataDirectory: "",
+    environmentName: "",
+    commandEnvironment: {},
+  });
+  const missing: string[] = [];
+  for (const root of roots) {
+    try {
+      if (!(await stat(root.directory)).isDirectory())
+        missing.push(root.logicalRoot);
+    } catch (error) {
+      if (
+        !(error instanceof Error && "code" in error && error.code === "ENOENT")
+      )
+        throw error;
+      missing.push(root.logicalRoot);
+    }
+  }
+  if (missing.length === 0) return;
+  const journeys = await discoverJourneys("real");
+  process.stderr.write(
+    `${JSON.stringify({
+      status: "condition-missing",
+      condition: "private-corpus-directories",
+      missingRoots: missing,
+      notExecuted: targets.flatMap((target) =>
+        journeys
+          .filter((journey) => journey.modes.includes(target.mode))
+          .map((journey) => ({ mode: target.mode, journey: journey.name })),
+      ),
+    })}\n`,
+  );
+  throw new Error(
+    "显式真实验收缺少材料，未执行来源采集或产品验收；请按 fixtures/live-corpus/files-from.txt 准备目录。",
+  );
 }
 
 async function runJourneyTargets(
   targets: readonly JourneyRunTarget[],
   signal: AbortSignal | undefined,
+  selection: "default" | "real" | undefined,
 ): Promise<readonly string[]> {
   const passed: string[] = [];
-  for (const target of targets) {
+  for (const [index, target] of targets.entries()) {
     const options =
       target.packedBin === undefined ? {} : { packedBin: target.packedBin };
-    switch (target.mode) {
-      case "source":
-      case "distribution":
-        passed.push(
-          ...(await runJourneys({
-            mode: target.mode,
-            ...options,
-            ...(signal === undefined ? {} : { signal }),
-          })),
+    try {
+      switch (target.mode) {
+        case "source":
+        case "distribution":
+          passed.push(
+            ...(await runJourneys({
+              mode: target.mode,
+              ...(selection === undefined ? {} : { selection }),
+              ...options,
+              ...(signal === undefined ? {} : { signal }),
+            })),
+          );
+          break;
+        case "packed":
+          passed.push(
+            ...(await runJourneys({
+              mode: target.mode,
+              ...(selection === undefined ? {} : { selection }),
+              ...options,
+              ...(signal === undefined ? {} : { signal }),
+            })),
+          );
+          break;
+        default:
+          assertNever(target.mode);
+      }
+    } catch (error) {
+      if (selection === "real" && index + 1 < targets.length)
+        process.stderr.write(
+          `${JSON.stringify({
+            status: "not-executed",
+            modes: targets.slice(index + 1).map((entry) => entry.mode),
+          })}\n`,
         );
-        break;
-      case "packed":
-        passed.push(
-          ...(await runJourneys({
-            mode: target.mode,
-            ...options,
-            ...(signal === undefined ? {} : { signal }),
-          })),
-        );
-        break;
-      default:
-        assertNever(target.mode);
+      throw error;
     }
   }
   return passed;
@@ -832,9 +920,20 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     });
   }
   try {
+    const args = process.argv.slice(2);
+    const selection =
+      args[0] === "--default"
+        ? "default"
+        : args[0] === "--real"
+          ? "real"
+          : undefined;
+    if (selection !== undefined) args.shift();
+    const targets = parseJourneyRunTargets(args);
+    if (selection === "real") await requireRealCorpus(targets);
     const passed = await runJourneyTargets(
-      parseJourneyRunTargets(process.argv.slice(2)),
+      targets,
       cancellation.signal,
+      selection,
     );
     process.stdout.write(`${passed.join("\n")}\n`);
     if (cancellation.signal.aborted) process.exitCode = 1;

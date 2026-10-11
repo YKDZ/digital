@@ -103,7 +103,11 @@ const journey: CliJourney = {
     const corpus = corpusRoot(context);
     const oracle = JSON.parse(
       await readFile(
-        path.join(corpus, "references/reviewed-oracle.json"),
+        path.resolve(
+          context.packageRoot,
+          "../..",
+          "fixtures/live-corpus/references/reviewed-oracle.json",
+        ),
         "utf8",
       ),
     ) as {

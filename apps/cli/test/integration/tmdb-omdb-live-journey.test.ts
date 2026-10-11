@@ -1,3 +1,5 @@
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -7,8 +9,15 @@ import journey, {
   assertSourceEnrichedFilm,
 } from "../e2e/journeys/tmdb-omdb-live.journey.ts";
 
-afterEach(() => {
+const temporaryDirectories: string[] = [];
+
+afterEach(async () => {
   vi.unstubAllEnvs();
+  await Promise.all(
+    temporaryDirectories
+      .splice(0)
+      .map((directory) => rm(directory, { recursive: true, force: true })),
+  );
 });
 
 describe("TMDB and OMDb live journey contract", () => {
@@ -39,11 +48,32 @@ describe("TMDB and OMDb live journey contract", () => {
   it("plans strict recognition, exact directed recognition, reuse, and metadata refresh through one SQLite catalogue", async () => {
     vi.stubEnv("DIGITAL_TMDB_ACCESS_TOKEN", "test-tmdb-token");
     vi.stubEnv("DIGITAL_OMDB_API_KEY", "test-omdb-key");
+    const workspace = await mkdtemp(
+      path.join(tmpdir(), "digital-film-contract-"),
+    );
+    temporaryDirectories.push(workspace);
+    const packageRoot = path.join(workspace, "apps", "cli");
+    // 本例只验证命令计划，两个合成目录不代表真实影片验收通过。
+    await Promise.all(
+      [
+        "media/电影/恐怖直播 (2013)",
+        "media/电影/[怒火救援].Man.on.Fire.2004.Blu-ray.1080p.AVC.DTS-HD.MA5.1-CMCT",
+      ].map((logicalRoot) =>
+        mkdir(
+          path.join(
+            workspace,
+            ".scratch/acceptance-corpus/assets",
+            logicalRoot,
+          ),
+          { recursive: true },
+        ),
+      ),
+    );
     const context = {
       mode: "source",
-      packageRoot: path.resolve(import.meta.dirname, "../.."),
-      workDir: "/temporary-work",
-      productDataDirectory: "/temporary-work/product-data",
+      packageRoot,
+      workDir: path.join(workspace, "work"),
+      productDataDirectory: path.join(workspace, "work/product-data"),
       environmentName: "completion-02-fixture-context",
       commandEnvironment: {},
     } as const;
@@ -68,8 +98,8 @@ describe("TMDB and OMDb live journey contract", () => {
       stdout,
       stderr: "",
     });
-    const strictRoot = result(JSON.stringify({ id: "strict-root" }));
-    const directedRoot = result(JSON.stringify({ id: "directed-root" }));
+    const strictRoot = result(JSON.stringify({ rootIds: ["strict-root"] }));
+    const directedRoot = result(JSON.stringify({ rootIds: ["directed-root"] }));
     const strictAccepted = result(
       JSON.stringify({ accepted: { entity: { id: "strict-asset" } } }),
     );
@@ -120,7 +150,15 @@ describe("TMDB and OMDb live journey contract", () => {
           nativeAddress: "omdb:imdb:tt2990738",
         },
       ],
-      metadata: [],
+      metadata: [
+        {
+          target: { kind: "entity", entityId: "asset-1" },
+          property: "asset.title",
+          value: "The Terror Live",
+          sourceSlot: "omdb.movie.title",
+          sourceRecordIds: ["omdb-record"],
+        },
+      ],
       entities: [],
       entityMentions: [],
       entityResolutionDecisions: [],
@@ -194,6 +232,36 @@ describe("TMDB and OMDb live journey contract", () => {
       metadataPolicyConflicts: [],
       recognitionExplanation: "strict title and year",
     };
+    // 普通消费读取采用当前 facts；原始来源断言仍单独保留未采用的 OMDb 标题。
+    const projected = {
+      ...accepted,
+      facts: {
+        id: "asset-1",
+        descriptions: [
+          {
+            target: { kind: "entity", entityId: "asset-1" },
+            metadata: accepted.effectiveMetadata.map((entry) => ({
+              property: entry.property,
+              result: {
+                status: "resolved",
+                values: [
+                  {
+                    ...entry,
+                    assertions: [
+                      {
+                        target: { kind: "entity", entityId: "asset-1" },
+                        sourceSlot: entry.sourceSlot,
+                        sourceRecordIds: entry.sourceRecordIds,
+                      },
+                    ],
+                  },
+                ],
+              },
+            })),
+          },
+        ],
+      },
+    };
     const common = {
       format: "temporary-asset-refresh-inspection/v1",
       unstable: true,
@@ -236,7 +304,7 @@ describe("TMDB and OMDb live journey contract", () => {
         compatibility: { version: "1" },
         dispositions: [],
       },
-      accepted,
+      accepted: projected,
     } as unknown as Parameters<typeof acceptedProjection>[0];
     const itemized = {
       ...common,
@@ -255,7 +323,7 @@ describe("TMDB and OMDb live journey contract", () => {
           key: "directed-recognition",
           relativePaths: ["."],
           outcome: "accepted",
-          accepted,
+          accepted: projected,
         },
       ],
     } as unknown as Parameters<typeof acceptedProjection>[0];

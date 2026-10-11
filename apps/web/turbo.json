@@ -5,8 +5,11 @@
     "build": {
       "outputs": ["dist/**"]
     },
+    "test": {
+      "dependsOn": ["$TURBO_EXTENDS$", "@digital/db-migrations#build"]
+    },
     "test:e2e": {
-      "dependsOn": ["build"],
+      "dependsOn": ["$TURBO_EXTENDS$", "@digital/db-migrations#build"],
       "cache": false
     }
   }

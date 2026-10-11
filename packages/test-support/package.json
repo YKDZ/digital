@@ -13,6 +13,12 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./product-client": {
+      "digital-source": "./src/product-client.ts",
+      "digital-development": "./.turbo/development/dist/product-client.js",
+      "types": "./dist/product-client.d.ts",
+      "default": "./dist/product-client.js"
+    },
     "./source-io": {
       "digital-source": "./src/source-io.ts",
       "digital-development": "./.turbo/development/dist/source-io.js",
