@@ -23389,6 +23389,7 @@ export class AssetRefreshWorkflow {
 
 type AssetRefreshAutomationOperations = Pick<
   AssetRefreshWorkflow,
+  | "inspectAssetLibraryScan"
   | "scanAssetLibrary"
   | "inspect"
   | "recoverRunningExecutions"
@@ -23597,8 +23598,15 @@ export class AssetRefreshAutomation {
       const reconciliation = await this.reconcileParentInformation(
         run.parentExecutionId,
       );
+      const scan =
+        execution.execution.operationKind === "scan-asset-library"
+          ? await this.workflow.inspectAssetLibraryScan(run.parentExecutionId)
+          : undefined;
       const hasUnavailablePrerequisite =
         executionHasUnavailablePrerequisite(execution.execution) ||
+        scan?.directories.some((directory) =>
+          directory.workItems.some(workFailureIsPrerequisiteUnavailable),
+        ) === true ||
         reconciliation.hasUnavailablePrerequisite;
       if (trigger !== "scan-now" && hasUnavailablePrerequisite) {
         await this.ports.automationCommands.setAutomationIntentEnabled(
