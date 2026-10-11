@@ -51,4 +51,4 @@ catalog:
   "vite": ^8.1.5
   "vitest": ^4.1.10
   "vue": ^3.5.39
-  "vue-tsc": ^3.3.6
+  "vue-tsc": ^3.3.12
