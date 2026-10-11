@@ -61,6 +61,8 @@ jobs:
       - name: 运行相同本地入口
         id: execution
         timeout-minutes: 30
+        env:
+          TURBO_CONCURRENCY: ${{ matrix.capability == 'root' && '2' || '10' }}
         run: node --conditions=digital-source scripts/ci-environment.ts run ${{ matrix.capability }}
       - name: 停止自有环境并收集真实数据及完整日志
         id: collection

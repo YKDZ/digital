@@ -150,6 +150,7 @@ async function run(): Promise<number> {
       "LC_ALL",
       "TERM",
       "CI",
+      "TURBO_CONCURRENCY",
       "COREPACK_HOME",
       "PNPM_HOME",
       "PLAYWRIGHT_BROWSERS_PATH",

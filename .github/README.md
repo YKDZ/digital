@@ -13,6 +13,8 @@ node --conditions=digital-source scripts/ci-environment.ts collect cli
 
 将 `cli` 换为 `web` 可运行浏览器链；`root` 需要独占的新工作区，运行前会登记环境目录为空。证据默认保存到 `.scratch/ci/<root|cli|web>`，可用 `DIGITAL_CI_EVIDENCE` 选择本次独立目录。每次重跑应使用新目录，避免覆盖前次证据。
 
+CI 根检查按托管运行器的资源预算将 Turbo 任务并发限制为 2，CLI/Web 保持默认 10；本地相同条件用 `TURBO_CONCURRENCY=2 node --conditions=digital-source scripts/ci-environment.ts run root` 复现，内部仍执行 `pnpm run check`，测试和作业期限保持不变。
+
 CLI 的 `--retain-on-success` 保持成功结局，停止并确认退出后暂不删除产品数据；不提供该选项时仍按原本行为回收。Web 使用已有 `--keep-on-success true`，成功后服务仍运行，后续 `collect` 会经公共 stop/inspect 停止并独立确认退出，然后收集整个真实产品数据根和停止后的完整日志。适用的浏览器诊断随场景结果保留。收集失败不会阻止其他明确自有环境的停止。
 
 CI 在执行失败、超时或取消后仍进入独立停止、收集与上传步骤。上传要求有真实文件；只有实际 upload-artifact 成功，并通过 GitHub API 核实产物 ID、名称、运行归属和有效字节后，才调用公共 delete。保存或上传失败不执行删除；未知退出状态保留载体，执行、保存和清理结果分别报告。删除后的结果另写入实际作业日志，避免只留在已经上传之后的本地文件里。本地 `collect` 成功仅证明收集完成，不能代替真实上传。
