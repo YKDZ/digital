@@ -7958,8 +7958,8 @@ function effectiveIdentityMemberMetadata(
   );
   const sourceRecords = [
     ...new Map(
-      accepted
-        .flatMap((item) => item.metadataSourceRecords ?? [])
+      facts
+        .flatMap(({ accepted: item }) => item.metadataSourceRecords ?? [])
         .map((record) => [record.id, record]),
     ).values(),
   ];
