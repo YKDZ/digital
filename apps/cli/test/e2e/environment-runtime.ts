@@ -567,6 +567,8 @@ export async function recycleOwnedEnvironment(input: {
   readonly workspacePath: string;
   readonly environment: string;
   readonly outcome: OwnedRecycling["outcome"];
+  /** 成功交接给上传调用方：停止和退出确认照常执行，数据暂不删除。 */
+  readonly retainOnSuccess?: boolean;
   /** 清理上下文：取消在停止/确认之后到达时，删除一律不执行、现场保留。 */
   readonly signal?: AbortSignal;
 }): Promise<OwnedRecycling> {
@@ -609,6 +611,19 @@ export async function recycleOwnedEnvironment(input: {
       retainedLogs,
     };
   }
+  if (input.retainOnSuccess === true)
+    return {
+      outcome: input.outcome,
+      stop: stopped,
+      exitConfirmation: confirmation,
+      problems,
+      recyclingDiagnostics: [
+        ...diagnostics,
+        "成功结果已保留，等待调用方实际上传后显式删除",
+      ],
+      retainedDataRoot: stopped.environment.productDataRoot,
+      retainedLogs,
+    };
   const deletion = await deleteScenarioEnvironment(input);
   if (deletion.status !== "deleted" && deletion.status !== "already-deleted")
     problems.push(

@@ -175,6 +175,8 @@
     "deployment": {
       "cache": false,
       "passThroughEnv": [
+        "DIGITAL_DEPLOYMENT_*",
+        "DIGITAL_COMPOSE_CHECK_*",
         "DIGITAL_DEPLOYMENT_PLAYWRIGHT_CLIENT",
         "PLAYWRIGHT_BROWSERS_PATH"
       ]

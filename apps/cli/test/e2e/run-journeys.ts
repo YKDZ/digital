@@ -1,5 +1,12 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -42,6 +49,7 @@ const journeyRunnerUsage = [
   "Usage:",
   "  run-journeys.ts <source|distribution> [source|distribution ...]",
   "  run-journeys.ts packed <bin-path>",
+  "  可选：--retain-on-success --handoff-ledger <path> --evidence-directory <path>",
 ].join("\n");
 
 function invalidArguments(message: string): never {
@@ -411,6 +419,10 @@ const evidenceRoot = path.join(workspaceRoot, "run", "02-evidence");
 export function ownedEnvironmentLifecycle(
   options: {
     readonly webPort?: number;
+    /** 成功后停止并保留，交给调用方在实际上传后显式删除。 */
+    readonly retainOnSuccess?: boolean;
+    /** prepare 之前保存归属，取消时仍能用公开操作收尾。 */
+    readonly handoffLedger?: string;
   } = {},
 ): JourneyEnvironmentLifecycle {
   return {
@@ -419,6 +431,20 @@ export function ownedEnvironmentLifecycle(
         purpose: `${journey.name}-${mode}`,
         runId,
       });
+      if (options.handoffLedger !== undefined) {
+        await mkdir(path.dirname(options.handoffLedger), { recursive: true });
+        await appendFile(
+          options.handoffLedger,
+          `${JSON.stringify({
+            workspacePath: workspaceRoot,
+            environment,
+            runId,
+            journey: journey.name,
+            mode,
+            issuedAt: new Date().toISOString(),
+          })}\n`,
+        );
+      }
       return await prepareScenarioEnvironment({
         workspacePath: workspaceRoot,
         environment,
@@ -431,6 +457,9 @@ export function ownedEnvironmentLifecycle(
         workspacePath: environment.workspacePath,
         environment: environment.environment,
         outcome,
+        ...(options.retainOnSuccess === undefined
+          ? {}
+          : { retainOnSuccess: options.retainOnSuccess }),
         ...(signal === undefined ? {} : { signal }),
       });
     },
@@ -538,10 +567,21 @@ export async function runJourney(options: {
   readonly packedBin?: string;
   readonly executeCommand?: JourneyCommandExecutor;
   readonly lifecycle?: JourneyEnvironmentLifecycle;
+  readonly retainOnSuccess?: boolean;
+  readonly handoffLedger?: string;
   readonly evidenceDirectory?: string;
   readonly signal?: AbortSignal;
 }): Promise<string> {
-  const lifecycle = options.lifecycle ?? ownedEnvironmentLifecycle();
+  const lifecycle =
+    options.lifecycle ??
+    ownedEnvironmentLifecycle({
+      ...(options.retainOnSuccess === undefined
+        ? {}
+        : { retainOnSuccess: options.retainOnSuccess }),
+      ...(options.handoffLedger === undefined
+        ? {}
+        : { handoffLedger: options.handoffLedger }),
+    });
   const evidenceDirectory = options.evidenceDirectory ?? evidenceRoot;
   const workDir = await mkdtemp(
     path.join(
@@ -767,6 +807,9 @@ export async function runJourney(options: {
 }
 
 export async function runJourneys(options: {
+  readonly retainOnSuccess?: boolean;
+  readonly handoffLedger?: string;
+  readonly evidenceDirectory?: string;
   readonly mode: CliJourneyMode;
   readonly packedBin?: string;
   readonly signal?: AbortSignal;
@@ -778,6 +821,15 @@ export async function runJourneys(options: {
       await runJourney({
         journey,
         mode: options.mode,
+        ...(options.retainOnSuccess === undefined
+          ? {}
+          : { retainOnSuccess: options.retainOnSuccess }),
+        ...(options.handoffLedger === undefined
+          ? {}
+          : { handoffLedger: options.handoffLedger }),
+        ...(options.evidenceDirectory === undefined
+          ? {}
+          : { evidenceDirectory: options.evidenceDirectory }),
         ...(options.packedBin === undefined
           ? {}
           : { packedBin: options.packedBin }),
@@ -791,6 +843,11 @@ export async function runJourneys(options: {
 async function runJourneyTargets(
   targets: readonly JourneyRunTarget[],
   signal: AbortSignal | undefined,
+  retention: {
+    retainOnSuccess?: boolean;
+    handoffLedger?: string;
+    evidenceDirectory?: string;
+  } = {},
 ): Promise<readonly string[]> {
   const passed: string[] = [];
   for (const target of targets) {
@@ -803,6 +860,7 @@ async function runJourneyTargets(
           ...(await runJourneys({
             mode: target.mode,
             ...options,
+            ...retention,
             ...(signal === undefined ? {} : { signal }),
           })),
         );
@@ -812,6 +870,7 @@ async function runJourneyTargets(
           ...(await runJourneys({
             mode: target.mode,
             ...options,
+            ...retention,
             ...(signal === undefined ? {} : { signal }),
           })),
         );
@@ -832,9 +891,32 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     });
   }
   try {
+    const args = process.argv.slice(2);
+    const retention: {
+      retainOnSuccess?: boolean;
+      handoffLedger?: string;
+      evidenceDirectory?: string;
+    } = {};
+    const modes: string[] = [];
+    for (let index = 0; index < args.length; index++) {
+      const argument = args[index]!;
+      if (argument === "--retain-on-success") retention.retainOnSuccess = true;
+      else if (
+        argument === "--handoff-ledger" ||
+        argument === "--evidence-directory"
+      ) {
+        const value = args[++index];
+        if (value === undefined || value.startsWith("--"))
+          invalidArguments(`${argument} requires a path`);
+        if (argument === "--handoff-ledger")
+          retention.handoffLedger = path.resolve(value);
+        else retention.evidenceDirectory = path.resolve(value);
+      } else modes.push(argument);
+    }
     const passed = await runJourneyTargets(
-      parseJourneyRunTargets(process.argv.slice(2)),
+      parseJourneyRunTargets(modes),
       cancellation.signal,
+      retention,
     );
     process.stdout.write(`${passed.join("\n")}\n`);
     if (cancellation.signal.aborted) process.exitCode = 1;
