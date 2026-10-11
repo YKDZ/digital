@@ -1,0 +1,37 @@
+{
+  "body": {
+    "post": {
+      "id": "1739441",
+      "creatorId": "customudon",
+      "title": "今年も一年ありがとうございました。",
+      "publishedDatetime": "2020-12-29T03:08:45+09:00",
+      "type": "article",
+      "feeRequired": 0,
+      "user": {
+        "name": "Custom Udon"
+      },
+      "coverImageUrl": "https://downloads.fanbox.cc/images/post/1739441/controlled-cover.png",
+      "body": {
+        "blocks": [
+          {
+            "type": "p",
+            "text": "新年まで残りわずかとなりました。\n\n今年も多くの方の応援やコメント、ご支援をいただきました。\n\n自分のペースではありますが、これまで活動を続けられたのも皆様の応援があってのことです。\n\n本当にありがどうございます。\n\n来年もより良い動画を作れるよう頑張っていきますので、よろしくお願いいたします。\n\n試しに作った1分ほどの動画ですが、せっかく作りましたので置いておきます。\n\n来年にはまた別の新しい動画を作成する予定です。\n\n色々あった一年ではありますが、年末年始も皆様お気をつけてお過ごしください。"
+          },
+          {
+            "type": "file",
+            "fileId": "f0"
+          }
+        ],
+        "fileMap": {
+          "f0": {
+            "id": "f0",
+            "name": "Cosplay",
+            "size": 96206252,
+            "extension": "mp4",
+            "url": "https://downloads.fanbox.cc/files/post/1739441/f0.mp4"
+          }
+        }
+      }
+    }
+  }
+}

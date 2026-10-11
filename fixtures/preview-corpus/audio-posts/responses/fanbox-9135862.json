@@ -1,0 +1,36 @@
+{
+  "body": {
+    "post": {
+      "id": "9135862",
+      "creatorId": "customudon",
+      "title": "年始の挨拶(おまけ動画付き)",
+      "publishedDatetime": "2025-01-01T00:11:17+09:00",
+      "type": "article",
+      "feeRequired": 0,
+      "user": {
+        "name": "Custom Udon"
+      },
+      "body": {
+        "blocks": [
+          {
+            "type": "p",
+            "text": "明けましておめでとうございます。\n\nそして、昨年も動画をご視聴いただきありがとうございました。\n\n投稿ペースが今までより遅くなってしまった事が反省点でしたが、今年は頑張っていきたいところです。\n\n年末に色々試しながら作ったおまけ動画を投稿しておきます。\n\n展開も無く1シーンだけの触手動画です。いつもは30fpsですが、試しにツールで60fpsまで引き上げてみました。\n\n音はありません。\n\nそれでは皆様、インフルエンザが流行っていますが、体調にはお気を付けて年始をお過ごしください。\n\n今年もよろしくお願いいたします。"
+          },
+          {
+            "type": "file",
+            "fileId": "f0"
+          }
+        ],
+        "fileMap": {
+          "f0": {
+            "id": "f0",
+            "name": "Tentacle-a",
+            "size": 80227714,
+            "extension": "mp4",
+            "url": "https://downloads.fanbox.cc/files/post/9135862/f0.mp4"
+          }
+        }
+      }
+    }
+  }
+}
