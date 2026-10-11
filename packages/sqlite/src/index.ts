@@ -7097,38 +7097,36 @@ export class SqliteCatalogue
       )`,
     );
 
-    const prerequisiteFailure = sql<boolean>`
+    const directPrerequisiteFailure = (execution: SQL) => sql<boolean>`
       exists (
-        select 1
-        from json_each(${workflowExecutions.dispositionsJson}) as disposition
+        select 1 from json_each(${execution}.dispositions_json) as disposition
         where json_extract(disposition.value, '$.failureClassification.kind') = 'prerequisite-unavailable'
-      )
-      or exists (
-        select 1
-        from json_each(${workflowExecutions.workItemsJson}) as work_item
+      ) or exists (
+        select 1 from json_each(${execution}.work_items_json) as work_item
         where json_extract(work_item.value, '$.failureClassification.kind') = 'prerequisite-unavailable'
       )
     `;
-    // 在应用游标和限制之前，先用 SQL 为每个持久意图选出最新的一条有类型降级记录。
-    // 若在限制之后才用 JavaScript 去重，A@5、A@3 可能占满一页并使 B@4 无法返回。
+    // 库扫描父保留目录账目，工作项的类型化失败仍由精确目录子权威持有。
+    // 用同一谓词选当前及更新记录，避免分页去重漏掉仅子任务降级的父执行。
+    const prerequisiteFailureFor = (execution: SQL) => sql<boolean>`
+      (${directPrerequisiteFailure(execution)} or exists (
+        select 1 from library_scan_directories as directory
+        inner join workflow_executions as directory_child
+          on directory_child.id = directory.child_execution_id
+        where directory.parent_execution_id = ${execution}.id
+          and (${directPrerequisiteFailure(sql`directory_child`)})
+      ))
+    `;
+    const prerequisiteFailure = prerequisiteFailureFor(
+      sql`${workflowExecutions}`,
+    );
+    // 在游标和限制之前按耐久意图选最新降级，父及精确子工作项使用相同的分类依据。
     const prerequisiteIsLatestForIntent = sql<boolean>`
       not exists (
-        select 1
-        from workflow_executions as newer_execution
+        select 1 from workflow_executions as newer_execution
         where newer_execution.automation_intent_id = ${workflowExecutions.automationIntentId}
           and newer_execution.rowid > ${workflowExecutions}.rowid
-          and (
-            exists (
-              select 1
-              from json_each(newer_execution.dispositions_json) as newer_disposition
-              where json_extract(newer_disposition.value, '$.failureClassification.kind') = 'prerequisite-unavailable'
-            )
-            or exists (
-              select 1
-              from json_each(newer_execution.work_items_json) as newer_work_item
-              where json_extract(newer_work_item.value, '$.failureClassification.kind') = 'prerequisite-unavailable'
-            )
-          )
+          and ${prerequisiteFailureFor(sql`newer_execution`)}
       )
     `;
     const [
