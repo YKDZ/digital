@@ -177,7 +177,9 @@ function commandResults(
       commandName: command.name,
       exitCode: 0,
       stdout:
-        index >= 1 && index <= 5 ? JSON.stringify({ id: `root-${index}` }) : "",
+        index >= 1 && index <= 5
+          ? JSON.stringify({ rootIds: [`root-${index}`] })
+          : "",
       stderr: "",
     }));
 }
