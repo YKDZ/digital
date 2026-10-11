@@ -28,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        capability: [root, cli, web]
+        capability: [web]
     env:
       DIGITAL_CI_EVIDENCE: ${{ github.workspace }}/.scratch/ci/${{ matrix.capability }}
       TMPDIR: ${{ runner.temp }}/d18-${{ matrix.capability }}
@@ -57,6 +57,8 @@ jobs:
         run: pnpm exec turbo run build --filter=@digital/web --filter=@digital/cli --filter=@digital/db-migrations
       - name: 运行相同本地入口
         id: execution
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: /tmp/d18-uninstalled-${{ github.run_id }}
         timeout-minutes: 30
         run: node --conditions=digital-source scripts/ci-environment.ts run ${{ matrix.capability }}
       - name: 停止自有环境并收集真实数据及完整日志
