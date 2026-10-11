@@ -21,6 +21,7 @@ import {
   artifactRoleDecisionKey,
 } from "@digital/domain";
 
+import { readDerivedEntityCoverReadiness } from "./derived-entity-cover-history.ts";
 import { matchesReviewedCatalogueSchema } from "./schema-contract.ts";
 import { workflowExecutionAuditVersion } from "./schema.ts";
 import { canonicalJson } from "./workflow-execution-persistence.ts";
@@ -1189,6 +1190,18 @@ export const currentLocalObservationSupportSql = `
 `;
 
 function hasValidObservedMaterialSupports(database: DatabaseSync): boolean {
+  /**
+   * 派生实体封面（entity 目标、primary-cover、带观察部件）的支持不走下面的 SQL 结构臂：
+   * 它必须先通过只读图加载的完整历史校验，通过的精确 support 键组再作为绑定值接回历史
+   * OR 分支。任一这类封面校验不成立即整体 integrity-failed；未通过的键也不会被 SQL 其他
+   * 分支放行，因此 current proof 臂不能替这类封面跳过结构校验。
+   */
+  const derivedCovers = readDerivedEntityCoverReadiness(database);
+  if (derivedCovers.some((item) => !item.verdict.historicallySupported))
+    return false;
+  const supportedCoverKeys = JSON.stringify(
+    derivedCovers.map((item) => item.supportKey),
+  );
   const invalid = database
     .prepare(`
       SELECT 1
@@ -1206,6 +1219,19 @@ function hasValidObservedMaterialSupports(database: DatabaseSync): boolean {
               association.target_kind <> 'entity'
               OR association.target_entity_id <> decision.asset_id))
         OR NOT (
+          CASE
+            WHEN association.role = 'asset.primary-cover'
+              AND association.target_kind = 'entity'
+              AND association.observed_artifact_part_json IS NOT NULL
+            THEN (
+              support.association_id || char(31) || support.recognition_decision_id ||
+              char(31) || COALESCE(support.observation_execution_id, '') ||
+              char(31) || COALESCE(support.observation_snapshot_id, '') ||
+              char(31) || COALESCE(support.observation_location_id, '') ||
+              char(31) || COALESCE(support.observation_revision_id, '') IN
+              (SELECT value FROM json_each(?))
+            )
+            ELSE (
           (${currentLocalObservationSupportSql})
           OR (json_extract(execution.material_association_json, '$.version') =
              'observed-material-association-checkpoint/1'
@@ -1405,8 +1431,51 @@ function hasValidObservedMaterialSupports(database: DatabaseSync): boolean {
                       accepted_blob.byte_length
               )
           )
+          -- 整包目录没有单一文件修订。目录消失只结束当前正向支持，不能把原先按
+          -- filesystem-package 工作项接受的目录历史判成损坏；历史依据必须仍精确落在
+          -- 同一接受行、执行、快照根、产物和该工作项声明的整包边界上。
+          OR EXISTS (
+            SELECT 1
+            FROM observed_material_acceptances AS accepted
+            JOIN workflow_executions AS accepted_execution
+              ON accepted_execution.id = accepted.execution_id
+            JOIN recognition_proposals AS accepted_proposal
+              ON accepted_proposal.id = accepted.proposal_id
+             AND accepted_proposal.execution_id = accepted.execution_id
+            JOIN locations AS accepted_location
+              ON accepted_location.id = accepted.location_id
+            WHERE accepted.acceptance_kind = 'a-work-item'
+              AND accepted.work_item_key <> ''
+              AND accepted.observed_reference = '.'
+              AND support.observation_material_kind = 'directory'
+              AND support.observation_revision_id IS NULL
+              AND association.observed_artifact_part_json IS NULL
+              AND association.role = 'asset.material-delivered'
+              AND association.target_kind = 'entity'
+              AND association.target_entity_id = decision.asset_id
+              AND association.subject_id = decision.asset_id
+              AND accepted.asset_id = decision.asset_id
+              AND accepted.association_id = association.id
+              AND accepted.artifact_id = association.artifact_id
+              AND accepted.execution_id = support.observation_execution_id
+              AND accepted.snapshot_id = support.observation_snapshot_id
+              AND accepted.location_id = support.observation_location_id
+              AND accepted_location.kind = 'observed'
+              AND accepted_location.artifact_id = association.artifact_id
+              AND accepted_location.address = json_extract(accepted_execution.snapshot_json, '$.root')
+              AND json_extract(accepted_execution.snapshot_json, '$.id') = accepted.snapshot_id
+              AND json_extract(accepted_execution.snapshot_json, '$.complete') = 1
+              AND EXISTS (
+                SELECT 1
+                FROM json_each(COALESCE(accepted_execution.work_items_json, '[]')) AS work_item
+                WHERE json_extract(work_item.value, '$.key') = accepted.work_item_key
+                  AND json_extract(work_item.value, '$.proposalId') = accepted.proposal_id
+                  AND json_extract(work_item.value, '$.acceptedAssetId') = accepted.asset_id
+                  AND json_extract(work_item.value, '$.observedArtifactBoundary') = 'filesystem-package'
+              )
+          )
           -- 有界本地部分（例如 PDF 首页图）自己没有载体交付接受行：它的权威来自同一执行里
-          -- 交付其载体那份 a-work-item 接受，载体产物/修订与部分坐标必须逐字相符，且该次
+          -- 交付其载体那份 a-work-item 或 b-local 接受，载体产物/修订与部分坐标必须逐字相符，且该次
           -- 观察的提案确实以相同 reference、角色与 locator 声明过这个部分。
           OR EXISTS (
             SELECT 1
@@ -1421,9 +1490,7 @@ function hasValidObservedMaterialSupports(database: DatabaseSync): boolean {
               ON accepted_revision.id = support.observation_revision_id
             JOIN blobs AS accepted_blob
               ON accepted_blob.digest = accepted_revision.blob_digest
-            WHERE accepted.acceptance_kind = 'a-work-item'
-              AND accepted.work_item_key <> ''
-              AND support.observation_execution_id IS NOT NULL
+            WHERE support.observation_execution_id IS NOT NULL
               AND support.observation_snapshot_id IS NOT NULL
               AND support.observation_location_id IS NOT NULL
               AND support.observation_revision_id IS NOT NULL
@@ -1446,12 +1513,26 @@ function hasValidObservedMaterialSupports(database: DatabaseSync): boolean {
                 accepted.observed_reference
               AND json_extract(accepted_execution.snapshot_json, '$.id') =
                   support.observation_snapshot_id
-              AND EXISTS (
-                SELECT 1
-                FROM json_each(COALESCE(accepted_execution.work_items_json, '[]')) AS work_item
-                WHERE json_extract(work_item.value, '$.key') = accepted.work_item_key
-                  AND json_extract(work_item.value, '$.proposalId') = accepted.proposal_id
-                  AND json_extract(work_item.value, '$.acceptedAssetId') = accepted.asset_id
+              AND (
+                (accepted.acceptance_kind = 'a-work-item'
+                 AND accepted.work_item_key <> ''
+                 AND EXISTS (
+                   SELECT 1
+                   FROM json_each(COALESCE(accepted_execution.work_items_json, '[]')) AS work_item
+                   WHERE json_extract(work_item.value, '$.key') = accepted.work_item_key
+                     AND json_extract(work_item.value, '$.proposalId') = accepted.proposal_id
+                     AND json_extract(work_item.value, '$.acceptedAssetId') = accepted.asset_id
+                 ))
+                OR (accepted.acceptance_kind = 'b-local'
+                    AND accepted.work_item_key = ''
+                    AND accepted_execution.proposal_id = accepted.proposal_id
+                    AND accepted_execution.accepted_asset_id = accepted.asset_id
+                    AND json_extract(accepted_proposal.basis_json, '$.kind') = 'manual-boundary'
+                    AND EXISTS (
+                      SELECT 1
+                      FROM json_each(json_extract(accepted_proposal.basis_json, '$.materialReferences')) AS reference
+                      WHERE reference.value = accepted.observed_reference
+                    ))
               )
               AND EXISTS (
                 SELECT 1
@@ -1477,10 +1558,12 @@ function hasValidObservedMaterialSupports(database: DatabaseSync): boolean {
                       accepted_blob.byte_length
               )
           )
-        )
+            )
+          END
+          )
       LIMIT 1
     `)
-    .get();
+    .get(supportedCoverKeys);
   if (invalid !== undefined) return false;
   const missing = database
     .prepare(`
