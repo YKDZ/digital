@@ -9,6 +9,7 @@
   "exports": {
     ".": {
       "digital-source": "./src/index.ts",
+      "digital-development": "./.turbo/development/dist/index.js",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
@@ -20,7 +21,8 @@
     "lint:fix": "oxlint --format=unix --config ../../oxlint.config.ts . --fix",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
     "test": "vitest run --reporter=verbose",
-    "build": "tsc -b tsconfig.build.json --force --pretty false"
+    "build": "tsc -b tsconfig.build.json --force --pretty false",
+    "dev:build": "node --conditions=digital-source ../../scripts/build-development.ts"
   },
   "dependencies": {
     "@digital/domain": "workspace:*"

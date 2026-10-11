@@ -3,6 +3,10 @@ import { renameSync } from "node:fs";
 import { open, readFile, rm } from "node:fs/promises";
 
 import {
+  developmentSessionProblem,
+  type DevelopmentSessionRecord,
+} from "./development-state.ts";
+import {
   processIdentityProblem,
   type ProcessIdentity,
 } from "./process-identity.ts";
@@ -88,6 +92,7 @@ export type RecordedLogHealth = (typeof recordedLogHealthValues)[number];
  */
 export type EnvironmentRunRecord = {
   readonly runId: string;
+  readonly runtime?: "production" | "development";
   readonly state: EnvironmentRunState;
   readonly startedAt: string;
   readonly updatedAt: string;
@@ -114,6 +119,7 @@ export type EnvironmentRunRecord = {
 };
 
 export type EnvironmentRecord = {
+  readonly development?: DevelopmentSessionRecord;
   readonly version: typeof environmentRecordVersion;
   readonly environmentId: string;
   readonly workspacePath: string;
@@ -288,6 +294,10 @@ export function validateRecord(
     )
       return { reason: "记录操作历史条目不完整" };
   }
+  if (value.development !== undefined) {
+    const problem = developmentSessionProblem(value.development);
+    if (problem !== undefined) return { reason: problem };
+  }
   if (value.run !== undefined) {
     const problem = runProblem(value.run);
     if (problem !== undefined) return { reason: problem };
@@ -355,6 +365,12 @@ function runProblem(value: unknown): string | undefined {
   ] as const)
     if (typeof value[key] !== "string" || value[key].length === 0)
       return `记录运行分支字段 ${key} 缺失或不是非空字符串`;
+  if (
+    value.runtime !== undefined &&
+    value.runtime !== "production" &&
+    value.runtime !== "development"
+  )
+    return "记录运行入口未知";
   if (!recordedRunStates.includes(value.state as never))
     return `记录运行分支状态未知：${String(value.state)}`;
   if (

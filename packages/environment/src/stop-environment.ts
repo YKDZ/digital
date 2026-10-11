@@ -1,3 +1,4 @@
+import { closeDevelopmentFrontend } from "./internal/development-client.ts";
 import { runStopUnderLock } from "./internal/locked-operation.ts";
 import {
   invalidEnvironmentFacts,
@@ -17,6 +18,8 @@ export type { StopOperationResult } from "./internal/operation-contract.ts";
 export async function stopEnvironment(input: {
   readonly workspacePath: string;
   readonly environment: string;
+  /** 当前开发包装在更新时只停止本世代，独立 stop 缺省永久结束会话。 */
+  readonly developmentSession?: string;
 }): Promise<StopOperationResult> {
   const invalid = (message: string): StopOperationResult => ({
     kind: "stop",
@@ -46,8 +49,33 @@ export async function stopEnvironment(input: {
   }
   const request: StopRequest = {
     kind: "stop",
+    ...(input.developmentSession === undefined
+      ? {}
+      : { developmentSession: input.developmentSession }),
     workspacePath,
     environment: input.environment,
   };
-  return await runStopUnderLock(request);
+  const result = await runStopUnderLock(request);
+  if (
+    input.developmentSession !== undefined ||
+    result.status === "unmanaged" ||
+    result.status === "invalid-request"
+  )
+    return result;
+  const problem = await closeDevelopmentFrontend(
+    workspacePath,
+    input.environment,
+  );
+  if (problem === undefined) return result;
+  return {
+    ...result,
+    status: "not-confirmed",
+    failure: result.failure ?? {
+      stage: "generation",
+      message: problem,
+      exitCode: null,
+    },
+    cleanup: { state: "unknown", errors: [...result.cleanup.errors, problem] },
+    diagnostics: [...result.diagnostics, problem],
+  };
 }

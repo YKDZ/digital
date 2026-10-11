@@ -9,6 +9,7 @@
   "exports": {
     ".": {
       "digital-source": "./src/main.ts",
+      "digital-development": "./.turbo/development/dist/main.js",
       "types": "./dist/main.d.ts",
       "default": "./dist/main.js"
     }
@@ -20,7 +21,8 @@
     "lint": "oxlint --quiet --format=unix --config ../../oxlint.config.ts --ignore-pattern node_modules .",
     "lint:fix": "oxlint --format=unix --config ../../oxlint.config.ts . --fix",
     "test": "vitest run --reporter=verbose --passWithNoTests",
-    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false"
+    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
+    "dev:build": "node --conditions=digital-source ../../scripts/build-development.ts"
   },
   "dependencies": {
     "@digital/application": "workspace:*",

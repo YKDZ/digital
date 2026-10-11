@@ -1,6 +1,6 @@
-# 开发预览入口（票 01，原 07）
+# 普通目录预览与开发更新
 
-`scripts/preview-environment.ts` 是仓库唯一的开发预览入口：一条命令把公开的环境生命周期
+`scripts/preview-environment.ts` 是仓库唯一的普通目录准备与接入入口：一条命令把公开的环境生命周期
 （`@digital/environment` 的 `prepare / start / inspect / stop / rebuild / delete`）与正式的
 产品目录接入串起来，得到一个有资料、可浏览的预览。它不复制环境内部命令，也不自己拼进程、
 数据库或来源装配。
@@ -88,3 +88,22 @@ node scripts/preview-environment.ts --help
 `apps/web` 自身的 `dev`（前端热更新开发服务）不在本票范围，保持不变。
 
 票 10 只需扩展本入口的默认输入集合（默认目录、默认识别配置），不必新增第二套准备逻辑。
+
+## 保留产品状态的代码更新
+
+先通过普通预览完成准备和目录接入，再停止现有服务，进入同一个环境的代码更新会话：
+
+```bash
+pnpm preview up --environment my-preview
+pnpm preview stop --environment my-preview
+pnpm preview:dev my-preview
+```
+
+开发入口要求已有、已停止的准备记录，不重复接入目录，也不重建产品数据。
+领域、应用、来源及服务端变更由 Turbo 的实际依赖图构建并替换服务，组件与样式沿用热更新。
+编译失败时旧服务停止，完整诊断留在开发日志中；恢复有效代码后会话自动恢复。
+
+另一个终端可用 `pnpm preview inspect --environment my-preview` 查看实际地址、更新状态与日志。
+用 `pnpm preview stop --environment my-preview` 独立终结本次开发会话；停止后代码变化不再启动服务。
+终端中断开发入口也会停止自有服务并保留产品数据及日志。准备、启动、停止、重建和删除仍可单独使用；
+普通启动缺省使用生产运行模式，切换模式须先显式停止。
