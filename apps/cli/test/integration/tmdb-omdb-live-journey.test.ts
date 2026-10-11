@@ -25,6 +25,9 @@ describe("TMDB and OMDb live journey contract", () => {
           mode: "source",
           packageRoot: path.resolve(import.meta.dirname, "../.."),
           workDir: "/unused",
+          productDataDirectory: "/unused/product-data",
+          environmentName: "completion-02-fixture-context",
+          commandEnvironment: {},
         }),
       ).rejects.toThrow(
         "TMDB and OMDb live journey requires DIGITAL_TMDB_ACCESS_TOKEN and DIGITAL_OMDB_API_KEY",
@@ -40,6 +43,9 @@ describe("TMDB and OMDb live journey contract", () => {
       mode: "source",
       packageRoot: path.resolve(import.meta.dirname, "../.."),
       workDir: "/temporary-work",
+      productDataDirectory: "/temporary-work/product-data",
+      environmentName: "completion-02-fixture-context",
+      commandEnvironment: {},
     } as const;
     await journey.setup(context);
     const commands = journey.commands(context);

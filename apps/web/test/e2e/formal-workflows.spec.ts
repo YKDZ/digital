@@ -16,6 +16,14 @@ async function mockCatalogue(
   await mockCataloguePage(page, catalogue);
 }
 
+/** 页头与开始整理面板都有“检查文件”，按所属面板定位，不用 first 猜一个。 */
+async function startIntakeScan(page: import("@playwright/test").Page) {
+  await page
+    .locator("div.border-dashed")
+    .getByRole("button", { name: "检查文件" })
+    .click();
+}
+
 function frierenCatalogue(): CatalogueFixture {
   const episode = (
     workId: string,
@@ -147,12 +155,13 @@ test("添加内容用所选文件位置创建检查记录", async ({ page }) => 
   await expect(page.getByText("检查文件，开始整理")).toBeVisible();
   await page.getByLabel("文件位置").click();
   await page.getByRole("option", { name: "作品资料库" }).click();
-  await page.getByRole("button", { name: "检查文件" }).click();
+  await startIntakeScan(page);
 
   await expect(page.getByText("待整理的文件")).toBeVisible();
   expect(requestBody).toEqual({
     observedRootId: "work-root",
     relativeScope: ".",
+    acceptTrusted: false,
   });
 });
 
@@ -170,11 +179,12 @@ test("添加内容只提交文件位置身份和固定范围", async ({ page }) 
   await page.goto("/intake", { waitUntil: "domcontentloaded" });
   await page.getByLabel("文件位置").click();
   await page.getByRole("option", { name: "音声资料库" }).click();
-  await page.getByRole("button", { name: "检查文件" }).click();
+  await startIntakeScan(page);
 
   expect(requestBody).toEqual({
     observedRootId: "audio-root",
     relativeScope: ".",
+    acceptTrusted: false,
   });
   expect(JSON.stringify(requestBody)).not.toContain("directory");
 });
@@ -192,7 +202,7 @@ test("添加内容失败时显示服务返回的错误", async ({ page }) => {
   await expect(page.getByText("检查文件，开始整理")).toBeVisible();
   await page.getByLabel("文件位置").click();
   await page.getByRole("option", { name: "作品资料库" }).click();
-  await page.getByRole("button", { name: "检查文件" }).click();
+  await startIntakeScan(page);
 
   await expect(page.getByRole("alert")).toContainText("请选择可用的文件位置");
 });
@@ -327,6 +337,9 @@ function proposalCatalogue(
           blockingConditions: [],
           current: {
             id: "asset-1",
+            refreshTarget: { subjectId: "asset-1" },
+            cardComponent: "generic",
+            detailComponent: "generic",
             title: "当前内容",
             classifications: [],
             available: true,
@@ -334,6 +347,9 @@ function proposalCatalogue(
           },
           proposed: {
             id: "asset-1",
+            refreshTarget: { subjectId: "asset-1" },
+            cardComponent: "generic",
+            detailComponent: "generic",
             title: "建议内容",
             classifications: [],
             available: true,
@@ -373,23 +389,34 @@ async function mockSettings(
     route.fulfill({
       json: {
         configured: true,
-        roots: [
+        libraries: [
           {
-            id: "book-root",
+            id: "library-1",
             displayName: "已保存的文件夹",
-            containerPath: "/media/books",
-            status: "active",
-            reachable: true,
             configVersion: 1,
-            symlinkMode: "do-not-follow",
-            allowedTargetRootIds: [],
+            recognitionProfileIds: ["book"],
+            sourceIdentities: [],
+            directories: ["/media/books"],
+            directoryViews: [
+              {
+                directoryId: "directory-1",
+                observedRootId: "book-root",
+                displayName: "books",
+                containerPath: "/media/books",
+                status: "active",
+                reachable: true,
+              },
+            ],
           },
         ],
+        recognitionProfiles: [{ id: "book", displayName: "书籍" }],
+        librarySources: [],
         sources: [],
         automation: plans
           ? [
               {
                 id: "automation-1",
+                assetLibraryId: "library-1",
                 folder: "已保存的文件夹",
                 observedRootId: "book-root",
                 relativeScope: ".",
@@ -399,6 +426,7 @@ async function mockSettings(
               },
             ]
           : [],
+        recovery: [],
       },
     }),
   );
@@ -410,7 +438,7 @@ test("重新载入后仍显示已保存的自动刷新设置", async ({ page }) 
   await page.goto("/settings/automation", { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: "自动刷新", exact: true }).click();
   await expect(page.getByText("已保存的文件夹", { exact: true })).toBeVisible();
-  await expect(page.getByText("整个文件位置 · 每小时")).toBeVisible();
+  await expect(page.getByText("整个目录 · 每小时")).toBeVisible();
 
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: "自动刷新", exact: true }).click();
@@ -433,11 +461,13 @@ test("新增自动刷新只提交文件位置身份和相对范围", async ({ pa
   await page.goto("/settings/automation", { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: "自动刷新", exact: true }).click();
   await page.getByRole("button", { name: "添加计划", exact: true }).click();
-  await page.getByLabel("范围（相对路径）").fill("轻小说");
-  await page.getByRole("button", { name: "保存并启用" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("范围（相对路径）").fill("轻小说");
+  await dialog.getByRole("button", { name: "保存并启用" }).click();
 
   expect(requestBody).toEqual({
     action: "enable",
+    assetLibraryId: "library-1",
     observedRootId: "book-root",
     relativeScope: "轻小说",
     intervalMilliseconds: 3_600_000,
