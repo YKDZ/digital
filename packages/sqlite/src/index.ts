@@ -21967,33 +21967,32 @@ export class SqliteCatalogue
               const owners = rows.sourceOwnerByRecordId.get(
                 lifecycle.sourceRecordId,
               );
-              return (
-                (rows.namedMetadataSubjectIds?.includes(row.subjectId) ===
-                  true ||
-                  factLineages.has(
-                    sourceLineageKey(
+              return [...(owners ?? [])].some(
+                (owner) =>
+                  (rows.namedMetadataSubjectIds?.includes(row.subjectId) ===
+                  true
+                    ? owner === assetId
+                    : factLineages.has(
+                        sourceLineageKey(
+                          lifecycle.sourceIdentity,
+                          lifecycle.nativeAddress,
+                        ),
+                      )) &&
+                  rows.currentSourceOwnerCoordinates.has(
+                    sourceOwnerCoordinateKey(
+                      owner,
                       lifecycle.sourceIdentity,
                       lifecycle.nativeAddress,
                     ),
-                  )) &&
-                [...(owners ?? [])].some(
-                  (owner) =>
-                    rows.currentSourceOwnerCoordinates.has(
-                      sourceOwnerCoordinateKey(
-                        owner,
-                        lifecycle.sourceIdentity,
-                        lifecycle.nativeAddress,
-                      ),
-                    ) &&
-                    rows.currentSourceOwnerCoverageHeads.has(
-                      sourceOwnerLineageKey(
-                        owner,
-                        lifecycle.sourceIdentity,
-                        lifecycle.nativeAddress,
-                        lifecycle.coverageId,
-                      ),
+                  ) &&
+                  rows.currentSourceOwnerCoverageHeads.has(
+                    sourceOwnerLineageKey(
+                      owner,
+                      lifecycle.sourceIdentity,
+                      lifecycle.nativeAddress,
+                      lifecycle.coverageId,
                     ),
-                )
+                  ),
               );
             })());
       const observedPart =
