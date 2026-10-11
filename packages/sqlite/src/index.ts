@@ -846,10 +846,12 @@ type CurrentCatalogueHydrationRows = {
   readonly namedBasisDecisionId?: string | undefined;
   /** 身份基线读取：忽略主头，强制以点名前驱决定为事实依据。 */
   readonly pinNamedBasisDecision?: boolean | undefined;
+  /** 仅参与主体/身份读取点名的描述目标，不扩大资产关系或产物图。 */
+  readonly namedMetadataSubjectIds?: readonly string[] | undefined;
   readonly associations: readonly (typeof sourceAssociations.$inferSelect)[];
   readonly currentAssociations: readonly (typeof currentSourceAssociations.$inferSelect)[];
   /** 候选事实 provenance 记录所属的真实来源 owner。 */
-  readonly sourceOwnerByRecordId: ReadonlyMap<string, string>;
+  readonly sourceOwnerByRecordId: ReadonlyMap<string, ReadonlySet<string>>;
   /** 产物事实直接引用的来源关联及其 owner 坐标。 */
   readonly sourceAssociationOwnerById: ReadonlyMap<
     string,
@@ -887,7 +889,12 @@ type CurrentCatalogueHydrationRows = {
   readonly relationships: readonly (typeof entityRelationships.$inferSelect)[];
   readonly sourceRecords: readonly Pick<
     typeof sourceRecords.$inferSelect,
-    "id" | "sourceIdentity" | "nativeAddress"
+    | "id"
+    | "executionId"
+    | "sourceIdentity"
+    | "nativeAddress"
+    | "coverageJson"
+    | "producerJson"
   >[];
   readonly artifacts: readonly (typeof artifacts.$inferSelect)[];
   readonly locations: readonly (typeof locations.$inferSelect)[];
@@ -7796,6 +7803,13 @@ export class SqliteCatalogue
       readonly execution: WorkflowExecution;
     }[]
   > {
+    return this.findAcceptedWithNamedMetadata(subjectIds);
+  }
+
+  private async findAcceptedWithNamedMetadata(
+    subjectIds: readonly string[],
+    namedMetadataSubjectIds: readonly string[] = [],
+  ): ReturnType<SqliteCatalogue["findAcceptedForSubjects"]> {
     const database = await this.ensure();
     const query = drizzle({ client: database });
     const found: Array<{
@@ -7807,6 +7821,9 @@ export class SqliteCatalogue
       const accepted = await this.readCurrentAcceptedWithDrizzle(
         query,
         subjectId,
+        undefined,
+        false,
+        namedMetadataSubjectIds,
       );
       if (accepted === undefined) continue;
       const row = query
@@ -8270,8 +8287,10 @@ export class SqliteCatalogue
       .where(sql`${recognitionHeads.recognitionDecisionId} IS NOT NULL`)
       .all()
       .map(({ subjectId }) => subjectId);
-    const metadataAccepted =
-      await this.findAcceptedForSubjects(metadataSubjectIds);
+    const metadataAccepted = await this.findAcceptedWithNamedMetadata(
+      metadataSubjectIds,
+      memberIds,
+    );
     return {
       entity: {
         id: entity.id,
@@ -17802,9 +17821,25 @@ export class SqliteCatalogue
       const tracked = trackedFileLocationByAddress.get(resolved);
       return tracked ?? soleFileLocationByAddress.get(resolved);
     };
+    const supportRootIds = new Set(
+      this.observedSupportRootsFor(execution).map((root) => root.id),
+    );
+    const supportedLocationIds = new Set(
+      transaction
+        .select({
+          locationId: currentFileObservationSupports.locationId,
+          rootId: currentFileObservationSupports.observedRootId,
+        })
+        .from(currentFileObservationSupports)
+        .all()
+        .filter((support) => supportRootIds.has(support.rootId))
+        .map((support) => support.locationId),
+    );
     const staleAddresses =
       this.staleLocalMaterialConfirmationAddressSet(execution);
     for (const location of observedLocations) {
+      // 续扫只刷新同一登记已经支持的位置；同址新登记须经自己的材料接受。
+      if (!supportedLocationIds.has(location.id)) continue;
       if (staleAddresses.has(path.resolve(location.address))) continue;
       const established = this.projectCurrentFileObservationForLocation(
         transaction,
@@ -20437,6 +20472,7 @@ export class SqliteCatalogue
      * 开读取；不改变任何当前范围/CAS 判定。
      */
     pinNamedBasisDecision = false,
+    namedMetadataSubjectIds: readonly string[] = [],
   ): Promise<readonly AcceptedAssetState[]> {
     const effectiveAssetIds =
       selection === "already-effective"
@@ -20767,7 +20803,9 @@ export class SqliteCatalogue
           and(
             inArray(
               metadataAssertions.subjectId,
-              sqliteTextSet(factSubjectIds),
+              sqliteTextSet(
+                uniqueStrings([...factSubjectIds, ...namedMetadataSubjectIds]),
+              ),
             ),
             indexMetadataProperties === undefined
               ? undefined
@@ -20873,6 +20911,8 @@ export class SqliteCatalogue
               executionId: sourceRecords.executionId,
               sourceIdentity: sourceRecords.sourceIdentity,
               nativeAddress: sourceRecords.nativeAddress,
+              coverageJson: sourceRecords.coverageJson,
+              producerJson: sourceRecords.producerJson,
             })
             .from(sourceRecords)
             .where(inArray(sourceRecords.id, sqliteTextSet(sourceRecordIds)))
@@ -20911,9 +20951,13 @@ export class SqliteCatalogue
      * 当前关联，并在该精确覆盖（元数据）或该来源记录（产物）上保留谱系头。owner 的关联被撤回
      * 或替换后，旧谱系头仍在也不能把已撤回的资料重新带回，另一 owner 的同地址当前也不得复活。
      */
-    const provenanceRecordById = new Map(
-      sourceRecordRows.map((row) => [row.id, row]),
-    );
+    const provenanceRecordById = new Map<
+      string,
+      Pick<
+        typeof sourceRecords.$inferSelect,
+        "id" | "executionId" | "sourceIdentity" | "nativeAddress"
+      >
+    >(sourceRecordRows.map((row) => [row.id, row]));
     const unloadedOriginRecordIds = uniqueStrings(
       metadataLifecyclesRows
         .map((row) => row.sourceRecordId)
@@ -20954,11 +20998,34 @@ export class SqliteCatalogue
                 : ([[row.id, row.acceptedAssetId]] as const),
             ),
     );
-    const sourceOwnerByRecordId = new Map<string, string>();
+    const sourceOwnerByRecordId = new Map<string, Set<string>>();
+    const retainSourceOwner = (recordId: string, owner: string) => {
+      const owners = sourceOwnerByRecordId.get(recordId) ?? new Set<string>();
+      owners.add(owner);
+      sourceOwnerByRecordId.set(recordId, owners);
+    };
     for (const [recordId, record] of provenanceRecordById) {
       const owner = acceptedOwnerByExecutionId.get(record.executionId);
-      if (owner !== undefined) sourceOwnerByRecordId.set(recordId, owner);
+      if (owner !== undefined) retainSourceOwner(recordId, owner);
     }
+    // 工作项接受不会写顶层 acceptedAssetId；归属必须来自接受项自己保留的精确记录集合。
+    if (originExecutionIds.length > 0)
+      for (const row of query
+        .select({ workItemsJson: workflowExecutions.workItemsJson })
+        .from(workflowExecutions)
+        .where(
+          inArray(workflowExecutions.id, sqliteTextSet(originExecutionIds)),
+        )
+        .all())
+        for (const item of JSON.parse(
+          row.workItemsJson,
+        ) as readonly AssetRefreshWorkItem[]) {
+          if (item.outcome !== "accepted" || item.acceptedAssetId === undefined)
+            continue;
+          for (const recordId of item.sourceRecordIds)
+            if (provenanceRecordById.has(recordId))
+              retainSourceOwner(recordId, item.acceptedAssetId);
+        }
     /** 刷新执行不重新接受资产，其记录 owner 由该执行写入的来源刷新变化确定。 */
     const ownerlessExecutionIds = uniqueStrings(
       [...provenanceRecordById.values()]
@@ -20985,7 +21052,7 @@ export class SqliteCatalogue
           ),
         )
         .all())
-        sourceOwnerByRecordId.set(row.sourceRecordId, row.subjectId);
+        retainSourceOwner(row.sourceRecordId, row.subjectId);
     const artifactSourceAssociationIds = uniqueStrings(
       artifactAssociationRows.flatMap((row) =>
         row.sourceAssociationId === null ? [] : [row.sourceAssociationId],
@@ -21019,7 +21086,7 @@ export class SqliteCatalogue
             ]),
     );
     const sourceOwnerIds = uniqueStrings([
-      ...sourceOwnerByRecordId.values(),
+      ...[...sourceOwnerByRecordId.values()].flatMap((owners) => [...owners]),
       ...Array.from(sourceAssociationOwnerById.values()).map(
         (owner) => owner.subjectId,
       ),
@@ -21176,6 +21243,20 @@ export class SqliteCatalogue
             await query
               .select({ id: currentFileObservationSupports.locationId })
               .from(currentFileObservationSupports)
+              .innerJoin(
+                observedRootRegistrations,
+                and(
+                  eq(
+                    observedRootRegistrations.id,
+                    currentFileObservationSupports.observedRootId,
+                  ),
+                  eq(
+                    observedRootRegistrations.configVersion,
+                    currentFileObservationSupports.observedRootVersion,
+                  ),
+                  eq(observedRootRegistrations.status, "active"),
+                ),
+              )
               .where(
                 inArray(
                   currentFileObservationSupports.locationId,
@@ -21367,6 +21448,7 @@ export class SqliteCatalogue
       const accepted = this.projectCurrentAcceptedFromRows(assetId, {
         namedBasisDecisionId,
         pinNamedBasisDecision,
+        namedMetadataSubjectIds,
         relationshipSupports,
         relationshipDecisions: relationshipDecisionRows,
         artifactRoleDecisions: artifactRoleDecisionRows,
@@ -21386,7 +21468,21 @@ export class SqliteCatalogue
         decisions,
         proposals: proposalRows,
         derivedCoverDeclaringProposals: derivedCoverDeclaringProposalRows,
-        artifactAssociations: artifactAssociationRows,
+        // 载体失去全部当前观察位置后退出当前材料图，耐久事实仍完整保留。
+        artifactAssociations: artifactAssociationRows.filter(
+          (association) =>
+            association.role !== "asset.material-delivered" ||
+            !locationRows.some(
+              (location) =>
+                location.kind === "observed" &&
+                location.artifactId === association.artifactId,
+            ) ||
+            currentLocationRows.some(
+              (location) =>
+                location.kind === "observed" &&
+                location.artifactId === association.artifactId,
+            ),
+        ),
         artifactSupersessions,
         artifactRetractions: artifactRetractionsRows,
         artifactRecognitionSupports: artifactRecognitionSupportRows,
@@ -21530,8 +21626,10 @@ export class SqliteCatalogue
     const artifactAssociationRows = rows.artifactAssociations.filter((row) =>
       factSubjectIds.has(row.subjectId),
     );
-    const metadataRows = rows.metadata.filter((row) =>
-      factSubjectIds.has(row.subjectId),
+    const metadataRows = rows.metadata.filter(
+      (row) =>
+        factSubjectIds.has(row.subjectId) ||
+        rows.namedMetadataSubjectIds?.includes(row.subjectId) === true,
     );
     const supersededArtifactAssociationIds = new Set(
       rows.artifactSupersessions.map((item) => item.predecessorAssociationId),
@@ -21568,6 +21666,86 @@ export class SqliteCatalogue
         ),
       ],
       revisions: rows.revisions,
+    };
+    // 捆绑来源的相关主体没有独立来源关联；本当前提案和当前主来源头共同证明资格。
+    const isCurrentBundledRelatedArtifact = (
+      row: typeof artifactAssociations.$inferSelect,
+    ): boolean => {
+      if (
+        row.subjectId === assetId ||
+        row.sourceAssociationId !== null ||
+        interpretation === undefined ||
+        recognitionSourceAssociation === undefined ||
+        row.producerJson === null
+      )
+        return false;
+      const recordIds = jsonStringArray(
+        row.sourceRecordIdsJson,
+        "artifact association source records",
+      );
+      return recordIds.some((recordId) => {
+        const record = sourceRecordsById.get(recordId);
+        if (
+          record === undefined ||
+          rows.sourceOwnerByRecordId.get(recordId)?.has(assetId) !== true ||
+          !factLineages.has(
+            sourceLineageKey(record.sourceIdentity, record.nativeAddress),
+          )
+        )
+          return false;
+        const coverage = JSON.parse(
+          record.coverageJson,
+        ) as SourceRecord["coverage"];
+        if (
+          coverage.authority !== "official" ||
+          coverage.completeness !== "complete"
+        )
+          return false;
+        const declared = interpretation.sourceArtifacts.some(
+          (candidate) =>
+            candidate.subjectId === row.subjectId &&
+            candidate.role === row.role &&
+            candidate.sourceRecordId === recordId &&
+            producerJson(candidate.producer ?? interpretation.producer) ===
+              row.producerJson,
+        );
+        const described = (interpretation.entities ?? []).some(
+          (entity) =>
+            entity.id === row.subjectId &&
+            entity.sourceRecordIds.includes(recordId) &&
+            producerJson(entity.producer ?? interpretation.producer) ===
+              row.producerJson,
+        );
+        if (!declared || !described) return false;
+        return interpretation.sourceRecordIds.some((anchorId) => {
+          const anchor = sourceRecordsById.get(anchorId);
+          if (
+            anchor === undefined ||
+            anchor.executionId !== record.executionId ||
+            anchor.sourceIdentity !==
+              recognitionSourceAssociation.sourceIdentity ||
+            anchor.nativeAddress !==
+              recognitionSourceAssociation.nativeAddress ||
+            anchor.producerJson !== record.producerJson
+          )
+            return false;
+          const anchorCoverage = JSON.parse(
+            anchor.coverageJson,
+          ) as SourceRecord["coverage"];
+          return (
+            anchorCoverage.authority === "official" &&
+            anchorCoverage.completeness === "complete" &&
+            rows.currentSourceOwnerRecordHeads.has(
+              sourceOwnerLineageKey(
+                assetId,
+                anchor.sourceIdentity,
+                anchor.nativeAddress,
+                anchor.id,
+              ),
+            )
+          );
+        });
+      });
     };
     const currentArtifactAssociationRows = artifactAssociationRows.filter(
       (row) => {
@@ -21627,6 +21805,27 @@ export class SqliteCatalogue
             positiveSupportLocationIds,
             currentLocationRevisionKeys: currentEvidenceRevisionKeys,
           });
+        if (isCurrentBundledRelatedArtifact(row)) return true;
+        const recordIds = jsonStringArray(
+          row.sourceRecordIdsJson,
+          "artifact association source records",
+        );
+        const association =
+          row.sourceAssociationId === null
+            ? undefined
+            : rows.sourceAssociationOwnerById.get(row.sourceAssociationId);
+        if (
+          row.subjectId !== assetId &&
+          recordIds.length > 0 &&
+          (association === undefined ||
+            !factLineages.has(
+              sourceLineageKey(
+                association.sourceIdentity,
+                association.nativeAddress,
+              ),
+            ))
+        )
+          return false;
         const hasActiveRecognitionSupport =
           rows.artifactRecognitionSupports.some(
             (support) =>
@@ -21635,11 +21834,11 @@ export class SqliteCatalogue
                 support.recognitionDecisionId,
               ),
           );
-        if (hasActiveRecognitionSupport) return true;
-        const recordIds = jsonStringArray(
-          row.sourceRecordIdsJson,
-          "artifact association source records",
-        );
+        if (
+          hasActiveRecognitionSupport &&
+          (row.subjectId === assetId || recordIds.length === 0)
+        )
+          return true;
         if (recordIds.length === 0) return row.subjectId === assetId;
         /**
          * 产物只按其直接引用的来源关联判定：该关联必须仍是所属 owner 的当前关联，
@@ -21647,9 +21846,6 @@ export class SqliteCatalogue
          * 的产物不会因为坐标仍被同一 owner 持有而复活。
          */
         if (row.sourceAssociationId === null) return false;
-        const association = rows.sourceAssociationOwnerById.get(
-          row.sourceAssociationId,
-        );
         if (association === undefined) return false;
         const currentForOwner = rows.currentSourceOwnerAssociationIds.get(
           association.subjectId,
@@ -21724,25 +21920,35 @@ export class SqliteCatalogue
               ),
             )
           : (() => {
-              const owner = rows.sourceOwnerByRecordId.get(
+              const owners = rows.sourceOwnerByRecordId.get(
                 lifecycle.sourceRecordId,
               );
               return (
-                owner !== undefined &&
-                rows.currentSourceOwnerCoordinates.has(
-                  sourceOwnerCoordinateKey(
-                    owner,
-                    lifecycle.sourceIdentity,
-                    lifecycle.nativeAddress,
-                  ),
-                ) &&
-                rows.currentSourceOwnerCoverageHeads.has(
-                  sourceOwnerLineageKey(
-                    owner,
-                    lifecycle.sourceIdentity,
-                    lifecycle.nativeAddress,
-                    lifecycle.coverageId,
-                  ),
+                (rows.namedMetadataSubjectIds?.includes(row.subjectId) ===
+                  true ||
+                  factLineages.has(
+                    sourceLineageKey(
+                      lifecycle.sourceIdentity,
+                      lifecycle.nativeAddress,
+                    ),
+                  )) &&
+                [...(owners ?? [])].some(
+                  (owner) =>
+                    rows.currentSourceOwnerCoordinates.has(
+                      sourceOwnerCoordinateKey(
+                        owner,
+                        lifecycle.sourceIdentity,
+                        lifecycle.nativeAddress,
+                      ),
+                    ) &&
+                    rows.currentSourceOwnerCoverageHeads.has(
+                      sourceOwnerLineageKey(
+                        owner,
+                        lifecycle.sourceIdentity,
+                        lifecycle.nativeAddress,
+                        lifecycle.coverageId,
+                      ),
+                    ),
                 )
               );
             })());
@@ -22349,6 +22555,7 @@ export class SqliteCatalogue
     assetId: string,
     namedBasisDecisionId?: string,
     pinNamedBasisDecision = false,
+    namedMetadataSubjectIds: readonly string[] = [],
   ): Promise<AcceptedAssetState | undefined> {
     const [accepted] = await this.readCurrentAcceptedPageWithDrizzle(
       query,
@@ -22357,6 +22564,7 @@ export class SqliteCatalogue
       "filter-current",
       namedBasisDecisionId,
       pinNamedBasisDecision,
+      namedMetadataSubjectIds,
     );
     return accepted;
   }

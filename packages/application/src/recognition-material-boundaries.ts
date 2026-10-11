@@ -478,6 +478,7 @@ function declarationCoversCandidate(
     candidate.members.every((member) =>
       owner.members.some(
         (held) =>
+          member.boundary.scopeReference === held.boundary.scopeReference &&
           candidateMemberCoveredByDeclaration(member, held) &&
           observationKeepsDeclarationIntegrity(snapshot, held),
       ),

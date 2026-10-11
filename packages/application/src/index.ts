@@ -170,6 +170,7 @@ import {
   groupMaterialScopeDeclarations,
   isWithinObservedDirectory,
   observedAddress,
+  memberMaterialAddresses,
   materialScopeDeclarationBaseline,
   materialScopeDeclarationsIntersect,
   reconcileRecognitionMaterialPlans,
@@ -7932,18 +7933,28 @@ function effectiveIdentityMemberMetadata(
       facts.map((fact) => [fact.accepted.entity.id, fact.accepted]),
     ).values(),
   ];
-  const metadata = accepted.flatMap((item) =>
-    item.metadata.flatMap((assertion) =>
-      assertion.target.kind === "entity" &&
-      memberIds.includes(assertion.target.entityId)
-        ? [
-            {
-              ...assertion,
-              target: { kind: "entity" as const, entityId: representativeId },
-            },
-          ]
-        : [],
-    ),
+  const metadata = [
+    ...new Map(
+      facts.flatMap((fact) =>
+        fact.accepted.metadata.map(
+          (assertion) =>
+            [
+              JSON.stringify(canonicalIntegrityValue(assertion)),
+              assertion,
+            ] as const,
+        ),
+      ),
+    ).values(),
+  ].flatMap((assertion) =>
+    assertion.target.kind === "entity" &&
+    memberIds.includes(assertion.target.entityId)
+      ? [
+          {
+            ...assertion,
+            target: { kind: "entity" as const, entityId: representativeId },
+          },
+        ]
+      : [],
   );
   const sourceRecords = [
     ...new Map(
@@ -13873,9 +13884,24 @@ export class AssetRefreshWorkflow {
     // 交付载体只负责把尚未落到原主体上的材料并进当前事实。原 MKV 已是主体的既有观察
     // 位置，snapshot-local 语义下重扫会重新铸成第二个 artifact，因此交付快照与关联/修订
     // 只含未交付项，让 rangeRecognition 恰好贡献这些新增，避免重复材料。
+    // 只有同一登记范围内的既有材料才已交付；同址新登记仍须形成自己的材料身份。
+    const retainedMaterialAddresses = new Set(
+      namedDeclaration.members
+        .filter((member) =>
+          frozen.boundaries!.some(
+            (boundary) =>
+              boundary.scopeReference === member.boundary.scopeReference,
+          ),
+        )
+        .flatMap((member) => memberMaterialAddresses(member, selectedSnapshot)),
+    );
     const deliveredAddresses = new Set(
       target.accepted.locations
-        .filter((location) => location.kind === "observed")
+        .filter(
+          (location) =>
+            location.kind === "observed" &&
+            retainedMaterialAddresses.has(location.address),
+        )
         .map((location) => location.address),
     );
     const deliveryReferences = materialReferences.filter(
@@ -14697,13 +14723,13 @@ export class AssetRefreshWorkflow {
             .map(({ id: sourceRecordId }) => sourceRecordId),
     );
     const retainedBySourceChange = <
-      T extends { sourceRecordIds: readonly string[] },
+      T extends { sourceRecordIds?: readonly string[] },
     >(
       values: readonly T[],
     ) =>
       values.filter(
         ({ sourceRecordIds }) =>
-          !sourceRecordIds.some((sourceRecordId) =>
+          !(sourceRecordIds ?? []).some((sourceRecordId) =>
             predecessorRecordIds.has(sourceRecordId),
           ),
       );
