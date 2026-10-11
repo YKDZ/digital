@@ -1,601 +1,641 @@
-import { spawn } from "node:child_process";
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-const webRoot = path.resolve(import.meta.dirname, "..");
-const repositoryRoot = path.resolve(webRoot, "../..");
-const uniqueId = `${process.pid}-${Date.now()}`;
-const image = `digital-deployment-check:${uniqueId}`;
-const container = `digital-deployment-check-${uniqueId}`;
-const runtimeImage = `digital-runtime-check:${uniqueId}`;
-const runtimeContainer = `digital-runtime-check-${uniqueId}`;
-const preparedVolume = `digital-prepared-check-${uniqueId}`;
-const unpreparedVolume = `digital-unprepared-check-${uniqueId}`;
-const futureVolume = `digital-future-check-${uniqueId}`;
-const failedVolume = `digital-failed-check-${uniqueId}`;
-const emptyStandaloneVolume = `digital-empty-standalone-check-${uniqueId}`;
-const damagedStandaloneVolume = `digital-damaged-standalone-check-${uniqueId}`;
-const emptyStandaloneContainer = `digital-empty-standalone-check-${uniqueId}`;
-const damagedStandaloneContainer = `digital-damaged-standalone-check-${uniqueId}`;
-const playwrightClient = `digital-playwright-check-${uniqueId}`;
-const playwrightClientImage = `digital-playwright-client:${uniqueId}`;
-const abortController = new AbortController();
+import {
+  manageContainerEnvironment,
+  type ContainerEndpoint,
+  type ContainerOperationResult,
+  type ContainerReference,
+  type ContainerRequest,
+} from "@digital/environment/container";
 
-interface CommandOptions {
-  readonly env?: NodeJS.ProcessEnv;
-  readonly includeStderr?: boolean;
-  readonly signal?: AbortSignal;
-  readonly timeout: number;
+import { fileCommandJournal, runCommand } from "./environment-lifecycle.ts";
+
+const repositoryRoot = path.resolve(import.meta.dirname, "../../..");
+const uniqueId = `completion-15-${process.pid}-${Date.now()}`;
+const artifacts = path.resolve(
+  process.env.DIGITAL_DEPLOYMENT_ARTIFACTS ?? `.scratch/deployment/${uniqueId}`,
+);
+const standaloneImage = process.env.DIGITAL_DEPLOYMENT_STANDALONE_IMAGE;
+const runtimeImage = process.env.DIGITAL_DEPLOYMENT_RUNTIME_IMAGE;
+if (!standaloneImage || !runtimeImage)
+  throw new Error("必须显式提供已构建的 standalone 和 runtime 镜像引用");
+const endpoint: ContainerEndpoint = {
+  command: process.env.DIGITAL_DEPLOYMENT_DOCKER_COMMAND ?? "docker",
+  arguments: JSON.parse(
+    process.env.DIGITAL_DEPLOYMENT_DOCKER_ARGUMENTS ?? "[]",
+  ) as string[],
+  host: process.env.DOCKER_HOST ?? "unix:///var/run/docker.sock",
+};
+const port = Number(process.env.DIGITAL_DEPLOYMENT_PORT ?? "8080");
+const fixture = path.join(repositoryRoot, "fixtures/controlled-source-io");
+const controller = new AbortController();
+for (const signal of ["SIGINT", "SIGTERM"] as const)
+  process.once(signal, () => controller.abort(new Error(`收到 ${signal}`)));
+const environments: ContainerReference[] = [];
+const operations: unknown[] = [];
+const resumeEnvironment = process.env.DIGITAL_DEPLOYMENT_RESUME_ENVIRONMENT;
+const resumeStage = process.env.DIGITAL_DEPLOYMENT_RESUME_STAGE;
+const browserAlreadyVerified =
+  resumeStage === "after-browser" || resumeStage === "after-browser-and-owner";
+const standaloneOwnerAlreadyVerified =
+  resumeStage === "after-browser-and-owner";
+const archiveCommand = process.env.DIGITAL_DEPLOYMENT_ARCHIVE_COMMAND ?? "tar";
+const archiveArguments = JSON.parse(
+  process.env.DIGITAL_DEPLOYMENT_ARCHIVE_ARGUMENTS ?? "[]",
+) as string[];
+const saveErrors: string[] = [];
+const cleanupErrors: string[] = [];
+let mainError: string | undefined;
+
+async function operate(
+  request: ContainerRequest,
+  cleanup = false,
+): Promise<ContainerOperationResult> {
+  const startedAt = new Date().toISOString();
+  const result = await manageContainerEnvironment(
+    request,
+    cleanup ? {} : { signal: controller.signal },
+  );
+  console.log(
+    JSON.stringify({
+      environment: request.environment,
+      action: request.action,
+      status: result.status,
+      finishedAt: new Date().toISOString(),
+      failure: result.failure,
+    }),
+  );
+  operations.push({
+    request,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    result,
+  });
+  try {
+    await writeFile(
+      path.join(artifacts, "operations.json"),
+      JSON.stringify(operations, null, 2),
+    );
+  } catch (error) {
+    saveErrors.push(String(error));
+  }
+  return result;
 }
-
-function runCommand(
-  command: string,
-  args: readonly string[],
-  options: CommandOptions,
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: repositoryRoot,
-      env: options.env,
-      signal: options.signal,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stderr = "";
-    let stdout = "";
-    let timedOut = false;
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGKILL");
-    }, options.timeout);
-
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      stdout += chunk;
-    });
-    child.stderr.on("data", (chunk: string) => {
-      stderr += chunk;
-    });
-    child.once("error", reject);
-    child.once("close", (code, signal) => {
-      clearTimeout(timeout);
-      if (code === 0 && !timedOut) {
-        resolve((options.includeStderr ? `${stdout}${stderr}` : stdout).trim());
-        return;
-      }
-      reject(
-        new Error(
-          `${command} ${args.join(" ")} ${
-            timedOut
-              ? `timed out after ${options.timeout}ms`
-              : `exited with code ${String(code)}${signal === null ? "" : ` from ${signal}`}`
-          }\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+function requireSuccess(
+  result: ContainerOperationResult,
+): ContainerOperationResult {
+  assert.equal(result.status, "ok", JSON.stringify(result));
+  return result;
+}
+async function prepare(
+  name: string,
+  mounts = false,
+): Promise<ContainerReference> {
+  const reference = {
+    workspacePath: repositoryRoot,
+    environment: `${uniqueId}-${name}`,
+  };
+  environments.push(reference);
+  requireSuccess(
+    await operate({
+      ...reference,
+      action: "prepare",
+      endpoint,
+      image: standaloneImage!,
+      ...(mounts
+        ? {
+            mounts: [
+              {
+                source: fixture,
+                target: "/controlled-source",
+                readonly: true as const,
+              },
+            ],
+            configuration: {
+              DIGITAL_SOURCE_IO_MODE: "controlled",
+              DIGITAL_SOURCE_IO_CONFIG: "/controlled-source/manifest.json",
+              DIGITAL_SOURCE_IO_IDENTITY:
+                "sha256:0595bf9c66f739a60b67ac434391e7e274d5f268df5509637c48b73c4fefa6e8",
+            },
+          }
+        : {}),
+    }),
+  );
+  return reference;
+}
+async function start(
+  reference: ContainerReference,
+  image = standaloneImage!,
+  waitFor: "ready" | "live" = "ready",
+) {
+  return requireSuccess(
+    await operate({
+      ...reference,
+      action: "start",
+      image,
+      publish: { hostIp: "0.0.0.0", hostPort: port, containerPort: 3000 },
+      waitFor,
+    }),
+  );
+}
+function serviceOf(result: ContainerOperationResult) {
+  const service = result.observation?.objects.findLast(
+    (object) => object.role === "service",
+  );
+  assert.ok(service?.id);
+  return service;
+}
+async function stopped(
+  reference: ContainerReference,
+  normal = true,
+  owners = false,
+) {
+  const result = requireSuccess(
+    await operate({ ...reference, action: "stop" }, true),
+  );
+  if (normal) {
+    const service = serviceOf(result);
+    assert.equal(service.running, false);
+    assert.equal(service.pid, 0);
+    assert.equal(service.exitCode, 143);
+    assert.equal(service.oomKilled, false);
+    assert.ok(
+      (service.stopDurationMilliseconds ?? Infinity) < 10_000,
+      JSON.stringify(service),
+    );
+    if (owners) {
+      const destination = path.join(
+        artifacts,
+        `${service.key}-stopped-container.tar`,
+      );
+      requireSuccess(
+        await operate(
+          {
+            ...reference,
+            action: "export",
+            objectId: service.id!,
+            destination,
+          },
+          true,
         ),
       );
-    });
-  });
-}
-
-function docker(timeout: number, ...args: string[]): Promise<string> {
-  return runCommand("docker", args, {
-    signal: abortController.signal,
-    timeout,
-  });
-}
-
-async function cleanup(): Promise<void> {
-  for (const args of [
-    ["rm", "--force", container],
-    ["rm", "--force", runtimeContainer],
-    ["rm", "--force", emptyStandaloneContainer],
-    ["rm", "--force", damagedStandaloneContainer],
-    ["rm", "--force", playwrightClient],
-    ["image", "rm", "--force", playwrightClientImage],
-    ["image", "rm", "--force", image],
-    ["image", "rm", "--force", runtimeImage],
-    ["volume", "rm", "--force", preparedVolume],
-    ["volume", "rm", "--force", unpreparedVolume],
-    ["volume", "rm", "--force", futureVolume],
-    ["volume", "rm", "--force", failedVolume],
-    ["volume", "rm", "--force", emptyStandaloneVolume],
-    ["volume", "rm", "--force", damagedStandaloneVolume],
-  ]) {
-    try {
-      await runCommand("docker", args, { timeout: 30_000 });
-    } catch {
-      // 资源可能尚未创建。
+      for (const pattern of [
+        "tmp/digital-web-process-*",
+        "tmp/digital-fanbox-browser-*",
+        "tmp/playwright_chromiumdev_profile-*",
+      ]) {
+        const listing = await runCommand({
+          phase: "shutdown-owner",
+          command: archiveCommand,
+          args: [
+            ...archiveArguments,
+            "--list",
+            "--file",
+            destination,
+            "--wildcards",
+            "--no-anchored",
+            pattern,
+          ],
+          cwd: repositoryRoot,
+          journal: fileCommandJournal(
+            path.join(artifacts, "shutdown-commands.ndjson"),
+          ),
+        });
+        assert.equal(
+          listing.stdoutTail.trim(),
+          "",
+          `停止后仍有临时owner：${pattern}`,
+        );
+        assert.ok(
+          listing.exitCode === 0 ||
+            (listing.exitCode === 2 &&
+              listing.stderrTail.includes("Not found in archive")),
+          JSON.stringify(listing),
+        );
+        assert.equal(listing.journalError, undefined);
+      }
     }
   }
+  return result;
 }
-
-async function assertCleanup(): Promise<void> {
-  const resources = [
-    ["container", container],
-    ["container", runtimeContainer],
-    ["container", emptyStandaloneContainer],
-    ["container", damagedStandaloneContainer],
-    ["image", image],
-    ["image", runtimeImage],
-    ["image", playwrightClientImage],
-    ["volume", preparedVolume],
-    ["volume", unpreparedVolume],
-    ["volume", futureVolume],
-    ["volume", failedVolume],
-    ["volume", emptyStandaloneVolume],
-    ["volume", damagedStandaloneVolume],
-  ] as const;
-  for (const [kind, name] of resources) {
-    try {
-      await runCommand("docker", [kind, "inspect", name], { timeout: 10_000 });
-    } catch {
-      continue;
-    }
-    throw new Error(`Deployment checker left temporary ${kind} ${name}`);
-  }
+async function task(
+  reference: ContainerReference,
+  script?: string,
+  dataReadonly = false,
+) {
+  const result = requireSuccess(
+    await operate({
+      ...reference,
+      action: "start",
+      role: "task",
+      waitFor: "exit",
+      dataReadonly,
+      ...(script === undefined
+        ? { command: ["prepare-only"] }
+        : {
+            entrypoint: "node",
+            command: ["--input-type=module", "--eval", script],
+          }),
+    }),
+  );
+  const object = result.observation?.objects.findLast(
+    (candidate) => candidate.role === "task",
+  );
+  assert.equal(object?.running, false);
+  assert.equal(object?.exitCode, 0);
+  return object!;
 }
-
-async function containerLogs(containerName = container): Promise<string> {
-  try {
-    return await runCommand("docker", ["logs", containerName], {
-      includeStderr: true,
-      timeout: 10_000,
-    });
-  } catch (error) {
-    return `Container logs unavailable: ${String(error)}`;
-  }
-}
-
-async function waitForLive(
-  baseUrl: string,
-  containerName: string,
-): Promise<void> {
-  const deadline = Date.now() + 60_000;
-
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(`${baseUrl}/api/live`, {
-        signal: AbortSignal.timeout(2_000),
-      });
-      if (response.ok) return;
-    } catch {
-      // 服务端可能仍在启动。
-    }
-
-    const running = await docker(
-      5_000,
-      "inspect",
-      "--format={{.State.Running}}",
-      containerName,
-    );
-    if (running !== "true") {
-      throw new Error(
-        `Container exited before liveness.\n${await containerLogs(containerName)}`,
-      );
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-
-  throw new Error(
-    `Container was not live within 60000ms.\n${await containerLogs(containerName)}`,
+async function sql(reference: ContainerReference, statement: string) {
+  await task(
+    reference,
+    `const { DatabaseSync } = await import('node:sqlite'); const db = new DatabaseSync('/data/catalogue.sqlite'); db.exec(${JSON.stringify(statement)}); db.close();`,
   );
 }
-
-async function assertStatus(
-  baseUrl: string,
+async function http(
+  reference: ContainerReference,
   pathname: string,
   expected: number,
-): Promise<void> {
-  const response = await fetch(`${baseUrl}${pathname}`, {
-    signal: AbortSignal.timeout(5_000),
-  });
-  if (response.status !== expected) {
-    throw new Error(
-      `${pathname} expected ${expected}, received ${response.status}`,
+) {
+  const result = requireSuccess(
+    await operate({ ...reference, action: "inspect" }),
+  );
+  const response = await fetch(
+    new URL(pathname, result.observation!.address!),
+    { signal: AbortSignal.timeout(5_000) },
+  );
+  assert.equal(
+    response.status,
+    expected,
+    `${reference.environment} ${pathname}`,
+  );
+  return response;
+}
+async function finish(reference: ContainerReference) {
+  requireSuccess(await operate({ ...reference, action: "stop" }, true));
+  const saved = await operate(
+    {
+      ...reference,
+      action: "save",
+      directory: path.join(artifacts, reference.environment),
+      includeData: true,
+    },
+    true,
+  );
+  requireSuccess(saved);
+  requireSuccess(
+    await operate({ ...reference, action: "delete", deleteData: true }, true),
+  );
+  requireSuccess(
+    await operate({ ...reference, action: "delete", deleteData: true }, true),
+  );
+  assert.equal(
+    requireSuccess(await operate({ ...reference, action: "inspect" }, true))
+      .remaining.length,
+    0,
+  );
+}
+async function materialDigest(): Promise<string> {
+  const root = path.join(fixture, "material");
+  const files = (await readdir(root, { recursive: true, withFileTypes: true }))
+    .filter((entry) => entry.isFile())
+    .map((entry) => path.join(entry.parentPath, entry.name))
+    .sort();
+  const digest = createHash("sha256");
+  for (const file of files) {
+    digest.update(path.relative(root, file));
+    digest.update(await readFile(file));
+  }
+  return digest.digest("hex");
+}
+async function browser(
+  reference: ContainerReference,
+  running: ContainerOperationResult,
+) {
+  const containerClient =
+    process.env.DIGITAL_DEPLOYMENT_PLAYWRIGHT_CLIENT === "container";
+  const baseUrl = containerClient
+    ? `http://${serviceOf(running).name}:3000`
+    : (process.env.DIGITAL_DEPLOYMENT_BROWSER_BASE_URL ??
+      running.observation!.address!);
+  const handoff = path.join(artifacts, "browser-handoff.json");
+  await writeFile(
+    handoff,
+    JSON.stringify({
+      mode: "provided",
+      baseUrl,
+      environment: reference.environment,
+      workspacePath: repositoryRoot,
+      productDataRoot: "/data",
+      materialDirectory: "/controlled-source/material/RJ01668691",
+      manifestPath: path.join(fixture, "manifest.json"),
+      sourceMode: "controlled",
+      productLogFile: "",
+      run: {
+        port: Number(new URL(baseUrl).port),
+        runId: running.observation!.runId,
+      },
+      artifactsDirectory: artifacts,
+    }),
+  );
+  if (containerClient) {
+    const browsers = process.env.PLAYWRIGHT_BROWSERS_PATH;
+    if (!browsers)
+      throw new Error("容器浏览器要求显式 PLAYWRIGHT_BROWSERS_PATH");
+    let clientImage = running.observation?.objects.findLast(
+      (object) => object.kind === "image" && object.state === "present",
     );
-  }
-}
-
-async function waitForReady(baseUrl: string): Promise<void> {
-  const deadline = Date.now() + 60_000;
-  let lastStatus: number | undefined;
-
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(`${baseUrl}/api/ready`, {
-        signal: AbortSignal.timeout(5_000),
-      });
-      lastStatus = response.status;
-      if (response.status === 200) return;
-    } catch {
-      // 存活检查可用后，启动过程可能仍在继续。
+    if (clientImage === undefined) {
+      const built = requireSuccess(
+        await operate({
+          ...reference,
+          action: "build",
+          contextPath: repositoryRoot,
+          dockerfile: path.join(
+            repositoryRoot,
+            "apps/web/Dockerfile.playwright-client",
+          ),
+        }),
+      );
+      clientImage = built.observation?.objects.findLast(
+        (object) => object.kind === "image",
+      );
     }
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-
-  throw new Error(
-    `/api/ready did not return 200 within 60000ms; last status ${String(lastStatus)}`,
-  );
-}
-
-async function launch(
-  containerName: string,
-  imageName: string,
-  volume: string,
-): Promise<string> {
-  await docker(
-    30_000,
-    "run",
-    "--detach",
-    "--name",
-    containerName,
-    "--mount",
-    `source=${volume},target=/data`,
-    "--publish",
-    "127.0.0.1::3000",
-    imageName,
-  );
-  const portOutput = await docker(10_000, "port", containerName, "3000/tcp");
-  const match = /:(\d+)$/u.exec(portOutput.split("\n")[0] ?? "");
-  if (!match?.[1])
-    throw new Error(`Could not determine the published port: ${portOutput}`);
-  const baseUrl = `http://127.0.0.1:${match[1]}`;
-  await waitForLive(baseUrl, containerName);
-  return baseUrl;
-}
-
-async function waitForExit(containerName: string): Promise<void> {
-  const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline) {
-    const state = await docker(
-      5_000,
-      "inspect",
-      "--format={{.State.Running}} {{.State.ExitCode}}",
-      containerName,
+    assert.ok(clientImage?.id);
+    const clientRun = requireSuccess(
+      await operate({
+        ...reference,
+        action: "start",
+        role: "client",
+        image: clientImage.id,
+        useData: false,
+        entrypoint: "node",
+        waitFor: "exit",
+        timeoutMilliseconds: 600_000,
+        mounts: [
+          { source: repositoryRoot, target: "/workspace", readonly: true },
+          { source: browsers, target: "/playwright-browsers", readonly: true },
+          { source: handoff, target: "/browser-handoff.json", readonly: true },
+        ],
+        configuration: {
+          DIGITAL_ACCEPTANCE_HANDOFF: "/browser-handoff.json",
+          PLAYWRIGHT_EXTERNAL_BASE_URL: baseUrl,
+          PLAYWRIGHT_BROWSERS_PATH: "/playwright-browsers",
+        },
+        command: [
+          "/workspace/apps/web/node_modules/@playwright/test/cli.js",
+          "test",
+          "--config",
+          "/workspace/apps/web/playwright.acceptance.config.ts",
+          "managed-service-product-chain.spec.ts",
+          "--grep",
+          "浏览器从空白正式迁移起步",
+          "--output=/tmp/browser-artifacts",
+        ],
+      }),
     );
-    const [running, exitCode] = state.split(" ");
-    if (running === "false") {
-      if (exitCode !== "0") return;
-      throw new Error("Damaged standalone deployment exited successfully");
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  throw new Error("Damaged standalone deployment did not exit within 60000ms");
-}
-
-async function assertNotLive(baseUrl: string): Promise<void> {
-  try {
-    const response = await fetch(`${baseUrl}/api/live`, {
-      signal: AbortSignal.timeout(2_000),
-    });
-    if (response.ok)
-      throw new Error("Damaged standalone deployment opened Web liveness");
-  } catch (error) {
-    if (error instanceof Error && error.message.includes("opened Web"))
-      throw error;
-  }
-}
-
-async function injectLedgerFailure(volume: string, sql: string): Promise<void> {
-  await docker(
-    30_000,
-    "run",
-    "--rm",
-    "--mount",
-    `source=${volume},target=/data`,
-    "--entrypoint",
-    "node",
-    image,
-    "--input-type=module",
-    "--eval",
-    `const moduleName = 'node:' + 'sqlite'; const { DatabaseSync } = await import(moduleName); const db = new DatabaseSync('/data/catalogue.sqlite'); db.exec(${JSON.stringify(sql)}); db.close();`,
-  );
-}
-
-async function inspectFailedStandaloneMigration(
-  volume: string,
-  retainedMarker: string,
-): Promise<{
-  readonly failure: { readonly id: string; readonly message: string } | null;
-  readonly retained: boolean;
-}> {
-  const output = await docker(
-    30_000,
-    "run",
-    "--rm",
-    "--mount",
-    `source=${volume},target=/data`,
-    "--entrypoint",
-    "node",
-    image,
-    "--input-type=module",
-    "--eval",
-    `const moduleName = 'node:' + 'sqlite'; const { DatabaseSync } = await import(moduleName); const db = new DatabaseSync('/data/catalogue.sqlite', { readOnly: true }); const failure = db.prepare('SELECT id, message FROM __digital_catalogue_migration_failures').get() ?? null; const retained = db.prepare('SELECT 1 FROM schema_migrations WHERE id = ?').get(${JSON.stringify(retainedMarker)}) !== undefined; console.log(JSON.stringify({ failure, retained })); db.close();`,
-  );
-  return JSON.parse(output) as {
-    readonly failure: { readonly id: string; readonly message: string } | null;
-    readonly retained: boolean;
-  };
-}
-
-async function runDeploymentE2e(baseUrl: string): Promise<void> {
-  if (process.env.DIGITAL_DEPLOYMENT_PLAYWRIGHT_CLIENT !== "container") {
-    await runCommand("pnpm", ["--dir", "apps/web", "run", "test:e2e"], {
-      env: { ...process.env, PLAYWRIGHT_EXTERNAL_BASE_URL: baseUrl },
-      signal: abortController.signal,
-      timeout: 120_000,
-    });
+    const client = clientRun.observation?.objects.findLast(
+      (object) => object.role === "client",
+    );
+    assert.equal(client?.exitCode, 0);
+    assert.equal(client?.running, false);
+    requireSuccess(
+      await operate({
+        ...reference,
+        action: "export",
+        objectId: client!.id!,
+        destination: path.join(artifacts, "browser-client-diagnostic.tar"),
+      }),
+    );
+    assert.equal(
+      requireSuccess(await operate({ ...reference, action: "inspect" }))
+        .observation?.serviceReady,
+      true,
+    );
     return;
   }
-  const browsers = process.env.PLAYWRIGHT_BROWSERS_PATH?.trim();
-  if (!browsers) {
-    throw new Error(
-      "PLAYWRIGHT_BROWSERS_PATH is required for container client mode",
-    );
-  }
-  await docker(
-    600_000,
-    "build",
-    "--pull=false",
-    "--file",
-    "apps/web/Dockerfile.playwright-client",
-    "--tag",
-    playwrightClientImage,
-    ".",
-  );
-  const e2eOutput = await docker(
-    180_000,
-    "run",
-    "--rm",
-    "--name",
-    playwrightClient,
-    "--network",
-    "host",
-    "--mount",
-    `type=bind,source=${repositoryRoot},target=/workspace`,
-    "--mount",
-    `type=bind,source=${browsers},target=/playwright-browsers,readonly`,
-    "--workdir",
-    "/workspace/apps/web",
-    "-e",
-    `PLAYWRIGHT_EXTERNAL_BASE_URL=${baseUrl}`,
-    "-e",
-    "PLAYWRIGHT_BROWSERS_PATH=/playwright-browsers",
-    playwrightClientImage,
-    "sh",
-    "-c",
-    'version=$(node node_modules/@playwright/test/cli.js --version) || exit $?; test "$version" = "Version 1.62.0" || { echo "Unexpected Playwright version: $version" >&2; exit 64; }; exec node node_modules/@playwright/test/cli.js test',
-  );
-  console.log(e2eOutput);
-}
-
-for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  process.once(signal, () => {
-    abortController.abort(new Error(`Received ${signal}`));
+  const input = process.env.DIGITAL_DEPLOYMENT_BROWSER_ARGUMENTS;
+  const args =
+    input === undefined
+      ? [
+          "--dir",
+          "apps/web",
+          "exec",
+          "playwright",
+          "test",
+          "--config",
+          "playwright.acceptance.config.ts",
+          "test/e2e/managed-service-product-chain.spec.ts",
+          "--grep",
+          "浏览器从空白正式迁移起步",
+          `--output=${path.join(artifacts, "browser")}`,
+        ]
+      : (JSON.parse(input) as string[]);
+  const result = await runCommand({
+    phase: "browser",
+    command: process.env.DIGITAL_DEPLOYMENT_BROWSER_COMMAND ?? "pnpm",
+    args,
+    cwd: repositoryRoot,
+    env: {
+      ...process.env,
+      DIGITAL_ACCEPTANCE_HANDOFF: handoff,
+      PLAYWRIGHT_EXTERNAL_BASE_URL: baseUrl,
+    },
+    signal: controller.signal,
+    journal: fileCommandJournal(
+      path.join(artifacts, "browser-commands.ndjson"),
+    ),
   });
+  assert.equal(result.exitCode, 0, JSON.stringify(result));
+  assert.equal(result.signal, null);
+  assert.equal(result.journalError, undefined);
+  // 浏览器退出后只观察；部署的 stop/save/delete 仍由本调用方执行。
+  assert.equal(
+    requireSuccess(await operate({ ...reference, action: "inspect" }))
+      .observation?.serviceReady,
+    true,
+  );
 }
 
+await mkdir(artifacts, { recursive: true, mode: 0o700 });
 try {
-  await docker(
-    600_000,
-    "build",
-    "--pull=false",
-    "--file",
-    "apps/web/Dockerfile",
-    "--target",
-    "standalone",
-    "--build-arg",
-    `DEPLOYMENT_BUILD_ID=${uniqueId}`,
-    "--tag",
-    image,
-    ".",
-  );
-  // 全新独立卷是受支持的单容器部署：不附带命令调用镜像，使默认准备并启动路径
-  // 必须先创建基线，Web 才能响应请求。
-  await docker(30_000, "volume", "create", emptyStandaloneVolume);
-  const emptyStandaloneBaseUrl = await launch(
-    emptyStandaloneContainer,
-    image,
-    emptyStandaloneVolume,
-  );
-  await waitForReady(emptyStandaloneBaseUrl);
-  await assertStatus(emptyStandaloneBaseUrl, "/api/catalogue", 200);
-  await docker(30_000, "rm", "--force", emptyStandaloneContainer);
-
-  // 仅迁移调用成功退出，且绝不打开 HTTP。
-  await docker(30_000, "volume", "create", preparedVolume);
-  await docker(
-    60_000,
-    "run",
-    "--rm",
-    "--mount",
-    `source=${preparedVolume},target=/data`,
-    image,
-    "prepare-only",
-  );
-  const baseUrl = await launch(container, image, preparedVolume);
-  await waitForReady(baseUrl);
-  const configuredUser = await docker(
-    10_000,
-    "image",
-    "inspect",
-    "--format={{.Config.User}}",
-    image,
-  );
-  const processes = await docker(
-    10_000,
-    "top",
-    container,
-    "-eo",
-    "uid,gid,pid,cmd",
-  );
-  if (
-    !["app", "1001:1001"].includes(configuredUser) ||
-    !processes
-      .split("\n")
-      .some((line) => /^1001\s+1001\s+\d+\s+node\b/u.test(line))
-  ) {
-    throw new Error(
-      `Container identity must be app or 1001:1001 with a node process running as 1001:1001; image=${configuredUser}, processes=${processes}`,
+  if (resumeEnvironment === undefined) {
+    const empty = await prepare("empty");
+    const emptyRun = await start(empty);
+    assert.equal(emptyRun.observation?.serviceReady, true);
+    await http(empty, "/api/catalogue", 200);
+    await stopped(empty);
+    await finish(empty);
+  }
+  const prepared =
+    resumeEnvironment === undefined
+      ? await prepare("prepared", true)
+      : { workspacePath: repositoryRoot, environment: resumeEnvironment };
+  if (resumeEnvironment === undefined) {
+    const prepareOnly = await task(prepared);
+    assert.equal(Object.keys(prepareOnly.ports ?? {}).length, 0);
+  } else {
+    environments.push(prepared);
+    // 显式接续已登记环境；先保全上次失败数据，不重做已证明的空卷/仅准备步骤。
+    requireSuccess(
+      await operate(
+        {
+          ...prepared,
+          action: "save",
+          directory: path.join(artifacts, "prior-failure-saved"),
+          includeData: true,
+        },
+        true,
+      ),
     );
   }
-  await runDeploymentE2e(baseUrl);
-
-  // 针对同一个已准备卷启动运行时前，先停止独立进程。这样部署检查永远不会让两个
-  // Web/执行宿主进程同时访问同一个 SQLite 目录。
-  await docker(30_000, "rm", "--force", container);
-
-  await docker(
-    600_000,
-    "build",
-    "--pull=false",
-    "--file",
-    "apps/web/Dockerfile",
-    "--target",
-    "runtime",
-    "--build-arg",
-    `DEPLOYMENT_BUILD_ID=${uniqueId}`,
-    "--tag",
-    runtimeImage,
-    ".",
-  );
-  // 仅启动目标可以服务由独立模式准备的目录；未经处理的卷则保持存活，
-  // 但拒绝就绪检查和业务流量。
-  const preparedRuntime = await launch(
-    runtimeContainer,
-    runtimeImage,
-    preparedVolume,
-  );
-  await waitForReady(preparedRuntime);
-  await assertStatus(preparedRuntime, "/api/catalogue", 200);
-  await docker(30_000, "rm", "--force", runtimeContainer);
-
-  await docker(30_000, "volume", "create", unpreparedVolume);
-  const unpreparedRuntime = await launch(
-    runtimeContainer,
-    runtimeImage,
-    unpreparedVolume,
-  );
-  await assertStatus(unpreparedRuntime, "/api/ready", 503);
-  await assertStatus(unpreparedRuntime, "/api/catalogue", 503);
-  await docker(30_000, "rm", "--force", runtimeContainer);
-
-  await docker(30_000, "volume", "create", futureVolume);
-  await docker(
-    60_000,
-    "run",
-    "--rm",
-    "--mount",
-    `source=${futureVolume},target=/data`,
-    image,
-    "prepare-only",
-  );
-  await injectLedgerFailure(
-    futureVolume,
-    "INSERT INTO __digital_catalogue_migrations (id, checksum, applied_at) VALUES ('99999999999999_future', 'future', '2026-08-20T00:00:00.000Z')",
-  );
-  const futureRuntime = await launch(
-    runtimeContainer,
-    runtimeImage,
-    futureVolume,
-  );
-  await assertStatus(futureRuntime, "/api/ready", 503);
-  await assertStatus(futureRuntime, "/api/catalogue", 503);
-  await docker(30_000, "rm", "--force", runtimeContainer);
-
-  await docker(30_000, "volume", "create", failedVolume);
-  await docker(
-    60_000,
-    "run",
-    "--rm",
-    "--mount",
-    `source=${failedVolume},target=/data`,
-    image,
-    "prepare-only",
-  );
-  await injectLedgerFailure(
-    failedVolume,
-    "INSERT INTO __digital_catalogue_migration_failures (id, message, occurred_at) VALUES ('20260820000000_v1_catalogue_baseline', 'failed', '2026-08-20T00:00:00.000Z')",
-  );
-  const failedRuntime = await launch(
-    runtimeContainer,
-    runtimeImage,
-    failedVolume,
-  );
-  await assertStatus(failedRuntime, "/api/ready", 503);
-  await assertStatus(failedRuntime, "/api/catalogue", 503);
-  await docker(30_000, "rm", "--force", runtimeContainer);
-
-  // 构造一个会进入真实基线 DDL 并失败的目录。独立镜像仍必须以默认准备并启动命令运行；
-  // 运行时返回 503 并不能证明 Web 始终保持离线。
-  const retainedMarker = "issue17-retained-before-failed-standalone";
-  const failureSecret = "issue17-secret-must-not-appear-in-diagnostics";
-  await docker(30_000, "volume", "create", damagedStandaloneVolume);
-  await docker(
-    60_000,
-    "run",
-    "--rm",
-    "--mount",
-    `source=${damagedStandaloneVolume},target=/data`,
-    image,
-    "prepare-only",
-  );
-  await injectLedgerFailure(
-    damagedStandaloneVolume,
-    `INSERT INTO schema_migrations (id, applied_at) VALUES ('${retainedMarker}', '2026-08-20T00:00:00.000Z'); INSERT INTO schema_migrations (id, applied_at) VALUES ('${failureSecret}', '2026-08-20T00:00:00.000Z'); DROP INDEX workflow_executions_reuse; DELETE FROM __digital_catalogue_migrations;`,
-  );
-  await docker(
-    30_000,
-    "run",
-    "--detach",
-    "--name",
-    damagedStandaloneContainer,
-    "--mount",
-    `source=${damagedStandaloneVolume},target=/data`,
-    "--publish",
-    "127.0.0.1::3000",
-    image,
-  );
-  const damagedPort = await docker(
-    10_000,
-    "port",
-    damagedStandaloneContainer,
-    "3000/tcp",
-  );
-  const damagedPortMatch = /:(\d+)$/u.exec(damagedPort.split("\n")[0] ?? "");
-  if (!damagedPortMatch?.[1])
-    throw new Error(
-      "Could not determine the damaged standalone published port",
+  const digestBefore = await materialDigest();
+  const running = await start(prepared);
+  if (!browserAlreadyVerified) {
+    const service = serviceOf(running);
+    const identity = requireSuccess(
+      await operate({
+        ...prepared,
+        action: "exec",
+        objectId: service.id!,
+        command: [
+          "node",
+          "--input-type=module",
+          "--eval",
+          "import fs from 'node:fs'; const status=fs.readFileSync('/proc/1/status','utf8'); if(!/^Uid:[ \t]+1001[ \t]+1001[ \t]+1001[ \t]+1001$/m.test(status)||!/^Gid:[ \t]+1001[ \t]+1001[ \t]+1001[ \t]+1001$/m.test(status))throw Error('PID1 identity'); if(process.getuid()!==1001 || process.getgid()!==1001) throw Error('wrong identity'); fs.writeFileSync('/data/permission-proof','writable'); let denied=false;try{fs.writeFileSync('/controlled-source/material/RJ01668691/forbidden','x')}catch(e){denied=e.code==='EROFS'||e.code==='EACCES'}if(!denied)throw Error('material writable'); console.log(JSON.stringify({uid:process.getuid(),gid:process.getgid(),dataWritable:true,materialReadonly:denied}));",
+        ],
+      }),
     );
-  const damagedBaseUrl = `http://127.0.0.1:${damagedPortMatch[1]}`;
-  await waitForExit(damagedStandaloneContainer);
-  await assertNotLive(damagedBaseUrl);
-  const damagedLogs = await containerLogs(damagedStandaloneContainer);
-  if (
-    !damagedLogs.includes("生产数据库准备失败：生产迁移") ||
-    damagedLogs.includes(failureSecret) ||
-    /SQLITE|node:sqlite|\bat\s+/u.test(damagedLogs)
-  ) {
-    throw new Error(
-      "Damaged standalone migration diagnostics were not sanitized",
-    );
+    assert.ok(identity.command?.stdout.includes('"uid":1001'));
+    await browser(prepared, running);
   }
-  const failedMigration = await inspectFailedStandaloneMigration(
-    damagedStandaloneVolume,
-    retainedMarker,
+  const beforeRestart = (await (
+    await http(prepared, "/api/settings", 200)
+  ).json()) as { libraries: { id: string; displayName: string }[] };
+  const created = beforeRestart.libraries.find(
+    (library) => library.displayName === "受控夹具资产库已改名",
   );
-  if (
-    failedMigration.failure?.id !== "20260820000000_v1_catalogue_baseline" ||
-    failedMigration.failure.message !== "Error" ||
-    !failedMigration.retained
-  ) {
-    throw new Error(
-      "Damaged standalone migration did not retain its sanitized failure ledger and existing data",
-    );
+  assert.ok(created);
+  await stopped(prepared, true, !standaloneOwnerAlreadyVerified);
+  await start(prepared, runtimeImage);
+  const afterRestart = (await (
+    await http(prepared, "/api/settings", 200)
+  ).json()) as typeof beforeRestart;
+  assert.equal(
+    afterRestart.libraries.find((library) => library.id === created.id)
+      ?.displayName,
+    created.displayName,
+  );
+  await http(prepared, "/api/catalogue", 200);
+  assert.equal(await materialDigest(), digestBefore);
+  await stopped(prepared, true, true);
+  await finish(prepared);
+
+  for (const [name, statement] of [
+    ["unprepared", undefined],
+    [
+      "future",
+      "INSERT INTO __digital_catalogue_migrations (id, checksum, applied_at) VALUES ('99999999999999_future', 'future', '2026-08-20T00:00:00.000Z')",
+    ],
+    [
+      "failed",
+      "INSERT INTO __digital_catalogue_migration_failures (id, message, occurred_at) VALUES ('20260820000000_v1_catalogue_baseline', 'failed', '2026-08-20T00:00:00.000Z')",
+    ],
+  ] as const) {
+    const reference = await prepare(name);
+    if (statement !== undefined) {
+      await task(reference);
+      await sql(reference, statement);
+    }
+    const runtime = await start(reference, runtimeImage, "live");
+    assert.equal(runtime.observation?.serviceReady, false);
+    await http(reference, "/api/ready", 503);
+    await http(reference, "/api/catalogue", 503);
+    await stopped(reference);
+    await finish(reference);
   }
+
+  const damaged = await prepare("damaged");
+  await task(damaged);
+  const marker = "standalone-retained-before-failure",
+    secret = "standalone-secret-must-not-appear";
+  await sql(
+    damaged,
+    `INSERT INTO schema_migrations (id, applied_at) VALUES ('${marker}', '2026-08-20T00:00:00.000Z'); INSERT INTO schema_migrations (id, applied_at) VALUES ('${secret}', '2026-08-20T00:00:00.000Z'); DROP INDEX workflow_executions_reuse; DELETE FROM __digital_catalogue_migrations;`,
+  );
+  const failed = await operate({
+    ...damaged,
+    action: "start",
+    waitFor: "ready",
+    publish: { hostIp: "0.0.0.0", hostPort: port, containerPort: 3000 },
+  });
+  assert.equal(failed.status, "failed");
+  assert.ok(failed.failure);
+  assert.equal(failed.observation?.serviceReady, false);
+  const failedService = serviceOf(failed);
+  assert.equal(failedService.running, false);
+  assert.notEqual(failedService.exitCode, 0);
+  let live = false;
+  try {
+    live = (await fetch(`http://127.0.0.1:${port}/api/live`)).ok;
+  } catch {}
+  assert.equal(live, false);
+  const logs = (
+    await Promise.all(failed.logs.map((file) => readFile(file, "utf8")))
+  )
+    .filter((log) => log.includes(`container logs ${failedService.id}`))
+    .join("\n");
+  assert.ok(logs.includes("生产数据库准备失败：生产迁移"));
+  assert.ok(!logs.includes(secret));
+  assert.ok(!/SQLITE|node:sqlite|\bat\s+/u.test(logs));
+  await task(
+    damaged,
+    `const {DatabaseSync}=await import('node:sqlite');const db=new DatabaseSync('/data/catalogue.sqlite',{readOnly:true});const failure=db.prepare('SELECT id,message FROM __digital_catalogue_migration_failures').get();if(failure?.id!=='20260820000000_v1_catalogue_baseline'||failure.message!=='Error')throw Error('failure ledger changed');if(!db.prepare('SELECT 1 FROM schema_migrations WHERE id=?').get(${JSON.stringify(marker)}))throw Error('original state lost');console.log(JSON.stringify({failure,retained:true}));db.close();`,
+  );
+  // 失败现场只保存；删除留给后续明确动作，container export 不作为卷备份。
+  requireSuccess(
+    await operate(
+      {
+        ...damaged,
+        action: "save",
+        directory: path.join(artifacts, "damaged-retained"),
+        includeData: true,
+      },
+      true,
+    ),
+  );
 } catch (error) {
-  console.error(error);
-  console.error(await containerLogs());
+  mainError = String(error);
   process.exitCode = 1;
+  console.error(error);
 } finally {
-  await cleanup();
-  await assertCleanup();
+  for (const reference of environments) {
+    const result = await operate({ ...reference, action: "stop" }, true);
+    cleanupErrors.push(...result.cleanupErrors);
+    saveErrors.push(...result.saveErrors);
+    if (result.status !== "ok")
+      cleanupErrors.push(
+        `${reference.environment}: ${result.failure?.message ?? result.status}`,
+      );
+  }
+  await writeFile(
+    path.join(artifacts, "outcome.json"),
+    JSON.stringify(
+      {
+        mainError: mainError ?? null,
+        resumeEnvironment,
+        browserAlreadyVerified,
+        saveErrors,
+        cleanupErrors,
+        environments,
+        operationsPath: path.join(artifacts, "operations.json"),
+        finishedAt: new Date().toISOString(),
+      },
+      null,
+      2,
+    ),
+  );
+  if (saveErrors.length > 0 || cleanupErrors.length > 0) process.exitCode = 1;
 }

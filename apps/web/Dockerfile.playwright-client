@@ -1,8 +1,8 @@
 FROM node:24-bookworm-slim
-ARG PACKAGE_MANAGER_PIN="pnpm@11.17.0"
+ARG PACKAGE_MANAGER_PIN="pnpm@12.3.4"
 RUN corepack enable \
   && corepack prepare "$PACKAGE_MANAGER_PIN" --activate \
-  && test "$(pnpm --version)" = "11.17.0"
+  && test "$(pnpm --version)" = "12.3.4"
 RUN apt-get update && apt-get install -y --no-install-recommends \
   libnspr4 libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
   libdbus-1-3 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
