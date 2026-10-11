@@ -2,10 +2,19 @@
   "extends": ["//"],
   "tags": ["composition-root"],
   "tasks": {
-    "build": { "outputs": ["dist/**"] },
-    "test": { "dependsOn": ["build", "@digital/sqlite#build"] },
+    "build": {
+      "outputs": ["dist/**"]
+    },
+    "test": {
+      "dependsOn": ["build", "@digital/sqlite#build"]
+    },
     "test:e2e": {
-      "dependsOn": ["build", "@digital/sqlite#build"],
+      "dependsOn": [
+        "build",
+        "@digital/sqlite#build",
+        "@digital/web#build",
+        "@digital/web#test:e2e"
+      ],
       "cache": false
     },
     "test:e2e:environment": {

@@ -13,9 +13,12 @@ import {
 } from "../packages/environment/src/index.ts";
 import { loadControlledSourceIo } from "../packages/test-support/src/source-io.ts";
 import {
+  configurePublicationScreenSources,
+  intakePublicationScreenCase,
+} from "./preview-corpus.ts";
+import {
   createProductClient,
   digestDirectory,
-  intakeDirectories,
   type JsonObject,
   type JsonValue,
   type ProductClient,
@@ -116,51 +119,6 @@ const save = async (): Promise<void> => {
 let owned = false;
 let passed = false;
 
-async function configureSources(client: ProductClient): Promise<void> {
-  const configured: JsonValue[] = [];
-  if (cases.some((c) => c.kind === "film")) {
-    for (const source of ["tmdb", "omdb"]) {
-      const result = await client.post("/settings/connections", {
-        source,
-        action: "configure",
-        secret:
-          source === "tmdb" ? "synthetic-tmdb-token" : "synthetic-omdb-key",
-      });
-      assert.equal(result.status, 200);
-      configured.push({ source, inspection: result.body });
-    }
-  }
-  if (cases.some((c) => c.kind === "anime")) {
-    assert.equal(
-      (
-        await client.post("/settings/connections", {
-          source: "bangumi",
-          action: "configure-client",
-          clientId: "synthetic-client",
-          clientSecret: "synthetic-client-secret",
-          redirectUri: `http://127.0.0.1:${String(port)}/api/source-connections/bangumi/callback`,
-        })
-      ).status,
-      200,
-    );
-    const authorization = await client.post(
-      "/source-connections/bangumi/authorize",
-      {},
-    );
-    assert.equal(authorization.status, 201);
-    const state = new URL(
-      string(object(authorization.body)["authorizationUrl"]),
-    ).searchParams.get("state");
-    assert(state);
-    const callback = await client.get("/source-connections/bangumi/callback", {
-      code: "synthetic-code",
-      state,
-    });
-    assert.equal(callback.status, 200);
-    configured.push({ source: "bangumi", inspection: callback.body });
-  }
-  evidence["connections"] = configured;
-}
 function acceptedItems(inspection: JsonObject): readonly JsonObject[] {
   return array(inspection["itemResults"])
     .map(object)
@@ -249,44 +207,28 @@ try {
     signal: controller.signal,
   });
   assert.equal((await client.readiness()).ready, true);
-  await configureSources(client);
+  evidence["connections"] = await configurePublicationScreenSources(
+    client,
+    cases,
+    port,
+  );
   for (const c of cases) {
-    const intake = await intakeDirectories(client, {
-      displayName: `出版物与影视资料 ${c.id}`,
-      directories: [path.join(fixture, c.directory)],
-      recognitionProfileIds: [
-        c.kind === "anime" ? "anime" : c.kind === "film" ? "movies" : "books",
-      ],
-      sourceIdentities:
-        c.kind === "anime"
-          ? ["bangumi"]
-          : c.kind === "film"
-            ? ["tmdb", "omdb"]
-            : ["nbinet"],
-      workflowTimeoutMs: 300_000,
-    });
-    const result: Record<string, unknown> = { id: c.id, kind: c.kind, intake };
+    const { intake, operations } = await intakePublicationScreenCase(
+      client,
+      fixture,
+      c,
+    );
+    const result: Record<string, unknown> = {
+      id: c.id,
+      kind: c.kind,
+      intake,
+      ...operations,
+    };
     results.push(result);
     const rootId = intake.observedRootIds[0];
     assert(rootId);
-    if (c.directed) {
+    if (c.directed)
       assert.equal(intake.assetIds.length, 0, "非规范收藏包不应自动制造资产");
-      const directed = await client.post("/refresh", {
-        observedRootId: rootId,
-        relativeScope: ".",
-        directedSourceIdentity: "tmdb",
-        directedSourceInput: { movie: String(c.tmdb) },
-      });
-      result["directed"] = directed;
-      assert.equal(directed.status, 201);
-      const execution = await client.awaitExecution(
-        string(object(directed.body)["id"]),
-        300_000,
-      );
-      result["directedExecution"] = execution;
-      assert.equal(execution.status, "completed");
-      assert.equal(execution.outcome, "accepted");
-    }
     const observed = await client.get("/intake", { rootId });
     assert.equal(observed.status, 200);
     const files = array(object(observed.body)["files"]).map(object);
@@ -305,23 +247,6 @@ try {
       `${c.id} 的正式材料归属数量错误`,
     );
     result["assetIds"] = assetIds;
-    if (c.official) {
-      const enrichment = await client.post("/source-enrichments", {
-        subjectId: assetIds[0]!,
-        sourceIdentity: "nbinet",
-        sourceInput: { isbn: c.official.isbn },
-        assetLibraryId: intake.assetLibraryId,
-      });
-      result["enrichment"] = enrichment;
-      assert.equal(enrichment.status, 201);
-      const execution = await client.awaitExecution(
-        string(object(enrichment.body)["id"]),
-        300_000,
-      );
-      result["enrichmentExecution"] = execution;
-      assert.equal(execution.status, "completed");
-      assert.equal(execution.outcome, "accepted");
-    }
     await save();
   }
   // Web 与 CLI 顺序持有同一产品数据，沿正式扫描入口请求封面并读回格式和来源事实。

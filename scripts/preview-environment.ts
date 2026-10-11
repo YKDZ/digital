@@ -37,6 +37,15 @@ import {
 } from "../packages/environment/src/index.ts";
 import { loadControlledSourceIo } from "../packages/test-support/src/source-io.ts";
 import {
+  configureAudioPostSources,
+  configurePublicationScreenSources,
+  defaultPreviewMaterials,
+  intakeAudioPostCase,
+  intakePublicationScreenCase,
+  previewCorpusCases,
+  previewCorpusManifest,
+} from "./preview-corpus.ts";
+import {
   createProductClient,
   digestDirectory,
   intakeDirectories,
@@ -189,7 +198,7 @@ export const usage = `用法：node scripts/preview-environment.ts [命令] [选
 选项：
   --workspace <目录>          代码检出根目录，默认本仓根；运行数据落在 <工作区>/.digital/environments/<环境>
   --environment <名称>        环境名，日常入口默认 completion-01-preview，verify 默认 completion-01-verify
-  --material <目录>           普通资料目录，可重复；默认 06 代表目录
+  --material <目录>           普通资料目录，可重复；up 默认完整29根，verify 默认06代表目录
   --source-mode <模式>        controlled（默认）| real | offline
   --manifest <路径>           受控来源清单绝对路径，由使用者显式选择
   --content-identity <身份>   期望的清单内容身份，缺省按清单重算
@@ -313,12 +322,16 @@ export function parseRequest(argv: readonly string[]): PreviewRequest {
         : defaultPreviewEnvironment),
     materials:
       materials.length === 0
-        ? [defaultMaterial]
+        ? command === "verify"
+          ? [defaultMaterial]
+          : defaultPreviewMaterials
         : materials.map((item) => requireAbsolute("--material", item)),
     sourceMode: sourceMode as PreviewSourceMode,
     manifestPath:
       values["--manifest"] === undefined
-        ? defaultManifest
+        ? command === "verify"
+          ? defaultManifest
+          : previewCorpusManifest
         : requireAbsolute("--manifest", values["--manifest"]),
     ...(values["--content-identity"] === undefined
       ? {}
@@ -661,6 +674,10 @@ async function readEnvironmentState(
   };
 }
 
+type PreviewIntakeOutcome = IntakeOutcome & {
+  readonly assetLibraryIds?: readonly string[];
+};
+
 async function runIntake(
   request: PreviewRequest,
   client: ProductClient,
@@ -669,7 +686,7 @@ async function runIntake(
     readonly directories?: readonly string[];
     readonly libraryName?: string;
   } = {},
-): Promise<IntakeOutcome> {
+): Promise<PreviewIntakeOutcome> {
   reporter.section("目录接入（正式产品入口）");
   const directories = options.directories ?? request.materials;
   reporter.fact("本次接入目录", [...directories]);
@@ -678,6 +695,115 @@ async function runIntake(
     "产品 /api/ready",
     readiness.ready ? "已就绪" : `未就绪（HTTP ${String(readiness.status)}）`,
   );
+  const selected = previewCorpusCases(directories);
+  if (
+    request.sourceMode === "controlled" &&
+    request.manifestPath === previewCorpusManifest &&
+    selected.length === directories.length
+  ) {
+    const audio = selected.filter(({ root }) => root.batch === "audio-posts");
+    if (audio[0] !== undefined)
+      await configureAudioPostSources(
+        client,
+        audio[0].fixture,
+        audio.map(({ item }) => item),
+      );
+    await configurePublicationScreenSources(
+      client,
+      selected.map(({ item }) => item),
+      Number(new URL(client.address).port),
+    );
+    const results: IntakeOutcome[] = [];
+    const roots: JsonValue[] = [];
+    const assetIds = new Set<string>();
+    for (const { root, item, fixture } of selected) {
+      reporter.fact("正在接入资料", root.id);
+      const displayName = `${options.libraryName ?? request.libraryName} · ${item.id}`;
+      const result =
+        root.batch === "audio-posts"
+          ? {
+              intake: await intakeAudioPostCase(
+                client,
+                fixture,
+                item,
+                request.workflowTimeoutMs,
+                displayName,
+              ),
+              operations: {},
+            }
+          : await intakePublicationScreenCase(
+              client,
+              fixture,
+              item,
+              request.workflowTimeoutMs,
+              displayName,
+            );
+      results.push(result.intake);
+      const rootId = result.intake.observedRootIds[0];
+      if (rootId === undefined) throw new Error(`资料 ${root.id} 没有观察根`);
+      const observed = await client.get("/intake", { rootId });
+      if (observed.status !== 200)
+        throw new Error(
+          `资料 ${root.id} 观察读取失败：HTTP ${String(observed.status)}`,
+        );
+      const files = asArray(asObject(observed.body)?.["files"]);
+      if (files.length === 0)
+        throw new Error(`资料 ${root.id} 没有安全观察到文件`);
+      const currentAssetIds = [
+        ...new Set(
+          files.flatMap((file) =>
+            asArray(asObject(file)?.["assetIds"]).flatMap((id) =>
+              typeof id === "string" ? [id] : [],
+            ),
+          ),
+        ),
+      ];
+      for (const id of currentAssetIds) assetIds.add(id);
+      roots.push(
+        JSON.parse(
+          JSON.stringify({
+            id: root.id,
+            batch: root.batch,
+            directory: path.join(fixture, item.directory),
+            recognition: root.recognition,
+            observedRootId: rootId,
+            safeFiles: files.length,
+            assetIds: currentAssetIds,
+            intake: result.intake,
+            operations: result.operations,
+          }),
+        ) as JsonValue,
+      );
+      reporter.fact(`资料 ${root.id}`, roots.at(-1)!);
+    }
+    const first = results[0];
+    if (first === undefined) throw new Error("共同预览没有选中资料");
+    reporter.fact("各根接入结果", roots);
+    reporter.fact("安全观察根数", roots.length);
+    reporter.fact(
+      "产生识别主体的根数",
+      roots.filter((root) => asArray(asObject(root)?.["assetIds"]).length > 0)
+        .length,
+    );
+    reporter.fact(
+      "未识别根数",
+      roots.filter((root) => asArray(asObject(root)?.["assetIds"]).length === 0)
+        .length,
+    );
+    reporter.fact("接入产生的资产", [...assetIds]);
+    const assetLibraryIds = [
+      ...new Set(results.map((result) => result.assetLibraryId)),
+    ];
+    reporter.fact("各根资产库", assetLibraryIds);
+    reporter.say("各根工作流及补充操作分别列出；根数量与资产数量独立记录。");
+    return {
+      ...first,
+      assetLibraryIds,
+      observedRootIds: results.flatMap((result) => [...result.observedRootIds]),
+      assetIds: [...assetIds],
+      reused: results.every((result) => result.reused),
+    };
+  }
   const intake = await intakeDirectories(client, {
     displayName: options.libraryName ?? request.libraryName,
     directories,
@@ -1424,6 +1550,30 @@ export function requestValidationCases(): readonly {
   };
   return [
     {
+      name: "完整默认输入与代表验证分开",
+      detail: "日常预览选择29根，受控代表验证和普通目录专项保持独立",
+      run: () => {
+        const preview = parseRequest([]);
+        if (preview.materials.length !== 29)
+          throw new Error(
+            `完整默认预览应选择29根，实际${String(preview.materials.length)}根`,
+          );
+        const verify = parseRequest(["verify"]);
+        if (
+          verify.materials.length !== 1 ||
+          verify.materials[0] !== defaultMaterial ||
+          verify.manifestPath !== defaultManifest
+        )
+          throw new Error("受控代表verify必须保持原代表目录及清单");
+        const subset = parseRequest(["up", "--material", "/ordinary/selected"]);
+        if (
+          subset.materials.length !== 1 ||
+          subset.materials[0] !== "/ordinary/selected"
+        )
+          throw new Error("显式普通目录专项不能被完整默认选择覆盖");
+      },
+    },
+    {
       name: "真实来源默认关闭",
       detail: "没有显式开关就拒绝，不触达任何来源",
       run: () =>
@@ -1810,14 +1960,14 @@ async function copyMaterialForDirectory(targetRoot: string): Promise<void> {
 function reportPreviewHandoff(
   request: PreviewRequest,
   client: ProductClient,
-  intake: IntakeOutcome,
+  intake: PreviewIntakeOutcome,
   reporter: PreviewReporter,
 ): void {
   reporter.section("开发预览可用");
   reporter.fact("浏览地址", client.address);
   reporter.fact(
     "资产库",
-    `${intake.assetLibraryId}（接入资产 ${String(intake.assetIds.length)} 个）`,
+    `${(intake.assetLibraryIds ?? [intake.assetLibraryId]).join("、")}（合计接入资产 ${String(intake.assetIds.length)} 个）`,
   );
   reporter.say(
     "停止服务：node scripts/preview-environment.ts stop --workspace " +
@@ -2095,8 +2245,12 @@ export async function main(
         ? exitCodes.invalidUsage
         : exitCodes.operationFailed;
   }
-  // 取消之后业务立即停止，但仍以可用的清理上下文对自有服务收尾并保存证据。
-  if (cancellation.signal.aborted) {
+  if (mainError !== undefined) reporter.fail(describeError(mainError));
+  let cancellationFinished = false;
+  // 保存也可能被首次取消打断；已观察取消时独立收尾，保留本次启动的数据与日志。
+  const finishCancellation = async (): Promise<boolean> => {
+    if (!cancellation.signal.aborted || cancellationFinished) return false;
+    cancellationFinished = true;
     const needsEntryCleanup =
       !running.failureFinished &&
       ["verify", "up", "prepare", "start"].includes(request.command);
@@ -2111,35 +2265,40 @@ export async function main(
       for (const error of cleanupErrors)
         reporter.say(`收尾错误（不覆盖主错误）：${error}`);
     }
-    if (mainError === undefined)
+    if (mainError === undefined) {
       mainError = new Error("收到中断信号，业务已取消");
+      reporter.fail(describeError(mainError));
+    }
     exit = interruptedExitCode(cancellation.signal.reason as NodeJS.Signals);
-  }
-  if (mainError !== undefined) reporter.fail(describeError(mainError));
+    return true;
+  };
+  await finishCancellation();
   if (exit === exitCodes.okay && reporter.failures.length > 0) {
     exit = exitCodes.intakeFailed;
   }
-  try {
-    await writeEvidence(requestWithSignal, reporter, exit, mainError);
-  } catch (error) {
-    reporter.fail(
-      `结果保存失败（保存错误，不覆盖主错误）：${describeError(error)}`,
-    );
-    if (exit === exitCodes.okay) exit = exitCodes.operationFailed;
-    if (!running.failureFinished && running.startedHere) {
-      const cleanupErrors = await finishOwnedFailure(
-        requestWithSignal,
-        reporter,
-        running.ownsService,
-        running.startedHere,
+  const saveResult = async (): Promise<void> => {
+    try {
+      await writeEvidence(requestWithSignal, reporter, exit, mainError);
+    } catch (error) {
+      reporter.fail(
+        `结果保存失败（保存错误，不覆盖主错误）：${describeError(error)}`,
       );
-      for (const cleanupError of cleanupErrors)
-        reporter.say(`收尾错误（不覆盖主错误）：${cleanupError}`);
-      running.failureFinished = true;
+      if (exit === exitCodes.okay) exit = exitCodes.operationFailed;
+      if (!running.failureFinished && running.startedHere) {
+        const cleanupErrors = await finishOwnedFailure(
+          requestWithSignal,
+          reporter,
+          running.ownsService,
+          running.startedHere,
+        );
+        for (const cleanupError of cleanupErrors)
+          reporter.say(`收尾错误（不覆盖主错误）：${cleanupError}`);
+        running.failureFinished = true;
+      }
     }
-  }
-  if (cancellation.signal.aborted)
-    exit = interruptedExitCode(cancellation.signal.reason as NodeJS.Signals);
+  };
+  await saveResult();
+  if (await finishCancellation()) await saveResult();
   reporter.print();
   return exit;
 }

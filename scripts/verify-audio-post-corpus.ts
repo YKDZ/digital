@@ -11,9 +11,12 @@ import {
 } from "../packages/environment/src/index.ts";
 import { loadControlledSourceIo } from "../packages/test-support/src/source-io.ts";
 import {
+  configureAudioPostSources,
+  intakeAudioPostCase,
+} from "./preview-corpus.ts";
+import {
   createProductClient,
   digestDirectory,
-  intakeDirectories,
   type JsonObject,
   type JsonValue,
 } from "./preview-product.ts";
@@ -132,36 +135,11 @@ try {
     signal: controller.signal,
   });
   assert.equal((await client.readiness()).ready, true);
-  if (cases.some((item) => item.kind === "post")) {
-    const browserCredential = JSON.parse(
-      await readFile(
-        path.join(fixture, "connections/synthetic-customudon.json"),
-        "utf8",
-      ),
-    ) as JsonObject;
-    const connection = await client.post("/settings/connections", {
-      source: "fanbox",
-      action: "configure",
-      creatorId: "customudon",
-      browserCredential,
-    });
-    assert.equal(connection.status, 200);
+  await configureAudioPostSources(client, fixture, cases);
+  if (cases.some((item) => item.kind === "post"))
     evidence["sessionConfigured"] = true;
-  }
   for (const item of cases) {
-    const profiles =
-      item.kind === "audio"
-        ? ["dlsite-voice"]
-        : item.kind === "post"
-          ? ["fanbox"]
-          : ["dlsite-voice", "fanbox", "books", "anime", "movies"];
-    const intake = await intakeDirectories(client, {
-      displayName: `轻量资料 ${item.id}`,
-      directories: [path.join(fixture, item.directory)],
-      recognitionProfileIds: profiles,
-      sourceIdentities: ["dlsite", "fanbox"],
-      workflowTimeoutMs: 300_000,
-    });
+    const intake = await intakeAudioPostCase(client, fixture, item);
     const rootId = intake.observedRootIds[0];
     assert(rootId);
     const observed = await client.get("/intake", { rootId });

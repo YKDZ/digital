@@ -6,8 +6,8 @@
 数据库或来源装配。
 
 ```bash
-pnpm preview              # 等价于 node scripts/preview-environment.ts（缺省命令 up）：准备 + 启动 + 目录接入，服务保持运行并打印浏览地址
-pnpm preview:verify       # 用一次性自建环境跑完预览场景断言并按归属收尾
+pnpm preview              # 准备、启动并自然接入完整29根轻量资料，服务保持运行并打印浏览地址
+pnpm preview:verify       # 用原受控代表目录运行预览场景断言并按归属收尾
 pnpm preview help         # 用法说明（--help 等同）
 node scripts/preview-environment.ts --help
 ```
@@ -37,10 +37,15 @@ node scripts/preview-environment.ts --help
 
 ## 默认输入与来源
 
-- 默认资料目录是票 06 的代表目录 `fixtures/controlled-source-io/material/RJ01668691`；
-  同一素材集的子集或任何其它普通目录都可以用 `--material` 显式给出（可重复）。
-- 来源默认**受控**：受控清单由使用者显式选择（`--manifest`，绝对路径），入口会按内容身份
-  核验后交给环境，产品根再复核一次。
+- 日常预览默认选择 `fixtures/preview-corpus/coverage.json` 的两批完整资料：29 根安全观察目录，
+  其中 24 根属于识别范围、5 根明确保持未识别。索引逐项引用原 `cases.json` 和 `references.json`；
+  根数量不代表资产数量。EPUB、PDF、图片、音视频是可执行轻量输入，不证明完整读取、播放或性能。
+- `verify` 保持票 06 的受控代表目录 `fixtures/controlled-source-io/material/RJ01668691`
+  和原清单，默认检查不依赖完整资料。专项可用 `--material` 显式选择任意普通目录（可重复），
+  包括共同资料中的某个子目录。
+- 来源默认**受控**：完整预览使用共同 `fixtures/preview-corpus/manifest.json`，仅引用两批原响应字节；
+  `--manifest` 可显式选择其它清单（绝对路径）。入口按内容身份核验后交给环境，产品根再复核一次。
+  已收录资料所需的合成来源连接通过正式设置入口配置；既有连接（包括撤销或不可用状态）不被替换。
 - **真实来源默认关闭**：必须同时给 `--allow-real-source` 与至少一条 `--real-condition`，
   条件会被原样报告；缺条件即拒绝，不静默落回真实装配。
 - 相对清单、相对资料目录、区间外端口（只允许 52001—52999）都在请求阶段被拒绝。
@@ -49,7 +54,7 @@ node scripts/preview-environment.ts --help
 
 ## 归属与收尾
 
-- **自建环境**（默认）：成功后先保存证据，再停止并删除；任何断言失败或异常都改走失败保留分支——
+- **自建 verify 环境**：成功后先保存证据，再停止并删除；任何断言失败或异常都改走失败保留分支——
   先停止自有服务，再保留可重启的数据、日志与证据载体，不宣称已回收。
 - **恢复上次失败记录**：`failed` 记录（上次准备失败，带着它自己的日志与数据载体）按恢复处理——
   本入口重新准备并拥有**本次启动的服务**，收尾只停止这个服务；那条记录与它的载体不属于本入口，
@@ -85,9 +90,8 @@ node scripts/preview-environment.ts --help
 逻辑过去散落在各人的手工命令里。`pnpm preview` 现在承担同一职责，`verify` 子命令把
 「从未接入 → 浏览 / 刷新 / 读取封面 / 人工编辑 / 子集与多目录接入 / 未列入来源请求失败 →
 改名、自动刷新、播放进度与人工封面在重启后保留 → 显式重建保持输入字节」做成可重复执行的断言。
-`apps/web` 自身的 `dev`（前端热更新开发服务）不在本票范围，保持不变。
-
-票 10 只需扩展本入口的默认输入集合（默认目录、默认识别配置），不必新增第二套准备逻辑。
+日常 `up` 成功后保持服务运行；使用者显式停止、重启、重建或删除。完整默认资料与代表验证沿用同一
+入口及生命周期，业务输入、来源响应和预期留在调用方，不由环境能力解释作品。
 
 ## 保留产品状态的代码更新
 
@@ -107,3 +111,99 @@ pnpm preview:dev my-preview
 用 `pnpm preview stop --environment my-preview` 独立终结本次开发会话；停止后代码变化不再启动服务。
 终端中断开发入口也会停止自有服务并保留产品数据及日志。准备、启动、停止、重建和删除仍可单独使用；
 普通启动缺省使用生产运行模式，切换模式须先显式停止。
+
+## 与本地自动化并行
+
+开发预览、CLI 和 Web 自动化使用各自的代码检出、环境名、空闲端口、临时目录及证据目录。
+每份检出独立安装依赖和构建；开发会话使用自己的 `.turbo/development/dist`，正式构建仍写本检出的
+`dist`。只读素材可以共用，产品数据与来源连接设置不可共用，也不要让两份检出互相指向构建输出。
+使用原 CLI journey 和 Web managed/provided 入口，不直接启动未经准备的产品进程。
+
+只有实际完成公共停止并确认自有进程退出后才能删除自己的环境。失败现场保留原错误、产品日志和
+浏览器诊断，经公共 `start` 显式重启后继续排查；无法确认归属或退出时保留现场，不按端口清理他方资源。
+
+## 单容器与 Compose 部署
+
+部署入口是 [Web Dockerfile](../apps/web/Dockerfile) 与
+[Compose 配置](../docker-compose.yml)，不需要测试框架或素材清单。以下命令从仓库根目录执行，
+要求已有可用的 Docker；Compose 用法另需 Docker Compose。构建使用正式 Turbo 依赖图：
+
+```bash
+docker build -f apps/web/Dockerfile --target standalone -t digital-standalone:latest .
+docker build -f apps/web/Dockerfile --target runtime -t digital-runtime:latest .
+```
+
+`standalone` 携带正式迁移，默认执行 `prepare-and-start`；`runtime` 只启动 Web，不执行迁移，
+未准备、版本不兼容、迁移失败或损坏的目录数据库不能就绪。两种镜像默认以 `1001:1001` 运行。
+产品数据与被观察文件必须分离：先按部署机器的权限管理方式准备已有目录，使运行用户可读写数据目录、
+可读取素材目录及其父目录。以下路径须替换为 Docker 后端机器上的实际绝对路径；远程 Docker 的挂载路径
+属于后端机器，镜像与路径也必须在该后端可用。
+
+```bash
+export DIGITAL_PRODUCT_DATA_HOST_PATH=/srv/digital/data
+export DIGITAL_OBSERVED_ROOT_HOST_PATH=/srv/digital/media
+export DIGITAL_UID=1001
+export DIGITAL_GID=1001
+```
+
+单容器直接准备并启动：
+
+```bash
+docker run -d --name digital-web --user "$DIGITAL_UID:$DIGITAL_GID" \
+  -p 127.0.0.1:3000:3000 \
+  --mount "type=bind,src=$DIGITAL_PRODUCT_DATA_HOST_PATH,dst=/data" \
+  --mount "type=bind,src=$DIGITAL_OBSERVED_ROOT_HOST_PATH,dst=/observed/media,readonly" \
+  digital-standalone:latest
+curl --fail http://127.0.0.1:3000/api/ready
+docker logs digital-web
+```
+
+也可以先单独准备，再用 `runtime` 启动，替代上面的单容器命令；迁移成功退出后才启动服务：
+
+```bash
+docker run --rm --user "$DIGITAL_UID:$DIGITAL_GID" \
+  --mount "type=bind,src=$DIGITAL_PRODUCT_DATA_HOST_PATH,dst=/data" \
+  digital-standalone:latest prepare-only
+docker run -d --name digital-web --user "$DIGITAL_UID:$DIGITAL_GID" \
+  -p 127.0.0.1:3000:3000 \
+  --mount "type=bind,src=$DIGITAL_PRODUCT_DATA_HOST_PATH,dst=/data" \
+  --mount "type=bind,src=$DIGITAL_OBSERVED_ROOT_HOST_PATH,dst=/observed/media,readonly" \
+  digital-runtime:latest
+```
+
+Compose 复用同一组目录和身份，并显式选择已构建镜像。UID 与 GID 都必须非零；配置不自动创建宿主挂载目录。
+`migrate` 成功退出后，`web` 才启动，素材挂载保持只读：
+
+```bash
+export DIGITAL_MIGRATION_IMAGE=digital-standalone:latest
+export DIGITAL_RUNTIME_IMAGE=digital-runtime:latest
+docker compose -p digital-example up -d --no-build --wait
+docker compose -p digital-example ps -a
+docker compose -p digital-example logs migrate web
+curl --fail http://127.0.0.1:3000/api/ready
+```
+
+Compose 默认只绑定 `127.0.0.1:3000`，可显式设置 `DIGITAL_BIND_ADDRESS` 与 `DIGITAL_PORT`。
+两种部署都通过产品设置接入容器内的 `/observed/media`，挂载本身不会登记资料库或执行目录接入。
+单容器用 `docker stop -t 10 digital-web` 停止、`docker start digital-web` 重启；保存所需日志后，
+`docker rm digital-web` 删除已停止容器。Compose 用 `docker compose -p digital-example stop -t 10`
+停止，`docker compose -p digital-example up -d --no-build --wait` 重启，
+`docker compose -p digital-example down` 删除该项目容器与网络。这些命令保留绑定的数据和素材目录；
+一致备份须先确认应用退出，再将整个产品数据根作为一个单元保存，素材不属于产品数据备份。
+
+### 显式部署检查
+
+默认根检查不启动 Docker。已构建镜像、可用 Docker 后端、独占检查端口、可写证据目录及 Playwright Chromium
+就绪后，可单独调用已有部署检查入口；两类证据分别保存：
+
+```bash
+export DIGITAL_DEPLOYMENT_STANDALONE_IMAGE=digital-standalone:latest
+export DIGITAL_DEPLOYMENT_RUNTIME_IMAGE=digital-runtime:latest
+export DIGITAL_DEPLOYMENT_ARTIFACTS="$PWD/.scratch/deployment/standalone"
+export DIGITAL_COMPOSE_CHECK_ARTIFACTS="$PWD/.scratch/deployment/compose"
+pnpm --filter @digital/web deployment
+```
+
+单容器检查默认使用端口 `8080`，Compose 检查默认使用端口 `3000`，可分别通过
+`DIGITAL_DEPLOYMENT_PORT` 与 `DIGITAL_COMPOSE_CHECK_PORT` 指定独占端口。检查只管理自己创建的对象，
+失败时保留诊断和数据；镜像构建成功、配置展开或辅助后端启动都不能代替检查实际通过。
