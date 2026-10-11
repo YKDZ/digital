@@ -286,6 +286,17 @@ async function environmentNames(): Promise<string[]> {
 
 async function collect(): Promise<number> {
   const saveErrors: string[] = [];
+  try {
+    const execution = await readJson<{
+      completed: boolean;
+      logErrors?: string[];
+    }>("execution.json");
+    if (!execution.completed) saveErrors.push("执行层完整日志保存状态未确认");
+    for (const error of execution.logErrors ?? [])
+      saveErrors.push(`执行日志保存: ${error}`);
+  } catch (error) {
+    saveErrors.push(`执行记录保存状态: ${errorText(error)}`);
+  }
   const result: Collection = {
     owners: await owners(saveErrors),
     saveErrors,
@@ -406,7 +417,33 @@ async function collect(): Promise<number> {
       );
     }
   }
-  if (capability === "root")
+  if (capability === "root") {
+    // 根默认 CLI 仍写原正式结果路径；其命令结果与场景结局也属于本次上传。
+    const journeyResults = path.join(workspacePath, "run", "02-evidence");
+    try {
+      for (const entry of await readdir(journeyResults, {
+        withFileTypes: true,
+      })) {
+        if (!entry.isFile()) continue;
+        try {
+          const target = path.join(evidence, "journeys");
+          await mkdir(target, { recursive: true, mode: 0o700 });
+          await writeFile(
+            path.join(target, entry.name),
+            redact(
+              await readFile(path.join(journeyResults, entry.name), "utf8"),
+            ),
+          );
+        } catch (error) {
+          result.saveErrors.push(
+            `CLI 场景结果 ${entry.name}: ${errorText(error)}`,
+          );
+        }
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+        result.saveErrors.push(`CLI 场景结果枚举: ${errorText(error)}`);
+    }
     for (const name of ["test-results", "playwright-report"]) {
       try {
         await cp(
@@ -419,6 +456,7 @@ async function collect(): Promise<number> {
           result.saveErrors.push(`浏览器诊断 ${name}: ${errorText(error)}`);
       }
     }
+  }
   await save("collection.json", result);
   return result.cleanupErrors.length === 0 && result.saveErrors.length === 0
     ? 0
