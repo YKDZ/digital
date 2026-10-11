@@ -1,10 +1,20 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import {
+  chown,
+  cp,
+  lstat,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 
 import type {
   ContainerEndpoint,
+  ComposeDeployment,
   ContainerMount,
   ContainerObject,
   ContainerObservation,
@@ -42,6 +52,16 @@ type ContainerRecord = {
   serviceId?: string;
   address?: string;
   hasFailure: boolean;
+  compose?: {
+    project: string;
+    file: string;
+    fileDigest: string;
+    overrideFile: string;
+    deployment: ComposeDeployment;
+    dataPresent: boolean;
+    dataDevice: number;
+    dataInode: number;
+  };
   evidence?: { directory: string; generation: number; dataSaved: boolean };
 };
 type InspectedObject = {
@@ -96,6 +116,17 @@ export async function runContainerOperation(
   let evidence: ContainerOperationResult["evidence"];
   let stage = "record";
   let sequence = 0;
+  let observationUnknown = false;
+  let cleanupAttempted = false;
+  const stopsOnFailure = [
+    "prepare",
+    "prepare-compose",
+    "compose-up",
+    "build",
+    "start",
+    "wait",
+    "save",
+  ].includes(request.action);
   const held = new HeldCommands();
   const offCancel = cancellation.onTrigger(() => {
     void held.close();
@@ -127,6 +158,7 @@ export async function runContainerOperation(
     args: readonly string[],
     cleanup = false,
     timeoutMilliseconds = 30_000,
+    environment: Readonly<Record<string, string>> = {},
   ): Promise<CommandRun> => {
     if (record === undefined) throw new Error("环境端点尚未登记");
     if (!cleanup && cancellation.triggered())
@@ -145,7 +177,7 @@ export async function runContainerOperation(
           ...args,
         ],
         cwd: layout.workspacePath,
-        env: filteredEnvironment(),
+        env: filteredEnvironment(process.env, environment),
         logFile,
         captureStdout: true,
         captureStderr: true,
@@ -216,6 +248,7 @@ export async function runContainerOperation(
         throw new Error("Docker端点身份与登记不符，拒绝操作");
     } catch (error) {
       // 端点观察失败后，旧记录中的运行状态不能冒充本次实际观察。
+      observationUnknown = true;
       markUnknown(record?.objects ?? []);
       throw error;
     }
@@ -261,7 +294,18 @@ export async function runContainerOperation(
         (object.kind === "image"
           ? !inspected.RepoTags?.includes(object.name)
           : (inspected.Name ?? "").replace(/^\//u, "") !== object.name) ||
-        (object.id !== undefined && inspected.Id !== object.id)
+        (object.id !== undefined && inspected.Id !== object.id) ||
+        ((object.composeService !== undefined ||
+          object.composeNetwork !== undefined) &&
+          record?.compose !== undefined &&
+          (actualLabels["com.docker.compose.project"] !==
+            record.compose.project ||
+            (object.composeService !== undefined &&
+              actualLabels["com.docker.compose.service"] !==
+                object.composeService) ||
+            (object.composeNetwork !== undefined &&
+              actualLabels["com.docker.compose.network"] !==
+                object.composeNetwork)))
       ) {
         object.state = "unknown";
         throw new Error(
@@ -332,6 +376,11 @@ export async function runContainerOperation(
             if (raw?.Id === undefined)
               throw new Error("Docker 对象缺少实际 ID");
             object.id = raw.Id;
+            if (
+              object.composeService !== undefined ||
+              object.composeNetwork !== undefined
+            )
+              object.name = (raw.Name ?? "").replace(/^\//u, "");
           }
           await verify(object, cleanup);
         }
@@ -349,6 +398,7 @@ export async function runContainerOperation(
           else if (object.state !== "absent") await verify(object, cleanup);
         }
       } catch (error) {
+        observationUnknown = true;
         markUnknown(record.objects.filter((object) => object.kind === kind));
         throw error;
       }
@@ -451,12 +501,19 @@ export async function runContainerOperation(
       serviceReady,
       objects: structuredClone(record.objects),
       ...(dataVolume === undefined ? {} : { dataVolume }),
+      ...(record.compose === undefined
+        ? {}
+        : {
+            composeProject: record.compose.project,
+            dataDirectory: layout.productDataRoot,
+            dataPresent: record.compose.dataPresent,
+          }),
       recordPath,
     };
   };
   const wait = async (
     object: ManagedObject,
-    condition: "ready" | "live" | "exit" | "running",
+    condition: "ready" | "live" | "exit" | "running" | "healthy",
     timeout: number,
   ): Promise<void> => {
     const end = Date.now() + timeout;
@@ -466,6 +523,12 @@ export async function runContainerOperation(
         throw new Error("等待的自有容器已不存在");
       if (condition === "exit" && object.running === false) return;
       if (condition === "running" && object.running) return;
+      if (
+        condition === "healthy" &&
+        object.running &&
+        object.health === "healthy"
+      )
+        return;
       if (!object.running)
         throw new Error(
           `容器在${condition}之前退出：exit=${String(object.exitCode)}`,
@@ -500,16 +563,113 @@ export async function runContainerOperation(
     throw new Error(`容器未在${String(timeout)}毫秒内达到${condition}`);
   };
 
+  const requireSaved = (data = false): void => {
+    if (
+      record?.evidence === undefined ||
+      record.evidence.generation !== record.generation ||
+      !existsSync(path.join(record.evidence.directory, "deployment.json"))
+    )
+      throw new Error("完整诊断尚未保存，禁止删除载体");
+    if (data && record.hasFailure && !record.evidence.dataSaved)
+      throw new Error("失败产品数据尚未保存，禁止删除");
+  };
+  const verifyDataDirectory = async (): Promise<void> => {
+    if (record?.compose === undefined || !record.compose.dataPresent)
+      throw new Error("自有产品数据目录不存在");
+    const actual = await lstat(layout.productDataRoot);
+    if (
+      !actual.isDirectory() ||
+      actual.dev !== record.compose.dataDevice ||
+      actual.ino !== record.compose.dataInode
+    )
+      throw new Error("自有产品数据目录身份不符");
+  };
+  const compose = async (
+    args: string[],
+    timeout = 30_000,
+  ): Promise<CommandRun> => {
+    if (record?.compose === undefined) throw new Error("环境不是 Compose 部署");
+    const deployment = record.compose;
+    if (
+      createHash("sha256")
+        .update(await readFile(deployment.file))
+        .digest("hex") !== deployment.fileDigest
+    )
+      throw new Error("Compose 配置快照已改变");
+    return await docker(
+      [
+        "compose",
+        "--project-name",
+        deployment.project,
+        "--env-file",
+        "/dev/null",
+        "--file",
+        deployment.file,
+        "--file",
+        deployment.overrideFile,
+        ...args,
+      ],
+      false,
+      timeout,
+      {
+        ...deployment.deployment.configuration,
+        [deployment.deployment.dataVariable]: layout.productDataRoot,
+      },
+    );
+  };
+  const verifyProject = async (): Promise<void> => {
+    if (record?.compose === undefined) throw new Error("环境不是 Compose 部署");
+    await verifyDaemon();
+    for (const kind of ["container", "network"] as const) {
+      const identifiers = output(
+        await docker([
+          kind,
+          "ls",
+          ...(kind === "container" ? ["--all"] : []),
+          "--quiet",
+          "--filter",
+          `label=com.docker.compose.project=${record.compose.project}`,
+        ]),
+      )
+        .split("\n")
+        .filter(Boolean);
+      for (const identifier of identifiers) {
+        const raw = (
+          JSON.parse(
+            output(await docker([kind, "inspect", identifier])),
+          ) as InspectedObject[]
+        )[0];
+        const actual = raw?.Labels ?? raw?.Config?.Labels ?? {};
+        const object = record.objects.find(
+          (candidate) =>
+            candidate.kind === kind &&
+            candidate.key === actual[`${labelRoot}.object`],
+        );
+        if (
+          object === undefined ||
+          Object.entries(labels(object)).some(
+            ([key, value]) => actual[key] !== value,
+          )
+        )
+          throw new Error("Compose 项目存在未授权对象，拒绝扩大操作范围");
+        await verify(object);
+      }
+    }
+  };
+
   try {
     await mkdir(layout.containerDirectory, { recursive: true, mode: 0o700 });
-    if (request.action === "prepare") {
+    if (request.action === "prepare" || request.action === "prepare-compose") {
       if (existsSync(recordPath) || existsSync(layout.recordPath))
         throw new Error("环境名已有记录；禁止按名字接管");
       if (!request.endpoint.host.startsWith("unix://"))
         throw new Error(
           "此本地容器能力要求显式daemon unix端点；远端访问由既有部署调用方提供",
         );
-      const configuration = request.configuration ?? {};
+      const configuration =
+        request.action === "prepare-compose"
+          ? request.compose.configuration
+          : (request.configuration ?? {});
       if (
         Object.keys(configuration).some((key) =>
           /secret|token|password|credential|cookie|api.?key/iu.test(key),
@@ -527,7 +687,7 @@ export async function runContainerOperation(
         daemonId: "",
         image: request.image,
         imageId: "",
-        mounts: request.mounts ?? [],
+        mounts: request.action === "prepare" ? (request.mounts ?? []) : [],
         configuration,
         objects: [],
         generation: 0,
@@ -546,24 +706,73 @@ export async function runContainerOperation(
         ]),
       );
       await persist();
-      stage = "create-volume";
-      const volume = await add("volume");
-      output(
-        await docker(["volume", "create", ...labelArgs(volume), volume.name]),
-      );
-      await verify(volume);
-      await persist();
-      stage = "create-network";
-      const network = await add("network");
-      output(
-        await docker([
-          "network",
-          "create",
-          ...labelArgs(network),
-          network.name,
-        ]),
-      );
-      await verify(network);
+      if (request.action === "prepare-compose") {
+        stage = "prepare-compose";
+        const deployment = request.compose;
+        if (
+          deployment.services.filter((service) => service.role === "service")
+            .length !== 1 ||
+          deployment.services.some(
+            (service) => !/^[a-zA-Z0-9_-]+$/u.test(service.name),
+          ) ||
+          new Set(deployment.services.map((service) => service.name)).size !==
+            deployment.services.length
+        )
+          throw new Error("Compose 需要一个运行服务及明确的唯一服务名");
+        if (
+          !Number.isInteger(deployment.dataOwner.uid) ||
+          !Number.isInteger(deployment.dataOwner.gid) ||
+          deployment.dataOwner.uid < 0 ||
+          deployment.dataOwner.gid < 0
+        )
+          throw new Error("数据目录身份无效");
+        const bytes = await readFile(deployment.file);
+        const file = path.join(
+          layout.containerDirectory,
+          "compose.json-or-yaml",
+        );
+        await writeFile(file, bytes, { mode: 0o600 });
+        await mkdir(layout.productDataRoot, { mode: 0o700 });
+        await chown(
+          layout.productDataRoot,
+          deployment.dataOwner.uid,
+          deployment.dataOwner.gid,
+        );
+        const dataIdentity = await lstat(layout.productDataRoot);
+        record.compose = {
+          project: `digital-${record.runId}`,
+          file,
+          fileDigest: createHash("sha256").update(bytes).digest("hex"),
+          overrideFile: path.join(
+            layout.containerDirectory,
+            "compose-owned.json",
+          ),
+          deployment,
+          dataPresent: true,
+          dataDevice: dataIdentity.dev,
+          dataInode: dataIdentity.ino,
+        };
+        await persist();
+      } else {
+        stage = "create-volume";
+        const volume = await add("volume");
+        output(
+          await docker(["volume", "create", ...labelArgs(volume), volume.name]),
+        );
+        await verify(volume);
+        await persist();
+        stage = "create-network";
+        const network = await add("network");
+        output(
+          await docker([
+            "network",
+            "create",
+            ...labelArgs(network),
+            network.name,
+          ]),
+        );
+        await verify(network);
+      }
     } else {
       record = JSON.parse(
         await readFile(recordPath, "utf8"),
@@ -582,7 +791,78 @@ export async function runContainerOperation(
           cleanupErrors.push(`停止前对账未确认：${redact(String(error))}`);
         }
       } else await reconcile();
-      if (request.action === "build") {
+      if (request.action === "compose-up") {
+        stage = "compose-up";
+        if (record.compose === undefined || !record.compose.dataPresent)
+          throw new Error("Compose 自有数据目录尚未准备");
+        await verifyDataDirectory();
+        await verifyProject();
+        const current = record.objects.filter(
+          (object) => object.state !== "absent",
+        );
+        if (current.length === 0) {
+          const services: Record<string, unknown> = {};
+          for (const service of record.compose.deployment.services) {
+            const object = await add("container", service.role);
+            object.composeService = service.name;
+            object.usesData = true;
+            services[service.name] = { labels: labels(object) };
+          }
+          const network = await add("network");
+          network.composeNetwork = "default";
+          await persist();
+          await writeFile(
+            record.compose.overrideFile,
+            JSON.stringify({
+              services,
+              networks: { default: { labels: labels(network) } },
+            }),
+            { mode: 0o600 },
+          );
+        }
+        output(
+          await compose(
+            ["up", "--detach", "--no-build"],
+            request.timeoutMilliseconds ?? 60_000,
+          ),
+        );
+        await reconcile();
+        for (const task of record.objects.filter(
+          (object) => object.role === "task" && object.state === "present",
+        )) {
+          await wait(task, "exit", request.timeoutMilliseconds ?? 60_000);
+          if (task.exitCode !== 0)
+            throw new Error(
+              `Compose 迁移任务失败：${task.composeService} exit=${String(task.exitCode)}`,
+            );
+        }
+        const service = record.objects.findLast(
+          (object) => object.role === "service" && object.state === "present",
+        );
+        if (service?.id === undefined)
+          throw new Error("Compose 运行服务未创建");
+        record.serviceId = service.id;
+        const binding = Object.values(service.ports ?? {}).flatMap(
+          (ports) => ports ?? [],
+        )[0];
+        if (binding !== undefined)
+          record.address = `http://${binding.HostIp === "0.0.0.0" ? "127.0.0.1" : binding.HostIp}:${binding.HostPort}`;
+        record.generation += 1;
+        await persist();
+        await wait(service, "ready", request.timeoutMilliseconds ?? 60_000);
+      } else if (request.action === "compose-down") {
+        stage = "compose-down";
+        await verifyProject();
+        if (record.objects.some((object) => object.running))
+          throw new Error("项目 down 前必须先确认停止");
+        if (record.objects.some((object) => object.state !== "absent")) {
+          requireSaved();
+          output(await compose(["down"]));
+          await reconcile();
+          if (record.objects.some((object) => object.state !== "absent"))
+            throw new Error("Compose down 后仍有自有资源");
+        }
+      } else if (request.action === "build") {
         stage = "build-image";
         const object = await add("image");
         output(
@@ -776,23 +1056,32 @@ export async function runContainerOperation(
           { mode: 0o600 },
         );
         if (request.includeData) {
-          const carrier = record.objects.findLast(
-            (object) =>
-              object.kind === "container" &&
-              object.usesData &&
-              object.state === "present",
-          );
-          if (carrier === undefined || (await verify(carrier)) === undefined)
-            throw new Error("没有保留的数据载体可供完整复制");
-          const data = path.join(request.directory, "product-data");
-          await mkdir(data, { mode: 0o700 });
-          output(
-            await docker(
-              ["container", "cp", `${carrier.id!}:/data/.`, data],
-              false,
-              600_000,
-            ),
-          );
+          if (record.compose !== undefined) {
+            await verifyDataDirectory();
+            await cp(
+              layout.productDataRoot,
+              path.join(request.directory, "product-data"),
+              { recursive: true, errorOnExist: true, force: false },
+            );
+          } else {
+            const carrier = record.objects.findLast(
+              (object) =>
+                object.kind === "container" &&
+                object.usesData &&
+                object.state === "present",
+            );
+            if (carrier === undefined || (await verify(carrier)) === undefined)
+              throw new Error("没有保留的数据载体可供完整复制");
+            const data = path.join(request.directory, "product-data");
+            await mkdir(data, { mode: 0o700 });
+            output(
+              await docker(
+                ["container", "cp", `${carrier.id!}:/data/.`, data],
+                false,
+                600_000,
+              ),
+            );
+          }
         }
         if (saveErrors.length > 0) throw new Error("诊断尚未完整保存");
         record.evidence = {
@@ -813,20 +1102,15 @@ export async function runContainerOperation(
             object.state !== "absent" &&
             (object.kind !== "volume" || request.deleteData),
         );
-        if (pending.length > 0) {
-          if (
-            record.evidence === undefined ||
-            record.evidence.generation !== record.generation ||
-            !existsSync(path.join(record.evidence.directory, "deployment.json"))
-          )
-            throw new Error("完整诊断尚未保存，禁止删除载体");
-          if (
-            pending.some((object) => object.kind === "volume") &&
-            record.hasFailure &&
-            !record.evidence.dataSaved
-          )
-            throw new Error("失败产品数据尚未保存，禁止删除");
-        }
+        if (
+          pending.length > 0 ||
+          (request.deleteData && record.compose?.dataPresent)
+        )
+          requireSaved(
+            pending.some((object) => object.kind === "volume") ||
+              (request.deleteData === true &&
+                record.compose?.dataPresent === true),
+          );
         for (const kind of [
           "container",
           "network",
@@ -849,6 +1133,11 @@ export async function runContainerOperation(
               throw new Error("对象删除未确认");
             await persist();
           }
+        if (request.deleteData && record.compose?.dataPresent) {
+          await verifyDataDirectory();
+          await rm(layout.productDataRoot, { recursive: true });
+          record.compose.dataPresent = false;
+        }
       }
     }
   } catch (error) {
@@ -856,10 +1145,7 @@ export async function runContainerOperation(
       stage,
       message: redact(error instanceof Error ? error.message : String(error)),
     };
-    if (
-      record !== undefined &&
-      ["prepare", "build", "start", "wait", "save"].includes(request.action)
-    ) {
+    if (record !== undefined && stopsOnFailure) {
       record.hasFailure = true;
       const closed = await held.close();
       cleanupErrors.push(...closed.errors);
@@ -869,6 +1155,7 @@ export async function runContainerOperation(
         cleanupErrors.push(`创建对账未确认：${redact(String(reconcileError))}`);
       }
       await stop();
+      cleanupAttempted = true;
     }
   } finally {
     offCancel();
@@ -878,10 +1165,28 @@ export async function runContainerOperation(
       saveErrors.push(`环境记录保存失败：${redact(String(error))}`);
     }
     observation = await observe();
+    // 最终持久化/HTTP 观察仍可能收到取消；成功离开 try 不代表可以遗留服务。
+    if (
+      cancellation.triggered() &&
+      record !== undefined &&
+      stopsOnFailure &&
+      !cleanupAttempted
+    ) {
+      failure ??= { stage, message: redact(cancellation.reason()) };
+      record.hasFailure = true;
+      await stop();
+      try {
+        await persist();
+      } catch (error) {
+        saveErrors.push(`停止后环境记录保存失败：${redact(String(error))}`);
+      }
+      observation = await observe();
+    }
   }
   const unknown =
-    record?.objects.some((object) => object.state === "unknown") ??
-    record === undefined;
+    observationUnknown ||
+    (record?.objects.some((object) => object.state === "unknown") ??
+      record === undefined);
   return {
     operation: request.action,
     status: cancellation.triggered()

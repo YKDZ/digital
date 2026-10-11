@@ -19,6 +19,7 @@
     "playwright.config.ts",
     "playwright.acceptance.config.ts",
     "scripts/**/*.ts",
+    "../../scripts/preview-product.ts",
     "vite.config.ts",
     "vitest.config.ts"
   ]
