@@ -778,8 +778,9 @@ async function preparePastDeadline(timeoutMs: number): Promise<{
 
 /**
  * 公开启动接口施加真实绝对期限：只有期限确实落在「本世代已存在且尚未发布」的窗口里、
- * 并由本次收尾确认自有进程退出时才算形成证据。抢在期限之前完成发布的那一次如实记下，
- * 按公开停止收回现场后重来。
+ * 并由本次收尾确认自有进程退出时才算形成证据。沿用本文件的自有进程暂停边界，
+ * 只在新世代身份已记录且尚未发布时暂停产品，期限到达后恢复，让公开启动自己收尾。
+ * 抢在暂停之前完成发布的那一次如实记下，按公开停止收回现场后重来。
  */
 async function startPastDeadline(timeoutMs: number): Promise<{
   readonly result: StartOperationResult;
@@ -792,10 +793,48 @@ async function startPastDeadline(timeoutMs: number): Promise<{
       scene.name,
     );
     const issuedAt = new Date().toISOString();
-    const result = await startEnvironment({
+    const priorRunId = (await readRecordFile()).run?.runId ?? null;
+    const pending = startEnvironment({
       ...sceneRef(),
       timeoutMs,
     });
+    let pausedPid: number | undefined;
+    let resume: ReturnType<typeof setTimeout> | undefined;
+    const resumeProduct = (): void => {
+      if (pausedPid === undefined) return;
+      const pid = pausedPid;
+      pausedPid = undefined;
+      process.kill(pid, "SIGCONT");
+      notes.push(
+        `本次自有产品 ${String(pid)} 于 ${new Date().toISOString()} 恢复响应`,
+      );
+    };
+    let result: StartOperationResult;
+    try {
+      await waitFor(
+        async () => {
+          const record = await readRecordFile();
+          if (record.run?.runId === priorRunId) return false;
+          if (record.run?.state !== "starting") return true;
+          const pid = record.run.processIdentity?.pid;
+          if (pid === undefined) return false;
+          process.kill(pid, "SIGSTOP");
+          pausedPid = pid;
+          notes.push(
+            `未发布世代 ${record.run.runId} 的自有产品 ${String(pid)} 已暂停`,
+          );
+          // 期限由操作进程执行；恢复只让已到期操作的既有收尾能得到产品回应。
+          resume = setTimeout(resumeProduct, timeoutMs + 500);
+          return true;
+        },
+        timeoutMs,
+        5,
+      );
+      result = await pending;
+    } finally {
+      if (resume !== undefined) clearTimeout(resume);
+      resumeProduct();
+    }
     observeStart(attempt, result);
     const message = result.failure?.message ?? "";
     notes.push(
