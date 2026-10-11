@@ -303,25 +303,55 @@ try {
     error instanceof Error
       ? { message: error.message, stack: error.stack }
       : String(error);
+  process.stderr.write(`原始失败：${String(error)}\n`);
   process.exitCode = 1;
 } finally {
-  evidence["passed"] = passed;
-  await save();
-  if (owned) {
-    const stopped = await stopEnvironment({ workspacePath, environment });
-    evidence["finalStop"] = stopped;
-    if (stopped.status !== "stopped" && stopped.status !== "already-stopped")
+  const saveErrors: { phase: string; message: string }[] = [];
+  const cleanupErrors: { phase: string; message: string }[] = [];
+  evidence["saveErrors"] = saveErrors;
+  evidence["cleanupErrors"] = cleanupErrors;
+  const saveDuringCleanup = async (phase: string): Promise<void> => {
+    try {
+      await save();
+    } catch (error) {
+      saveErrors.push({ phase, message: String(error) });
+      process.stderr.write(`保存证据失败（${phase}）：${String(error)}\n`);
       process.exitCode = 1;
-    if (passed && process.exitCode !== 1) {
-      const deleted = await deleteEnvironment({
-        workspacePath,
-        environment,
-      });
-      evidence["delete"] = deleted;
-      if (deleted.status !== "deleted" && deleted.status !== "already-deleted")
+    }
+  };
+  evidence["passed"] = passed;
+  await saveDuringCleanup("停止前");
+  if (owned) {
+    try {
+      const stopped = await stopEnvironment({ workspacePath, environment });
+      evidence["finalStop"] = stopped;
+      if (stopped.status !== "stopped" && stopped.status !== "already-stopped")
         process.exitCode = 1;
+    } catch (error) {
+      cleanupErrors.push({ phase: "停止", message: String(error) });
+      process.stderr.write(`停止服务失败：${String(error)}\n`);
+      process.exitCode = 1;
+    }
+    await saveDuringCleanup("停止后");
+    if (passed && process.exitCode !== 1) {
+      try {
+        const deleted = await deleteEnvironment({
+          workspacePath,
+          environment,
+        });
+        evidence["delete"] = deleted;
+        if (
+          deleted.status !== "deleted" &&
+          deleted.status !== "already-deleted"
+        )
+          process.exitCode = 1;
+      } catch (error) {
+        cleanupErrors.push({ phase: "删除", message: String(error) });
+        process.stderr.write(`删除环境失败：${String(error)}\n`);
+        process.exitCode = 1;
+      }
     }
   }
   evidence["completedAt"] = new Date().toISOString();
-  await save();
+  await saveDuringCleanup("最终结果");
 }
