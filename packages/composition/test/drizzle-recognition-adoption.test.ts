@@ -3063,11 +3063,13 @@ it("keeps disposable tooling on the explicit SQLite testing subpath", async () =
   expect(JSON.parse(packageManifest).exports).toEqual({
     ".": {
       "digital-source": "./src/index.ts",
+      "digital-development": "./.turbo/development/dist/index.js",
       types: "./dist/index.d.ts",
       default: "./dist/index.js",
     },
     "./testing": {
       "digital-source": "./src/testing.ts",
+      "digital-development": "./.turbo/development/dist/testing.js",
       types: "./dist/testing.d.ts",
       default: "./dist/testing.js",
     },
