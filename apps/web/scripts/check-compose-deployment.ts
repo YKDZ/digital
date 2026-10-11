@@ -1,448 +1,424 @@
-import { spawn } from "node:child_process";
-import { chmod, chown, mkdir, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import assert from "node:assert/strict";
+import { chmod, cp, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import {
+  manageContainerEnvironment,
+  type ContainerObject,
+  type ContainerOperationResult,
+  type ContainerReference,
+  type ContainerRequest,
+} from "@digital/environment/container";
+
+import {
+  createProductClient,
+  digestDirectory,
+  intakeDirectories,
+} from "../../../scripts/preview-product.ts";
+import { fileCommandJournal, runCommand } from "./environment-lifecycle.ts";
+
 const repositoryRoot = path.resolve(import.meta.dirname, "../../..");
-const temporaryParent = await safeTemporaryParent(
-  process.env.DIGITAL_COMPOSE_CHECK_ROOT ?? tmpdir(),
+const uniqueId = `completion-16-${process.pid}-${Date.now()}`;
+const artifacts = path.resolve(
+  process.env.DIGITAL_COMPOSE_CHECK_ARTIFACTS ??
+    `.scratch/deployment/${uniqueId}`,
 );
-const { nonce, root } = await createOwnedRoot(temporaryParent);
-const project = nonce;
-const port = String(39_000 + (process.pid % 1_000));
-const productData = path.join(root, "product-data");
-const observed = path.join(root, "observed");
-const failedData = path.join(root, "failed-product-data");
-const stoppedContainerExport = path.join(root, "stopped-web.tar");
-const uid = process.env.DIGITAL_COMPOSE_CHECK_UID ?? "1001";
-const gid = process.env.DIGITAL_COMPOSE_CHECK_GID ?? "1001";
-const abortController = new AbortController();
+const port = Number(process.env.DIGITAL_COMPOSE_CHECK_PORT ?? "3000");
+const uid = Number(process.env.DIGITAL_COMPOSE_CHECK_UID ?? "1001");
+const gid = Number(process.env.DIGITAL_COMPOSE_CHECK_GID ?? "1001");
+const migrationImage = process.env.DIGITAL_DEPLOYMENT_STANDALONE_IMAGE;
+const runtimeImage = process.env.DIGITAL_DEPLOYMENT_RUNTIME_IMAGE;
+if (!migrationImage || !runtimeImage)
+  throw new Error("必须显式提供已构建的迁移及运行镜像引用");
+const endpoint = {
+  command: process.env.DIGITAL_DEPLOYMENT_DOCKER_COMMAND ?? "docker",
+  arguments: JSON.parse(
+    process.env.DIGITAL_DEPLOYMENT_DOCKER_ARGUMENTS ?? "[]",
+  ) as string[],
+  host: process.env.DOCKER_HOST ?? "unix:///var/run/docker.sock",
+};
+const observed = path.join(artifacts, "observed");
+const controller = new AbortController();
+for (const signal of ["SIGINT", "SIGTERM"] as const)
+  process.once(signal, () => controller.abort(new Error(`收到 ${signal}`)));
+const environments: ContainerReference[] = [];
+const operations: unknown[] = [];
+const saveErrors: string[] = [];
+const cleanupErrors: string[] = [];
+let mainError: string | undefined;
+let saveNumber = 0;
 
-async function safeTemporaryParent(candidate: string): Promise<string> {
-  const resolved = path.resolve(candidate);
-  if (candidate !== resolved || resolved === path.parse(resolved).root) {
-    throw new Error("DIGITAL_COMPOSE_CHECK_ROOT 必须是已有的绝对临时父目录");
-  }
-  if (!(await stat(resolved)).isDirectory()) {
-    throw new Error("DIGITAL_COMPOSE_CHECK_ROOT 必须是已有的绝对目录");
-  }
-  return resolved;
-}
-
-async function createOwnedRoot(
-  parent: string,
-): Promise<{ nonce: string; root: string }> {
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    const nonce = `digital-compose-check-${process.pid}-${Date.now()}-${attempt}`;
-    const root = path.join(parent, nonce);
-    try {
-      await mkdir(root, { mode: 0o700 });
-      return { nonce, root };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    }
-  }
-  throw new Error("无法原子创建 Compose 临时目录");
-}
-
-class CommandFailure extends Error {
-  readonly code: number | null;
-  readonly output: string;
-
-  constructor(code: number | null, output: string) {
-    super(output);
-    this.code = code;
-    this.output = output;
-  }
-}
-
-function run(
-  command: string,
-  args: readonly string[],
-  env: NodeJS.ProcessEnv = process.env,
-) {
-  return new Promise<string>((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: repositoryRoot,
-      env,
-      signal: abortController.signal,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let output = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      output += chunk;
-    });
-    child.stderr.on("data", (chunk: string) => {
-      output += chunk;
-    });
-    child.once("error", reject);
-    child.once("close", (code) =>
-      code === 0
-        ? resolve(output)
-        : reject(
-            new CommandFailure(
-              code,
-              `${command} ${args.join(" ")} exited ${code}\n${output}`,
-            ),
-          ),
+async function saveOperations(): Promise<void> {
+  try {
+    await writeFile(
+      path.join(artifacts, "operations.json"),
+      JSON.stringify(
+        { operations, mainError, saveErrors, cleanupErrors },
+        null,
+        2,
+      ),
     );
+  } catch (error) {
+    saveErrors.push(String(error));
+    console.error("保存调用方结果失败", error);
+  }
+}
+async function operate(
+  request: ContainerRequest,
+  cleanup = false,
+): Promise<ContainerOperationResult> {
+  const startedAt = new Date().toISOString();
+  const result = await manageContainerEnvironment(
+    request,
+    cleanup ? {} : { signal: controller.signal },
+  );
+  operations.push({
+    request,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    result,
   });
-}
-
-function compose(
-  args: readonly string[],
-  environment = environmentFor(productData, port, uid, gid),
-) {
-  return run(
-    "docker",
-    ["compose", "--project-name", project, ...args],
-    environment,
+  console.log(
+    JSON.stringify({
+      environment: request.environment,
+      action: request.action,
+      status: result.status,
+      failure: result.failure,
+    }),
   );
+  await saveOperations();
+  return result;
 }
-
-function environmentFor(
-  data: string,
-  publishedPort: string,
-  configuredUid: string,
-  configuredGid: string,
-): NodeJS.ProcessEnv {
-  return {
-    ...process.env,
-    DIGITAL_UID: configuredUid,
-    DIGITAL_GID: configuredGid,
-    DIGITAL_PRODUCT_DATA_HOST_PATH: data,
-    DIGITAL_OBSERVED_ROOT_HOST_PATH: observed,
-    DIGITAL_BIND_ADDRESS: "127.0.0.1",
-    DIGITAL_PORT: publishedPort,
-    DIGITAL_MIGRATION_IMAGE: `${nonce}-migration`,
-    DIGITAL_RUNTIME_IMAGE: `${nonce}-runtime`,
+function success(result: ContainerOperationResult): ContainerOperationResult {
+  assert.equal(result.status, "ok", JSON.stringify(result));
+  return result;
+}
+function web(result: ContainerOperationResult): ContainerObject {
+  const object = result.observation?.objects.findLast(
+    (item) => item.role === "service" && item.state === "present",
+  );
+  assert(object?.id);
+  return object;
+}
+async function prepare(
+  suffix: string,
+  identity = { uid, gid },
+): Promise<ContainerReference> {
+  const reference = {
+    workspacePath: repositoryRoot,
+    environment: `${uniqueId}-${suffix}`,
   };
-}
-
-async function waitReady(publishedPort: string): Promise<void> {
-  for (let attempt = 0; attempt < 24; attempt += 1) {
-    try {
-      const ready = await fetch(`http://127.0.0.1:${publishedPort}/api/ready`);
-      if (ready.ok) return;
-    } catch {
-      /* 启动中 */
-    }
-    await new Promise((resolve) => setTimeout(resolve, 2_500));
-  }
-  throw new Error("Compose Web 未在 60 秒内 ready");
-}
-
-async function waitHealthy(): Promise<void> {
-  let lastStatus = "unknown";
-  for (let attempt = 0; attempt < 36; attempt += 1) {
-    const health = await run("docker", [
-      "inspect",
-      "--format={{.State.Health.Status}}",
-      `${project}-web-1`,
-    ]);
-    lastStatus = health.trim();
-    if (lastStatus === "healthy") return;
-    await new Promise((resolve) => setTimeout(resolve, 2_500));
-  }
-  throw new Error(
-    `Compose 健康检查未在 90 秒内变为 healthy，最后状态：${lastStatus}\n${await healthDiagnostics()}`,
+  environments.push(reference);
+  success(
+    await operate({
+      ...reference,
+      action: "prepare-compose",
+      endpoint,
+      image: migrationImage!,
+      compose: {
+        file: path.join(repositoryRoot, "docker-compose.yml"),
+        configuration: {
+          DIGITAL_MIGRATION_IMAGE: migrationImage!,
+          DIGITAL_RUNTIME_IMAGE: runtimeImage!,
+          DIGITAL_UID: String(identity.uid),
+          DIGITAL_GID: String(identity.gid),
+          DIGITAL_OBSERVED_ROOT_HOST_PATH: observed,
+          DIGITAL_BIND_ADDRESS: "127.0.0.1",
+          DIGITAL_PORT: String(port),
+        },
+        services: [
+          { name: "migrate", role: "task" },
+          { name: "web", role: "service" },
+        ],
+        dataVariable: "DIGITAL_PRODUCT_DATA_HOST_PATH",
+        dataOwner: { uid, gid },
+      },
+    }),
   );
+  return reference;
 }
-
-async function healthDiagnostics(): Promise<string> {
-  const [state, logs, ready] = await Promise.all([
-    run("docker", [
-      "inspect",
-      "--format={{json .State}}",
-      `${project}-web-1`,
-    ]).catch((error) => String(error)),
-    compose(["logs", "--no-color", "--tail", "50", "web"]).catch((error) =>
-      String(error),
+async function up(
+  reference: ContainerReference,
+): Promise<ContainerOperationResult> {
+  const result = success(await operate({ ...reference, action: "compose-up" }));
+  const migration = result.observation?.objects.findLast(
+    (object) => object.role === "task" && object.state === "present",
+  );
+  assert.equal(migration?.running, false);
+  assert.equal(migration?.exitCode, 0);
+  assert.equal(result.observation?.serviceReady, true);
+  const service = web(result);
+  assert.equal(service.running, true);
+  success(
+    await operate({
+      ...reference,
+      action: "wait",
+      objectId: service.id!,
+      condition: "live",
+    }),
+  );
+  success(
+    await operate({
+      ...reference,
+      action: "wait",
+      objectId: service.id!,
+      condition: "healthy",
+      timeoutMilliseconds: 90_000,
+    }),
+  );
+  return result;
+}
+async function stop(
+  reference: ContainerReference,
+  normal: boolean,
+): Promise<ContainerOperationResult> {
+  const result = success(await operate({ ...reference, action: "stop" }, true));
+  assert(
+    result.observation?.objects.every((object) => object.running !== true),
+  );
+  if (normal) {
+    const service = web(result);
+    assert.equal(service.running, false);
+    assert.equal(service.pid, 0);
+    assert.equal(service.exitCode, 143);
+    assert.equal(service.oomKilled, false);
+    assert(
+      (service.stopDurationMilliseconds ?? Infinity) < 10_000,
+      JSON.stringify(service),
+    );
+  }
+  return result;
+}
+async function save(reference: ContainerReference): Promise<void> {
+  success(
+    await operate(
+      {
+        ...reference,
+        action: "save",
+        includeData: true,
+        directory: path.join(
+          artifacts,
+          `${reference.environment}-saved-${++saveNumber}`,
+        ),
+      },
+      true,
     ),
-    fetch(`http://127.0.0.1:${port}/api/ready`)
-      .then((response) => `HTTP ${response.status}`)
-      .catch((error) => String(error)),
-  ]);
-  return [
-    `容器状态：${redactDiagnostic(state)}`,
-    `最后 Web 日志：${redactDiagnostic(logs)}`,
-    `最终 readiness：${ready}`,
-  ].join("\n");
-}
-
-function redactDiagnostic(value: string): string {
-  return value.replace(
-    /((?:token|password|secret|authorization)[^\s=:]*[=:])\S+/giu,
-    "$1[已隐藏]",
   );
 }
-
-async function expectComposeFailure(
-  args: readonly string[],
-  environment: NodeJS.ProcessEnv,
+async function remove(reference: ContainerReference): Promise<void> {
+  await save(reference);
+  success(
+    await operate({ ...reference, action: "delete", deleteData: true }, true),
+  );
+  success(await operate({ ...reference, action: "stop" }, true));
+  const repeated = success(
+    await operate({ ...reference, action: "delete", deleteData: true }, true),
+  );
+  assert.equal(repeated.remaining.length, 0);
+  assert.equal(repeated.observation?.dataPresent, false);
+}
+async function assertOwnersStopped(
+  reference: ContainerReference,
+  service: ContainerObject,
 ): Promise<void> {
-  try {
-    await compose(args, environment);
-  } catch {
-    return;
-  }
-  throw new Error("预期 Compose 启动失败，但命令成功");
-}
-
-async function execInWeb(script: string): Promise<string> {
-  return await compose(["exec", "-T", "web", "sh", "-ceu", script]);
-}
-
-async function assertWebIsNotRunning(): Promise<void> {
-  const output = await run("docker", [
-    "inspect",
-    "--format={{.State.Running}}",
-    `${project}-web-1`,
-  ]);
-  if (output.trim() !== "false") throw new Error("失败迁移后 Web 仍在运行");
-}
-
-async function seedAndAssertPersistence(): Promise<void> {
-  const sql = [
-    "INSERT INTO observed_root_registrations VALUES ('compose-check-root','Compose check','/observed/media','/observed/media','active',1,1,'never','[]');",
-    "INSERT INTO workflow_executions (id,status,stage,outcome,source_record_ids_json,compatibility_json,information_requirement_json) VALUES ('compose-check-execution','completed','completed','accepted','[]','{}','{}');",
-    "INSERT INTO recognition_proposals VALUES ('compose-check-proposal','compose-check-execution','{}','[]');",
-    "INSERT INTO recognition_decisions VALUES ('compose-check-decision','compose-check-proposal','compose-check-recognized-asset','[]');",
-  ].join(" ");
-  const encoded = Buffer.from(sql).toString("base64");
-  await compose([
-    "exec",
-    "-T",
-    "-e",
-    `CHECK_SQL=${encoded}`,
-    "web",
-    "node",
-    "--input-type=module",
-    "--eval",
-    "const moduleName = 'node:' + 'sqlite'; const { DatabaseSync } = await import(moduleName); const db = new DatabaseSync('/data/catalogue.sqlite'); db.exec(Buffer.from(process.env.CHECK_SQL, 'base64').toString()); db.close();",
-  ]);
-  await mkdir(path.join(productData, "private-source-connections"), {
-    recursive: true,
-    mode: 0o700,
-  });
-  const connectionDirectory = path.join(
-    productData,
-    "private-source-connections",
+  const destination = path.join(artifacts, "stopped-web.tar");
+  success(
+    await operate(
+      { ...reference, action: "export", objectId: service.id!, destination },
+      true,
+    ),
   );
-  const connection = path.join(connectionDirectory, "tmdb.json");
-  await writeFile(
-    connection,
-    '{"version":"product-source-connection/1","configurationVersion":1,"credentialStatus":"revoked","availability":"unavailable","reason":"revoked"}',
-    { mode: 0o600 },
-  );
-  await Promise.all([
-    chown(connectionDirectory, Number(uid), Number(gid)),
-    chown(connection, Number(uid), Number(gid)),
-  ]);
-}
-
-async function assertPersistedState(): Promise<void> {
-  const query =
-    "const moduleName = 'node:' + 'sqlite'; const { DatabaseSync } = await import(moduleName); const db = new DatabaseSync('/data/catalogue.sqlite',{readOnly:true}); const result={root:db.prepare(\"SELECT container_path FROM observed_root_registrations WHERE id='compose-check-root'\").get(),execution:db.prepare(\"SELECT status FROM workflow_executions WHERE id='compose-check-execution'\").get(),asset:db.prepare(\"SELECT asset_id FROM recognition_decisions WHERE id='compose-check-decision'\").get()}; console.log(JSON.stringify(result)); db.close();";
-  const output = await compose([
-    "exec",
-    "-T",
-    "web",
-    "node",
-    "--input-type=module",
-    "--eval",
-    query,
-  ]);
-  if (
-    !output.includes("/observed/media") ||
-    !output.includes("completed") ||
-    !output.includes("compose-check-recognized-asset")
-  )
-    throw new Error(`重建后 Catalogue 状态丢失：${output}`);
-  await execInWeb(
-    "test -f /data/private-source-connections/tmdb.json; test -f /data/non-root-write-proof",
-  );
-}
-
-async function stopWebAndAssertShutdown(): Promise<void> {
-  const startedAt = Date.now();
-  await compose(["stop", "web"]);
-  const elapsedMilliseconds = Date.now() - startedAt;
-  if (elapsedMilliseconds >= 10_000)
-    throw new Error(
-      `Compose Web 未在默认 10 秒停止窗内结束：${elapsedMilliseconds}ms`,
+  for (const pattern of [
+    "tmp/digital-web-process-*",
+    "tmp/digital-fanbox-browser-*",
+    "tmp/playwright_chromiumdev_profile-*",
+  ]) {
+    const result = await runCommand({
+      phase: "shutdown-owner",
+      command: "tar",
+      args: [
+        "--list",
+        "--file",
+        destination,
+        "--wildcards",
+        "--no-anchored",
+        pattern,
+      ],
+      cwd: repositoryRoot,
+      journal: fileCommandJournal(
+        path.join(artifacts, "shutdown-commands.ndjson"),
+      ),
+    });
+    assert.equal(
+      result.stdoutTail.trim(),
+      "",
+      `停止后仍有临时 owner：${pattern}`,
     );
-
-  const rawState = await run("docker", [
-    "inspect",
-    "--format={{json .State}}",
-    `${project}-web-1`,
-  ]);
-  const state = JSON.parse(rawState) as {
-    readonly Running?: unknown;
-    readonly Pid?: unknown;
-    readonly OOMKilled?: unknown;
-    readonly ExitCode?: unknown;
-  };
-  if (
-    state.Running !== false ||
-    state.Pid !== 0 ||
-    state.OOMKilled !== false ||
-    state.ExitCode !== 143
-  )
-    throw new Error(`Compose Web 停止状态不符合正常关闭合同：${rawState}`);
-
-  await run("docker", [
-    "export",
-    "--output",
-    stoppedContainerExport,
-    `${project}-web-1`,
-  ]);
-  try {
-    for (const pattern of [
-      "tmp/digital-web-process-*",
-      "tmp/digital-fanbox-browser-*",
-      "tmp/playwright_chromiumdev_profile-*",
-    ]) {
-      try {
-        const entries = await run("tar", [
-          "--list",
-          "--file",
-          stoppedContainerExport,
-          "--wildcards",
-          "--no-anchored",
-          pattern,
-        ]);
-        if (entries.trim())
-          throw new Error(`停止容器仍有临时 owner：${entries.trim()}`);
-      } catch (error) {
-        if (error instanceof CommandFailure && error.code === 2) continue;
-        throw error;
-      }
-    }
-  } finally {
-    await rm(stoppedContainerExport, { force: true });
+    assert(
+      result.exitCode === 0 ||
+        (result.exitCode === 2 &&
+          result.stderrTail.includes("Not found in archive")),
+      JSON.stringify(result),
+    );
+    assert.equal(result.journalError, undefined);
   }
-}
-
-async function assertRootConfigurationRejected(
-  configuredUid: string,
-  configuredGid: string,
-): Promise<void> {
-  await compose(
-    ["down", "--remove-orphans"],
-    environmentFor(productData, port, configuredUid, configuredGid),
-  ).catch(() => undefined);
-  await expectComposeFailure(
-    ["up", "-d"],
-    environmentFor(productData, port, configuredUid, configuredGid),
-  );
-  await assertWebIsNotRunning();
-}
-
-for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  process.once(signal, () =>
-    abortController.abort(new Error(`收到 ${signal}`)),
-  );
 }
 
 try {
-  await run("docker", ["compose", "version"]);
-  await mkdir(productData, { recursive: true, mode: 0o750 });
-  await mkdir(observed, { recursive: true, mode: 0o750 });
-  await mkdir(path.join(failedData, "catalogue.sqlite"), {
-    recursive: true,
-    mode: 0o750,
+  await mkdir(artifacts, { recursive: true, mode: 0o700 });
+  await cp(
+    path.join(repositoryRoot, "fixtures/controlled-source-io/material"),
+    observed,
+    { recursive: true },
+  );
+  await chmod(observed, 0o755);
+  const materialsBefore = await digestDirectory(observed);
+  const normal = await prepare("normal");
+  const started = await up(normal);
+  const service = web(started);
+  const identity = success(
+    await operate({
+      ...normal,
+      action: "exec",
+      objectId: service.id!,
+      command: [
+        "node",
+        "--input-type=module",
+        "--eval",
+        "import fs from 'node:fs'; console.log(JSON.stringify({uid:process.getuid(),gid:process.getgid()})); fs.writeFileSync('/data/compose-write-check','ok'); try {fs.writeFileSync('/observed/media/forbidden-write','bad');throw Error('素材可写');} catch(e) {if(e.code !== 'EROFS') throw e;}",
+      ],
+    }),
+  );
+  assert.deepEqual(JSON.parse(identity.command!.stdout), { uid, gid });
+  const client = createProductClient(started.observation!.address!, {
+    signal: controller.signal,
   });
-  const probe = path.join(observed, "probe.txt");
-  await writeFile(probe, "synthetic-observed-root", { mode: 0o440 });
-  await Promise.all([
-    chown(productData, Number(uid), Number(gid)),
-    chown(observed, Number(uid), Number(gid)),
-    chown(probe, Number(uid), Number(gid)),
-    chown(failedData, Number(uid), Number(gid)),
-    chmod(productData, 0o750),
-    chmod(observed, 0o750),
-  ]);
-  await compose(["up", "-d", "--build"]);
-  await waitReady(port);
-  const live = await fetch(`http://127.0.0.1:${port}/api/live`);
-  if (!live.ok) throw new Error("Compose Web 未通过 liveness");
-  await waitHealthy();
-  await execInWeb(
-    `test "$(id -u)" = ${uid}; test "$(id -g)" = ${gid}; test "$(cat /observed/media/probe.txt)" = synthetic-observed-root; touch /data/non-root-write-proof; ! touch /observed/media/must-remain-read-only`,
+  const intake = await intakeDirectories(client, {
+    displayName: "Compose 正式持久性",
+    directories: ["/observed/media"],
+    recognitionProfileIds: ["dlsite-voice"],
+    sourceIdentities: [],
+    workflowTimeoutMs: 300_000,
+  });
+  assert.equal(intake.executionStatus, "completed");
+  assert(intake.observedRootIds.length > 0);
+  assert(intake.assetIds.length > 0, "正常刷新必须形成可核查的识别结果");
+  const settingsBefore = await client.get("/settings");
+  const executionBefore = await client.get(`/executions/${intake.executionId}`);
+  const detailBefore = await client.get(`/catalogue/${intake.assetIds[0]!}`);
+  assert.equal(executionBefore.status, 200);
+  assert.equal(detailBefore.status, 200);
+  // 原场景保留 revoked 来源状态；正式撤销空根版本，不配置凭据或请求外网。
+  const revoked = await client.post("/settings/connections", {
+    source: "tmdb",
+    action: "revoke",
+    expectedVersion: 0,
+  });
+  assert.equal(revoked.status, 200);
+  const connectionsBefore = await client.get("/settings");
+  await writeFile(
+    path.join(artifacts, "product-before.json"),
+    JSON.stringify(
+      {
+        intake,
+        settingsBefore,
+        executionBefore,
+        detailBefore,
+        connectionsBefore,
+      },
+      null,
+      2,
+    ),
   );
-  await seedAndAssertPersistence();
-  await stopWebAndAssertShutdown();
-  await compose(["down"]);
-  await compose(["up", "-d"]);
-  await waitReady(port);
-  await assertPersistedState();
-  await compose(["down"]);
-  await expectComposeFailure(
-    ["up", "-d"],
-    environmentFor(failedData, String(Number(port) + 1), uid, gid),
+  const stopped = await stop(normal, true);
+  await assertOwnersStopped(normal, web(stopped));
+  await save(normal);
+  success(await operate({ ...normal, action: "compose-down" }));
+  const restarted = await up(normal);
+  const reopened = createProductClient(restarted.observation!.address!, {
+    signal: controller.signal,
+  });
+  const libraries = await reopened.libraries();
+  assert(
+    libraries.some(
+      (library) =>
+        library.id === intake.assetLibraryId &&
+        intake.observedRootIds.every((id) =>
+          library.observedRootIds.includes(id),
+        ),
+    ),
   );
-  await assertWebIsNotRunning();
-  await assertRootConfigurationRejected("0", gid);
-  await assertRootConfigurationRejected(uid, "0");
+  assert.deepEqual(
+    await reopened.get(`/executions/${intake.executionId}`),
+    executionBefore,
+  );
+  assert.deepEqual(
+    await reopened.get(`/catalogue/${intake.assetIds[0]!}`),
+    detailBefore,
+  );
+  const connectionsAfter = await reopened.get("/settings");
+  assert.deepEqual(connectionsAfter, connectionsBefore);
+  await writeFile(
+    path.join(artifacts, "product-after.json"),
+    JSON.stringify({ libraries, connectionsAfter }, null, 2),
+  );
+  await stop(normal, true);
+  await remove(normal);
+  for (const [name, identity] of [
+    ["uid-zero", { uid: 0, gid }],
+    ["gid-zero", { uid, gid: 0 }],
+  ] as const) {
+    const reference = await prepare(name, identity);
+    const rejected = await operate({ ...reference, action: "compose-up" });
+    assert.equal(rejected.status, "failed", JSON.stringify(rejected));
+    assert.equal(rejected.observation?.serviceReady, false);
+    assert.equal(
+      rejected.observation?.objects.find((object) => object.role === "task")
+        ?.exitCode,
+      64,
+    );
+    assert(
+      rejected.observation?.objects.every((object) => object.running !== true),
+    );
+    await stop(reference, false);
+    await remove(reference);
+  }
+  const failed = await prepare("migration-failure");
+  const prepared = success(await operate({ ...failed, action: "inspect" }));
+  // 原部署反例：只破坏本次新建的空根，不修改迁移或运行参数。
+  await mkdir(
+    path.join(prepared.observation!.dataDirectory!, "catalogue.sqlite"),
+  );
+  const rejected = await operate({ ...failed, action: "compose-up" });
+  assert.equal(rejected.status, "failed", JSON.stringify(rejected));
+  assert.equal(rejected.observation?.serviceReady, false);
+  const migration = rejected.observation?.objects.find(
+    (object) => object.role === "task",
+  );
+  assert(migration?.exitCode !== undefined && migration.exitCode !== 0);
+  assert(
+    rejected.observation?.objects.every((object) => object.running !== true),
+  );
+  assert(rejected.failure?.message);
+  await stop(failed, false);
+  await save(failed);
+  assert.equal(await digestDirectory(observed), materialsBefore);
+} catch (error) {
+  mainError =
+    error instanceof Error ? (error.stack ?? error.message) : String(error);
+  console.error("Compose 部署失败", mainError);
+  process.exitCode = controller.signal.aborted ? 130 : 1;
 } finally {
-  try {
-    await cleanup();
-    await assertCleanup();
-  } finally {
-    await rm(root, { recursive: true, force: false });
-  }
-}
-
-async function cleanup(): Promise<void> {
-  await compose(["down", "--remove-orphans"]).catch(() => undefined);
-  await run("docker", [
-    "image",
-    "rm",
-    "--force",
-    `${nonce}-migration`,
-    `${nonce}-runtime`,
-  ]).catch(() => undefined);
-}
-
-async function assertCleanup(): Promise<void> {
-  const names = [
-    `${project}-web-1`,
-    `${project}-migrate-1`,
-    `${project}_default`,
-    `${nonce}-migration`,
-    `${nonce}-runtime`,
-  ];
-  const kinds = ["container", "container", "network", "image", "image"];
-  for (const [index, name] of names.entries()) {
+  // 场景保存失败也不能阻断独立停止；失败数据及记录交给显式后续操作。
+  for (const reference of environments) {
     try {
-      await run("docker", [kinds[index]!, "inspect", name]);
+      const stopped = await operate({ ...reference, action: "stop" }, true);
+      if (stopped.status !== "ok") cleanupErrors.push(JSON.stringify(stopped));
+      if (stopped.observation?.dataPresent) await save(reference);
     } catch (error) {
-      if (isMissingInspection(error)) continue;
-      throw error;
+      cleanupErrors.push(`${reference.environment}: ${String(error)}`);
     }
-    throw new Error(`Compose checker 残留 ${kinds[index]} ${name}`);
   }
-  const volumes = await run("docker", [
-    "volume",
-    "ls",
-    "--quiet",
-    "--filter",
-    `name=${project}`,
-  ]);
-  if (volumes.trim())
-    throw new Error(`Compose checker 残留 volume ${volumes.trim()}`);
-}
-
-function isMissingInspection(error: unknown): boolean {
-  return (
-    error instanceof CommandFailure &&
-    error.code === 1 &&
-    /(?:No such (?:container|network|image)|network .+ not found)/u.test(
-      error.output,
-    )
-  );
+  await saveOperations();
+  if (saveErrors.length > 0 || cleanupErrors.length > 0) process.exitCode = 1;
 }
