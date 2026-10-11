@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import {
   beginSourceRefreshScopeAcquisition,
   cancelSourceRefreshRun,
@@ -19,6 +21,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   AssetRefreshWorkflow,
+  AssetLibraries,
   AssetRefreshAutomation,
   AutomationHost,
   ExecutionHost,
@@ -26,14 +29,18 @@ import {
   ObservedRootRegistrations,
   attachAssetRefreshAutomation,
   prerequisiteUnavailableFailure,
+  recognitionMaterialBoundaryIntersectsScope,
   sha256,
   workflowCompatibilityCanReuse,
   type AssetRefreshReuseQueries,
+  type AssetLibraryPersistence,
+  type LibraryScanDirectoryRecord,
   type AutomationCommands,
   type AutomationQueries,
   type ChangeImpactCommands,
   type ChangeImpactPreview,
   type ChangeImpactQueries,
+  type EffectiveRecognitionMaterialBoundary,
   type ExecutionInspection,
   type MetadataRefreshPersistence,
   type InformationRequirement,
@@ -126,6 +133,25 @@ function fixtureObservedRootRegistration(
     readOnly: true,
     symlinkMode: "do-not-follow",
     allowedTargetRootIds: [],
+  };
+}
+
+/** 仅点名这一库和目录；冻结后撤权及绑定失败仍由原预检边界判定。 */
+function fixtureAutomationLibraries(rootId: string) {
+  return {
+    async freezeLibraryScan(libraryId: string) {
+      if (libraryId !== "library-fixture")
+        throw new Error("资产库不存在或已移除");
+      const root = fixtureObservedRoot(rootId);
+      return {
+        snapshot: { id: libraryId },
+        candidates: [{ id: rootId }],
+        frozenRoots: [root],
+        directoryAuthorizations: [
+          { observedRootId: rootId, authorityVersion: 1 },
+        ],
+      };
+    },
   };
 }
 
@@ -353,6 +379,7 @@ function refreshFixture(options?: {
   readonly reusable?: boolean;
   readonly invalidMetadataProvenance?: boolean;
   readonly unavailableManagedCover?: boolean;
+  readonly managedCoverAvailability?: { available: boolean };
   readonly requireLineageFreezeBeforeCollection?: boolean;
   readonly invalidRefreshMetadataProvenance?: boolean;
   readonly includeForeignAndUserFacts?: boolean;
@@ -393,6 +420,8 @@ function refreshFixture(options?: {
   readonly sourceAddressForSnapshotVersion?: (version: number) => string;
   readonly sharedCollectionScope?: boolean;
   readonly automationInformationRequirement?: InformationRequirement;
+  /** 自动化用例使用真实库冻结及父子目录账本，其他单目录用例保留原接缝。 */
+  readonly assetLibraryAutomation?: boolean;
   /** 存在于组合层，但绝不适用于本次执行的证据。 */
   readonly unusedConfiguredCollector?: boolean;
   /** 允许后续部署在一次执行后新增不适用的采集器。 */
@@ -571,6 +600,10 @@ function refreshFixture(options?: {
   let acceptanceBarrierUsed = false;
   let lineageFrozen = false;
   const persisted = new Map<string, ExecutionInspection>();
+  const libraryScanDirectories = new Map<
+    string,
+    readonly LibraryScanDirectoryRecord[]
+  >();
   /**
    * SQLite 复用只会看到识别决定仍为当前关联头的已接受执行。应将它与提案标识符区分开：
    * 夹具提案刻意复用简单 ID。
@@ -713,6 +746,73 @@ function refreshFixture(options?: {
       executions.push(execution);
       persisted.set(execution.id, { execution, sourceRecords: [] });
       return "started";
+    },
+    async createLibraryScan({ execution, directories }) {
+      const started = await persistence.createExecution(execution);
+      if (started === "started")
+        libraryScanDirectories.set(execution.id, directories);
+      return started;
+    },
+    async registerLibraryScanChild({
+      parentExecutionId,
+      directoryKey,
+      execution,
+    }) {
+      const parent = persisted.get(parentExecutionId)?.execution;
+      const directories = libraryScanDirectories.get(parentExecutionId);
+      const entry = directories?.find(
+        (directory) => directory.directoryKey === directoryKey,
+      );
+      if (parent?.status !== "running" || parent.cancellation !== undefined)
+        return "cancelled";
+      if (entry === undefined) throw new Error("测试目录没有父扫描归属");
+      if (entry.childExecutionId !== undefined) return "already-registered";
+      executions.push(execution);
+      persisted.set(execution.id, { execution, sourceRecords: [] });
+      libraryScanDirectories.set(
+        parentExecutionId,
+        directories!.map((directory) =>
+          directory.directoryKey === directoryKey ||
+          directory.executedByDirectoryKey === directoryKey
+            ? { ...directory, childExecutionId: execution.id, stage: "running" }
+            : directory,
+        ),
+      );
+      return "registered";
+    },
+    async recordLibraryScanDirectoryResult({
+      parentExecutionId,
+      directoryKey,
+      ...result
+    }) {
+      const directories = libraryScanDirectories.get(parentExecutionId);
+      if (!directories?.some((entry) => entry.directoryKey === directoryKey))
+        throw new Error("测试目录没有父扫描归属");
+      libraryScanDirectories.set(
+        parentExecutionId,
+        directories.map((entry) =>
+          entry.directoryKey === directoryKey ? { ...entry, ...result } : entry,
+        ),
+      );
+    },
+    async inspectLibraryScan(parentExecutionId) {
+      const parent = persisted.get(parentExecutionId)?.execution;
+      const directories = libraryScanDirectories.get(parentExecutionId);
+      const snapshot = parent?.workflowInput?.assetLibrary;
+      if (
+        parent === undefined ||
+        directories === undefined ||
+        snapshot === undefined
+      )
+        return undefined;
+      return {
+        parentExecutionId,
+        assetLibraryId: snapshot.id,
+        configVersion: snapshot.configVersion,
+        status: parent.status,
+        ...(parent.outcome === undefined ? {} : { outcome: parent.outcome }),
+        directories,
+      };
     },
     async retainSourceRecords({ expectedExecution, execution, sourceRecords }) {
       retained.push(...sourceRecords.map((record) => record.id));
@@ -969,6 +1069,23 @@ function refreshFixture(options?: {
                   sourceRecordIds: ["other-record"],
                 },
               ],
+              relationshipReadBasis: {
+                targets: [
+                  {
+                    relationshipId: "foreign-relationship",
+                    target: {
+                      kind: "source" as const,
+                      sourceSubjectId: input.accepted.entity.id,
+                      sourceIdentity: "other-source",
+                      nativeAddress: "https://other.example/foreign",
+                      coverageId: "other-official",
+                      sourceSlot: "other.relationship",
+                    },
+                  },
+                ],
+                decisions: [],
+                manualRelationshipIds: [],
+              },
               artifacts: [...input.accepted.artifacts, { id: "user-artifact" }],
               locations: [
                 ...input.accepted.locations,
@@ -1030,14 +1147,20 @@ function refreshFixture(options?: {
                     item.acceptedAssetId !== undefined &&
                     item.proposalId !== undefined,
                 )
-                .map((item) => ({
-                  workItem: item,
-                  proposal: acceptedValue.proposal,
-                  accepted:
-                    item.acceptedAssetId === currentSources.entity.id
-                      ? currentSources
-                      : undefined,
-                })),
+                .map((item) =>
+                  item.acceptedAssetId === currentSources.entity.id
+                    ? {
+                        workItem: item,
+                        proposal: currentSources.proposal,
+                        accepted: currentSources,
+                      }
+                    : {
+                        ...inspection.workItemInspections?.find(
+                          (previous) => previous.workItem.key === item.key,
+                        ),
+                        workItem: item,
+                      },
+                ),
             }),
       });
     },
@@ -1139,6 +1262,74 @@ function refreshFixture(options?: {
               },
             ];
       });
+    },
+    /**
+     * 与 SQLite 同一语义：只有范围引用仍能解析到一份登记观察根、且该决定仍留在当前
+     * 已接受状态里的声明才算生效；再按与本次刷新范围是否相交筛除无关根。
+     */
+    async listEffectiveMaterialBoundaries({ scope, relativeScope }) {
+      const address = path.resolve(scope.containerPath, relativeScope);
+      const members = await Promise.all(
+        accepted.flatMap((item) =>
+          item.recognitionDecision.boundaries.map(async (boundary) => {
+            const registration =
+              await observedRootStore.queries.getObservedRootRegistration(
+                boundary.scopeReference,
+              );
+            if (registration === undefined) return undefined;
+            const candidate: EffectiveRecognitionMaterialBoundary = {
+              assetId: item.entity.id,
+              decisionId: item.recognitionDecision.id,
+              boundary,
+              rootPath: registration.containerPath,
+            };
+            return recognitionMaterialBoundaryIntersectsScope(
+              candidate,
+              address,
+            )
+              ? candidate
+              : undefined;
+          }),
+        ),
+      );
+      return members.filter(
+        (member): member is EffectiveRecognitionMaterialBoundary =>
+          member !== undefined,
+      );
+    },
+    /**
+     * 与 SQLite 同一语义：被点名决定只由形成其提案的那次执行代表，并返回该主体当前
+     * 仍生效的已接受投影。缺这份读取时逐决定复用会诚实停下，夹具必须提供而不是省略。
+     */
+    async findAcceptedForDecision({ decisionId }) {
+      const acceptedValue = accepted.find(
+        (current) => current.recognitionDecision.id === decisionId,
+      );
+      if (acceptedValue === undefined) return undefined;
+      // 被点名决定的比较基线只能是它自己那次扫描的观察：只有携带耐久文件系统
+      // snapshot 的执行才真正代表那次观察（生产 index.ts:17963-17979 要求
+      // decisionObservation.execution.snapshot）。同名提案可能散落在多次执行里，
+      // 必须优先挑出确实带有 snapshot 的那一份，而不是随手取最近一条无观察的执行。
+      const matches = [...persisted.values()]
+        .toReversed()
+        .filter(
+          (candidate) =>
+            candidate.proposal?.id === acceptedValue.proposal.id ||
+            candidate.workItemInspections?.some(
+              (item) => item.proposal?.id === acceptedValue.proposal.id,
+            ),
+        );
+      const inspection =
+        matches.find(
+          (candidate) => candidate.execution.snapshot !== undefined,
+        ) ?? matches[0];
+      return inspection === undefined
+        ? undefined
+        : {
+            accepted: acceptedValue,
+            proposal: acceptedValue.proposal,
+            execution: inspection.execution,
+          };
     },
     async findCurrentSourceAssociationByCoordinate(input) {
       return accepted
@@ -1253,30 +1444,47 @@ function refreshFixture(options?: {
         (candidate) => candidate.entity.id === current.entity.id,
       );
       if (index < 0) throw new Error("current accepted identity disappeared");
-      accepted[index] = next;
+      // accepted-boundary 是本地观察写批次；SQLite 只替换本地事实，保留来源与人工事实。
+      const projected =
+        next.proposal.basis.kind === "accepted-boundary"
+          ? {
+              ...next,
+              metadata: [
+                ...current.metadata.filter(
+                  (fact) =>
+                    fact.sourceRecordIds.length > 0 ||
+                    fact.authoredBy !== undefined ||
+                    fact.observedArtifactPart === undefined,
+                ),
+                ...next.metadata,
+              ],
+            }
+          : next;
+      accepted[index] = projected;
       currentRecognitionHeadExecutionByAsset.set(next.entity.id, execution.id);
       const inspection = persisted.get(execution.id)!;
       persisted.set(execution.id, {
         ...inspection,
         execution,
         proposal: next.proposal,
-        accepted: next,
-        workItemInspections: execution.workItems?.map((item) => ({
-          workItem: item,
-          ...(item.proposalId === undefined ? {} : { proposal: next.proposal }),
-          ...(item.acceptedAssetId === next.entity.id
-            ? { accepted: next }
-            : {}),
-        })),
+        accepted: projected,
+        workItemInspections: execution.workItems?.map((item) =>
+          item.acceptedAssetId === next.entity.id
+            ? { workItem: item, proposal: next.proposal, accepted: projected }
+            : {
+                ...inspection.workItemInspections?.find(
+                  (previous) => previous.workItem.key === item.key,
+                ),
+                workItem: item,
+              },
+        ),
       });
     },
     async applyMetadataRefresh({ execution, submission }) {
       const inspection = persisted.get(execution.id)!;
-      const prior = [...persisted.values()]
-        .toReversed()
-        .find(
-          (candidate) => candidate.accepted?.entity.id === submission.assetId,
-        )?.accepted;
+      const prior = accepted.find(
+        (candidate) => candidate.entity.id === submission.assetId,
+      );
       persisted.set(execution.id, {
         ...inspection,
         execution,
@@ -1718,9 +1926,18 @@ function refreshFixture(options?: {
     },
   });
   const observedRootStore =
-    new InMemoryObservedRootRegistrationStore<ObservedRootRegistration>([
-      fixtureObservedRootRegistration("fixture-root"),
-    ]);
+    new InMemoryObservedRootRegistrationStore<ObservedRootRegistration>(
+      [fixtureObservedRootRegistration("fixture-root")],
+      {
+        libraries: [
+          {
+            id: "library-fixture",
+            status: "active" as const,
+            rootIds: ["fixture-root"],
+          },
+        ],
+      },
+    );
   const observedRootCleanupReporter = new InMemoryObservedRootCleanupReporter();
   const observedRootRegistrations = new ObservedRootRegistrations({
     commands: observedRootStore.commands,
@@ -1750,7 +1967,7 @@ function refreshFixture(options?: {
       return await rebindFrozenScope(input);
     };
   }
-  const workflow = new AssetRefreshWorkflow({
+  const workflowPorts: ConstructorParameters<typeof AssetRefreshWorkflow>[0] = {
     invocationSupervisor: new ExecutionHost(),
     observedRootRegistrations,
     sourceAddressingCapabilities: [
@@ -1966,16 +2183,14 @@ function refreshFixture(options?: {
       options?.observedEpubPartOnly === true
         ? [
             {
-              capability: {
-                capabilityId: "format.inspector",
-                get capabilityVersion() {
-                  return (
-                    options.formatCoordinateState?.capabilityVersion ?? "1"
-                  );
-                },
-                get contractVersion() {
-                  return options.formatCoordinateState?.contractVersion ?? "1";
-                },
+              get capability() {
+                return {
+                  capabilityId: "format.inspector",
+                  capabilityVersion:
+                    options.formatCoordinateState?.capabilityVersion ?? "1",
+                  contractVersion:
+                    options.formatCoordinateState?.contractVersion ?? "1",
+                };
               },
               inspect({ observedArtifactReference }) {
                 formatInspectionCalls += 1;
@@ -3156,19 +3371,15 @@ function refreshFixture(options?: {
       ? {
           observedArtifactPartAcquirers: [
             {
-              capability: {
-                capabilityId: "format.part",
-                get capabilityVersion() {
-                  return (
+              get capability() {
+                return {
+                  capabilityId: "format.part",
+                  capabilityVersion:
                     options.partAcquirerCoordinateState?.capabilityVersion ??
-                    "1"
-                  );
-                },
-                get contractVersion() {
-                  return (
-                    options.partAcquirerCoordinateState?.contractVersion ?? "1"
-                  );
-                },
+                    "1",
+                  contractVersion:
+                    options.partAcquirerCoordinateState?.contractVersion ?? "1",
+                };
               },
               canAcquire: () => true,
               async acquire(input) {
@@ -3234,10 +3445,11 @@ function refreshFixture(options?: {
           location: { address: "/managed/blob" },
         };
       },
-      ...(options?.unavailableManagedCover === true
+      ...(options?.unavailableManagedCover === true ||
+      options?.managedCoverAvailability !== undefined
         ? {
             async isAvailable() {
-              return false;
+              return options?.managedCoverAvailability?.available ?? false;
             },
           }
         : {}),
@@ -3294,7 +3506,19 @@ function refreshFixture(options?: {
     currentCatalogueQueries: {
       async listCurrentCataloguePage(input) {
         const limit = input?.limit ?? 24;
-        return { items: accepted.slice(0, limit) };
+        return {
+          items: accepted.slice(0, limit).map((item) => ({
+            ...item,
+            metadataSourceRecords: [...persisted.values()]
+              .flatMap((inspection) => inspection.sourceRecords)
+              .filter((record) =>
+                item.metadata.some((assertion) =>
+                  assertion.sourceRecordIds.includes(record.id),
+                ),
+              )
+              .map(({ id, sourceIdentity }) => ({ id, sourceIdentity })),
+          })),
+        };
       },
       async listCurrentCatalogue() {
         return accepted;
@@ -3689,10 +3913,86 @@ function refreshFixture(options?: {
     ...(options?.resumeClock === undefined
       ? {}
       : { resumeClock: options.resumeClock }),
+  };
+  let assetLibraries: AssetLibraries | undefined;
+  if (options?.assetLibraryAutomation === true) {
+    const library = () => {
+      const entry = observedRootStore.libraryLedger.read("library-fixture");
+      return entry === undefined
+        ? undefined
+        : {
+            ...entry,
+            displayName: "自动化夹具作品库",
+            recognitionProfileIds: ["fixture-profile"],
+            sourceIdentities: ["source"],
+          };
+    };
+    const libraryPersistence: AssetLibraryPersistence = {
+      async listAssetLibraries() {
+        const current = library();
+        return current === undefined ? [] : [current];
+      },
+      async getAssetLibrary(id) {
+        return id === "library-fixture" ? library() : undefined;
+      },
+      async saveAssetLibrary() {
+        throw new Error("此自动化夹具不写库配置");
+      },
+      async reconnectAssetLibraryDirectory() {
+        throw new Error("此自动化夹具不重连目录");
+      },
+    };
+    assetLibraries = new AssetLibraries({
+      persistence: libraryPersistence,
+      roots: observedRootRegistrations,
+      recognitionProfiles: [
+        {
+          id: "fixture-profile",
+          displayName: "夹具识别方式",
+          directoryInterpreterIds: ["directory"],
+          recognizerIds: ["recognizer"],
+        },
+      ],
+      sources: [
+        {
+          id: "source",
+          displayName: "测试来源",
+          collectorIds: ["collector"],
+          sourceCandidateInterpreterIds: [],
+          sourceInterpreterIds: ["interpreter"],
+          sourceAssociationInterpreterIds: [],
+          acquirerIds: ["acquirer"],
+          informationFulfillmentIds: [],
+        },
+      ],
+      capabilities: {
+        directoryInterpreters: workflowPorts.directoryInterpreters.map(
+          ({ capability }) => capability,
+        ),
+        recognizers: workflowPorts.recognizers.map(
+          ({ capability }) => capability,
+        ),
+        collectors: workflowPorts.collectors.map(
+          ({ capability }) => capability,
+        ),
+        sourceCandidateInterpreters: [],
+        sourceAssociationInterpreters: [],
+        informationFulfillments: [],
+        sourceInterpreters: workflowPorts.sourceInterpreters.map(
+          ({ capability }) => capability,
+        ),
+        acquirers: workflowPorts.acquirers.map(({ capability }) => capability),
+      },
+    });
+  }
+  const workflow = new AssetRefreshWorkflow({
+    ...workflowPorts,
+    ...(assetLibraries === undefined ? {} : { assetLibraries }),
   });
   const automatedWorkflow = attachAssetRefreshAutomation(
     workflow,
     new AssetRefreshAutomation(workflow, {
+      ...(assetLibraries === undefined ? {} : { assetLibraries }),
       executionQueries: persistence,
       automationQueries: persistence,
       automationCommands: persistence,
@@ -3903,13 +4203,25 @@ describe("Asset Refresh acceptance", () => {
       snapshotVersion: () => version,
     });
     await scanFixtureObservedScope(subject.workflow, { acceptTrusted: true });
+    const first = subject.accepted[0];
+    const firstEntityId = first?.entity.id;
+    const firstDecisionId = first?.recognitionDecision.id;
+    const previewCountBefore = subject.changePreviews.size;
     version = 2;
 
     const changed = await scanFixtureObservedScope(subject.workflow, {
       acceptTrusted: true,
     });
-    expect(changed.execution.outcome).toBe("proposal");
-    expect(subject.changePreviews.size).toBe(1);
+    // 有字节改动落在已确认头范围内时，现在就地耐久重接受（accepted），不再新增改动影响预览：
+    // 见生产 index.ts:18079-18270，同主体同决定重接受 index.ts:25572。
+    expect(changed.execution.outcome).toBe("accepted");
+    expect(subject.changePreviews.size).toBe(previewCountBefore);
+    // 价值保留：同一资产、同一识别决定被就地刷新，观察版本推进（新记录替换旧记录），
+    // 既没有新建身份/决定，也没有重复资产。
+    expect(subject.accepted).toHaveLength(1);
+    expect(subject.accepted[0].entity.id).toBe(firstEntityId);
+    expect(subject.accepted[0].recognitionDecision.id).toBe(firstDecisionId);
+    expect(subject.accepted[0]).not.toBe(first);
   });
 
   it("adds a later ordinary source to an observed-evidence asset without rewriting its recognition basis", async () => {
@@ -4020,8 +4332,16 @@ describe("Asset Refresh acceptance", () => {
 
     expect(result.execution).toMatchObject({
       outcome: "failed",
-      reason: expect.stringContaining("Recognizer"),
+      reason: "1 个工作项未完成；其余工作项已独立保留结果",
     });
+    expect(result.execution.workItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          outcome: "failed",
+          reason: expect.stringContaining("Recognizer"),
+        }),
+      ]),
+    );
     expect(subject.accepted).toEqual([]);
   });
 
@@ -4070,10 +4390,22 @@ describe("Asset Refresh acceptance", () => {
       acceptTrusted: true,
     });
 
+    // 执行聚合原因承载在 execution 上，具体越权字段原因现在落在 workItems[]：
+    // 见生产 index.ts:7372-7398（terminalFromWorkItems 聚合）与 index.ts:5060-5121（伪造护栏）。
     expect(resumed.execution).toMatchObject({
       outcome: "failed",
-      reason: "Recognizer proposal draft contains unauthorized fields",
+      reason: "1 个工作项未完成；其余工作项已独立保留结果",
     });
+    expect(resumed.execution.workItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          outcome: "failed",
+          reason: expect.stringContaining(
+            "Recognizer proposal draft contains unauthorized fields",
+          ),
+        }),
+      ]),
+    );
     expect(subject.accepted).toEqual([]);
   });
 
@@ -4104,7 +4436,15 @@ describe("Asset Refresh acceptance", () => {
       refreshFixtureObservedScope(subject.workflow, {
         directory: "/observed/work",
         acceptTrusted: true,
-        onCheckpoint(execution) {
+        onHostCheckpoint(execution) {
+          if (
+            !execution.workItems?.some(
+              (item) =>
+                item.sourceRecordIds.length > 0 &&
+                item.proposalId === undefined,
+            )
+          )
+            return;
           executionId = execution.id;
           throw new Error("stop before recognition");
         },
@@ -4116,12 +4456,20 @@ describe("Asset Refresh acceptance", () => {
       executionId,
       acceptTrusted: true,
     });
+    // 初次采集已耐久保存，识别器尚未参与；恢复时仍须拒绝其冒用受信规则的结果。
     expect(resumed.execution).toMatchObject({
       outcome: "failed",
-      reason:
-        "Recognition Rule Result producer does not match the executing recognizer",
+      workItems: [
+        expect.objectContaining({
+          outcome: "failed",
+          reason:
+            "Recognition Rule Result producer does not match the executing recognizer",
+        }),
+      ],
     });
     expect(subject.accepted).toHaveLength(0);
+    // 保留护栏价值：中断发生在接受之前，识别接受一次都没有被调用。
+    expect(subject.recognitionAcceptanceCalls()).toBe(0);
   });
 
   it("durably freezes an interpreter coordinate before an ordinary scan interpreter throws", async () => {
@@ -4654,7 +5002,16 @@ describe("Asset Refresh acceptance", () => {
 
     expect(repeated.execution.outcome).toBe("accepted");
     expect(subject.formatInspectionCalls()).toBe(2);
-    expect(subject.collectionCalls()).toBe(2);
+    expect(subject.collectionCalls()).toBe(1);
+    expect(subject.accepted.at(-1)?.artifactRevisions).toContainEqual(
+      expect.objectContaining({
+        producer: {
+          capabilityId: "format.inspector",
+          capabilityVersion: "1",
+          contractVersion: "2",
+        },
+      }),
+    );
   });
 
   it("does not reuse an ordinary scan when collector and interpreter contracts advance, and records their new provenance", async () => {
@@ -4673,6 +5030,7 @@ describe("Asset Refresh acceptance", () => {
     interpreter.capabilityVersion = "2";
     interpreter.contractVersion = "2";
 
+    const initialDecisionId = subject.accepted[0]!.recognitionDecision.id;
     const repeated = await refreshFixtureObservedScope(subject.workflow, {
       directory: "/observed/work",
       acceptTrusted: true,
@@ -4681,9 +5039,33 @@ describe("Asset Refresh acceptance", () => {
     expect(initial.execution.outcome).toBe("accepted");
     expect(repeated.execution.outcome).toBe("no-change");
     expect(repeated.execution.reusedExecutionId).toBeUndefined();
+    expect(subject.collectionCalls()).toBe(1);
+    expect(repeated.execution.workItems).toEqual([
+      expect.objectContaining({
+        outcome: "no-change",
+        acceptedAssetId: initial.accepted!.entity.id,
+      }),
+    ]);
+    expect(subject.accepted[0]!.recognitionDecision.id).toBe(initialDecisionId);
+    const refreshed = await refreshFixtureMetadata(
+      subject.workflow,
+      initial.accepted!.entity.id,
+    );
     expect(subject.collectionCalls()).toBe(2);
+    expect(refreshed.accepted?.metadata).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          property: "asset.title",
+          producer: expect.objectContaining({
+            capabilityId: "interpreter",
+            capabilityVersion: "2",
+            contractVersion: "2",
+          }),
+        }),
+      ]),
+    );
     expect(
-      subject.persisted.get(repeated.execution.id)?.execution.compatibility
+      subject.persisted.get(refreshed.execution.id)?.execution.compatibility
         .capabilityCoordinates,
     ).toEqual(expect.arrayContaining(["collector@2/2", "interpreter@2/2"]));
   });
@@ -4707,20 +5089,19 @@ describe("Asset Refresh acceptance", () => {
     expect(
       subject.persisted.get(repeated.execution.id)?.execution.reusePlan,
     ).toEqual(subject.persisted.get(initial.execution.id)?.execution.reusePlan);
-    expect(
-      subject.persisted
-        .get(initial.execution.id)!
-        .execution.compatibility.capabilityCoordinates.filter(
-          (coordinate) =>
-            !subject
-              .lastOrdinaryReuseAvailability()
-              ?.capabilityCoordinates.includes(coordinate),
-        ),
-    ).toEqual([]);
     expect(repeated.execution).toMatchObject({
       outcome: "no-change",
-      reusedExecutionId: initial.execution.id,
+      workItems: [
+        expect.objectContaining({
+          outcome: "no-change",
+          acceptedAssetId: initial.accepted!.entity.id,
+        }),
+      ],
     });
+    expect(
+      subject.persisted.get(repeated.execution.id)!.execution.compatibility
+        .capabilityCoordinates,
+    ).not.toContain("unused.collector@1/1");
     expect(subject.collectionCalls()).toBe(1);
   });
 
@@ -4742,13 +5123,25 @@ describe("Asset Refresh acceptance", () => {
       },
     });
 
+    const initialDecisionId = subject.accepted[0]!.recognitionDecision.id;
     const repeated = await refreshFixtureObservedScope(subject.workflow, {
       directory: "/observed/work",
       acceptTrusted: true,
     });
 
     expect(repeated.execution.reusedExecutionId).toBeUndefined();
-    expect(subject.collectionCalls()).toBe(2);
+    expect(subject.collectionCalls()).toBe(1);
+    expect(repeated.execution.workItems).toEqual([
+      expect.objectContaining({
+        outcome: "no-change",
+        acceptedAssetId: initial.accepted!.entity.id,
+      }),
+    ]);
+    expect(
+      subject.persisted.get(initial.execution.id)!.execution.compatibility
+        .capabilityCoordinates,
+    ).toEqual([]);
+    expect(subject.accepted[0]!.recognitionDecision.id).toBe(initialDecisionId);
   });
 
   it("rematerializes a required observed part when its acquirer coordinate changes", async () => {
@@ -4762,6 +5155,14 @@ describe("Asset Refresh acceptance", () => {
       acceptTrusted: true,
       informationRequirement: primaryCoverRequirement,
     });
+    const initialPart = subject.accepted[0]!.artifactRevisions.find(
+      (revision) => revision.producer?.capabilityId === "format.part",
+    );
+    expect(initialPart?.producer).toEqual({
+      capabilityId: "format.part",
+      capabilityVersion: "1",
+      contractVersion: "1",
+    });
     coordinate.capabilityVersion = "2";
 
     const repeated = await scanFixtureObservedScope(subject.workflow, {
@@ -4769,9 +5170,28 @@ describe("Asset Refresh acceptance", () => {
       informationRequirement: primaryCoverRequirement,
     });
 
+    expect(initialPart?.producer?.capabilityVersion).toBe("1");
     expect(repeated.execution.outcome).toBe("accepted");
     expect(subject.observedPartAcquisitionCalls()).toBe(2);
-    expect(subject.managedStoreCalls()).toBe(4);
+    expect(subject.managedStoreCalls()).toBe(3);
+    expect(subject.collectionCalls()).toBe(1);
+    expect(subject.accepted.at(-1)?.artifactRevisions).toContainEqual(
+      expect.objectContaining({
+        producer: {
+          capabilityId: "format.part",
+          capabilityVersion: "2",
+          contractVersion: "1",
+        },
+      }),
+    );
+    const unchanged = await scanFixtureObservedScope(subject.workflow, {
+      acceptTrusted: true,
+      informationRequirement: primaryCoverRequirement,
+    });
+    expect(unchanged.execution.outcome).toBe("no-change");
+    expect(subject.observedPartAcquisitionCalls()).toBe(2);
+    expect(subject.managedStoreCalls()).toBe(3);
+    expect(subject.collectionCalls()).toBe(1);
   });
 
   it("materializes local format facts only with a persisted parent revision", async () => {
@@ -5118,15 +5538,19 @@ describe("Asset Refresh acceptance", () => {
         expect.objectContaining({ sourceIdentity: "supplement" }),
       ]),
     );
-    expect(result.itemResults?.[0]?.accepted?.effectiveMetadata).toEqual(
-      expect.arrayContaining([
+    const awards = result.itemResults?.[0]?.accepted?.facts.descriptions
+      .flatMap((description) => description.metadata)
+      .find((item) => item.property === "asset.awards");
+    expect(awards?.result).toMatchObject({
+      status: "resolved",
+      values: [
         expect.objectContaining({
           property: "asset.awards",
           value: "One award",
           sourceIdentity: "supplement",
         }),
-      ]),
-    );
+      ],
+    });
   });
 
   it("reuses every unchanged explicit boundary without new source or catalogue effects", async () => {
@@ -5144,11 +5568,11 @@ describe("Asset Refresh acceptance", () => {
     expect(repeated.execution.workItems).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          key: "first-boundary",
+          relativePaths: ["track.flac"],
           outcome: "no-change",
         }),
         expect.objectContaining({
-          key: "second-boundary",
+          relativePaths: ["other.flac"],
           outcome: "no-change",
         }),
       ]),
@@ -5157,7 +5581,7 @@ describe("Asset Refresh acceptance", () => {
     expect(subject.accepted).toHaveLength(2);
   });
 
-  it("preserves a reused item's full capability closure so later upgrades reexecute it", async () => {
+  it("来源能力升级保留已确认边界，显式资料刷新使用新坐标", async () => {
     const collector = { capabilityVersion: "1", contractVersion: "1" };
     const interpreter = { capabilityVersion: "1", contractVersion: "1" };
     const recognizer = { capabilityVersion: "1", contractVersion: "1" };
@@ -5200,14 +5624,30 @@ describe("Asset Refresh acceptance", () => {
 
     expect(third.execution.workItems).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ key: "first-boundary", outcome: "accepted" }),
         expect.objectContaining({
-          key: "second-boundary",
-          outcome: "accepted",
+          relativePaths: ["track.flac"],
+          outcome: "no-change",
+        }),
+        expect.objectContaining({
+          relativePaths: ["other.flac"],
+          outcome: "no-change",
         }),
       ]),
     );
+    expect(subject.collectionCalls()).toBe(2);
+    for (const accepted of subject.accepted) {
+      const refreshed = await refreshFixtureMetadata(
+        subject.workflow,
+        accepted.entity.id,
+      );
+      expect(refreshed.accepted?.entity.id).toBe(accepted.entity.id);
+      expect(
+        subject.persisted.get(refreshed.execution.id)?.execution.compatibility
+          .capabilityCoordinates,
+      ).toEqual(expect.arrayContaining(["collector@2/2", "interpreter@2/2"]));
+    }
     expect(subject.collectionCalls()).toBe(4);
+    expect(subject.accepted).toHaveLength(2);
   });
 
   it("continues to reuse an item's complete closure when no capability changed", async () => {
@@ -5233,11 +5673,11 @@ describe("Asset Refresh acceptance", () => {
     expect(third.execution.workItems).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          key: "first-boundary",
+          relativePaths: ["track.flac"],
           outcome: "no-change",
         }),
         expect.objectContaining({
-          key: "second-boundary",
+          relativePaths: ["other.flac"],
           outcome: "no-change",
         }),
       ]),
@@ -5265,11 +5705,11 @@ describe("Asset Refresh acceptance", () => {
     expect(repeated.execution.workItems).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          key: "first-boundary",
+          relativePaths: ["track.flac"],
           outcome: "no-change",
         }),
         expect.objectContaining({
-          key: "second-boundary",
+          relativePaths: ["other.flac"],
           outcome: "no-change",
         }),
       ]),
@@ -5302,14 +5742,30 @@ describe("Asset Refresh acceptance", () => {
 
     expect(repeated.execution.workItems).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ key: "first-boundary", outcome: "accepted" }),
         expect.objectContaining({
-          key: "second-boundary",
-          outcome: "accepted",
+          relativePaths: ["track.flac"],
+          outcome: "no-change",
+        }),
+        expect.objectContaining({
+          relativePaths: ["other.flac"],
+          outcome: "no-change",
         }),
       ]),
     );
-    expect(subject.collectionCalls()).toBe(4);
+    expect(subject.collectionCalls()).toBe(2);
+    expect(
+      subject.persisted
+        .get(initial.execution.id)!
+        .execution.workItems?.every(
+          (item) => item.reuseCompatibility === undefined,
+        ),
+    ).toBe(true);
+    expect(subject.accepted).toHaveLength(2);
+    expect(
+      repeated.execution.workItems
+        ?.map((item) => item.acceptedAssetId)
+        .toSorted(),
+    ).toEqual(subject.accepted.map((item) => item.entity.id).toSorted());
   });
 
   it("reevaluates same-path explicit boundaries when their frozen observations change", async () => {
@@ -5329,6 +5785,11 @@ describe("Asset Refresh acceptance", () => {
       decisionId: item.recognitionDecision.id,
     }));
 
+    const before = subject.accepted.map((item) => ({
+      id: item.entity.id,
+      revisions: item.artifactRevisions,
+      metadata: item.metadata,
+    }));
     snapshotVersion = 1;
     const changed = await refreshFixtureObservedScope(subject.workflow, {
       directory: "/observed/work",
@@ -5337,14 +5798,48 @@ describe("Asset Refresh acceptance", () => {
 
     expect(changed.execution.workItems).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ key: "first-boundary", outcome: "accepted" }),
         expect.objectContaining({
-          key: "second-boundary",
+          relativePaths: ["track.flac"],
+          outcome: "accepted",
+        }),
+        expect.objectContaining({
+          relativePaths: ["other.flac"],
           outcome: "no-change",
         }),
       ]),
     );
-    expect(subject.collectionCalls()).toBe(3);
+    expect(subject.collectionCalls()).toBe(2);
+    expect(subject.accepted).toHaveLength(2);
+    const observed = subject.persisted.get(changed.execution.id)!.execution
+      .snapshot!.files;
+    expect(observed).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          relativePath: "track.flac",
+          modifiedAt: "2026-07-29T00:00:01.000Z",
+        }),
+        expect.objectContaining({
+          relativePath: "other.flac",
+          modifiedAt: "2026-07-29T00:00:00.000Z",
+        }),
+      ]),
+    );
+    expect(
+      subject.persisted
+        .get(changed.execution.id)!
+        .workItemInspections?.find((item) =>
+          item.workItem.relativePaths.includes("track.flac"),
+        )?.proposal?.basis.kind,
+    ).toBe("accepted-boundary");
+    for (const previous of before)
+      expect(
+        subject.accepted.find((item) => item.entity.id === previous.id)
+          ?.metadata,
+      ).toEqual(
+        expect.arrayContaining(
+          previous.metadata.filter((fact) => fact.sourceRecordIds.length > 0),
+        ),
+      );
     expect(
       subject.accepted.map((item) => ({
         assetId: item.entity.id,
@@ -5378,7 +5873,7 @@ describe("Asset Refresh acceptance", () => {
     expect(refreshed.execution.workItems).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          key: "first-boundary",
+          relativePaths: ["track.flac"],
           outcome: "accepted",
           acceptedAssetId: firstAssetId,
         }),
@@ -5412,11 +5907,12 @@ describe("Asset Refresh acceptance", () => {
 
     expect(reevaluated.execution.workItems).toEqual([
       expect.objectContaining({
-        key: "explicit-boundary",
-        outcome: "accepted",
+        relativePaths: ["track.flac"],
+        outcome: "no-change",
         acceptedAssetId: current.entity.id,
       }),
     ]);
+    expect(subject.collectionCalls()).toBe(1);
     expect(subject.accepted).toHaveLength(1);
     expect(subject.accepted[0]).toMatchObject({
       entity: { id: current.entity.id },
@@ -5441,7 +5937,8 @@ describe("Asset Refresh acceptance", () => {
       directory: "/observed/work",
       acceptTrusted: true,
     });
-    const assetId = subject.accepted[0].entity.id;
+    const assetId = subject.accepted[0]!.entity.id;
+    const original = subject.accepted[0]!;
     snapshotVersion = 1;
 
     const result = await refreshFixtureObservedScope(subject.workflow, {
@@ -5452,15 +5949,35 @@ describe("Asset Refresh acceptance", () => {
     expect(result.execution.workItems).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          key: "first-boundary",
-          outcome: "failed",
-          reason: "仅更改来源地址必须使用来源关联更换流程",
+          relativePaths: ["track.flac"],
+          outcome: "accepted",
+          acceptedAssetId: assetId,
         }),
       ]),
     );
     expect(subject.accepted.map((item) => item.entity.id)).toContain(assetId);
     expect(subject.accepted).toHaveLength(2);
     expect(subject.changePreviews.size).toBe(0);
+    expect(subject.collectionCalls()).toBe(2);
+    expect(subject.accepted[0]!.recognitionSourceAssociation).toEqual(
+      original.recognitionSourceAssociation,
+    );
+    expect(
+      subject.persisted.get(result.execution.id)!.execution.snapshot!.files,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          relativePath: "track.flac",
+          modifiedAt: "2026-07-29T00:00:01.000Z",
+        }),
+      ]),
+    );
+    expect(subject.accepted[0]!.proposal.basis.kind).toBe("accepted-boundary");
+    expect(subject.accepted[0]!.metadata).toEqual(
+      expect.arrayContaining(
+        original.metadata.filter((fact) => fact.sourceRecordIds.length > 0),
+      ),
+    );
   });
 
   it("does not reuse explicit boundaries when required metadata or relationships expand", async () => {
@@ -5488,8 +6005,44 @@ describe("Asset Refresh acceptance", () => {
       },
     });
 
-    expect(expanded.execution.outcome).toBe("failed");
-    expect(subject.collectionCalls()).toBe(4);
+    expect(expanded.execution.outcome).toBe("no-change");
+    expect(subject.collectionCalls()).toBe(2);
+    const preparation = await subject.workflow.prepareInformation({
+      selection: { subjectIds: subject.accepted.map((item) => item.entity.id) },
+      requirement: {
+        metadataUsageContext: "asset.ordinary",
+        metadata: [{ property: "asset.description", necessity: "required" }],
+        relationshipTypes: [
+          { type: "asset.contribution", necessity: "required" },
+        ],
+        artifactRoles: [],
+      },
+    });
+    expect(preparation.subjects).toHaveLength(2);
+    for (const item of preparation.subjects) {
+      expect(item.inputs.map((input) => input.readiness)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: "metadata",
+            coordinate: "asset.description",
+            necessity: "required",
+            status: "unavailable",
+          }),
+          expect.objectContaining({
+            kind: "relationship",
+            coordinate: "asset.contribution",
+            necessity: "required",
+            status: "unavailable",
+          }),
+        ]),
+      );
+    }
+    for (const item of subject.accepted)
+      expect(item.metadata).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ property: "asset.title" }),
+        ]),
+      );
     expect(
       subject.accepted.map((item) => ({
         assetId: item.entity.id,
@@ -5500,9 +6053,10 @@ describe("Asset Refresh acceptance", () => {
   });
 
   it("does not reuse an explicit boundary whose required managed artifact disappeared", async () => {
+    const availability = { available: true };
     const subject = refreshFixture({
       independentEvidence: true,
-      unavailableManagedCover: true,
+      managedCoverAvailability: availability,
     });
     await refreshFixtureObservedScope(subject.workflow, {
       directory: "/observed/work",
@@ -5514,6 +6068,22 @@ describe("Asset Refresh acceptance", () => {
       associationId: item.recognitionSourceAssociation!.id,
       decisionId: item.recognitionDecision.id,
     }));
+    const before = await subject.workflow.prepareInformation({
+      selection: { subjectIds: subject.accepted.map((item) => item.entity.id) },
+      requirement: primaryCoverRequirement,
+    });
+    expect(before.subjects).toHaveLength(2);
+    for (const item of before.subjects)
+      expect(item.inputs.map((input) => input.readiness)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: "artifact-role",
+            coordinate: "asset.primary-cover",
+            status: "available",
+          }),
+        ]),
+      );
+    availability.available = false;
     const repeated = await refreshFixtureObservedScope(subject.workflow, {
       directory: "/observed/work",
       acceptTrusted: true,
@@ -5522,15 +6092,34 @@ describe("Asset Refresh acceptance", () => {
 
     expect(repeated.execution.workItems).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ key: "first-boundary", outcome: "accepted" }),
         expect.objectContaining({
-          key: "second-boundary",
-          outcome: "accepted",
+          relativePaths: ["track.flac"],
+          outcome: "no-change",
+        }),
+        expect.objectContaining({
+          relativePaths: ["other.flac"],
+          outcome: "no-change",
         }),
       ]),
     );
-    expect(subject.collectionCalls()).toBe(4);
-    expect(subject.acquisitionCalls()).toBe(4);
+    expect(subject.collectionCalls()).toBe(2);
+    expect(subject.acquisitionCalls()).toBe(2);
+    const after = await subject.workflow.prepareInformation({
+      selection: { subjectIds: subject.accepted.map((item) => item.entity.id) },
+      requirement: primaryCoverRequirement,
+    });
+    expect(after.subjects).toHaveLength(2);
+    for (const item of after.subjects)
+      expect(item.inputs.map((input) => input.readiness)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: "artifact-role",
+            coordinate: "asset.primary-cover",
+            necessity: "required",
+            status: "unavailable",
+          }),
+        ]),
+      );
     expect(
       subject.accepted.map((item) => ({
         assetId: item.entity.id,
@@ -5907,35 +6496,38 @@ describe("Asset Refresh acceptance", () => {
     ["acquisitionReference", "source-artifacts-stored"],
     ["normalized media type", "source-artifacts-stored"],
   ] as const)(
-    "reacquires instead of resuming a legacy checkpoint without its %s at %s",
+    "旧检查点缺少 %s 时在 %s 修复缺失坐标并复用仍有效的已获取内容",
     async (coordinate, stage) => {
-      let release!: () => void;
-      const barrier = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      const subject = refreshFixture(
-        stage === "source-artifacts-acquired"
-          ? { managedStoreBarrier: async () => await barrier }
-          : { acceptanceBarrier: async () => await barrier },
-      );
-      const initial = refreshFixtureObservedScope(subject.workflow, {
-        directory: "/observed/work",
-        executionId: `legacy-${stage}`,
-        acceptTrusted: true,
-        informationRequirement: primaryCoverRequirement,
-      });
+      const subject = refreshFixture();
+      const interruption = new Error("在来源产物耐久窗口中断");
       const executionId = `legacy-${stage}`;
-      let inspection: ExecutionInspection | undefined;
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        inspection = subject.persisted.get(executionId);
-        if (inspection?.execution.stage === stage) break;
-        await new Promise<void>((resolve) => setImmediate(resolve));
-      }
-      expect(inspection?.execution.stage).toBe(stage);
+      const reached = (execution: WorkflowExecution) =>
+        execution.workItems?.some((item) =>
+          stage === "source-artifacts-acquired"
+            ? (item.sourceArtifactAcquisitions?.length ?? 0) > 0
+            : (item.managedSourceArtifacts?.length ?? 0) > 0,
+        ) === true;
+      await expect(
+        refreshFixtureObservedScope(subject.workflow, {
+          directory: "/observed/work",
+          executionId,
+          acceptTrusted: true,
+          informationRequirement: primaryCoverRequirement,
+          onHostCheckpoint(execution) {
+            if (reached(execution)) throw interruption;
+          },
+        }),
+      ).rejects.toBe(interruption);
+      const inspection = subject.persisted.get(executionId);
+      expect(inspection !== undefined && reached(inspection.execution)).toBe(
+        true,
+      );
       const execution = inspection!.execution;
       const legacyAcquisition = (
         checkpoint: NonNullable<
-          WorkflowExecution["sourceArtifactAcquisitions"]
+          NonNullable<
+            WorkflowExecution["workItems"]
+          >[number]["sourceArtifactAcquisitions"]
         >[number],
       ) => {
         if (coordinate === "sourceRecordId") {
@@ -5954,7 +6546,9 @@ describe("Asset Refresh acceptance", () => {
       };
       const legacyManaged = (
         checkpoint: NonNullable<
-          WorkflowExecution["managedSourceArtifacts"]
+          NonNullable<
+            WorkflowExecution["workItems"]
+          >[number]["managedSourceArtifacts"]
         >[number],
       ) => {
         if (coordinate === "sourceRecordId") {
@@ -5976,18 +6570,22 @@ describe("Asset Refresh acceptance", () => {
       };
       subject.persisted.set(executionId, {
         ...inspection!,
-        execution:
-          stage === "source-artifacts-acquired"
-            ? {
-                ...execution,
-                sourceArtifactAcquisitions:
-                  execution.sourceArtifactAcquisitions?.map(legacyAcquisition),
-              }
-            : {
-                ...execution,
-                managedSourceArtifacts:
-                  execution.managedSourceArtifacts?.map(legacyManaged),
-              },
+        execution: {
+          ...execution,
+          workItems: execution.workItems?.map((item) =>
+            stage === "source-artifacts-acquired"
+              ? {
+                  ...item,
+                  sourceArtifactAcquisitions:
+                    item.sourceArtifactAcquisitions?.map(legacyAcquisition),
+                }
+              : {
+                  ...item,
+                  managedSourceArtifacts:
+                    item.managedSourceArtifacts?.map(legacyManaged),
+                },
+          ),
+        },
       });
 
       const resumed = await subject.workflow.resume({
@@ -5995,10 +6593,19 @@ describe("Asset Refresh acceptance", () => {
         acceptTrusted: true,
       });
       expect(resumed.execution.outcome).toBe("accepted");
-      expect(subject.acquisitionCalls()).toBe(2);
-
-      release();
-      await initial;
+      // 托管记录失效时仍保留合法获取记录，只重存；获取记录失效时才重新获取。
+      expect(subject.acquisitionCalls()).toBe(
+        stage === "source-artifacts-acquired" ? 2 : 1,
+      );
+      expect(subject.managedStoreCalls()).toBe(
+        stage === "source-artifacts-acquired" ? 1 : 2,
+      );
+      expect(subject.accepted).toHaveLength(1);
+      expect(subject.accepted[0].artifactAssociations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ role: "asset.primary-cover" }),
+        ]),
+      );
     },
   );
 
@@ -6113,17 +6720,44 @@ describe("Asset Refresh acceptance", () => {
     );
   });
 
-  it("rejects overlapping recognition boundaries emitted by different interpreters", async () => {
+  it("keeps overlapping recognition boundaries emitted by different interpreters unresolved instead of throwing", async () => {
     const subject = refreshFixture({
       independentEvidence: true,
       overlappingInterpreter: true,
     });
-    await expect(
-      refreshFixtureObservedScope(subject.workflow, {
-        directory: "/observed/work",
-        acceptTrusted: true,
-      }),
-    ).rejects.toThrow("Recognition work-item boundaries must not overlap");
+    // 重叠范围现在按每个候选计划落为 boundaryConflict 未处置项，不再整体抛出：
+    // 见生产 index.ts:7272（标记 boundaryConflict）与 index.ts:17897-17901（逐计划处置）。
+    const conflictReason = "多个候选资产范围包含相同材料，需要明确决定";
+    const result = await refreshFixtureObservedScope(subject.workflow, {
+      directory: "/observed/work",
+      acceptTrusted: true,
+    });
+
+    expect(result.execution.outcome).toBe("accepted");
+    expect(result.execution.workItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: "first-boundary",
+          outcome: "unresolved",
+          reason: conflictReason,
+        }),
+        expect.objectContaining({
+          key: "overlapping-boundary",
+          outcome: "unresolved",
+          reason: conflictReason,
+        }),
+      ]),
+    );
+    // 非重叠的 other.flac 身份仍被独立接受并只落一份资产。
+    expect(result.execution.workItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: "second-boundary",
+          outcome: "accepted",
+        }),
+      ]),
+    );
+    expect(subject.accepted).toHaveLength(1);
   });
 
   it("keeps competing identities for one boundary unresolved instead of treating them as sibling work items", async () => {
@@ -6201,21 +6835,24 @@ describe("Asset Refresh acceptance", () => {
 
   it("projects a bounded authoritative Current Catalogue page for Delivery", async () => {
     const subject = refreshFixture();
-    await refreshFixtureObservedScope(subject.workflow, {
+    const completed = await refreshFixtureObservedScope(subject.workflow, {
       directory: "/observed/work",
       acceptTrusted: true,
     });
 
     const page = await subject.workflow.listCurrentCataloguePage({ limit: 1 });
+    // Delivery 投影改用 readEffectiveSubject 的扁平主体：作品身份直接落在 item.id
+    // 而不再是 item.entity.id；见生产 listCurrentCataloguePage index.ts:19627-19643。
     expect(page).toMatchObject({
       items: [
         {
-          entity: { kind: "digital-asset" },
+          id: completed.accepted?.entity.id,
           recognitionSourceAssociation: { sourceIdentity: "source" },
         },
       ],
     });
     expect(page.items[0]).not.toHaveProperty("recognitionDecision");
+    expect(page.items[0]).not.toHaveProperty("entity");
   });
 
   it("keeps bounded Workflow History and Current Attention as separate Delivery queries", async () => {
@@ -6441,10 +7078,19 @@ describe("Asset Refresh acceptance", () => {
       acceptTrusted: true,
     });
 
+    // 执行层不再承载具体原因（单个未处置工作项不聚合出原因），
+    // 可靠文件身份歧义的具体原因落在该工作项上：见生产 index.ts:18717-18733。
     expect(result.execution).toMatchObject({
       outcome: "unresolved",
-      reason: "可靠文件身份对应多个当前作品，无法安全重用",
     });
+    expect(result.execution.workItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          outcome: "unresolved",
+          reason: "可靠文件身份对应多个当前作品，无法安全重用",
+        }),
+      ]),
+    );
     expect(subject.persisted.get(result.execution.id)?.proposal).toBeDefined();
     expect(subject.accepted).toEqual([]);
   });
@@ -6531,7 +7177,7 @@ describe("Asset Refresh acceptance", () => {
     ]);
   });
 
-  it("keeps a collector's sanitized partial-coverage diagnosis inspectable", async () => {
+  it("在明确请求缺失资料时保留采集器的安全诊断及来源失败码", async () => {
     const subject = refreshFixture({
       collectionUnavailableForUnrequestedMetadata: true,
     });
@@ -6539,16 +7185,29 @@ describe("Asset Refresh acceptance", () => {
     const result = await refreshFixtureObservedScope(subject.workflow, {
       directory: "/observed/work",
       acceptTrusted: true,
+      informationRequirement: {
+        metadataUsageContext: "asset.ordinary",
+        metadata: [
+          { property: "source.protected-body", necessity: "required" },
+        ],
+        artifactRoles: [],
+        relationshipTypes: [],
+      },
     });
 
+    expect(result.execution.outcome).toBe("failed");
+    expect(subject.accepted).toEqual([]);
+
+    // ADR-0086 后诊断挂在逐工作项处置 work-item:${plan.key}（普通目录扫描即 selection），
+    // 不再是前置的 official-collection 处置：见生产 index.ts:18563-18585。
     expect(
       result.execution.dispositions.find(
-        (disposition) => disposition.key === "official-collection",
+        (disposition) => disposition.key === "work-item:selection",
       )?.reason,
     ).toContain("protected detail unavailable");
     expect(
       result.execution.dispositions.find(
-        (disposition) => disposition.key === "official-collection",
+        (disposition) => disposition.key === "work-item:selection",
       )?.sourceFailureCodes,
     ).toEqual([
       {
@@ -6580,9 +7239,11 @@ describe("Asset Refresh acceptance", () => {
       });
 
       expect(result.execution.outcome).toBe("accepted");
+      // 诊断挂在 work-item:selection，用真键确认畸形坐标确实被省略结构化码，
+      // 而不是靠 official-collection 前置键的空命中蒙混过关。
       expect(
         result.execution.dispositions.find(
-          (item) => item.key === "official-collection",
+          (item) => item.key === "work-item:selection",
         )?.sourceFailureCodes,
       ).toBeUndefined();
       expect(JSON.stringify([...subject.persisted.values()])).not.toContain(
@@ -6602,12 +7263,22 @@ describe("Asset Refresh acceptance", () => {
       acceptTrusted: true,
     });
 
+    // 越权护栏仍在（生产 index.ts:4632/4775 抛出），具体原因落在失败工作项上，
+    // 执行层只保留聚合原因（index.ts:7372-7398）。
     expect(result.execution).toMatchObject({
       outcome: "failed",
-      reason: expect.stringContaining(
-        "Source Collection Failure producer does not match the executing capability",
-      ),
+      reason: "1 个工作项未完成；其余工作项已独立保留结果",
     });
+    expect(result.execution.workItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          outcome: "failed",
+          reason: expect.stringContaining(
+            "Source Collection Failure producer does not match the executing capability",
+          ),
+        }),
+      ]),
+    );
     expect(result.sourceRecords).toEqual([]);
   });
 
@@ -6721,7 +7392,8 @@ describe("Asset Refresh acceptance", () => {
     expect(result.execution.dispositions).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          key: "source-artifact.acquire:asset.primary-cover",
+          // 逐工作项获取处置现在带 work-item:${plan.key}: 前缀：见生产 index.ts:18967-18972。
+          key: "work-item:selection:source-artifact.acquire:asset.primary-cover",
           status: "failed",
           reason: "可选来源产物获取失败；识别仍可继续",
         }),
@@ -6763,8 +7435,16 @@ describe("Asset Refresh acceptance", () => {
         ...(expected !== "reject"
           ? {}
           : {
-              onCheckpoint(execution) {
-                if (execution.stage === "source-artifacts-acquired")
+              // 工作项获取循环里的耐久检查点只通知宿主接缝（notifyDurableCheckpoint
+              // 传入 notifyCaller=false），故抛错钩子必须挂在 onHostCheckpoint：
+              // 见生产 index.ts:18987/19000 与 workflow-invocation-lifecycle.ts:21-24。
+              onHostCheckpoint(execution) {
+                if (
+                  execution.workItems?.some(
+                    (item) =>
+                      (item.sourceArtifactAcquisitions?.length ?? 0) > 0,
+                  )
+                )
                   throw interruption;
               },
             }),
@@ -6851,7 +7531,8 @@ describe("Asset Refresh acceptance", () => {
     expect(result.execution.dispositions).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          key: "source-artifact.acquire:fanbox.attachment.file",
+          // 逐工作项获取处置键带 work-item:${plan.key}: 前缀（生产 index.ts:18967-18972）。
+          key: "work-item:selection:source-artifact.acquire:fanbox.attachment.file",
           status: "failed",
         }),
       ]),
@@ -6876,19 +7557,20 @@ describe("Asset Refresh acceptance", () => {
     });
 
     expect(result.execution.outcome).toBe("accepted");
+    // 工作项路径只对“未完成的可选获取”落一条失败处置；成功的可选获取不再落 completed
+    // 获取处置（生产 index.ts:18967-18972：仅 status === "optional-failed" 记处置）。
+    // 审计价值仍由「恰好一条 :2 失败处置 + 恰好一份封面被接受」共同承载，两者不矛盾。
     expect(
       result.execution.dispositions
         .filter((item) =>
-          item.key.startsWith("source-artifact.acquire:asset.primary-cover"),
+          /^work-item:selection:source-artifact\.acquire:asset\.primary-cover(?::\d)?$/.test(
+            item.key,
+          ),
         )
         .map(({ key, status }) => ({ key, status })),
     ).toEqual([
       {
-        key: "source-artifact.acquire:asset.primary-cover:1",
-        status: "completed",
-      },
-      {
-        key: "source-artifact.acquire:asset.primary-cover:2",
+        key: "work-item:selection:source-artifact.acquire:asset.primary-cover:2",
         status: "failed",
       },
     ]);
@@ -6920,8 +7602,13 @@ describe("Asset Refresh acceptance", () => {
             },
           ],
         },
-        onCheckpoint(execution) {
-          if (execution.stage !== "source-artifacts-stored") return;
+        onHostCheckpoint(execution) {
+          if (
+            !execution.workItems?.some(
+              (item) => (item.managedSourceArtifacts?.length ?? 0) > 0,
+            )
+          )
+            return;
           executionId = execution.id;
           throw new Error("stop after first same-role candidate");
         },
@@ -6935,16 +7622,14 @@ describe("Asset Refresh acceptance", () => {
     expect(
       resumed.execution.dispositions
         .filter((item) =>
-          item.key.startsWith("source-artifact.acquire:asset.primary-cover"),
+          /^work-item:selection:source-artifact\.acquire:asset\.primary-cover(?::\d)?$/.test(
+            item.key,
+          ),
         )
         .map(({ key, status }) => ({ key, status })),
     ).toEqual([
       {
-        key: "source-artifact.acquire:asset.primary-cover:1",
-        status: "completed",
-      },
-      {
-        key: "source-artifact.acquire:asset.primary-cover:2",
+        key: "work-item:selection:source-artifact.acquire:asset.primary-cover:2",
         status: "failed",
       },
     ]);
@@ -6953,6 +7638,8 @@ describe("Asset Refresh acceptance", () => {
         (item) => item.role === "asset.primary-cover",
       ),
     ).toHaveLength(1);
+    expect(subject.acquisitionCalls()).toBe(2);
+    expect(subject.managedStoreCalls()).toBe(1);
   });
 
   it("resumes the preallocated subject after optional failure is durably interrupted", async () => {
@@ -6965,21 +7652,20 @@ describe("Asset Refresh acceptance", () => {
         directory: "/observed/work",
         acceptTrusted: true,
         informationRequirement: optionalPrimaryCoverRequirement,
-        onCheckpoint(execution) {
+        onHostCheckpoint(execution) {
           if (
             !execution.dispositions.some(
               (item) =>
-                item.key === "source-artifact.acquire:asset.primary-cover" &&
+                item.key ===
+                  "work-item:selection:source-artifact.acquire:asset.primary-cover" &&
                 item.status === "failed",
             )
           )
             return;
           executionId = execution.id;
-          plannedAssetId = (
-            execution as WorkflowExecution & {
-              readonly plannedAssetId?: string;
-            }
-          ).plannedAssetId;
+          plannedAssetId = execution.workItems?.find(
+            (item) => item.key === "selection",
+          )?.plannedAssetId;
           throw interruption;
         },
       }),
@@ -7020,8 +7706,12 @@ describe("Asset Refresh acceptance", () => {
               { role: "fanbox.attachment.file", necessity, maximum: 1 },
             ],
           },
-          onCheckpoint(execution) {
-            if (execution.stage === "source-artifacts-stored") {
+          onHostCheckpoint(execution) {
+            if (
+              execution.workItems?.some(
+                (item) => (item.managedSourceArtifacts?.length ?? 0) > 0,
+              )
+            ) {
               executionId = execution.id;
               throw new Error("stop after storing the first source artifact");
             }
@@ -7154,7 +7844,18 @@ describe("Asset Refresh acceptance", () => {
   });
 
   it("reuses a legacy files-only persisted snapshot without treating absent directory observations as empty structure", async () => {
-    const subject = refreshFixture({ reusable: true });
+    const subject = refreshFixture();
+    const initial = await refreshFixtureObservedScope(subject.workflow, {
+      directory: "/observed/work",
+      acceptTrusted: true,
+    });
+    const prior = subject.persisted.get(initial.execution.id)!;
+    const { directories: _directories, ...filesOnly } =
+      prior.execution.snapshot!;
+    subject.persisted.set(initial.execution.id, {
+      ...prior,
+      execution: { ...prior.execution, snapshot: filesOnly },
+    });
     const result = await refreshFixtureObservedScope(subject.workflow, {
       directory: "/observed/work",
       acceptTrusted: true,
@@ -7162,16 +7863,19 @@ describe("Asset Refresh acceptance", () => {
 
     expect(result.execution).toMatchObject({
       outcome: "no-change",
-      acceptedAssetId: "asset",
-      reusedExecutionId: "prior-execution",
+      workItems: [
+        expect.objectContaining({
+          acceptedAssetId: initial.accepted!.entity.id,
+          outcome: "no-change",
+        }),
+      ],
     });
-    expect(subject.collectionCalls()).toBe(0);
-    expect(subject.accepted).toEqual([]);
+    expect(subject.collectionCalls()).toBe(1);
+    expect(subject.accepted).toHaveLength(1);
   });
 
   it("does not call an unavailable managed cover a no-change result", async () => {
     const subject = refreshFixture({
-      reusable: true,
       unavailableManagedCover: true,
     });
     const result = await refreshFixtureObservedScope(subject.workflow, {
@@ -7181,6 +7885,21 @@ describe("Asset Refresh acceptance", () => {
     });
     expect(result.execution.outcome).toBe("accepted");
     expect(subject.collectionCalls()).toBe(1);
+    const readiness = await subject.workflow.prepareInformation({
+      selection: { subjectIds: [result.accepted!.entity.id] },
+      requirement: primaryCoverRequirement,
+    });
+    expect(
+      readiness.subjects[0]!.inputs.map((input) => input.readiness),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "artifact-role",
+          coordinate: "asset.primary-cover",
+          status: "unavailable",
+        }),
+      ]),
+    );
   });
 
   it("keeps owning entrypoints distinct and rejects selections from another operation", async () => {
@@ -8094,7 +8813,9 @@ describe("Asset Refresh acceptance", () => {
     expect(inspected.execution).toMatchObject({
       status: "completed",
       outcome: "partially-succeeded",
-      acceptedAssetId: expect.any(String),
+      workItems: [
+        expect.objectContaining({ acceptedAssetId: expect.any(String) }),
+      ],
     });
     expect(inspected.recognition?.status).toBe("accepted");
     expect(inspected.execution.dispositions).toEqual(
@@ -8806,20 +9527,30 @@ describe("Asset Refresh acceptance", () => {
     });
 
     expect(subject.accepted[0]).not.toHaveProperty("metadataPolicyIds");
-    expect(inspected.accepted?.effectiveMetadata).toEqual([
+    // ADR-0086：共同生效读取不再暴露 accepted.effectiveMetadata，
+    // 而是把可解释的生效值放进 facts.descriptions[].metadata[].result（见
+    // effective-fact-reads.ts:118-137 的 SelectedMetadataRead）。
+    const titleRead = (inspected.accepted?.facts.descriptions ?? [])
+      .flatMap((description) => description.metadata)
+      .find((metadata) => metadata.property === "asset.title");
+    expect(titleRead?.result).toEqual(
       expect.objectContaining({
-        property: "asset.title",
-        value: "Work",
-        sourceIdentity: "source",
-        sourceRecordIds: ["record"],
-        sourceSlot: "source.title",
-        alternatives: [],
-        reasoning: {
-          kind: "source-preference",
-          preferredSource: "source",
-        },
+        status: "resolved",
+        values: [
+          expect.objectContaining({
+            property: "asset.title",
+            value: "Work",
+            sourceIdentity: "source",
+            sourceRecordIds: ["record"],
+            sourceSlot: "source.title",
+            reasoning: {
+              kind: "source-preference",
+              preferredSource: "source",
+            },
+          }),
+        ],
       }),
-    ]);
+    );
   });
 
   it("projects incomparable enrolled policies as an inspectable conflict with no effective value", async () => {
@@ -8830,21 +9561,43 @@ describe("Asset Refresh acceptance", () => {
       acceptTrusted: true,
     });
 
-    expect(inspected.accepted?.effectiveMetadata).toEqual([]);
-    expect(inspected.accepted?.metadataPolicyConflicts).toEqual([
+    // ADR-0086：不可比较的登记策略不再暴露 effectiveMetadata/metadataPolicyConflicts，
+    // 而是把冲突落到 facts：metadata 项 result.status === "conflict"，描述级 conflicts 记录
+    // policy-conflict（effective-fact-reads.ts:118-137），候选值改由专用公开读取
+    // workflow.inspectSubjectConflictEvidence 给出（effective-fact-reads.ts:194-206、index.ts:12443）。
+    const descriptions = inspected.accepted?.facts.descriptions ?? [];
+    const titleResult = descriptions
+      .flatMap((description) => description.metadata)
+      .find((metadata) => metadata.property === "asset.title")?.result;
+    expect(titleResult).toMatchObject({ status: "conflict" });
+    expect(
+      descriptions.some((description) =>
+        description.conflicts.some(
+          (conflict) => conflict.kind === "policy-conflict",
+        ),
+      ),
+    ).toBe(true);
+
+    const evidence = await subject.workflow.inspectSubjectConflictEvidence(
+      subject.accepted[0].entity.id,
+      {
+        metadataUsageContext: "asset.ordinary",
+        metadata: [],
+        artifactRoles: [],
+        relationshipTypes: [],
+      },
+    );
+    expect(evidence?.conflicts).toEqual([
       expect.objectContaining({
         kind: "policy-conflict",
         property: "asset.title",
-        metadataUsageContext: "asset.ordinary",
-        policyIds: ["ordinary-test", "ordinary-test-competing"],
-        candidates: [
+        candidates: expect.arrayContaining([
           expect.objectContaining({
             value: "Work",
             sourceIdentity: "source",
             sourceRecordIds: ["record"],
-            sourceSlot: "source.title",
           }),
-        ],
+        ]),
       }),
     ]);
   });
@@ -9320,7 +10073,9 @@ describe("Asset Refresh acceptance", () => {
     const staleArtifact = { id: "stale-source-artifact" };
     const staleAssociation = {
       id: "stale-source-artifact-association",
-      subjectId: current.entity.id,
+      // ArtifactAssociation 现要求 target: DescriptionTarget，不再是 subjectId
+      // （domain index.ts:760-762；effective-fact-reads.ts:302/314/465/481 读取 target.kind）。
+      target: { kind: "entity" as const, entityId: current.entity.id },
       artifactId: staleArtifact.id,
       role: "asset.material-delivered" as const,
       sourceRecordIds: ["ended-source-record"],
@@ -9336,7 +10091,7 @@ describe("Asset Refresh acceptance", () => {
     const coverArtifact = { id: "independently-supported-cover" };
     const cover = {
       id: "independently-supported-cover-association",
-      subjectId: current.entity.id,
+      target: { kind: "entity" as const, entityId: current.entity.id },
       artifactId: coverArtifact.id,
       role: "asset.primary-cover" as const,
       sourceRecordIds: ["independent-source-record"],
@@ -9412,9 +10167,53 @@ describe("Asset Refresh acceptance", () => {
     });
     expect(prepared.candidates[0]?.ruleResults).toEqual([]);
     expect(JSON.stringify(prepared)).not.toContain('"interpretation"');
-    expect(JSON.stringify(prepared)).not.toContain('"sourceRecordIds"');
     expect(JSON.stringify(prepared)).not.toContain('"producer"');
     expect(JSON.stringify(prepared)).not.toContain('"capabilityId"');
+    // 公共预演同时保留可解释来源标签与真实候选事实；内部记录标识只留在耐久审计。
+    expect(JSON.stringify(prepared)).not.toContain('"sourceRecordIds"');
+    const currentTitle = prepared.preview?.facts?.current.descriptions
+      .find(
+        (description) => description.metadataUsageContext === "asset.ordinary",
+      )
+      ?.metadata.find((entry) => entry.property === "asset.title")?.result;
+    const projectedTitle = prepared.preview?.facts?.projected.descriptions
+      .find(
+        (description) => description.metadataUsageContext === "asset.ordinary",
+      )
+      ?.metadata.find((entry) => entry.property === "asset.title")?.result;
+    const sourceTitle = (value: string) =>
+      expect.objectContaining({
+        value,
+        sourceIdentity: "source",
+        sourceSlot: "source.title",
+        assertions: [expect.objectContaining({ sourceSlot: "source.title" })],
+      });
+    expect(prepared.preview?.facts?.current.id).toBe(
+      subject.accepted[0].entity.id,
+    );
+    expect(prepared.preview?.facts?.projected.id).toBe(
+      subject.accepted[0].entity.id,
+    );
+    expect(currentTitle).toMatchObject({
+      status: "resolved",
+      values: [sourceTitle("Work")],
+    });
+    expect(projectedTitle).toMatchObject({
+      status: "resolved",
+      values: expect.arrayContaining([
+        sourceTitle("Other Work"),
+        sourceTitle("Work"),
+      ]),
+    });
+    expect(
+      subject.changePreviews.get(prepared.preview!.id)?.projected.metadata,
+    ).toContainEqual(
+      expect.objectContaining({
+        property: "asset.title",
+        value: "Other Work",
+        sourceRecordIds: ["record"],
+      }),
+    );
     expect(prepared.preview?.projected.metadata).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -9652,6 +10451,12 @@ describe("Asset Refresh acceptance", () => {
       metadata: [
         ...subject.accepted[0].metadata,
         {
+          // MetadataAssertion 现在要求 target: DescriptionTarget（domain index.ts:760-762；
+          // effective-fact-reads.ts:314 读取 target.kind），真实接受都会写 target。
+          target: {
+            kind: "entity" as const,
+            entityId: subject.accepted[0].entity.id,
+          },
           property: "user.note",
           value: "added while collecting",
           sourceSlot: "user.note",
@@ -9709,6 +10514,7 @@ describe("Asset Refresh acceptance", () => {
       acceptTrusted: true,
     });
     const interruption = new Error("stop after change-impact preview");
+    let checkpoint: WorkflowExecution | undefined;
 
     await expect(
       rescrapeFixtureObservedSelection(subject.workflow, {
@@ -9730,16 +10536,24 @@ describe("Asset Refresh acceptance", () => {
         sourceIdentity: "source",
         sourceAddress: "https://source.example/other-work",
         onHostCheckpoint(execution) {
-          if (execution.outcome === "proposal") throw interruption;
+          if (
+            execution.workItems?.some((item) => item.outcome === "proposal")
+          ) {
+            checkpoint = execution;
+            throw interruption;
+          }
         },
       }),
     ).rejects.toBe(interruption);
 
     const durable = subject.persisted.get(subject.executions.at(-1)!.id)!;
-    expect(durable.execution).toMatchObject({
-      status: "completed",
-      outcome: "proposal",
-    });
+    expect(checkpoint).toBeDefined();
+    expect(durable.execution).toEqual(checkpoint);
+    expect(durable.execution.workItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ outcome: "proposal" }),
+      ]),
+    );
     expect(subject.changePreviews.size).toBe(1);
   });
 
@@ -9769,17 +10583,22 @@ describe("Asset Refresh acceptance", () => {
   });
 
   it("projects concrete before and after state while preserving facts outside the replaced source", async () => {
-    const subject = refreshFixture({ includeForeignAndUserFacts: true });
-    await refreshFixtureObservedScope(subject.workflow, {
-      directory: "/observed/work",
-      acceptTrusted: true,
+    const subject = refreshFixture({
+      includeForeignAndUserFacts: true,
+      sourceAssociationOutcome: "accepted",
+      sourceEnrichmentSucceeds: true,
     });
     await refreshFixtureObservedScope(subject.workflow, {
       directory: "/observed/work",
       acceptTrusted: true,
-      directedSourceAddress: "https://source.example/other-work",
-      directedSourceIdentity: "source",
     });
+    const prepared = await subject.workflow.prepareConflictedEstablishment({
+      assetId: subject.accepted[0]!.entity.id,
+      sourceIdentity: "source",
+      sourceInput: { address: "https://source.example/other-work" },
+      initiatedBy: "reviewer",
+    });
+    expect(prepared.state).toBe("awaiting-confirmation");
 
     const preview = [...subject.changePreviews.values()].at(-1)!;
     expect(preview.current.metadata).toEqual(
@@ -9890,6 +10709,7 @@ describe("Asset Refresh acceptance", () => {
       directory: "/observed/work",
       acceptTrusted: true,
     });
+    const firstAssetId = subject.accepted[0]?.entity.id;
 
     const repeated = await refreshFixtureObservedScope(subject.workflow, {
       directory: "/observed/work",
@@ -9898,11 +10718,12 @@ describe("Asset Refresh acceptance", () => {
       directedSourceIdentity: "source",
     });
 
-    expect(repeated.execution).toMatchObject({
-      outcome: "no-change",
-      acceptedAssetId: subject.accepted[0]?.entity.id,
-    });
+    // 有字节变化落在已确认头范围内时现在就地耐久重接受（accepted），不再走预览：
+    // 见生产 index.ts:18079-18270、同主体同决定重接受 25572。
+    expect(repeated.execution.outcome).toBe("accepted");
+    // 价值保留：不重复创建资产，仍只有一份且身份不变。
     expect(subject.accepted).toHaveLength(1);
+    expect(subject.accepted[0]?.entity.id).toBe(firstAssetId);
     expect(subject.changePreviews.size).toBe(0);
   });
 
@@ -9919,10 +10740,19 @@ describe("Asset Refresh acceptance", () => {
       directedSourceAddress: "https://source.example/address-only",
       directedSourceIdentity: "source",
     });
+    // 拒绝仅改地址的具体原因现在落在工作项，执行层是聚合原因（index.ts:7372-7398）。
     expect(result.execution).toMatchObject({
       outcome: "failed",
-      reason: "仅更改来源地址必须使用来源关联更换流程",
+      reason: "1 个工作项未完成；其余工作项已独立保留结果",
     });
+    expect(result.execution.workItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          outcome: "failed",
+          reason: "仅更改来源地址必须使用来源关联更换流程",
+        }),
+      ]),
+    );
     expect(subject.changePreviews.size).toBe(0);
   });
 
@@ -9945,29 +10775,38 @@ describe("Asset Refresh acceptance", () => {
       confirmedBy: "reviewer",
     });
 
+    const previewCountBefore = subject.changePreviews.size;
     const ordinary = await refreshFixtureObservedScope(subject.workflow, {
       directory: "/observed/work",
       acceptTrusted: true,
     });
 
+    // 身份更换确认后，普通扫描不再回炉生成改动预览，而是就地保留已确认范围：
+    // 见生产 index.ts:18322-18330。
     expect(ordinary.execution.outcome, JSON.stringify(ordinary.execution)).toBe(
-      "proposal",
+      "no-change",
     );
-    expect([...subject.changePreviews.values()].at(-1)).toMatchObject({
-      status: "awaiting-confirmation",
-      projected: {
-        recognitionSourceAssociation: {
-          nativeAddress: "https://source.example/work",
-        },
-      },
-    });
+    expect(ordinary.execution.workItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          outcome: "no-change",
+          reason: "保留已经确认的资产范围",
+        }),
+      ]),
+    );
+    // 价值保留：不新增改动预览，也不复制资产。
+    expect(subject.changePreviews.size).toBe(previewCountBefore);
     expect(subject.accepted).toHaveLength(1);
   });
 
   it("persists a minimal Automation Intent and invokes the ordinary workflow for initial and scan-now triggers", async () => {
     const tracker = { resolveCalls: 0, rebindCalls: 0, closeCalls: 0 };
-    const subject = refreshFixture({ observedScopeTracker: tracker });
+    const subject = refreshFixture({
+      assetLibraryAutomation: true,
+      observedScopeTracker: tracker,
+    });
     const enabled = await subject.workflow.enableAutomation({
+      assetLibraryId: "library-fixture",
       observedRootId: "fixture-root",
       relativeScope: ".",
       intervalMilliseconds: 60_000,
@@ -9989,7 +10828,7 @@ describe("Asset Refresh acceptance", () => {
     await expect(
       subject.workflow.triggerAutomation(enabled.intent.id, "interval"),
     ).resolves.toMatchObject({ status: "disabled" });
-    expect(tracker).toEqual({ resolveCalls: 3, rebindCalls: 0, closeCalls: 3 });
+    expect(tracker).toEqual({ resolveCalls: 1, rebindCalls: 2, closeCalls: 3 });
   });
 
   it("does not persist an automation intent when its observed root is unavailable", async () => {
@@ -9997,12 +10836,13 @@ describe("Asset Refresh acceptance", () => {
     let scanCalls = 0;
     const automation = new AssetRefreshAutomation(
       {
-        async scanObservedScope() {
+        async scanAssetLibrary() {
           scanCalls += 1;
           return {} as never;
         },
       } as never,
       {
+        assetLibraries: fixtureAutomationLibraries("revoked-root"),
         executionQueries: {} as never,
         automationQueries: {} as never,
         automationCommands: {
@@ -10022,6 +10862,7 @@ describe("Asset Refresh acceptance", () => {
 
     await expect(
       automation.enableAutomation({
+        assetLibraryId: "library-fixture",
         observedRootId: "revoked-root",
         relativeScope: ".",
         intervalMilliseconds: 60_000,
@@ -10036,7 +10877,11 @@ describe("Asset Refresh acceptance", () => {
   it("suppresses repeated automatic root failures until an operator enables the intent again", async () => {
     const intent = {
       id: "temporarily-unavailable-root",
-      scope: { observedRootId: "fixture-root", relativeScope: "." },
+      scope: {
+        assetLibraryId: "library-fixture",
+        observedRootId: "fixture-root",
+        relativeScope: ".",
+      },
       enabled: true,
       intervalMilliseconds: 60_000,
       workflowInputVersion: "asset-refresh-input/1" as const,
@@ -10049,7 +10894,7 @@ describe("Asset Refresh acceptance", () => {
       [];
     const automation = new AssetRefreshAutomation(
       {
-        async scanObservedScope() {
+        async scanAssetLibrary() {
           scans += 1;
           throw new ObservedRootUnavailable(
             "文件位置当前缺失、不可读或范围越界",
@@ -10102,7 +10947,11 @@ describe("Asset Refresh acceptance", () => {
   it("suppresses an adapter-reported prerequisite failure without interpreting its diagnostic", async () => {
     const intent = {
       id: "unavailable-source-prerequisite",
-      scope: { observedRootId: "fixture-root", relativeScope: "." },
+      scope: {
+        assetLibraryId: "library-fixture",
+        observedRootId: "fixture-root",
+        relativeScope: ".",
+      },
       enabled: true,
       intervalMilliseconds: 60_000,
       workflowInputVersion: "asset-refresh-input/1" as const,
@@ -10114,8 +10963,12 @@ describe("Asset Refresh acceptance", () => {
     const disabled: string[] = [];
     const automation = new AssetRefreshAutomation(
       {
-        async scanObservedScope() {
+        async scanAssetLibrary() {
           scans += 1;
+          return { parentExecutionId: "failed-by-typed-prerequisite" };
+        },
+        async inspect(executionId: string) {
+          expect(executionId).toBe("failed-by-typed-prerequisite");
           return {
             execution: {
               id: "failed-by-typed-prerequisite",
@@ -10166,8 +11019,12 @@ describe("Asset Refresh acceptance", () => {
 
   it("suppresses automatic work when a required Information Fulfillment child durably records an unavailable prerequisite", async () => {
     const intent = {
-      id: "unavailable-information-child",
-      scope: { observedRootId: "fixture-root", relativeScope: "." },
+      id: "modern-information-intent",
+      scope: {
+        assetLibraryId: "library-fixture",
+        observedRootId: "fixture-root",
+        relativeScope: ".",
+      },
       enabled: true,
       intervalMilliseconds: 60_000,
       workflowInputVersion: "asset-refresh-input/1" as const,
@@ -10175,110 +11032,169 @@ describe("Asset Refresh acceptance", () => {
       policyReferences: ["policy/1"],
       acceptTrusted: true,
     };
+    const parent = {
+      id: "modern-information-parent",
+      automationIntentId: intent.id,
+      status: "completed",
+      dispositions: [],
+    };
+    const requirement = {
+      metadataUsageContext: "asset.ordinary",
+      metadata: [{ property: "asset.awards", necessity: "required" as const }],
+      relationshipTypes: [],
+      artifactRoles: [],
+    };
+    const plan = {
+      operationId: "awards-operation",
+      subjectId: "accepted-subject",
+      sourceIdentity: "source",
+      operation: "source-refresh",
+      capability: {
+        kind: "source-collector",
+        capabilityId: "collector",
+        capabilityVersion: "1",
+        contractVersion: "1",
+        implementationVersion: "1",
+        identity: "source",
+      },
+      requirement,
+    };
+    let childStatus: "running" | "failed" = "failed";
     let scans = 0;
+    let registrations = 0;
+    let operationDisposition: "planned" | "registered" = "planned";
     const disabled: string[] = [];
+    const child = () => ({
+      id: "modern-information-child",
+      status: childStatus,
+      workflowInput: { parentExecutionId: parent.id },
+      dispositions:
+        childStatus === "failed"
+          ? [
+              {
+                key: "source-refresh",
+                status: "failed",
+                failureClassification: prerequisiteUnavailableFailure,
+              },
+            ]
+          : [],
+    });
     const automation = new AssetRefreshAutomation(
       {
-        async scanObservedScope() {
+        async scanAssetLibrary(input: { libraryId: string }) {
+          expect(input.libraryId).toBe("library-fixture");
           scans += 1;
-          return {
-            execution: {
-              id: "parent-scan",
-              status: "completed",
-              dispositions: [],
-            },
-            accepted: { entity: { id: "accepted-subject" } },
-          } as never;
+          return { parentExecutionId: parent.id };
         },
-        async fulfillInformation() {
-          return {
-            requirement: {
-              metadataUsageContext: "asset.ordinary",
-              metadata: [],
-              relationshipTypes: [],
-              artifactRoles: [],
-            },
-            subjects: [
-              {
-                subjectId: "accepted-subject",
-                status: "unavailable",
-                inputs: [
-                  {
-                    kind: "metadata",
-                    coordinate: "asset.awards",
-                    necessity: "required",
-                    status: "unavailable",
-                    executionReferences: [
-                      { workflowExecutionId: "information-child" },
-                    ],
-                  },
-                ],
-              },
-            ],
-          };
+        async inspect(executionId: string) {
+          expect(executionId).toBe(parent.id);
+          return { execution: parent };
+        },
+        async fulfillPreparedInformation(input: {
+          preparation: { subjects: readonly { plans: readonly unknown[] }[] };
+          initiation: { parentExecutionId: string; fromDurableLedger: boolean };
+        }) {
+          expect(input.initiation).toMatchObject({
+            parentExecutionId: parent.id,
+            fromDurableLedger: true,
+          });
+          expect(input.preparation.subjects[0]!.plans).toEqual([plan]);
+          registrations += 1;
+          operationDisposition = "registered";
+          return { requirement, subjects: [] };
         },
       } as never,
       {
         executionQueries: {
-          async inspectExecution(executionId) {
-            return executionId === "information-child"
-              ? ({
-                  execution: {
-                    id: executionId,
-                    status: "failed",
-                    dispositions: [
-                      {
-                        key: "source-refresh",
-                        status: "failed",
-                        failureClassification: prerequisiteUnavailableFailure,
-                      },
-                    ],
-                  },
-                } as never)
-              : undefined;
+          async inspectExecution(executionId: string) {
+            return executionId === child().id &&
+              operationDisposition === "registered"
+              ? { execution: child() }
+              : executionId === parent.id && scans > 0
+                ? { execution: parent }
+                : undefined;
+          },
+          async listExecutions() {
+            return scans === 0
+              ? []
+              : [
+                  parent,
+                  ...(operationDisposition === "registered" ? [child()] : []),
+                ];
+          },
+        },
+        libraryScanFulfillment: {
+          async inspectLibraryScanFulfillment(parentExecutionId: string) {
+            expect(parentExecutionId).toBe(parent.id);
+            return {
+              parentExecutionId,
+              stage: "planned",
+              plannerCoordinate: "information-planner@1/1",
+              subjects: [
+                {
+                  subjectId: "accepted-subject",
+                  disposition: "planned",
+                  requirement,
+                  operations: [
+                    {
+                      operationId: plan.operationId,
+                      subjectId: plan.subjectId,
+                      plan,
+                      disposition: operationDisposition,
+                      ...(operationDisposition === "registered"
+                        ? { childExecutionId: child().id }
+                        : {}),
+                    },
+                  ],
+                },
+              ],
+            };
           },
         },
         automationQueries: {
           async inspectAutomationIntent() {
-            return intent.enabled ? intent : { ...intent, enabled: false };
+            return intent;
           },
           async listAutomationIntents() {
             return [intent];
           },
         },
         automationCommands: {
-          async setAutomationIntentEnabled(_id, enabled, reason) {
+          async setAutomationIntentEnabled(
+            _id: string,
+            enabled: boolean,
+            reason?: string,
+          ) {
             disabled.push(reason ?? "");
-            (intent as { enabled: boolean }).enabled = enabled;
+            intent.enabled = enabled;
           },
           async releaseAutomationTrigger() {},
         },
         recognitionPolicyVersion: "policy/1",
         observedRootRegistrations: {} as never,
-        informationRequirementForAcceptedSubject() {
-          return {
-            metadataUsageContext: "asset.ordinary",
-            metadata: [
-              { property: "asset.awards", necessity: "required" as const },
-            ],
-            relationshipTypes: [],
-            artifactRoles: [],
-          };
-        },
       } as never,
     );
-
-    await automation.triggerDueAutomation();
-    await automation.triggerDueAutomation();
-
+    expect(registrations).toBe(0);
+    const first = await automation.triggerDueAutomation();
+    expect(first).toMatchObject([
+      { status: "started", execution: { execution: { id: parent.id } } },
+    ]);
+    expect(registrations).toBe(1);
+    expect(disabled).toEqual(["prerequisite-unavailable"]);
+    expect(await automation.triggerDueAutomation()).toEqual([]);
     expect(scans).toBe(1);
+    expect(registrations).toBe(1);
     expect(disabled).toEqual(["prerequisite-unavailable"]);
   });
 
   it("classifies a still-running Information Fulfillment child before a later due poll starts another parent", async () => {
     const intent = {
-      id: "asynchronous-information-child",
-      scope: { observedRootId: "fixture-root", relativeScope: "." },
+      id: "modern-information-intent",
+      scope: {
+        assetLibraryId: "library-fixture",
+        observedRootId: "fixture-root",
+        relativeScope: ".",
+      },
       enabled: true,
       intervalMilliseconds: 60_000,
       workflowInputVersion: "asset-refresh-input/1" as const,
@@ -10286,141 +11202,167 @@ describe("Asset Refresh acceptance", () => {
       policyReferences: ["policy/1"],
       acceptTrusted: true,
     };
-    let scans = 0;
-    let parentStarted = false;
-    let childStatus: "running" | "failed" = "running";
-    const disabled: string[] = [];
     const parent = {
-      id: "asynchronous-parent",
+      id: "modern-information-parent",
       automationIntentId: intent.id,
       status: "completed",
       dispositions: [],
     };
-    const child = {
-      id: "asynchronous-information-child-execution",
-      status: childStatus,
-      workflowInput: {
-        initiatedBy: `information-fulfillment:${parent.id}:accepted-subject`,
-      },
+    const requirement = {
+      metadataUsageContext: "asset.ordinary",
+      metadata: [{ property: "asset.awards", necessity: "required" as const }],
+      relationshipTypes: [],
+      artifactRoles: [],
     };
+    const plan = {
+      operationId: "awards-operation",
+      subjectId: "accepted-subject",
+      sourceIdentity: "source",
+      operation: "source-refresh",
+      capability: {
+        kind: "source-collector",
+        capabilityId: "collector",
+        capabilityVersion: "1",
+        contractVersion: "1",
+        implementationVersion: "1",
+        identity: "source",
+      },
+      requirement,
+    };
+    let childStatus: "running" | "failed" = "running";
+    let scans = 0;
+    let registrations = 0;
+    let operationDisposition: "planned" | "registered" = "planned";
+    const disabled: string[] = [];
+    const child = () => ({
+      id: "modern-information-child",
+      status: childStatus,
+      workflowInput: { parentExecutionId: parent.id },
+      dispositions:
+        childStatus === "failed"
+          ? [
+              {
+                key: "source-refresh",
+                status: "failed",
+                failureClassification: prerequisiteUnavailableFailure,
+              },
+            ]
+          : [],
+    });
     const automation = new AssetRefreshAutomation(
       {
-        async scanObservedScope() {
+        async scanAssetLibrary(input: { libraryId: string }) {
+          expect(input.libraryId).toBe("library-fixture");
           scans += 1;
-          parentStarted = true;
-          return {
-            execution: parent,
-            accepted: { entity: { id: "accepted-subject" } },
-          } as never;
+          return { parentExecutionId: parent.id };
         },
-        async fulfillInformation() {
-          return {
-            requirement: {
-              metadataUsageContext: "asset.ordinary",
-              metadata: [],
-              relationshipTypes: [],
-              artifactRoles: [],
-            },
-            subjects: [
-              {
-                subjectId: "accepted-subject",
-                status: "pending",
-                inputs: [
-                  {
-                    kind: "metadata",
-                    coordinate: "asset.awards",
-                    necessity: "required",
-                    status: "pending",
-                    executionReferences: [{ workflowExecutionId: child.id }],
-                  },
-                ],
-              },
-            ],
-          };
+        async inspect(executionId: string) {
+          expect(executionId).toBe(parent.id);
+          return { execution: parent };
+        },
+        async fulfillPreparedInformation(input: {
+          preparation: { subjects: readonly { plans: readonly unknown[] }[] };
+          initiation: { parentExecutionId: string; fromDurableLedger: boolean };
+        }) {
+          expect(input.initiation).toMatchObject({
+            parentExecutionId: parent.id,
+            fromDurableLedger: true,
+          });
+          expect(input.preparation.subjects[0]!.plans).toEqual([plan]);
+          registrations += 1;
+          operationDisposition = "registered";
+          return { requirement, subjects: [] };
         },
       } as never,
       {
         executionQueries: {
-          async inspectExecution(executionId) {
-            if (executionId === child.id)
-              return {
-                execution: {
-                  ...child,
-                  status: childStatus,
-                  dispositions:
-                    childStatus === "failed"
-                      ? [
-                          {
-                            key: "source-refresh",
-                            status: "failed",
-                            failureClassification:
-                              prerequisiteUnavailableFailure,
-                          },
-                        ]
-                      : [],
-                },
-              } as never;
-            return undefined;
+          async inspectExecution(executionId: string) {
+            return executionId === child().id &&
+              operationDisposition === "registered"
+              ? { execution: child() }
+              : executionId === parent.id && scans > 0
+                ? { execution: parent }
+                : undefined;
           },
           async listExecutions() {
-            return parentStarted
-              ? ([
+            return scans === 0
+              ? []
+              : [
                   parent,
-                  {
-                    ...child,
-                    status: childStatus,
-                    dispositions:
-                      childStatus === "failed"
-                        ? [
-                            {
-                              key: "source-refresh",
-                              status: "failed",
-                              failureClassification:
-                                prerequisiteUnavailableFailure,
-                            },
-                          ]
-                        : [],
-                  },
-                ] as never)
-              : ([] as never);
+                  ...(operationDisposition === "registered" ? [child()] : []),
+                ];
+          },
+        },
+        libraryScanFulfillment: {
+          async inspectLibraryScanFulfillment(parentExecutionId: string) {
+            expect(parentExecutionId).toBe(parent.id);
+            return {
+              parentExecutionId,
+              stage: "planned",
+              plannerCoordinate: "information-planner@1/1",
+              subjects: [
+                {
+                  subjectId: "accepted-subject",
+                  disposition: "planned",
+                  requirement,
+                  operations: [
+                    {
+                      operationId: plan.operationId,
+                      subjectId: plan.subjectId,
+                      plan,
+                      disposition: operationDisposition,
+                      ...(operationDisposition === "registered"
+                        ? { childExecutionId: child().id }
+                        : {}),
+                    },
+                  ],
+                },
+              ],
+            };
           },
         },
         automationQueries: {
           async inspectAutomationIntent() {
-            return intent.enabled ? intent : { ...intent, enabled: false };
+            return intent;
           },
           async listAutomationIntents() {
             return [intent];
           },
         },
         automationCommands: {
-          async setAutomationIntentEnabled(_id, enabled, reason) {
+          async setAutomationIntentEnabled(
+            _id: string,
+            enabled: boolean,
+            reason?: string,
+          ) {
             disabled.push(reason ?? "");
-            (intent as { enabled: boolean }).enabled = enabled;
+            intent.enabled = enabled;
           },
           async releaseAutomationTrigger() {},
         },
         recognitionPolicyVersion: "policy/1",
         observedRootRegistrations: {} as never,
-        informationRequirementForAcceptedSubject() {
-          return {
-            metadataUsageContext: "asset.ordinary",
-            metadata: [
-              { property: "asset.awards", necessity: "required" as const },
-            ],
-            relationshipTypes: [],
-            artifactRoles: [],
-          };
-        },
       } as never,
     );
-
-    await automation.triggerDueAutomation();
-    await automation.triggerDueAutomation();
-    childStatus = "failed";
-    await automation.triggerDueAutomation();
-
+    expect(registrations).toBe(0);
+    const first = await automation.triggerDueAutomation();
+    expect(first).toMatchObject([
+      { status: "started", execution: { execution: { id: parent.id } } },
+    ]);
+    expect(registrations).toBe(1);
+    expect(disabled).toEqual([]);
+    const waiting = await automation.triggerDueAutomation();
+    expect(waiting).toEqual([
+      { status: "skipped", reason: "信息履行仍在进行中" },
+    ]);
     expect(scans).toBe(1);
+    childStatus = "failed";
+    const unavailable = await automation.triggerDueAutomation();
+    expect(unavailable).toEqual([
+      { status: "skipped", reason: "自动刷新所需的前置条件当前不可用" },
+    ]);
+    expect(scans).toBe(1);
+    expect(registrations).toBe(1);
     expect(disabled).toEqual(["prerequisite-unavailable"]);
   });
 
@@ -10436,11 +11378,12 @@ describe("Asset Refresh acceptance", () => {
     });
     const automation = new AssetRefreshAutomation(
       {
-        async scanObservedScope() {
+        async scanAssetLibrary() {
           throw new Error("a rejected intent must not start a scan");
         },
       } as never,
       {
+        assetLibraries: fixtureAutomationLibraries("fixture-root"),
         executionQueries: {} as never,
         automationQueries: {} as never,
         automationCommands: {
@@ -10470,6 +11413,7 @@ describe("Asset Refresh acceptance", () => {
 
     await expect(
       automation.enableAutomation({
+        assetLibraryId: "library-fixture",
         observedRootId: "fixture-root",
         relativeScope: ".",
         intervalMilliseconds: 60_000,
@@ -10500,12 +11444,13 @@ describe("Asset Refresh acceptance", () => {
       });
       const automation = new AssetRefreshAutomation(
         {
-          async scanObservedScope() {
+          async scanAssetLibrary() {
             scanCalls += 1;
             return {} as never;
           },
         } as never,
         {
+          assetLibraries: fixtureAutomationLibraries("invalid-root"),
           executionQueries: {} as never,
           automationQueries: {} as never,
           automationCommands: {
@@ -10521,6 +11466,7 @@ describe("Asset Refresh acceptance", () => {
 
       await expect(
         automation.enableAutomation({
+          assetLibraryId: "library-fixture",
           observedRootId: "invalid-root",
           relativeScope: "../outside",
           intervalMilliseconds: 60_000,
@@ -10556,10 +11502,12 @@ describe("Asset Refresh acceptance", () => {
       ],
     };
     const subject = refreshFixture({
+      assetLibraryAutomation: true,
       automationInformationRequirement: requirement,
     });
 
     const enabled = await subject.workflow.enableAutomation({
+      assetLibraryId: "library-fixture",
       observedRootId: "fixture-root",
       relativeScope: ".",
       intervalMilliseconds: 60_000,
@@ -10769,7 +11717,15 @@ describe("Asset Refresh acceptance", () => {
       refreshFixtureObservedScope(subject.workflow, {
         directory: "/observed/work",
         acceptTrusted: true,
-        onCheckpoint(execution) {
+        onHostCheckpoint(execution) {
+          if (
+            !execution.workItems?.some(
+              (item) =>
+                item.sourceRecordIds.length > 0 &&
+                item.proposalId === undefined,
+            )
+          )
+            return;
           executionId = execution.id;
           throw new Error("freeze ordinary recovery checkpoint");
         },
@@ -10781,6 +11737,7 @@ describe("Asset Refresh acceptance", () => {
       execution: {
         ...durable.execution,
         stage: "recognition",
+        workItems: undefined,
         sourceRecordIds: [],
         dispositions: [
           ...durable.execution.dispositions.filter(
@@ -10848,8 +11805,16 @@ describe("Asset Refresh acceptance", () => {
       refreshFixtureObservedScope(subject.workflow, {
         directory: "/observed/work",
         acceptTrusted: true,
-        onCheckpoint(execution) {
-          if (execution.stage !== "source-records-retained") return;
+        onHostCheckpoint(execution) {
+          if (
+            !execution.workItems?.some(
+              (item) =>
+                item.sourceRecordIds.length > 0 &&
+                item.proposalId === undefined,
+            )
+          )
+            return;
+
           executionId = execution.id;
           throw new Error("simulated process interruption");
         },
@@ -10965,7 +11930,15 @@ describe("Asset Refresh acceptance", () => {
       refreshFixtureObservedScope(subject.workflow, {
         directory: "/observed/work",
         acceptTrusted: false,
-        onCheckpoint(execution) {
+        onHostCheckpoint(execution) {
+          if (
+            !execution.workItems?.some(
+              (item) =>
+                item.sourceRecordIds.length > 0 &&
+                item.proposalId === undefined,
+            )
+          )
+            return;
           executionId = execution.id;
           throw new Error("simulated process interruption");
         },
@@ -10994,7 +11967,15 @@ describe("Asset Refresh acceptance", () => {
         directory: "/observed/work",
         acceptTrusted: true,
         executionId,
-        onCheckpoint() {
+        onHostCheckpoint(execution) {
+          if (
+            !execution.workItems?.some(
+              (item) =>
+                item.sourceRecordIds.length > 0 &&
+                item.proposalId === undefined,
+            )
+          )
+            return;
           throw new Error(`simulated crash ${executionId}`);
         },
       });
@@ -11057,7 +12038,15 @@ describe("Asset Refresh acceptance", () => {
         directory: "/observed/work",
         acceptTrusted: true,
         informationRequirement: primaryCoverRequirement,
-        onCheckpoint(execution) {
+        onHostCheckpoint(execution) {
+          if (
+            !execution.workItems?.some(
+              (item) =>
+                item.sourceRecordIds.length > 0 &&
+                item.proposalId === undefined,
+            )
+          )
+            return;
           executionId = execution.id;
           throw new Error("simulated process interruption");
         },
@@ -11170,7 +12159,15 @@ describe("Asset Refresh acceptance", () => {
         directory: "/observed/work",
         acceptTrusted: true,
         informationRequirement: primaryCoverRequirement,
-        onCheckpoint(execution) {
+        onHostCheckpoint(execution) {
+          if (
+            !execution.workItems?.some(
+              (item) =>
+                item.sourceRecordIds.length > 0 &&
+                item.proposalId === undefined,
+            )
+          )
+            return;
           executionId = execution.id;
           throw new Error("simulated process interruption");
         },
@@ -11228,8 +12225,9 @@ describe("Asset Refresh acceptance", () => {
   });
 
   it("recovers interactive and automatic durable executions before polling new triggers", async () => {
-    const subject = refreshFixture();
+    const subject = refreshFixture({ assetLibraryAutomation: true });
     const enabled = await subject.workflow.enableAutomation({
+      assetLibraryId: "library-fixture",
       observedRootId: "fixture-root",
       relativeScope: ".",
       intervalMilliseconds: 60_000,
@@ -11241,8 +12239,15 @@ describe("Asset Refresh acceptance", () => {
         directory: "/observed/work",
         acceptTrusted: false,
         executionId: "interrupted-interactive",
-        onCheckpoint() {
-          throw new Error("simulated interactive process crash");
+        onHostCheckpoint(execution) {
+          if (
+            execution.workItems?.some(
+              (item) =>
+                item.sourceRecordIds.length > 0 &&
+                item.proposalId === undefined,
+            )
+          )
+            throw new Error("simulated interactive process crash");
         },
       }),
     ).rejects.toThrow("simulated interactive process crash");
@@ -11254,8 +12259,15 @@ describe("Asset Refresh acceptance", () => {
         automationIntentId: enabled.intent.id,
         trigger: "interval",
         requestedAt: "2026-07-29T00:00:00.000Z",
-        onCheckpoint() {
-          throw new Error("simulated automation process crash");
+        onHostCheckpoint(execution) {
+          if (
+            execution.workItems?.some(
+              (item) =>
+                item.sourceRecordIds.length > 0 &&
+                item.proposalId === undefined,
+            )
+          )
+            throw new Error("simulated automation process crash");
         },
       }),
     ).rejects.toThrow("simulated automation process crash");
@@ -11266,6 +12278,7 @@ describe("Asset Refresh acceptance", () => {
     await subject.workflow.disableAutomation(enabled.intent.id);
     const host = new AutomationHost(subject.workflow);
     await host.start();
+    await host.settled();
     host.stop();
     await expect(
       subject.workflow.inspect("interrupted-automation"),
@@ -11474,12 +12487,23 @@ function informationFulfillmentLifecycleFixture() {
         return [
           {
             subjectId: "subject",
-            metadata: [],
-            relationships: [],
-            artifactAssociations: [],
-            sourceAssociations: [
-              { id: "association", sourceIdentity: "source" },
-            ],
+            sourceArtifactCurrency: [],
+            basis: {
+              id: "subject",
+              metadata: [],
+              relationships: [],
+              artifactAssociations: [],
+              artifactRevisions: [],
+              blobs: [],
+              locations: [],
+              sourceAssociations: [
+                {
+                  id: "association",
+                  subjectId: "subject",
+                  sourceIdentity: "source",
+                },
+              ],
+            },
           },
         ];
       },
@@ -11637,19 +12661,25 @@ describe("Information fulfillment lifecycle", () => {
 });
 
 describe("Automation host", () => {
-  it("starts an immediate due poll, drives timer polls with an injected clock, and stops cleanly", async () => {
+  it("classifies startup recovery before the injected clock drives any due poll, and stops cleanly", async () => {
     let now = new Date("2026-07-29T00:00:00.000Z");
     let timer: (() => void) | undefined;
     let cleared = false;
     const calls: string[] = [];
     const host = new AutomationHost(
       {
-        async recoverRunningExecutions() {
-          calls.push("recover");
+        async classifyRunningExecutions() {
+          calls.push("classify");
           return [];
+        },
+        async continueRunningExecution() {
+          return undefined;
         },
         async triggerDueAutomation(current) {
           calls.push(`due:${current.toISOString()}`);
+          return [];
+        },
+        async reconcileTerminalFulfillment() {
           return [];
         },
       },
@@ -11672,18 +12702,20 @@ describe("Automation host", () => {
 
     await host.start();
     expect(host.running).toBe(true);
-    expect(calls).toEqual(["recover", "due:2026-07-29T00:00:00.000Z"]);
+    expect(host.recoveryReady).toBe(true);
+    expect(calls).toEqual(["classify"]);
     now = new Date("2026-07-29T00:00:00.250Z");
     timer?.();
     await host.settled();
     expect(calls).toEqual([
-      "recover",
-      "due:2026-07-29T00:00:00.000Z",
+      "classify",
+      "classify",
       "due:2026-07-29T00:00:00.250Z",
     ]);
 
     host.stop();
     expect(host.running).toBe(false);
+    expect(host.recoveryReady).toBe(false);
     expect(cleared).toBe(true);
     now = new Date("2026-07-29T00:00:00.500Z");
     timer?.();
@@ -11692,6 +12724,7 @@ describe("Automation host", () => {
   });
 
   it("passes the shared Host checkpoint request into an active interval execution", async () => {
+    let now = new Date("2026-07-29T00:00:00.000Z");
     let timer: (() => void) | undefined;
     let release!: () => void;
     const barrier = new Promise<void>((resolve) => {
@@ -11707,12 +12740,14 @@ describe("Automation host", () => {
     const executionHost = new ExecutionHost();
     const host = new AutomationHost(
       {
-        async recoverRunningExecutions() {
+        async classifyRunningExecutions() {
           return [];
+        },
+        async continueRunningExecution() {
+          return undefined;
         },
         async triggerDueAutomation(_now, lifecycle) {
           polls += 1;
-          if (polls === 1) return [];
           receivedLifecycle = lifecycle !== undefined;
           entered();
           await barrier;
@@ -11720,11 +12755,14 @@ describe("Automation host", () => {
           continuedAfterCheckpoint = true;
           return [];
         },
+        async reconcileTerminalFulfillment() {
+          return [];
+        },
       },
       {
         executionHost,
         clock: {
-          now: () => new Date("2026-07-29T00:00:00.000Z"),
+          now: () => now,
           setInterval(callback) {
             timer = callback;
             return "timer";
@@ -11735,8 +12773,10 @@ describe("Automation host", () => {
     );
 
     await host.start();
+    now = new Date("2026-07-29T00:00:02.000Z");
     timer?.();
     await intervalEntered;
+    expect(polls).toBe(1);
     expect(receivedLifecycle).toBe(true);
     host.stop();
     const closing = executionHost.close();
@@ -11749,12 +12789,18 @@ describe("Automation host", () => {
   it("can restart after its initial classification poll fails", async () => {
     let attempts = 0;
     const host = new AutomationHost({
-      async recoverRunningExecutions() {
+      async classifyRunningExecutions() {
         attempts += 1;
         if (attempts === 1) throw new Error("claim still busy");
         return [];
       },
+      async continueRunningExecution() {
+        return undefined;
+      },
       async triggerDueAutomation() {
+        return [];
+      },
+      async reconcileTerminalFulfillment() {
         return [];
       },
     });
@@ -11780,15 +12826,27 @@ describe("Automation host", () => {
     const executionHost = new ExecutionHost();
     const host = new AutomationHost(
       {
-        async recoverRunningExecutions(lifecycle) {
+        async classifyRunningExecutions() {
+          return [
+            {
+              executionId: "execution-recovered",
+              category: "continuable" as const,
+              subject: "崩溃前已开始的观察刷新",
+            },
+          ];
+        },
+        async continueRunningExecution(_executionId, lifecycle) {
           entered();
           await barrier;
           lifecycle?.onCheckpoint();
           continuedAfterCheckpoint = true;
-          return [];
+          return undefined;
         },
         async triggerDueAutomation() {
           dueCalls += 1;
+          return [];
+        },
+        async reconcileTerminalFulfillment() {
           return [];
         },
       },

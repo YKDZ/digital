@@ -48,15 +48,18 @@ it("无来源连接的本地作品按已部署的系列定义标注，重开后�
         ]),
       }),
     );
-    const registration = await workflow.observedRootRegistrations.create({
-      displayName: "本地作品",
-      containerPath: media,
-      readOnly: true,
-      symlinkMode: "do-not-follow",
-      allowedTargetRootIds: [],
+    // 合法前置：走公开资产库入口登记并授权该目录，注册本身从不自动等于授权。
+    const libraries = workflow.assetLibraries;
+    const library = await libraries.save({
+      displayName: "本地作品库",
+      directories: [media],
+      recognitionProfileIds: libraries.recognitionProfiles.map(
+        (profile) => profile.id,
+      ),
+      sourceIdentities: libraries.sources.map((source) => source.id),
     });
     const scan = await workflow.scanObservedScope({
-      registrationId: registration.id,
+      registrationId: library.rootIds[0]!,
       relativeScope: ".",
       acceptTrusted: false,
     });

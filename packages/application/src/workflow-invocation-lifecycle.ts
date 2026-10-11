@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 export type WorkflowInvocationLifecycle<Checkpoint> = {
   readonly onCheckpoint?: ((checkpoint: Checkpoint) => void) | undefined;
   readonly onHostCheckpoint?: ((checkpoint: Checkpoint) => void) | undefined;
@@ -29,13 +31,20 @@ export function rethrowWorkflowLifecycle(error: unknown): void {
   if (error instanceof WorkflowLifecycleInterruption) throw error;
 }
 
+// 内部目录新扫描和续跑都可能再次经过公开接缝：wrapper 须留到最外调用，
+// 父账本才能把生命周期中断与真正的目录失败分开。
+const publicWorkflowInvocation = new AsyncLocalStorage<boolean>();
+
 export async function atPublicWorkflowBoundary<Result>(
   operation: () => Promise<Result>,
 ): Promise<Result> {
-  try {
-    return await operation();
-  } catch (error) {
-    if (error instanceof WorkflowLifecycleInterruption) throw error.cause;
-    throw error;
-  }
+  if (publicWorkflowInvocation.getStore() === true) return await operation();
+  return await publicWorkflowInvocation.run(true, async () => {
+    try {
+      return await operation();
+    } catch (error) {
+      if (error instanceof WorkflowLifecycleInterruption) throw error.cause;
+      throw error;
+    }
+  });
 }

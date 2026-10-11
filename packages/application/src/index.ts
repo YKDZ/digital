@@ -170,6 +170,7 @@ import {
   groupMaterialScopeDeclarations,
   isWithinObservedDirectory,
   observedAddress,
+  memberMaterialAddresses,
   materialScopeDeclarationBaseline,
   materialScopeDeclarationsIntersect,
   reconcileRecognitionMaterialPlans,
@@ -7932,23 +7933,33 @@ function effectiveIdentityMemberMetadata(
       facts.map((fact) => [fact.accepted.entity.id, fact.accepted]),
     ).values(),
   ];
-  const metadata = accepted.flatMap((item) =>
-    item.metadata.flatMap((assertion) =>
-      assertion.target.kind === "entity" &&
-      memberIds.includes(assertion.target.entityId)
-        ? [
-            {
-              ...assertion,
-              target: { kind: "entity" as const, entityId: representativeId },
-            },
-          ]
-        : [],
-    ),
+  const metadata = [
+    ...new Map(
+      facts.flatMap((fact) =>
+        fact.accepted.metadata.map(
+          (assertion) =>
+            [
+              JSON.stringify(canonicalIntegrityValue(assertion)),
+              assertion,
+            ] as const,
+        ),
+      ),
+    ).values(),
+  ].flatMap((assertion) =>
+    assertion.target.kind === "entity" &&
+    memberIds.includes(assertion.target.entityId)
+      ? [
+          {
+            ...assertion,
+            target: { kind: "entity" as const, entityId: representativeId },
+          },
+        ]
+      : [],
   );
   const sourceRecords = [
     ...new Map(
-      accepted
-        .flatMap((item) => item.metadataSourceRecords ?? [])
+      facts
+        .flatMap(({ accepted: item }) => item.metadataSourceRecords ?? [])
         .map((record) => [record.id, record]),
     ).values(),
   ];
@@ -11333,136 +11344,143 @@ export class AssetRefreshWorkflow {
         }
       | undefined;
   }): Promise<LibraryScanRun> {
-    const libraries = this.ports.assetLibraries;
-    if (libraries === undefined) throw new Error("当前部署没有资产库配置");
-    const automation = input.automation;
-    const frozen = await libraries.freezeLibraryScan(input.libraryId);
-    const snapshot = frozen.snapshot;
-    const candidates =
-      automation === undefined
-        ? frozen.candidates
-        : frozen.candidates.filter(
-            (candidate) => candidate.id === automation.observedRootId,
+    return await atPublicWorkflowBoundary(async () => {
+      const libraries = this.ports.assetLibraries;
+      if (libraries === undefined) throw new Error("当前部署没有资产库配置");
+      const automation = input.automation;
+      const frozen = await libraries.freezeLibraryScan(input.libraryId);
+      const snapshot = frozen.snapshot;
+      const candidates =
+        automation === undefined
+          ? frozen.candidates
+          : frozen.candidates.filter(
+              (candidate) => candidate.id === automation.observedRootId,
+            );
+      if (candidates.length === 0) {
+        if (automation !== undefined)
+          throw new ObservedRootUnavailable(
+            "该目录已不在此资产库中，请重新设置",
           );
-    if (candidates.length === 0) {
-      if (automation !== undefined)
-        throw new ObservedRootUnavailable("该目录已不在此资产库中，请重新设置");
-      throw new Error("资产库没有配置可扫描的目录");
-    }
-    if (automation !== undefined && candidates[0]?.unavailable !== undefined)
-      throw new ObservedRootUnavailable(
-        candidates[0].unavailable === "inactive"
-          ? "该目录已停用，无法自动刷新"
-          : "该目录当前不可观察，请检查后重试",
+        throw new Error("资产库没有配置可扫描的目录");
+      }
+      if (automation !== undefined && candidates[0]?.unavailable !== undefined)
+        throw new ObservedRootUnavailable(
+          candidates[0].unavailable === "inactive"
+            ? "该目录已停用，无法自动刷新"
+            : "该目录当前不可观察，请检查后重试",
+        );
+      const plan = planLibraryScanDirectories({
+        assetLibraryId: snapshot.id,
+        configVersion: snapshot.configVersion,
+        roots: candidates,
+      });
+      const scoped: LibraryScanPlan =
+        automation === undefined || automation.relativeScope === "."
+          ? plan
+          : {
+              ...plan,
+              // 意图的有限范围只落到它自己的目录条目，绝不放宽成整库观察。
+              directories: plan.directories.map((directory) =>
+                directory.mode === "execute" &&
+                directory.unavailable === undefined
+                  ? { ...directory, relativeScope: automation.relativeScope }
+                  : directory,
+              ),
+            };
+      const frozenRoots =
+        automation === undefined
+          ? frozen.frozenRoots
+          : frozen.frozenRoots.filter(
+              (root) => root.id === automation.observedRootId,
+            );
+      const directoryAuthorizations =
+        automation === undefined
+          ? frozen.directoryAuthorizations
+          : frozen.directoryAuthorizations.filter(
+              (entry) => entry.observedRootId === automation.observedRootId,
+            );
+      const parent: WorkflowExecution = {
+        id: id("execution"),
+        workflowInput: {
+          version: "asset-refresh-input/1",
+          trigger: automation?.trigger ?? "interactive",
+          initiatedBy:
+            input.initiatedBy?.trim() ||
+            (automation === undefined
+              ? "interactive"
+              : `automation:${automation.intentId}`),
+          acceptTrusted: input.acceptTrusted,
+          configurationReferences:
+            automation === undefined
+              ? [
+                  `asset-library/${snapshot.id}/config/${snapshot.configVersion}`,
+                ]
+              : [...automation.policyReferences],
+          assetLibrary: snapshot,
+          libraryScan: scoped,
+          // 冻结的可用观察根权威随父耐久写下；续跑与目录子都只重绑这一份快照。
+          observedRoots: frozenRoots,
+          // 本票的目录授权账目同样只冻结一次：后续每个效果、提交与恢复都复核这一份，
+          // 而不是回看今天的库配置。周期意图只带走它自己那一条目录授权。
+          directoryAuthorizations,
+        },
+        selection: {
+          intent: "scan-now",
+          informationRequirement:
+            input.informationRequirement ?? emptyInformationRequirement,
+        },
+        operationKind: "scan-asset-library",
+        filesystemSnapshots: [],
+        status: "running",
+        stage: "recognition",
+        sourceRecordIds: [],
+        compatibility: this.compatibility(),
+        dispositions: [{ key: "library-scan-directories", status: "running" }],
+        ...(automation === undefined
+          ? {}
+          : { automationIntentId: automation.intentId }),
+      };
+      const directoryRecords = scoped.directories.map(
+        libraryScanDirectoryFromPlan,
       );
-    const plan = planLibraryScanDirectories({
-      assetLibraryId: snapshot.id,
-      configVersion: snapshot.configVersion,
-      roots: candidates,
-    });
-    const scoped: LibraryScanPlan =
-      automation === undefined || automation.relativeScope === "."
-        ? plan
-        : {
-            ...plan,
-            // 意图的有限范围只落到它自己的目录条目，绝不放宽成整库观察。
-            directories: plan.directories.map((directory) =>
-              directory.mode === "execute" &&
-              directory.unavailable === undefined
-                ? { ...directory, relativeScope: automation.relativeScope }
-                : directory,
-            ),
-          };
-    const frozenRoots =
-      automation === undefined
-        ? frozen.frozenRoots
-        : frozen.frozenRoots.filter(
-            (root) => root.id === automation.observedRootId,
-          );
-    const directoryAuthorizations =
-      automation === undefined
-        ? frozen.directoryAuthorizations
-        : frozen.directoryAuthorizations.filter(
-            (entry) => entry.observedRootId === automation.observedRootId,
-          );
-    const parent: WorkflowExecution = {
-      id: id("execution"),
-      workflowInput: {
-        version: "asset-refresh-input/1",
-        trigger: automation?.trigger ?? "interactive",
-        initiatedBy:
-          input.initiatedBy?.trim() ||
-          (automation === undefined
-            ? "interactive"
-            : `automation:${automation.intentId}`),
+      const disposition = await this.ports.executionCommands.createLibraryScan({
+        execution: parent,
+        directories: directoryRecords,
+        ...(automation === undefined
+          ? {}
+          : { requestedAt: automation.requestedAt }),
+        // 批次壳只在自动化父且部署接好了账本时与现代父同事务落下：它的存在与否就是现代父与
+        // 历史无规划父的耐久分界，普通扫描与旧库因此保持原样。
+        ...(automation === undefined ||
+        this.ports.libraryScanFulfillment === undefined
+          ? {}
+          : {
+              fulfillmentPlannerCoordinate:
+                automatedInformationPlannerCoordinate(
+                  this.ports.informationPlanner,
+                ),
+            }),
+      });
+      if (disposition !== "started")
+        throw new AutomationExecutionNotStarted(disposition);
+      input.onExecutionStarted?.(parent);
+      return await this.executeLibraryScanDirectories({
+        parent,
+        snapshot,
+        plan: scoped,
+        frozenRoots,
+        ledger: directoryRecords,
         acceptTrusted: input.acceptTrusted,
-        configurationReferences:
-          automation === undefined
-            ? [`asset-library/${snapshot.id}/config/${snapshot.configVersion}`]
-            : [...automation.policyReferences],
-        assetLibrary: snapshot,
-        libraryScan: scoped,
-        // 冻结的可用观察根权威随父耐久写下；续跑与目录子都只重绑这一份快照。
-        observedRoots: frozenRoots,
-        // 本票的目录授权账目同样只冻结一次：后续每个效果、提交与恢复都复核这一份，
-        // 而不是回看今天的库配置。周期意图只带走它自己那一条目录授权。
-        directoryAuthorizations,
-      },
-      selection: {
-        intent: "scan-now",
-        informationRequirement:
-          input.informationRequirement ?? emptyInformationRequirement,
-      },
-      operationKind: "scan-asset-library",
-      filesystemSnapshots: [],
-      status: "running",
-      stage: "recognition",
-      sourceRecordIds: [],
-      compatibility: this.compatibility(),
-      dispositions: [{ key: "library-scan-directories", status: "running" }],
-      ...(automation === undefined
-        ? {}
-        : { automationIntentId: automation.intentId }),
-    };
-    const directoryRecords = scoped.directories.map(
-      libraryScanDirectoryFromPlan,
-    );
-    const disposition = await this.ports.executionCommands.createLibraryScan({
-      execution: parent,
-      directories: directoryRecords,
-      ...(automation === undefined
-        ? {}
-        : { requestedAt: automation.requestedAt }),
-      // 批次壳只在自动化父且部署接好了账本时与现代父同事务落下：它的存在与否就是现代父与
-      // 历史无规划父的耐久分界，普通扫描与旧库因此保持原样。
-      ...(automation === undefined ||
-      this.ports.libraryScanFulfillment === undefined
-        ? {}
-        : {
-            fulfillmentPlannerCoordinate: automatedInformationPlannerCoordinate(
-              this.ports.informationPlanner,
-            ),
-          }),
-    });
-    if (disposition !== "started")
-      throw new AutomationExecutionNotStarted(disposition);
-    input.onExecutionStarted?.(parent);
-    return await this.executeLibraryScanDirectories({
-      parent,
-      snapshot,
-      plan: scoped,
-      frozenRoots,
-      ledger: directoryRecords,
-      acceptTrusted: input.acceptTrusted,
-      ...(input.informationRequirement === undefined
-        ? {}
-        : { informationRequirement: input.informationRequirement }),
-      ...(input.onProgress === undefined
-        ? {}
-        : { onProgress: input.onProgress }),
-      ...(input.onHostCheckpoint === undefined
-        ? {}
-        : { onHostCheckpoint: input.onHostCheckpoint }),
+        ...(input.informationRequirement === undefined
+          ? {}
+          : { informationRequirement: input.informationRequirement }),
+        ...(input.onProgress === undefined
+          ? {}
+          : { onProgress: input.onProgress }),
+        ...(input.onHostCheckpoint === undefined
+          ? {}
+          : { onHostCheckpoint: input.onHostCheckpoint }),
+      });
     });
   }
 
@@ -13866,9 +13884,35 @@ export class AssetRefreshWorkflow {
     // 交付载体只负责把尚未落到原主体上的材料并进当前事实。原 MKV 已是主体的既有观察
     // 位置，snapshot-local 语义下重扫会重新铸成第二个 artifact，因此交付快照与关联/修订
     // 只含未交付项，让 rangeRecognition 恰好贡献这些新增，避免重复材料。
+    // 只有同一登记范围内的既有材料才已交付；同址新登记仍须形成自己的材料身份。
+    const retainedMaterialAddresses = new Set(
+      namedDeclaration.members
+        .filter((member) =>
+          frozen.boundaries!.some(
+            (boundary) =>
+              boundary.scopeReference === member.boundary.scopeReference,
+          ),
+        )
+        .flatMap((member) => memberMaterialAddresses(member, selectedSnapshot)),
+    );
+    const deliveredArtifactIds = new Set(
+      target.accepted.artifactAssociations
+        .filter(
+          (association) =>
+            association.target.kind === "entity" &&
+            association.target.entityId === assetId &&
+            association.role === "asset.material-delivered",
+        )
+        .map((association) => association.artifactId),
+    );
     const deliveredAddresses = new Set(
       target.accepted.locations
-        .filter((location) => location.kind === "observed")
+        .filter(
+          (location) =>
+            location.kind === "observed" &&
+            deliveredArtifactIds.has(location.artifactId) &&
+            retainedMaterialAddresses.has(location.address),
+        )
         .map((location) => location.address),
     );
     const deliveryReferences = materialReferences.filter(
@@ -14690,13 +14734,13 @@ export class AssetRefreshWorkflow {
             .map(({ id: sourceRecordId }) => sourceRecordId),
     );
     const retainedBySourceChange = <
-      T extends { sourceRecordIds: readonly string[] },
+      T extends { sourceRecordIds?: readonly string[] },
     >(
       values: readonly T[],
     ) =>
       values.filter(
         ({ sourceRecordIds }) =>
-          !sourceRecordIds.some((sourceRecordId) =>
+          !(sourceRecordIds ?? []).some((sourceRecordId) =>
             predecessorRecordIds.has(sourceRecordId),
           ),
       );
@@ -18551,8 +18595,66 @@ export class AssetRefreshWorkflow {
           previousEvidence.length === 0 || baseline === undefined
             ? undefined
             : inspectedRevisionCoordinates(previousEvidence, baseline.root);
+        // 同字节的本地部件仍受其实际获取器的完整坐标约束。只重派生本次需求确实
+        // 消费、且当前父位置/locator/角色精确对应的部件；纯来源刷新不因此重取材料。
+        const partProposal = attachObservedFormatFacts(
+          {
+            id: id("recognition-proposal"),
+            boundaries: retained.accepted.recognitionDecision.boundaries,
+            observedArtifactAssociations: localAssociations,
+            basis: {
+              kind: "accepted-boundary",
+              recognitionDecisionId: retained.accepted.recognitionDecision.id,
+              observationSnapshotId: requiredFilesystemSnapshot(initial).id,
+              evidence: plan.evidence,
+              materialReferences: plan.relativePaths,
+            },
+            ruleResults: [],
+          },
+          plan.evidence,
+        );
+        const changedPartReferences = new Set(
+          selectObservedArtifactParts(
+            partProposal,
+            withObservedMaterialImageRequirement(requirement),
+          )
+            .filter((candidate) => {
+              const acquirer = this.ports.observedArtifactPartAcquirers?.find(
+                (item) => item.canAcquire(candidate),
+              );
+              if (acquirer === undefined) return false;
+              const parentAddress =
+                requiredFilesystemSnapshot(initial).root +
+                "/" +
+                candidate.observedArtifactReference;
+              return retained.accepted.artifactAssociations.some(
+                (association) =>
+                  association.role ===
+                    observedArtifactPartAssociationRole(
+                      partProposal,
+                      candidate,
+                    ) &&
+                  association.observedArtifactPart?.locator ===
+                    candidate.locator &&
+                  retained.accepted.locations.some(
+                    (location) =>
+                      location.kind === "observed" &&
+                      location.address === parentAddress &&
+                      location.artifactId ===
+                        association.observedArtifactPart?.artifactId,
+                  ) &&
+                  (association.producer === undefined ||
+                    !sameCapabilityCoordinate(
+                      association.producer,
+                      acquirer.capability,
+                    )),
+              );
+            })
+            .map((candidate) => candidate.observedArtifactReference),
+        );
         const changed =
           baseline === undefined ||
+          (refreshesHeadDecision && changedPartReferences.size > 0) ||
           // 冻结坐标属于正在刷新的那份决定：追加范围的比较只看该决定自己那次观察里
           // 的文件事实，绝不借主身份的运行坐标把未变的追加材料误判成需要修订。
           (refreshesHeadDecision &&
@@ -18672,6 +18774,7 @@ export class AssetRefreshWorkflow {
                   const previousFacts = baselineRevisionFacts.get(reference);
                   const currentFacts = currentRevisionFacts.get(reference);
                   return (
+                    changedPartReferences.has(reference) ||
                     file === undefined ||
                     previous === undefined ||
                     file.size !== previous.size ||
@@ -24065,6 +24168,7 @@ export class AssetRefreshWorkflow {
 
 type AssetRefreshAutomationOperations = Pick<
   AssetRefreshWorkflow,
+  | "inspectAssetLibraryScan"
   | "scanAssetLibrary"
   | "inspect"
   | "recoverRunningExecutions"
@@ -24273,8 +24377,15 @@ export class AssetRefreshAutomation {
       const reconciliation = await this.reconcileParentInformation(
         run.parentExecutionId,
       );
+      const scan =
+        execution.execution.operationKind === "scan-asset-library"
+          ? await this.workflow.inspectAssetLibraryScan(run.parentExecutionId)
+          : undefined;
       const hasUnavailablePrerequisite =
         executionHasUnavailablePrerequisite(execution.execution) ||
+        scan?.directories.some((directory) =>
+          directory.workItems.some(workFailureIsPrerequisiteUnavailable),
+        ) === true ||
         reconciliation.hasUnavailablePrerequisite;
       if (trigger !== "scan-now" && hasUnavailablePrerequisite) {
         await this.ports.automationCommands.setAutomationIntentEnabled(

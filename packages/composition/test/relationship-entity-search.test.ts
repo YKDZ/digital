@@ -24,15 +24,18 @@ async function admitBook(
 ) {
   const root = await mkdtemp(path.join(tmpdir(), "digital-search-media-"));
   await writeFile(path.join(root, "book.txt"), `${name} 正文`);
-  const registration = await workflow.observedRootRegistrations.create({
+  // 每次收纳都通过公开资产库入口取得该目录授权：登记本身不构成读取权威。
+  const libraries = workflow.assetLibraries;
+  const library = await libraries.save({
     displayName: name,
-    containerPath: root,
-    readOnly: true,
-    symlinkMode: "do-not-follow",
-    allowedTargetRootIds: [],
+    directories: [root],
+    recognitionProfileIds: libraries.recognitionProfiles.map(
+      (profile) => profile.id,
+    ),
+    sourceIdentities: libraries.sources.map((source) => source.id),
   });
   const scan = await workflow.scanObservedScope({
-    registrationId: registration.id,
+    registrationId: library.rootIds[0]!,
     relativeScope: ".",
     acceptTrusted: false,
   });

@@ -1,9 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { readFile, rm } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync, constants as sqliteConstants } from "node:sqlite";
 
 import {
+  AssetLibraries,
   AssetRefreshAutomation,
   AssetRefreshWorkflow,
   attachAssetRefreshAutomation,
@@ -14,11 +15,16 @@ import {
   type SourceEnrichmentCheckpoint,
   type WorkflowExecution,
 } from "@digital/application";
-import { DlsiteExactDirectoryInterpreter } from "@digital/dlsite";
-import type {
-  AcceptedRecognition,
-  SourceInterpretationBatch,
-  SourceRecord,
+import {
+  DlsiteExactDirectoryInterpreter,
+  DlsiteLocalSourceCandidateInterpreter,
+} from "@digital/dlsite";
+import {
+  validateReevaluatedRecognition,
+  type AcceptedRecognition,
+  type RecognitionMaterialBoundary,
+  type SourceInterpretationBatch,
+  type SourceRecord,
 } from "@digital/domain";
 import { OmdbCollector, OmdbSourceInterpreter } from "@digital/omdb";
 import { SqliteCatalogue } from "@digital/sqlite";
@@ -35,6 +41,7 @@ import {
 } from "@digital/tmdb";
 import { afterAll, afterEach, expect, it, vi } from "vitest";
 
+import { runProduct } from "../src/index.ts";
 import { composeAssetRefresh } from "../src/runtime.ts";
 import {
   disposePreparedCatalogueTemplate,
@@ -42,6 +49,27 @@ import {
 } from "./prepared-catalogue.ts";
 
 const cleanup: string[] = [];
+
+/**
+ * 识别材料范围自 160b269「完成资产库内容发现与共同生效读取」起是领域必填声明：
+ * `packages/domain/src/index.ts:345`（Proposal）、`:727`（Decision），校验入口
+ * `validateAcceptedRecognition`（`packages/domain/src/index.ts:1651`）要求非空，
+ * 且提案与决定的范围必须一致（`packages/domain/src/index.ts:1815`）。
+ * 本夹具经公开 `SqliteCatalogue.acceptRecognition` 直接写入目录，不来自真实观察根扫描，
+ * 因此按夹具实际采用的材料坐标如实声明一个离散范围；未绑定观察根的 `scopeReference`
+ * 在生产读取里被跳过（`packages/sqlite/src/index.ts:16029`），不伪造任何范围授权。
+ */
+function fixtureMaterialBoundaries(
+  materialReferences: readonly string[],
+): readonly RecognitionMaterialBoundary[] {
+  return [
+    {
+      kind: "discrete",
+      scopeReference: "composition-fixture-scope",
+      materialReferences,
+    },
+  ];
+}
 
 function sourceEnrichmentAuthority(
   associationId: string,
@@ -95,35 +123,53 @@ function instrumentedObservedRootRegistration(
 
 function instrumentedObservedRootRegistrations(
   filesystemOptions?: InMemoryObservedFilesystemOptions,
-): Pick<
-  ObservedRootRegistrations,
-  | "resolveActiveScope"
-  | "rebindFrozenScope"
-  | "assertFrozenRootsCurrent"
-  | "capability"
-  | "objectIdentityContract"
-  | "observeBoundScope"
-  | "openBoundByteSource"
-  | "closeBoundScope"
-  | "reportCleanupFailure"
-> {
+) {
+  const directories = [
+    ["manual", "/observed/manual"],
+    ["automatic", "/observed/automatic"],
+    ["RJ01668691", "/observed/RJ01668691"],
+    ["same-title-a", "/observed/same-title-a"],
+    ["same-title-b", "/observed/same-title-b"],
+  ];
   const store =
     new InMemoryObservedRootRegistrationStore<ObservedRootRegistration>(
-      [
-        ["manual", "/observed/manual"],
-        ["automatic", "/observed/automatic"],
-        ["RJ01668691", "/observed/RJ01668691"],
-        ["same-title-a", "/observed/same-title-a"],
-        ["same-title-b", "/observed/same-title-b"],
-      ].map(([id, logicalDirectory]) =>
+      directories.map(([id, logicalDirectory]) =>
         instrumentedObservedRootRegistration(id, logicalDirectory),
       ),
+      {
+        libraries: [
+          {
+            id: "library-instrumented",
+            status: "active" as const,
+            rootIds: directories.map(([id]) => id),
+          },
+        ],
+      },
     );
   const cleanupReporter = new InMemoryObservedRootCleanupReporter();
   return new ObservedRootRegistrations({
     commands: store.commands,
     queries: store.queries,
-    filesystem: new InMemoryObservedFilesystemCapability(filesystemOptions),
+    filesystem: new InMemoryObservedFilesystemCapability(
+      filesystemOptions ?? {
+        async observe({ scope }) {
+          return {
+            id: `instrumented-${scope.logicalLocation}-snapshot`,
+            root: scope.logicalLocation,
+            complete: true,
+            excluded: [],
+            files: [
+              {
+                relativePath: "instrumented-dlsite.wav",
+                size: 4,
+                modifiedAt: "2026-08-02T00:00:00.000Z",
+              },
+            ],
+            observedAt: "2026-08-02T00:00:00.000Z",
+          };
+        },
+      },
+    ),
     productDataDirectory: "/product-data",
     managedArtifactDirectory: "/product-data/managed-artifacts",
     cleanupFailureReporter: cleanupReporter,
@@ -152,11 +198,16 @@ async function scanInstrumentedObservedScope(
   > & { readonly directory: string },
 ) {
   const { directory, ...request } = input;
-  return await workflow.scanObservedScope({
+  const result = await workflow.scanObservedScope({
     registrationId: instrumentedRegistrationId(directory),
     relativeScope: ".",
     ...request,
   });
+  const accepted = (result.itemResults ?? []).flatMap((item) =>
+    item.accepted === undefined ? [] : [item.accepted],
+  );
+  expect(accepted.length).toBeLessThanOrEqual(1);
+  return { ...result, accepted: result.accepted ?? accepted[0] };
 }
 
 async function declaredPackageExports(
@@ -270,6 +321,41 @@ it("commits one validated recognition adoption without direct DatabaseSync queri
 it("reopens and enumerates an observed-evidence recognition without a source association", async () => {
   const root = await preparedCatalogueRoot();
   cleanup.push(root);
+  const media = root + "-observed";
+  cleanup.push(media);
+  await mkdir(media);
+  const firstBytes = new Uint8Array([1]);
+  const secondBytes = new Uint8Array([1, 2]);
+  await writeFile(path.join(media, "book.epub"), firstBytes);
+  const product = runProduct(
+    { productDataDirectory: root, environment: {} },
+    { start: (application) => application },
+  );
+  const library = await product.result.workflow.assetLibraries.save({
+    displayName: "本地出版物识别夹具",
+    directories: [media],
+    recognitionProfileIds:
+      product.result.workflow.assetLibraries.recognitionProfiles.map(
+        ({ id }) => id,
+      ),
+    sourceIdentities: [],
+  });
+  const observed = await product.result.workflow.scanObservedScope({
+    registrationId: library.rootIds[0]!,
+    relativeScope: ".",
+    acceptTrusted: false,
+  });
+  const firstSnapshot = observed.execution.snapshot!;
+  const firstDigest = sha256(firstBytes);
+  const firstRevisionId =
+    "artifact-revision_" +
+    sha256(new TextEncoder().encode("local-epub-artifact\u0000" + firstDigest));
+  const secondDigest = sha256(secondBytes);
+  const secondRevisionId =
+    "artifact-revision_" +
+    sha256(
+      new TextEncoder().encode("local-epub-artifact\u0000" + secondDigest),
+    );
   const catalogue = SqliteCatalogue.forProductData(root);
   const producer = {
     capabilityId: "epub-inspector",
@@ -279,7 +365,7 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
   const revision = {
     observedArtifactReference: "book.epub",
     blob: {
-      digest: "epub-digest",
+      digest: firstDigest,
       mediaType: "application/epub+zip",
       byteLength: 1,
     },
@@ -299,12 +385,20 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
   };
   const proposal = {
     id: "local-proposal",
+    boundaries: [
+      {
+        kind: "discrete" as const,
+        scopeReference: library.rootIds[0]!,
+        materialReferences: ["book.epub"],
+      },
+    ],
     basis: {
       kind: "observed-evidence" as const,
       producer,
       evidence: [evidence],
       artifactRevisions: [revision],
     },
+    observedArtifactRevisions: [revision],
     observedArtifactAssociations: [
       {
         observedArtifactReference: revision.observedArtifactReference,
@@ -331,6 +425,7 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
       id: "local-decision",
       proposalId: proposal.id,
       assetId: "local-asset",
+      boundaries: proposal.boundaries,
       acceptedRuleResults: proposal.ruleResults,
     },
     artifacts: [{ id: "local-epub-artifact" }],
@@ -338,14 +433,14 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
       {
         id: "local-epub-location",
         artifactId: "local-epub-artifact",
-        address: "/observed/RJ01668691/book.epub",
+        address: path.join(media, "book.epub"),
         kind: "observed",
       },
     ],
     blobs: [revision.blob],
     artifactRevisions: [
       {
-        id: "local-epub-revision",
+        id: firstRevisionId,
         artifactId: "local-epub-artifact",
         blobDigest: revision.blob.digest,
         producer,
@@ -381,6 +476,11 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
   const running = {
     ...runningExecution(),
     id: "local-execution",
+    sourceRecordIds: [],
+    selection: { directory: media },
+    snapshot: firstSnapshot,
+    workflowInput: observed.execution.workflowInput,
+    resolvedSelection: observed.execution.resolvedSelection,
     reusePlan,
     compatibility,
   };
@@ -393,13 +493,48 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
       outcome: "accepted",
       proposalId: proposal.id,
       acceptedAssetId: accepted.entity.id,
+      workItems: [
+        {
+          key: "local-book",
+          relativePaths: ["book.epub"],
+          stage: "completed",
+          status: "completed",
+          outcome: "accepted",
+          proposalId: proposal.id,
+          acceptedAssetId: accepted.entity.id,
+        },
+      ],
     },
     accepted,
+    observedMaterialAcceptances: [
+      {
+        workItemKey: "local-book",
+        acceptanceKind: "a-work-item",
+        proposalId: proposal.id,
+        assetId: accepted.entity.id,
+        artifactId: "local-epub-artifact",
+        locationId: "local-epub-location",
+        associationId: "local-epub-association",
+        snapshotId: running.snapshot.id,
+        observedReference: "book.epub",
+        materialKind: "file",
+      },
+    ],
   });
+  const selectionId = await product.result.observedFileSelectionForLocation(
+    "local-epub-location",
+  );
+  await expect(
+    product.result.confirmObservedFileRevision({
+      observedFileSelectionId: selectionId!,
+      assetLibraryId: library.id,
+    }),
+  ).resolves.toEqual({ artifactRevisionId: firstRevisionId });
   catalogue.close();
+  await product.close();
 
   const reopened = SqliteCatalogue.forProductData(root);
-  await expect(reopened.inspectExecution(running.id)).resolves.toMatchObject({
+  expect(await reopened.inspectExecution(running.id)).toMatchObject({
     accepted: {
       entity: { id: "local-asset" },
       proposal: { basis: { kind: "observed-evidence" } },
@@ -427,7 +562,7 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
         observedArtifactReference: "book.epub",
         artifactId: "local-epub-artifact",
         locationId: "local-epub-location",
-        revisionId: "local-epub-revision",
+        revisionId: firstRevisionId,
         associationId: "local-epub-association",
       },
     ]),
@@ -443,10 +578,21 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
       ],
     },
   ]);
+  await writeFile(path.join(media, "book-second.epub"), secondBytes);
+  const nextProduct = runProduct(
+    { productDataDirectory: root, environment: {} },
+    { start: (application) => application },
+  );
+  const nextObservation = await nextProduct.result.workflow.scanObservedScope({
+    registrationId: library.rootIds[0]!,
+    relativeScope: ".",
+    acceptTrusted: false,
+  });
+  await nextProduct.close();
   const nextRevision = {
     ...revision,
     observedArtifactReference: "book-second.epub",
-    blob: { ...revision.blob, digest: "epub-digest-2", byteLength: 2 },
+    blob: { ...revision.blob, digest: secondDigest, byteLength: 2 },
   };
   const nextEvidence = {
     ...evidence,
@@ -459,6 +605,7 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
   const nextProposal = {
     ...proposal,
     id: "local-proposal-2",
+    observedArtifactRevisions: [nextRevision],
     observedArtifactAssociations: [
       {
         observedArtifactReference: nextRevision.observedArtifactReference,
@@ -475,7 +622,14 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
       evidence: [nextEvidence],
     })),
   };
-  const reevaluation = { ...runningExecution(), id: "local-reevaluation" };
+  const reevaluation = {
+    ...runningExecution(),
+    id: "local-reevaluation",
+    selection: { directory: media },
+    snapshot: nextObservation.execution.snapshot,
+    workflowInput: nextObservation.execution.workflowInput,
+    resolvedSelection: nextObservation.execution.resolvedSelection,
+  };
   await reopened.createExecution(reevaluation);
   const nextAccepted: AcceptedRecognition = {
     ...current,
@@ -485,14 +639,14 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
       {
         id: "local-epub-location-2",
         artifactId: "local-epub-artifact",
-        address: "/observed/RJ01668691/book-second.epub",
+        address: path.join(media, "book-second.epub"),
         kind: "observed",
       },
     ],
     blobs: [nextRevision.blob],
     artifactRevisions: [
       {
-        id: "local-epub-revision-2",
+        id: secondRevisionId,
         artifactId: "local-epub-artifact",
         blobDigest: nextRevision.blob.digest,
         producer,
@@ -504,7 +658,7 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
         target: {
           kind: "artifact-revision",
           artifactId: "local-epub-artifact",
-          revisionId: "local-epub-revision-2",
+          revisionId: secondRevisionId,
         },
         property: "asset.title",
         sourceSlot: "epub.opf.title",
@@ -513,7 +667,7 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
         producer,
         observedArtifactPart: {
           artifactId: "local-epub-artifact",
-          revisionId: "local-epub-revision-2",
+          revisionId: secondRevisionId,
           locator: "epub:opf/dc:title[1]",
         },
       },
@@ -546,8 +700,8 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
       sourceAssociations: [],
       artifactRevisions: expect.arrayContaining([
         expect.objectContaining({
-          id: "local-epub-revision-2",
-          blobDigest: "epub-digest-2",
+          id: secondRevisionId,
+          blobDigest: secondDigest,
         }),
       ]),
       metadata: [{ value: "本地标题第二版" }],
@@ -575,7 +729,7 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
       observedArtifactReference: "book.epub",
       artifactId: "local-epub-artifact",
       locationId: "local-epub-location",
-      revisionId: "local-epub-revision",
+      revisionId: firstRevisionId,
       associationId: "local-epub-association",
     },
   ]);
@@ -640,7 +794,7 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
         ],
         artifactRevisions: currentAfterReevaluation.artifactRevisions.map(
           (item) =>
-            item.id === "local-epub-revision-2"
+            item.id === secondRevisionId
               ? { ...item, blobDigest: "conflicting-epub-digest" }
               : item,
         ),
@@ -648,7 +802,7 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
       sourceRecords: [],
       expectedLineageHeads: [],
     }),
-  ).rejects.toThrow("Artifact Revision local-epub-revision-2 conflicts");
+  ).rejects.toThrow(`Artifact Revision ${secondRevisionId} conflicts`);
   const rolledBack = await reopened.inspectExecution(failedExecution.id);
   expect(rolledBack?.execution).toMatchObject({ status: "running" });
   expect(rolledBack?.proposal).toBeUndefined();
@@ -1636,10 +1790,37 @@ it("uses shipped TMDB collection and interpretation while OMDb enrichment establ
   vi.restoreAllMocks();
   const policyWorkflow = composeAssetRefresh(root);
   try {
-    const current = await policyWorkflow.listCurrentCatalogue();
+    const currentReads = await policyWorkflow.listCurrentCatalogue();
+    const current = currentReads.map((subject) => ({
+      id: subject.id,
+      effectiveMetadata: subject.descriptions
+        .filter(
+          (description) =>
+            description.target.kind === "entity" &&
+            description.target.entityId === subject.id &&
+            description.metadataUsageContext === "asset.ordinary",
+        )
+        .flatMap((description) =>
+          description.metadata.flatMap((item) =>
+            item.result.status === "resolved" ? item.result.values : [],
+          ),
+        ),
+    }));
+    expect(
+      (await catalogue.findAcceptedForSubjects(["tmdb-film"]))[0]?.accepted
+        .metadata,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          property: "asset.title",
+          value: "OMDb Example Film",
+          sourceRecordIds: [initial.record.id],
+        }),
+      ]),
+    );
     expect(current).toEqual([
       expect.objectContaining({
-        entity: { id: "tmdb-film", kind: "digital-asset" },
+        id: "tmdb-film",
         effectiveMetadata: expect.arrayContaining([
           expect.objectContaining({
             property: "asset.title",
@@ -1647,19 +1828,6 @@ it("uses shipped TMDB collection and interpretation while OMDb enrichment establ
             sourceIdentity: "tmdb",
             sourceRecordIds: [baseline.record.id],
             sourceSlot: "tmdb.movie.title",
-            alternatives: [
-              expect.objectContaining({
-                value: "OMDb Example Film",
-                sourceIdentity: "omdb",
-                sourceRecordIds: [initial.record.id],
-                sourceSlot: "omdb.movie.title",
-                exclusion: {
-                  kind: "source-preference",
-                  selectedSource: "tmdb",
-                  disagreesWithSelected: true,
-                },
-              }),
-            ],
             reasoning: {
               kind: "source-preference",
               preferredSource: "tmdb",
@@ -1671,7 +1839,6 @@ it("uses shipped TMDB collection and interpretation while OMDb enrichment establ
             sourceIdentity: "omdb",
             sourceRecordIds: [initial.record.id],
             sourceSlot: "omdb.movie.awards",
-            alternatives: [],
             reasoning: {
               kind: "source-preference",
               preferredSource: "omdb",
@@ -1680,6 +1847,14 @@ it("uses shipped TMDB collection and interpretation while OMDb enrichment establ
         ]),
       }),
     ]);
+    expect(current[0]?.effectiveMetadata).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          property: "asset.title",
+          value: "OMDb Example Film",
+        }),
+      ]),
+    );
     const genres = current[0]?.effectiveMetadata.filter(
       (metadata) => metadata.property === "asset.genre",
     );
@@ -1689,7 +1864,6 @@ it("uses shipped TMDB collection and interpretation while OMDb enrichment establ
         sourceIdentity: "tmdb",
         sourceRecordIds: [baseline.record.id],
         sourceSlot: "tmdb.movie.genre.0",
-        alternatives: [],
         reasoning: {
           kind: "source-preference",
           preferredSource: "tmdb",
@@ -1700,7 +1874,6 @@ it("uses shipped TMDB collection and interpretation while OMDb enrichment establ
         sourceIdentity: "tmdb",
         sourceRecordIds: [baseline.record.id],
         sourceSlot: "tmdb.movie.genre.1",
-        alternatives: [],
         reasoning: {
           kind: "source-preference",
           preferredSource: "tmdb",
@@ -2639,13 +2812,32 @@ it("keeps public manual and automatic refresh execution writes inside Drizzle", 
   const root = await preparedCatalogueRoot();
   cleanup.push(root);
   const catalogue = SqliteCatalogue.forProductData(root);
+  await prepareInstrumentedLibrary(catalogue);
   const observedRootRegistrations = instrumentedObservedRootRegistrations();
+  const capability = (capabilityId: string) => ({
+    capabilityId,
+    capabilityVersion: "1",
+    contractVersion: "1",
+  });
+  const assetLibraries = instrumentedAssetLibraries(
+    observedRootRegistrations,
+    {
+      directoryInterpreters: [{ capability: capability("dlsite.directory") }],
+      recognizers: [{ capability: capability("dlsite.recognizer") }],
+      collectors: [{ capability: capability("dlsite.collector") }],
+      sourceInterpreters: [{ capability: capability("dlsite.interpreter") }],
+      acquirers: [{ capability: capability("dlsite.acquirer") }],
+    },
+    "dlsite",
+  );
   const manualAndAutomatic = instrumentedRecognitionWorkflow(catalogue, {
     observedRootRegistrations,
+    assetLibraries,
   });
   const workflow = attachAssetRefreshAutomation(
     manualAndAutomatic,
     new AssetRefreshAutomation(manualAndAutomatic, {
+      assetLibraries,
       executionQueries: catalogue,
       automationQueries: catalogue,
       // 本测试刻意使用内存观察根夹具来隔离 Drizzle 写入边界。
@@ -2670,7 +2862,18 @@ it("keeps public manual and automatic refresh execution writes inside Drizzle", 
   await catalogue.listExecutions();
   rejectDirectDatabaseWrites();
 
-  const manual = await scanInstrumentedObservedScope(workflow, {
+  const manualWorkflow = instrumentedRecognitionWorkflow(catalogue, {
+    observedRootRegistrations,
+    assetLibraries,
+    identity: {
+      key: "manual",
+      sourceIdentity: "dlsite",
+      sourceAddress:
+        "https://www.dlsite.com/maniax/work/=/product_id/RJ01668692.html",
+      title: "Manual Drizzle work",
+    },
+  });
+  const manual = await scanInstrumentedObservedScope(manualWorkflow, {
     directory: "/observed/manual",
     acceptTrusted: true,
     executionId: "manual-drizzle-execution",
@@ -2678,10 +2881,13 @@ it("keeps public manual and automatic refresh execution writes inside Drizzle", 
   expect(manual.execution).toMatchObject({
     id: "manual-drizzle-execution",
     status: "completed",
-    snapshot: { root: "/observed/manual" },
+    filesystemSnapshots: [
+      expect.objectContaining({ root: "/observed/manual" }),
+    ],
   });
 
   const enabled = await workflow.enableAutomation({
+    assetLibraryId: "library-instrumented",
     observedRootId: "automatic",
     relativeScope: ".",
     intervalMilliseconds: 1_000,
@@ -2709,6 +2915,23 @@ it("keeps public manual and automatic refresh execution writes inside Drizzle", 
     execution: {
       automationIntentId: enabled.intent.id,
       workflowInput: { trigger: "scan-now" },
+      selection: { intent: "scan-now" },
+      compatibility: {
+        workflowVersion: "asset-refresh/2",
+        capabilityCoordinates: expect.any(Array),
+      },
+    },
+  });
+  const automaticScan = await workflow.inspectAssetLibraryScan(
+    automatic.execution.execution.id,
+  );
+  expect(automaticScan?.directories).toHaveLength(1);
+  const childExecutionId = automaticScan?.directories[0]?.childExecutionId;
+  expect(childExecutionId).toBeDefined();
+  const automaticChild = await catalogue.inspectExecution(childExecutionId!);
+  expect(automaticChild).toMatchObject({
+    execution: {
+      status: "completed",
       selection: { directory: "/observed/automatic" },
       compatibility: {
         workflowVersion: "asset-refresh/2",
@@ -2766,7 +2989,11 @@ it("keeps Automation Intent enablement inside Drizzle", async () => {
   await catalogue.listExecutions();
   await catalogue.createAutomationIntentForTesting({
     id: "drizzle-automation-intent",
-    scope: { observedRootId: "drizzle-observed-root", relativeScope: "." },
+    scope: {
+      assetLibraryId: "library-instrumented",
+      observedRootId: "drizzle-observed-root",
+      relativeScope: ".",
+    },
     enabled: true,
     intervalMilliseconds: 60_000,
     workflowInputVersion: "asset-refresh-input/1",
@@ -2796,7 +3023,12 @@ it("keeps disposable tooling on the explicit SQLite testing subpath", async () =
       ),
       readFile(new URL("../../sqlite/package.json", import.meta.url), "utf8"),
     ]);
-  const runtimeExports = ["SqliteCatalogue"];
+  const runtimeExports = [
+    "SqliteCatalogue",
+    "derivedCoverCurrentlyRepresentative",
+    "readDerivedEntityCoverReadiness",
+    "validateDerivedEntityCoverHistory",
+  ];
   const testingExports = [
     "disposableCatalogueTarget",
     "disposableCatalogueTargetFromEnvironment",
@@ -2821,16 +3053,23 @@ it("keeps disposable tooling on the explicit SQLite testing subpath", async () =
       ...runtimeExports,
       "SqliteCatalogueClock",
       "SqliteCatalogueOptions",
+      "DerivedCoverCurrentRows",
+      "DerivedCoverHistoryRows",
+      "DerivedCoverReadinessEntry",
+      "DerivedCoverSupportRow",
+      "DerivedCoverVerdict",
     ].toSorted(compareExportNames),
   );
   expect(JSON.parse(packageManifest).exports).toEqual({
     ".": {
       "digital-source": "./src/index.ts",
+      "digital-development": "./.turbo/development/dist/index.js",
       types: "./dist/index.d.ts",
       default: "./dist/index.js",
     },
     "./testing": {
       "digital-source": "./src/testing.ts",
+      "digital-development": "./.turbo/development/dist/testing.js",
       types: "./dist/testing.d.ts",
       default: "./dist/testing.js",
     },
@@ -2972,7 +3211,7 @@ it("uses only Drizzle writes across the complete initial recognition route", asy
   });
 
   expect(durableAcceptance).toEqual(expectedAcceptance);
-  expect(result.execution.reason).toBeUndefined();
+  expect(result.execution.reason, JSON.stringify(result)).toBeUndefined();
   expect(result.execution.outcome).toBe("accepted");
   expect(result.accepted?.entity.kind).toBe("digital-asset");
   expect(result.accepted?.artifactAssociations).toEqual(
@@ -3018,16 +3257,26 @@ it("rejects an Application acceptance when its carried persisted baseline loses 
   expect(raced).toBe(true);
   expect(result.execution).toMatchObject({
     outcome: "failed",
-    reason:
-      "Workflow Execution instrumented-cas-race execution baseline is stale or terminal",
+    workItems: [
+      expect.objectContaining({
+        outcome: "failed",
+        reason:
+          "Workflow Execution instrumented-cas-race execution baseline is stale or terminal",
+      }),
+    ],
   });
   expect(adoptionFactCounts(root)).toEqual(emptyAdoptionFactCounts());
   expect(
     (await catalogue.inspectExecution(result.execution.id))?.execution,
   ).toMatchObject({
     status: "failed",
-    reason:
-      "Workflow Execution instrumented-cas-race execution baseline is stale or terminal",
+    workItems: [
+      expect.objectContaining({
+        outcome: "failed",
+        reason:
+          "Workflow Execution instrumented-cas-race execution baseline is stale or terminal",
+      }),
+    ],
   });
   catalogue.close();
 });
@@ -3254,8 +3503,12 @@ it("reuses the accepted DLsite-shaped result on a guarded second scan without se
 
   expect(second.execution).toMatchObject({
     outcome: "no-change",
-    acceptedAssetId: first.accepted?.entity.id,
-    reusedExecutionId: first.execution.id,
+    workItems: [
+      expect.objectContaining({
+        acceptedAssetId: first.accepted?.entity.id,
+        outcome: "no-change",
+      }),
+    ],
   });
   expect(adoptionFactCounts(root)).toEqual(factsBefore);
   expect(executionAndSourceRecordCounts(root)).toEqual({
@@ -3270,6 +3523,7 @@ it("reevaluates a changed ordinary DLsite evidence-array observation without rew
   cleanup.push(root);
   const catalogue = SqliteCatalogue.forProductData(root);
   const observation = { version: 1 };
+  await prepareInstrumentedLibrary(catalogue);
   const workflow = instrumentedRecognitionWorkflow(catalogue, {
     observation,
     useExactDlsiteDirectory: true,
@@ -3305,6 +3559,42 @@ it("reevaluates a changed ordinary DLsite evidence-array observation without rew
     expectedReevaluation = input.expectedExecution;
     durableReevaluation = (await catalogue.inspectExecution(input.execution.id))
       ?.execution;
+    const cover = input.accepted.artifactAssociations.find(
+      ({ role }) => role === "asset.primary-cover",
+    );
+    expect(cover).toBeDefined();
+    for (const mutated of [
+      { ...cover!, sourceRecordIds: ["forged-source-record"] },
+      {
+        ...cover!,
+        producer: { ...cover!.producer!, capabilityVersion: "forged-version" },
+      },
+    ]) {
+      expect(() =>
+        validateReevaluatedRecognition({
+          current: input.current,
+          accepted: {
+            ...input.accepted,
+            artifactAssociations: input.accepted.artifactAssociations.map(
+              (item) => (item.id === cover!.id ? mutated : item),
+            ),
+          },
+        }),
+      ).toThrow("Artifact Association has unknown source provenance");
+    }
+    expect(() =>
+      validateReevaluatedRecognition({
+        current: input.current,
+        accepted: {
+          ...input.accepted,
+          locations: input.accepted.locations.map((item) =>
+            item.artifactId === cover!.artifactId
+              ? { ...item, address: "/managed/changed-source-cover" }
+              : item,
+          ),
+        },
+      }),
+    ).toThrow("Artifact Association has unknown source provenance");
     await originalReevaluation(input);
   };
 
@@ -3319,36 +3609,29 @@ it("reevaluates a changed ordinary DLsite evidence-array observation without rew
 
   expect(second.execution).toMatchObject({
     outcome: "accepted",
-    acceptedAssetId: first.accepted?.entity.id,
+    workItems: [
+      expect.objectContaining({
+        outcome: "accepted",
+        acceptedAssetId: first.accepted?.entity.id,
+      }),
+    ],
   });
   expect(second.accepted?.entity.id).toBe(first.accepted?.entity.id);
   expect(expectedReevaluation).toBeDefined();
   expect(durableReevaluation).toEqual(expectedReevaluation);
   expect(executionAndSourceRecordCounts(root)).toEqual({
     executions: initialExecutions.executions + 1,
-    sourceRecords: initialExecutions.sourceRecords + 1,
+    sourceRecords: initialExecutions.sourceRecords,
   });
   expect(recognitionIdentityFacts(root)).toEqual(initialIdentity);
 
   const reevaluatedCoverFacts = primaryCoverFacts(root);
-  expect(reevaluatedCoverFacts).toHaveLength(2);
-  expect([
-    ...new Set(reevaluatedCoverFacts.map((fact) => fact.artifactId)),
-  ]).toHaveLength(2);
-  expect([
-    ...new Set(reevaluatedCoverFacts.map((fact) => fact.locationId)),
-  ]).toHaveLength(2);
-  expect([
-    ...new Set(reevaluatedCoverFacts.map((fact) => fact.revisionId)),
-  ]).toHaveLength(2);
-  expect(new Set(reevaluatedCoverFacts.map((fact) => fact.blobDigest))).toEqual(
-    new Set([initialCoverFacts[0]?.blobDigest]),
-  );
+  expect(reevaluatedCoverFacts).toEqual(initialCoverFacts);
   expect(adoptionFactCounts(root)).toMatchObject({
-    artifacts: initialFacts.artifacts + 2,
-    locations: initialFacts.locations + 2,
-    artifactRevisions: initialFacts.artifactRevisions + 1,
-    artifactAssociations: initialFacts.artifactAssociations + 2,
+    artifacts: initialFacts.artifacts + 1,
+    locations: initialFacts.locations + 1,
+    artifactRevisions: initialFacts.artifactRevisions,
+    artifactAssociations: initialFacts.artifactAssociations + 1,
     blobs: initialFacts.blobs,
   });
 
@@ -3361,7 +3644,12 @@ it("reevaluates a changed ordinary DLsite evidence-array observation without rew
 
   expect(third.execution).toMatchObject({
     outcome: "no-change",
-    acceptedAssetId: first.accepted?.entity.id,
+    workItems: [
+      expect.objectContaining({
+        outcome: "no-change",
+        acceptedAssetId: first.accepted?.entity.id,
+      }),
+    ],
   });
   expect(adoptionFactCounts(root)).toEqual(factsAfterReevaluation);
   expect(executionAndSourceRecordCounts(root)).toEqual({
@@ -4139,18 +4427,8 @@ function instrumentedRecognitionWorkflow(
       readonly sourceAddress: string;
       readonly title: string;
     };
-    readonly observedRootRegistrations?: Pick<
-      ObservedRootRegistrations,
-      | "resolveActiveScope"
-      | "rebindFrozenScope"
-      | "assertFrozenRootsCurrent"
-      | "capability"
-      | "objectIdentityContract"
-      | "observeBoundScope"
-      | "openBoundByteSource"
-      | "closeBoundScope"
-      | "reportCleanupFailure"
-    >;
+    readonly observedRootRegistrations?: ObservedRootRegistrations;
+    readonly assetLibraries?: AssetLibraries;
   },
 ) {
   const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
@@ -4167,6 +4445,7 @@ function instrumentedRecognitionWorkflow(
       : `-v${options.observation.version}`;
   const recordId = () =>
     `instrumented-${identity.key}-record${observationSuffix()}`;
+  const stagedBytes = new Map<string, Uint8Array>();
   let collectionSequence = 0;
   let activeRecordId = recordId();
   const observationTime = () =>
@@ -4192,22 +4471,18 @@ function instrumentedRecognitionWorkflow(
           root: scope.logicalLocation,
           complete: true,
           excluded: [],
-          files:
-            options?.explicitWorkPlan === true ||
-            options?.observation !== undefined
-              ? [
-                  {
-                    relativePath: "instrumented-dlsite.wav",
-                    size: 4,
-                    modifiedAt: observationTime(),
-                  },
-                ]
-              : [],
+          files: [
+            {
+              relativePath: "instrumented-dlsite.wav",
+              size: 4,
+              modifiedAt: observationTime(),
+            },
+          ],
           observedAt: observationTime(),
         };
       },
     });
-  return new AssetRefreshWorkflow({
+  const ports: ConstructorParameters<typeof AssetRefreshWorkflow>[0] = {
     observedRootRegistrations,
     directoryInterpreters:
       options?.useExactDlsiteDirectory === true
@@ -4278,6 +4553,24 @@ function instrumentedRecognitionWorkflow(
         },
       },
     ],
+    ...(options?.useExactDlsiteDirectory === true
+      ? {
+          sourceAssociationCandidateInterpreters: [
+            new DlsiteLocalSourceCandidateInterpreter(),
+          ],
+          sourceAssociationInterpreters: [
+            {
+              capability: capability("dlsite.association"),
+              canInterpret: () => true,
+              interpret: () => ({
+                status: "accepted" as const,
+                explanation: "相同精确来源地址的测试响应",
+              }),
+            },
+          ],
+          sourceEnrichmentPersistence: catalogue,
+        }
+      : {}),
     sourceInterpreters: [
       {
         capability: capability("dlsite.interpreter"),
@@ -4318,7 +4611,7 @@ function instrumentedRecognitionWorkflow(
         capability: capability("dlsite.recognizer"),
         canRecognize: () => true,
         recognize: ({ evidence }) => ({
-          id: `instrumented-${identity.key}-proposal${observationSuffix()}`,
+          id: `instrumented-${identity.key}-proposal-${activeRecordId}`,
           ruleResults: [
             {
               capabilityId: "dlsite.recognizer",
@@ -4352,6 +4645,39 @@ function instrumentedRecognitionWorkflow(
       },
     ],
     managedStore: {
+      async stage(content) {
+        const stagedReference = `staged:${content.idempotencyKey}`;
+        stagedBytes.set(stagedReference, content.bytes);
+        return {
+          candidateId: content.candidateId,
+          sourceRecordId: content.sourceRecordId,
+          stagedReference,
+          digest: sha256(content.bytes),
+          mediaType: content.mediaType,
+          ...(content.role === undefined ? {} : { role: content.role }),
+          ...(content.acquisitionReference === undefined
+            ? {}
+            : { acquisitionReference: content.acquisitionReference }),
+          ...(content.sourceArtifactProducer === undefined
+            ? {}
+            : { sourceArtifactProducer: content.sourceArtifactProducer }),
+          ...(content.acquisitionProducer === undefined
+            ? {}
+            : { acquisitionProducer: content.acquisitionProducer }),
+        };
+      },
+      async storeStaged(checkpoint) {
+        const bytes = stagedBytes.get(checkpoint.stagedReference);
+        if (bytes === undefined) throw new Error("缺少测试耐久暂存字节");
+        return {
+          blob: {
+            digest: sha256(bytes),
+            mediaType: checkpoint.mediaType,
+            byteLength: bytes.byteLength,
+          },
+          location: { address: `/managed/instrumented-${identity.key}-cover` },
+        };
+      },
       async store(content) {
         return {
           blob: {
@@ -4373,6 +4699,19 @@ function instrumentedRecognitionWorkflow(
     metadataRefreshPersistence: catalogue,
     changeImpactQueries: catalogue,
     changeImpactCommands: catalogue,
+  };
+  const assetLibraries =
+    options?.assetLibraries ??
+    (options?.useExactDlsiteDirectory === true
+      ? instrumentedAssetLibraries(
+          observedRootRegistrations,
+          ports,
+          identity.sourceIdentity,
+        )
+      : undefined);
+  return new AssetRefreshWorkflow({
+    ...ports,
+    ...(assetLibraries === undefined ? {} : { assetLibraries }),
   });
 }
 
@@ -4675,6 +5014,7 @@ function runningExecution(): WorkflowExecution {
     status: "running",
     stage: "source-artifacts-stored",
     sourceRecordIds: ["dlsite-record"],
+    dispositions: [],
   };
 }
 
@@ -4863,6 +5203,7 @@ function omdbAcceptedRecognition(
 ): AcceptedRecognition {
   const proposal = {
     id: "omdb-initial-proposal",
+    boundaries: fixtureMaterialBoundaries(["omdb:imdb:tt1234567"]),
     basis: {
       kind: "source-interpretation" as const,
       interpretation: source.interpretation,
@@ -4902,6 +5243,7 @@ function omdbAcceptedRecognition(
       id: "omdb-decision",
       proposalId: proposal.id,
       assetId: "omdb-film",
+      boundaries: proposal.boundaries,
       acceptedRuleResults: proposal.ruleResults,
     },
     artifacts: [],
@@ -4970,6 +5312,7 @@ function omdbAcceptedRecognitionForAsset(input: {
   ];
   const proposal = {
     id: input.proposalId,
+    boundaries: fixtureMaterialBoundaries(["omdb:imdb:tt1234567"]),
     basis: { kind: "source-interpretation" as const, interpretation },
     ruleResults,
   };
@@ -4996,6 +5339,7 @@ function omdbAcceptedRecognitionForAsset(input: {
       id: input.decisionId,
       proposalId: proposal.id,
       assetId: input.assetId,
+      boundaries: proposal.boundaries,
       acceptedRuleResults: proposal.ruleResults,
     },
     artifacts: [],
@@ -5088,6 +5432,7 @@ async function tmdbAcceptedRecognitionFromShippedAdapter(): Promise<{
       evidence,
       basis: { kind: "source-interpretation", interpretation },
     }),
+    boundaries: fixtureMaterialBoundaries(["tmdb:movie:1"]),
     basis: { kind: "source-interpretation" as const, interpretation },
   };
   return {
@@ -5116,6 +5461,7 @@ async function tmdbAcceptedRecognitionFromShippedAdapter(): Promise<{
         id: "tmdb-shipped-decision",
         proposalId: proposal.id,
         assetId: "tmdb-film",
+        boundaries: proposal.boundaries,
         acceptedRuleResults: proposal.ruleResults,
       },
       artifacts: [],
@@ -5194,6 +5540,7 @@ function tmdbAcceptedRecognition(): {
   };
   const proposal = {
     id: "tmdb-initial-proposal",
+    boundaries: fixtureMaterialBoundaries(["tmdb:movie:1"]),
     basis: { kind: "source-interpretation" as const, interpretation },
     ruleResults: [
       {
@@ -5232,6 +5579,7 @@ function tmdbAcceptedRecognition(): {
         id: "tmdb-decision",
         proposalId: proposal.id,
         assetId: "tmdb-film",
+        boundaries: proposal.boundaries,
         acceptedRuleResults: proposal.ruleResults,
       },
       artifacts: [],
@@ -5518,6 +5866,7 @@ function acceptedRecognition(): AcceptedRecognition {
   };
   const proposal = {
     id: "dlsite-proposal",
+    boundaries: fixtureMaterialBoundaries(["/managed/dlsite-cover"]),
     basis: { kind: "source-interpretation" as const, interpretation },
     ruleResults: [
       {
@@ -5556,6 +5905,7 @@ function acceptedRecognition(): AcceptedRecognition {
       id: "dlsite-decision",
       proposalId: proposal.id,
       assetId: "dlsite-work",
+      boundaries: proposal.boundaries,
       acceptedRuleResults: proposal.ruleResults,
     },
     artifacts: [{ id: "dlsite-cover" }],
@@ -5673,6 +6023,7 @@ function continuityConflictRecognition(): AcceptedRecognition {
       id: "dlsite-continuity-decision",
       proposalId: proposal.id,
       assetId: "dlsite-continuity-work",
+      boundaries: proposal.boundaries,
       acceptedRuleResults: proposal.ruleResults,
     },
     artifacts: [{ id: "dlsite-continuity-cover" }],
@@ -5766,6 +6117,7 @@ function independentlyAcceptedRecognition(): AcceptedRecognition {
       id: "dlsite-independent-decision",
       proposalId: proposal.id,
       assetId: "dlsite-independent-work",
+      boundaries: proposal.boundaries,
       acceptedRuleResults: proposal.ruleResults,
     },
     artifacts: [{ id: "dlsite-independent-cover" }],
@@ -5797,4 +6149,169 @@ function independentlyAcceptedRecognition(): AcceptedRecognition {
       target: { kind: "entity" as const, entityId: "dlsite-independent-work" },
     })),
   };
+}
+
+/** 已有内存授权账本对应的只读库配置，不把注册当授权。 */
+function instrumentedAssetLibraries(
+  roots: ObservedRootRegistrations,
+  ports: {
+    readonly directoryInterpreters: readonly {
+      capability: {
+        capabilityId: string;
+        capabilityVersion: string;
+        contractVersion: string;
+      };
+    }[];
+    readonly recognizers: readonly {
+      capability: {
+        capabilityId: string;
+        capabilityVersion: string;
+        contractVersion: string;
+      };
+    }[];
+    readonly collectors: readonly {
+      capability: {
+        capabilityId: string;
+        capabilityVersion: string;
+        contractVersion: string;
+      };
+    }[];
+    readonly sourceInterpreters: readonly {
+      capability: {
+        capabilityId: string;
+        capabilityVersion: string;
+        contractVersion: string;
+      };
+    }[];
+    readonly acquirers: readonly {
+      capability: {
+        capabilityId: string;
+        capabilityVersion: string;
+        contractVersion: string;
+      };
+    }[];
+    readonly sourceAssociationCandidateInterpreters?: readonly {
+      capability: {
+        capabilityId: string;
+        capabilityVersion: string;
+        contractVersion: string;
+      };
+    }[];
+    readonly sourceAssociationInterpreters?: readonly {
+      capability: {
+        capabilityId: string;
+        capabilityVersion: string;
+        contractVersion: string;
+      };
+    }[];
+  },
+  sourceIdentity: string,
+) {
+  const library = {
+    id: "library-instrumented",
+    displayName: "Drizzle测试作品库",
+    status: "active" as const,
+    configVersion: 1,
+    rootIds: [
+      "manual",
+      "automatic",
+      "RJ01668691",
+      "same-title-a",
+      "same-title-b",
+    ],
+    recognitionProfileIds: ["instrumented"],
+    sourceIdentities: [sourceIdentity],
+  };
+  return new AssetLibraries({
+    persistence: {
+      async listAssetLibraries() {
+        return [library];
+      },
+      async getAssetLibrary(id) {
+        return id === library.id ? library : undefined;
+      },
+      async saveAssetLibrary() {
+        throw new Error("只读测试配置");
+      },
+      async reconnectAssetLibraryDirectory() {
+        throw new Error("不重连测试目录");
+      },
+    },
+    roots,
+    recognitionProfiles: [
+      {
+        id: "instrumented",
+        displayName: "测试识别",
+        directoryInterpreterIds: ports.directoryInterpreters.map(
+          (x) => x.capability.capabilityId,
+        ),
+        recognizerIds: ports.recognizers.map((x) => x.capability.capabilityId),
+      },
+    ],
+    sources: [
+      {
+        id: sourceIdentity,
+        displayName: "测试来源",
+        collectorIds: ports.collectors.map((x) => x.capability.capabilityId),
+        sourceCandidateInterpreterIds: (
+          ports.sourceAssociationCandidateInterpreters ?? []
+        ).map((x) => x.capability.capabilityId),
+        sourceInterpreterIds: ports.sourceInterpreters.map(
+          (x) => x.capability.capabilityId,
+        ),
+        sourceAssociationInterpreterIds: (
+          ports.sourceAssociationInterpreters ?? []
+        ).map((x) => x.capability.capabilityId),
+        acquirerIds: ports.acquirers.map((x) => x.capability.capabilityId),
+        informationFulfillmentIds: [],
+      },
+    ],
+    capabilities: {
+      directoryInterpreters: ports.directoryInterpreters.map(
+        (x) => x.capability,
+      ),
+      recognizers: ports.recognizers.map((x) => x.capability),
+      collectors: ports.collectors.map((x) => x.capability),
+      sourceCandidateInterpreters: (
+        ports.sourceAssociationCandidateInterpreters ?? []
+      ).map((x) => x.capability),
+      sourceInterpreters: ports.sourceInterpreters.map((x) => x.capability),
+      sourceAssociationInterpreters: (
+        ports.sourceAssociationInterpreters ?? []
+      ).map((x) => x.capability),
+      acquirers: ports.acquirers.map((x) => x.capability),
+      informationFulfillments: [],
+    },
+  });
+}
+
+async function prepareInstrumentedLibrary(catalogue: SqliteCatalogue) {
+  const paths = [
+    ["manual", "/observed/manual"],
+    ["automatic", "/observed/automatic"],
+    ["RJ01668691", "/observed/RJ01668691"],
+    ["same-title-a", "/observed/same-title-a"],
+    ["same-title-b", "/observed/same-title-b"],
+  ] as const;
+  for (const [id, directory] of paths)
+    await catalogue.createObservedRootRegistration(
+      instrumentedObservedRootRegistration(id, directory),
+    );
+  expect(
+    await catalogue.saveAssetLibrary({
+      id: "library-instrumented",
+      displayName: "Drizzle测试作品库",
+      configVersion: 1,
+      status: "active",
+      recognitionProfileIds: ["instrumented"],
+      sourceIdentities: ["dlsite"],
+      directories: paths.map(([id, directory]) => ({
+        displayName: id,
+        containerPath: directory,
+        canonicalPath: directory,
+        symlinkMode: "do-not-follow",
+        allowedTargetCanonicalPaths: [],
+      })),
+    }),
+  ).toBeDefined();
 }

@@ -888,6 +888,14 @@ function accepted(
 ): AcceptedRecognition {
   const proposal = {
     id: "initial-proposal",
+    // 本例只测试来源运行，不声明已确认字节；材料范围仍须按现行准入契约显式给出。
+    boundaries: [
+      {
+        kind: "discrete" as const,
+        scopeReference: "source-refresh-run-fixture",
+        materialReferences: ["asset-1-input"],
+      },
+    ],
     basis: {
       kind: "source-interpretation" as const,
       interpretation: sourceInterpretation,
@@ -927,6 +935,7 @@ function accepted(
       id: "decision-1",
       proposalId: proposal.id,
       assetId: "asset-1",
+      boundaries: proposal.boundaries,
       acceptedRuleResults: proposal.ruleResults,
     },
     artifacts: [],
