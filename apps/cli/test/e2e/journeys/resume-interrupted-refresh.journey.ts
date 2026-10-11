@@ -293,6 +293,7 @@ function current(
 
 const journey: CliJourney = {
   name: "resume-interrupted-refresh",
+  realCorpus: true,
   source: { mode: "real" },
   modes: ["source", "distribution"],
   async setup(context) {

@@ -2,6 +2,14 @@
   "extends": ["//"],
   "tags": ["environment"],
   "tasks": {
-    "test": { "dependsOn": [] }
+    "test": {
+      "dependsOn": [
+        "$TURBO_EXTENDS$",
+        "@digital/web#build",
+        "@digital/web#test:e2e",
+        "@digital/cli#build",
+        "@digital/db-migrations#build"
+      ]
+    }
   }
 }

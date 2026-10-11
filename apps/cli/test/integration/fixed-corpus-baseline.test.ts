@@ -146,7 +146,7 @@ describe("fixed corpus inventory baseline", () => {
         path.resolve(
           context.packageRoot,
           "../..",
-          ".scratch/acceptance-corpus/references/reviewed-oracle.json",
+          "fixtures/live-corpus/references/reviewed-oracle.json",
         ),
         "utf8",
       ),
@@ -181,7 +181,7 @@ describe("fixed corpus inventory baseline", () => {
         path.resolve(
           context.packageRoot,
           "../..",
-          ".scratch/acceptance-corpus/references/reviewed-oracle.json",
+          "fixtures/live-corpus/references/reviewed-oracle.json",
         ),
         "utf8",
       ),

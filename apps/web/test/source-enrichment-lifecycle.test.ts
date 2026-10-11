@@ -23,10 +23,12 @@ it("已有资产来源补充在耐久 ID 后早返，并在安全检查点关闭
   vi.stubGlobal("fetch", delayed.fetch);
   let product: WebProduct | undefined = productFor(data);
   let restarted: WebProduct | undefined;
+  let passed = false;
   try {
-    const assetId = await createManualAsset(product, media);
+    const { assetId, libraryId } = await createManualAsset(product, media);
     const pendingResponse = post(product.result.api, "/source-enrichments", {
       subjectId: assetId,
+      assetLibraryId: libraryId,
       sourceIdentity: "nbinet",
       sourceInput: { isbn: "9789864738281" },
     });
@@ -53,20 +55,22 @@ it("已有资产来源补充在耐久 ID 后早返，并在安全检查点关闭
       sourceAssociations: [],
     });
     await restarted.result.startCatalogueAutomation();
-    await expect(
-      inspectSourceEnrichment(restarted.result.api, started.id),
-    ).resolves.toMatchObject({
-      id: started.id,
-      status: "failed",
-      outcome: "interrupted",
-      reason: expect.stringMatching(/.+/u),
-      sourceEnrichments: [
-        expect.objectContaining({ input: { isbn: "9789864738281" } }),
-      ],
-      sourceAssociations: [],
-    });
+    // 启动只等待分类与接纳；终态由恢复监督在后台耐久完成。
+    await expect
+      .poll(() => inspectSourceEnrichment(restarted!.result.api, started.id))
+      .toMatchObject({
+        id: started.id,
+        status: "failed",
+        outcome: "interrupted",
+        reason: expect.stringMatching(/.+/u),
+        sourceEnrichments: [
+          expect.objectContaining({ input: { isbn: "9789864738281" } }),
+        ],
+        sourceAssociations: [],
+      });
     const retry = await post(restarted.result.api, "/source-enrichments", {
       subjectId: assetId,
+      assetLibraryId: libraryId,
       sourceIdentity: "nbinet",
       sourceInput: { isbn: "9789864738281" },
     });
@@ -93,12 +97,14 @@ it("已有资产来源补充在耐久 ID 后早返，并在安全检查点关闭
         sources: [expect.objectContaining({ sourceIdentity: "nbinet" })],
       },
     });
+    passed = true;
   } finally {
     delayed.release.resolve();
     await product?.close();
     await restarted?.close();
     vi.unstubAllGlobals();
-    await rm(temporary, { recursive: true, force: true });
+    if (passed) await rm(temporary, { recursive: true, force: true });
+    else console.error(`17 来源生命周期失败数据保留：${temporary}`);
   }
 }, 60_000);
 
@@ -115,16 +121,9 @@ it("结构化定向新材料在耐久 ID 后早返，并在安全检查点关闭
   vi.stubGlobal("fetch", delayed.fetch);
   let product: WebProduct | undefined = productFor(data);
   let restarted: WebProduct | undefined;
+  let passed = false;
   try {
-    const root = await (
-      await post(product.result.api, "/settings/roots", {
-        action: "create",
-        displayName: "定向材料",
-        containerPath: media,
-        symlinkMode: "do-not-follow",
-        allowedTargetRootIds: [],
-      })
-    ).json();
+    const root = await createRoot(product, media);
     const pendingResponse = post(product.result.api, "/refresh", {
       observedRootId: root.id,
       relativeScope: ".",
@@ -182,12 +181,14 @@ it("结构化定向新材料在耐久 ID 后早返，并在安全检查点关闭
           }),
         ],
       });
+    passed = true;
   } finally {
     delayed.release.resolve();
     await product?.close();
     await restarted?.close();
     vi.unstubAllGlobals();
-    await rm(temporary, { recursive: true, force: true });
+    if (passed) await rm(temporary, { recursive: true, force: true });
+    else console.error(`17 定向生命周期失败数据保留：${temporary}`);
   }
 }, 60_000);
 
@@ -201,44 +202,65 @@ function productFor(data: string): WebProduct {
 async function createManualAsset(
   product: WebProduct,
   media: string,
-): Promise<string> {
+): Promise<{ assetId: string; libraryId: string }> {
   const api = product.result.api;
-  const root = await (
-    await post(api, "/settings/roots", {
-      action: "create",
-      displayName: "本地内容",
-      containerPath: media,
-      symlinkMode: "do-not-follow",
-      allowedTargetRootIds: [],
-    })
-  ).json();
-  const scan = await (
+  const root = await createRoot(product, media);
+  const scan = await responseJson(
     await post(api, "/refresh", {
       observedRootId: root.id,
       relativeScope: ".",
-    })
-  ).json();
+    }),
+    201,
+  );
   await expect
     .poll(async () => inspectIntakeExecution(api, root.id, scan.id))
     .toMatchObject({
       execution: { status: expect.stringMatching(/completed|failed/u) },
     });
-  const preview = await (
+  const preview = await responseJson(
     await post(api, "/intake", {
       action: "prepare",
       executionId: scan.id,
       relativePaths: ["local.txt"],
       name: "本地内容",
       classification: "book",
-    })
-  ).json();
-  const saved = await (
+    }),
+    200,
+  );
+  const saved = await responseJson(
     await post(api, "/intake", {
       action: "confirm",
       executionId: preview.executionId,
-    })
-  ).json();
-  return saved.asset.id as string;
+    }),
+    200,
+  );
+  return { assetId: saved.asset.id as string, libraryId: root.libraryId };
+}
+
+/** 正式资产库选择赋予目录与来源权限；目录登记本身不是授权。 */
+async function createRoot(product: WebProduct, media: string) {
+  const api = product.result.api;
+  const settings = await responseJson(await api.request("/settings"), 200);
+  const saved = await responseJson(
+    await post(api, "/settings/libraries", {
+      action: "save",
+      displayName: "本地内容",
+      directories: [media],
+      recognitionProfileIds: settings.recognitionProfiles.map(
+        (profile: { id: string }) => profile.id,
+      ),
+      sourceIdentities: ["nbinet"],
+    }),
+    200,
+  );
+  expect(saved.rootIds).toHaveLength(1);
+  return { id: saved.rootIds[0] as string, libraryId: saved.id as string };
+}
+
+async function responseJson(response: Response, expectedStatus: number) {
+  const body = await response.text();
+  expect(response.status, body).toBe(expectedStatus);
+  return JSON.parse(body);
 }
 
 function post(api: WebDelivery["api"], route: string, body: object) {
@@ -255,7 +277,10 @@ async function inspectSourceEnrichment(
   api: WebDelivery["api"],
   executionId: string,
 ) {
-  return await (await api.request(`/source-enrichments/${executionId}`)).json();
+  return await responseJson(
+    await api.request(`/source-enrichments/${executionId}`),
+    200,
+  );
 }
 
 async function inspectIntakeExecution(
@@ -263,9 +288,10 @@ async function inspectIntakeExecution(
   rootId: string,
   executionId: string,
 ) {
-  return await (
-    await api.request(`/intake?rootId=${rootId}&executionId=${executionId}`)
-  ).json();
+  return await responseJson(
+    await api.request(`/intake?rootId=${rootId}&executionId=${executionId}`),
+    200,
+  );
 }
 
 async function settlesWithin(

@@ -251,11 +251,7 @@ function currentState(context: CliJourneyContext): JourneyState {
 }
 
 function corpusRoot(context: CliJourneyContext): string {
-  return path.resolve(
-    context.packageRoot,
-    "../..",
-    ".scratch/acceptance-corpus",
-  );
+  return path.resolve(context.packageRoot, "../..", "fixtures/live-corpus");
 }
 
 function exactRootSet(actual: readonly string[], expected: readonly string[]) {
