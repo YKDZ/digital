@@ -13,6 +13,38 @@ import {
 
 afterAll(disposePreparedCatalogueTemplate);
 
+/**
+ * 通过现行公开资产库入口为一个目录建立授权，返回该目录对应的观察根编号。
+ * 登记本身不等于授权，因此收纳流程必须先有活动库点名这个目录。
+ */
+async function seedLibraryRoot(
+  workflow: {
+    readonly assetLibraries: {
+      save(input: {
+        readonly displayName: string;
+        readonly directories: readonly string[];
+        readonly recognitionProfileIds: readonly string[];
+        readonly sourceIdentities: readonly string[];
+      }): Promise<{ readonly rootIds: readonly string[] }>;
+      readonly recognitionProfiles: readonly { readonly id: string }[];
+      readonly sources: readonly { readonly id: string }[];
+    };
+  },
+  displayName: string,
+  directory: string,
+): Promise<string> {
+  const libraries = workflow.assetLibraries;
+  const saved = await libraries.save({
+    displayName,
+    directories: [directory],
+    recognitionProfileIds: libraries.recognitionProfiles.map(
+      (profile) => profile.id,
+    ),
+    sourceIdentities: libraries.sources.map((source) => source.id),
+  });
+  return saved.rootIds[0]!;
+}
+
 it("后台轮询不接管本次启动后仍在等待来源的人工检查", async () => {
   const data = await preparedCatalogueRoot();
   const media = await mkdtemp(path.join(tmpdir(), "digital-live-scan-"));
@@ -60,16 +92,10 @@ it("后台轮询不接管本次启动后仍在等待来源的人工检查", asyn
         clearInterval() {},
       },
     });
-    const root = await application.workflow.observedRootRegistrations.create({
-      displayName: "材料",
-      containerPath: media,
-      readOnly: true,
-      symlinkMode: "do-not-follow",
-      allowedTargetRootIds: [],
-    });
+    const rootId = await seedLibraryRoot(application.workflow, "材料", media);
     let executionId = "";
     const scanning = application.workflow.scanObservedScope({
-      registrationId: root.id,
+      registrationId: rootId,
       relativeScope: ".",
       acceptTrusted: true,
       onExecutionStarted(execution) {
@@ -103,15 +129,9 @@ it("竞争整理同一批材料只采用一个范围，同一确认的并发重�
   await writeFile(path.join(media, "two.txt"), "第二项材料");
   const workflow = composeAssetRefresh(data, {});
   try {
-    const root = await workflow.observedRootRegistrations.create({
-      displayName: "两份整理",
-      containerPath: media,
-      readOnly: true,
-      symlinkMode: "do-not-follow",
-      allowedTargetRootIds: [],
-    });
+    const rootId = await seedLibraryRoot(workflow, "两份整理", media);
     const scan = await workflow.scanObservedScope({
-      registrationId: root.id,
+      registrationId: rootId,
       relativeScope: ".",
       acceptTrusted: true,
     });
@@ -159,15 +179,9 @@ it("分次采用修订范围时保留未处理材料，全部采用后关闭原�
   try {
     await writeFile(path.join(media, "one.txt"), "第一项");
     await writeFile(path.join(media, "two.txt"), "第二项");
-    const root = await workflow.observedRootRegistrations.create({
-      displayName: "材料",
-      containerPath: media,
-      readOnly: true,
-      symlinkMode: "do-not-follow",
-      allowedTargetRootIds: [],
-    });
+    const rootId = await seedLibraryRoot(workflow, "材料", media);
     const scan = await workflow.scanObservedScope({
-      registrationId: root.id,
+      registrationId: rootId,
       relativeScope: ".",
       acceptTrusted: false,
     });
@@ -208,15 +222,9 @@ it("人工将多个未识别文件确认为一项无来源内容，重复确认�
   await writeFile(path.join(media, "unselected.txt"), "另一项未选择的材料");
   let workflow = composeAssetRefresh(data, {});
   try {
-    const root = await workflow.observedRootRegistrations.create({
-      displayName: "本地材料",
-      containerPath: media,
-      readOnly: true,
-      symlinkMode: "do-not-follow",
-      allowedTargetRootIds: [],
-    });
+    const rootId = await seedLibraryRoot(workflow, "本地材料", media);
     const scan = await workflow.scanObservedScope({
-      registrationId: root.id,
+      registrationId: rootId,
       relativeScope: ".",
       acceptTrusted: true,
     });
@@ -275,15 +283,9 @@ it("损坏文件不能经人工确认绕过检查，其余文件可整理但变�
   await writeFile(path.join(media, "notes.txt"), "原始记录");
   const workflow = composeAssetRefresh(data, {});
   try {
-    const root = await workflow.observedRootRegistrations.create({
-      displayName: "部分可用",
-      containerPath: media,
-      readOnly: true,
-      symlinkMode: "do-not-follow",
-      allowedTargetRootIds: [],
-    });
+    const rootId = await seedLibraryRoot(workflow, "部分可用", media);
     const scan = await workflow.scanObservedScope({
-      registrationId: root.id,
+      registrationId: rootId,
       relativeScope: ".",
       acceptTrusted: true,
     });
@@ -304,7 +306,7 @@ it("损坏文件不能经人工确认绕过检查，其余文件可整理但变�
     ).rejects.toThrow("所选文件已变化");
     expect(await workflow.listCurrentCatalogue()).toHaveLength(0);
     const rescanned = await workflow.scanObservedScope({
-      registrationId: root.id,
+      registrationId: rootId,
       relativeScope: ".",
       acceptTrusted: true,
     });
@@ -331,15 +333,9 @@ it("人工名称与分类作为有归属的事实保存，不要求来源或格�
   await writeFile(path.join(media, "notes.txt"), "手记正文");
   let workflow = composeAssetRefresh(data, {});
   try {
-    const root = await workflow.observedRootRegistrations.create({
-      displayName: "手记",
-      containerPath: media,
-      readOnly: true,
-      symlinkMode: "do-not-follow",
-      allowedTargetRootIds: [],
-    });
+    const rootId = await seedLibraryRoot(workflow, "手记", media);
     const scan = await workflow.scanObservedScope({
-      registrationId: root.id,
+      registrationId: rootId,
       relativeScope: ".",
       acceptTrusted: true,
     });
@@ -349,17 +345,24 @@ it("人工名称与分类作为有归属的事实保存，不要求来源或格�
       name: "林间手记",
       classification: "book",
     });
-    expect(review.content.effectiveMetadata).toEqual(
+    // 预演保留人工事实本身的归属；生效读取再把该归属投影为 user 来源。
+    expect(review.content.metadata).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           property: "asset.title",
           value: "林间手记",
-          sourceIdentity: "user",
+          authoredBy: {
+            initiatedBy: "interactive",
+            proposalId: expect.any(String),
+          },
         }),
         expect.objectContaining({
           property: "asset.content-classification",
           value: "book",
-          sourceIdentity: "user",
+          authoredBy: {
+            initiatedBy: "interactive",
+            proposalId: expect.any(String),
+          },
         }),
       ]),
     );
@@ -371,7 +374,15 @@ it("人工名称与分类作为有归属的事实保存，不要求来源或格�
     const content = await workflow.inspectCurrentCatalogueSubject(
       saved.content.entity.id,
     );
-    expect(content?.effectiveMetadata).toEqual(
+    const description = content?.descriptions.find(
+      ({ target }) =>
+        target.kind === "entity" && target.entityId === saved.content.entity.id,
+    );
+    expect(
+      description?.metadata.flatMap(({ result }) =>
+        result.status === "resolved" ? result.values : [],
+      ),
+    ).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           property: "asset.title",
