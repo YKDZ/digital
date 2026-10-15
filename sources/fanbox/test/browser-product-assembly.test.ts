@@ -346,6 +346,46 @@ beforeEach(() => {
 });
 
 describe("FANBOX browser product assembly", () => {
+  it("生产连接验证不经 Node fetch 发出端点请求", async () => {
+    const nodeFetch = vi.fn(async () => {
+      throw new Error("Node transport must be unreachable");
+    });
+    vi.stubGlobal("fetch", nodeFetch);
+    renderer.connectedChallenge = true;
+    const assembly = createFanboxProductAssembly();
+    try {
+      await expect(
+        assembly.validatedBrowserCredential({
+          creatorId: "customudon",
+          browserCredential: {
+            userAgent: "test-browser/1",
+            cookies: [
+              {
+                name: "FANBOXSESSID",
+                value: "test-private-session",
+                domain: ".fanbox.cc",
+                path: "/",
+              },
+            ],
+          },
+        }),
+      ).rejects.toThrow("FANBOX 来源连接验证失败");
+      expect(nodeFetch).not.toHaveBeenCalled();
+      expect(renderer.launches).toBe(1);
+      expect(renderer.operations).toContainEqual({
+        context: 1,
+        pathname: "/post.info",
+        credentials: "include",
+      });
+    } finally {
+      try {
+        await assembly.close();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    }
+  }, 30_000);
+
   it("验证与采集各用 fresh context，并在同一采集 session 只追加一次 public detail", async () => {
     const assembly = createFanboxProductAssembly();
     const privateConfiguration = await assembly.validatedBrowserCredential({

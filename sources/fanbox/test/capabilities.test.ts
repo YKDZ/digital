@@ -14,7 +14,6 @@ import {
   FanboxDateDirectoryInterpreter,
   FanboxExactRecognizer,
   FanboxSourceInterpreter,
-  createFanboxProductAssembly,
   decodeFanboxCollectionFailureCode,
   fanboxCreatorIdFromEvidence,
   fanboxOfficialCollectionCapability,
@@ -28,36 +27,6 @@ describe("FANBOX 产品浏览器连接", () => {
     expect(fanboxPublic).not.toHaveProperty("validatedFanboxBrowserCredential");
     expect(fanboxPublic).not.toHaveProperty("verifyFanboxStoredCredential");
   });
-
-  it("生产连接验证不经 Node fetch 发出端点请求", async () => {
-    const nodeFetch = vi.fn(async () => {
-      throw new Error("Node transport must be unreachable");
-    });
-    vi.stubGlobal("fetch", nodeFetch);
-    const assembly = createFanboxProductAssembly();
-    try {
-      await expect(
-        assembly.validatedBrowserCredential({
-          creatorId: "customudon",
-          browserCredential: {
-            userAgent: "test-browser/1",
-            cookies: [
-              {
-                name: "FANBOXSESSID",
-                value: "test-private-session",
-                domain: ".fanbox.cc",
-                path: "/",
-              },
-            ],
-          },
-        }),
-      ).rejects.toThrow("FANBOX 来源连接验证失败");
-      expect(nodeFetch).not.toHaveBeenCalled();
-    } finally {
-      await assembly.close().catch(() => undefined);
-      vi.unstubAllGlobals();
-    }
-  }, 30_000);
 
   it("把浏览器导出的 cookie 属性规范化为唯一 V2 私密串", async () => {
     const assembly = createScriptedFanboxProductAssembly(
