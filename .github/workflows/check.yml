@@ -39,8 +39,8 @@ jobs:
           cache: true
       - name: 准备本作业临时目录
         run: |
-          ci_tmp="$RUNNER_TEMP/digital-check-${{ github.run_id }}-${{ github.run_attempt }}"
-          mkdir -m 700 -p "$ci_tmp"
+          # 私有控制通道使用 Unix socket，作业临时根保持短路径。
+          ci_tmp="$(mktemp -d /tmp/digital-ci.XXXXXXXX)"
           printf 'TMPDIR=%s\n' "$ci_tmp" >> "$GITHUB_ENV"
       - name: 安装锁定依赖
         run: pnpm install --frozen-lockfile
