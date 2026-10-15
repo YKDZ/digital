@@ -215,7 +215,7 @@ pnpm exec turbo run deployment --filter=@digital/web
 
 构建网络由 Docker 默认配置提供。宿主网络可达而桥接网络无法访问依赖仓库的开发环境，可显式设置 `DIGITAL_DEPLOYMENT_BUILD_NETWORK=host`，向同一正式构建传入 Docker 的原生网络选项；CI 沿用 runner 的默认网络。
 
-仓库开发容器使用 Unix Docker 宿主的网络，并将工作区挂载到与宿主相同的绝对路径，使发布端口、素材和证据目录在验收进程与 daemon 两侧都可访问。更新这项配置后须重建开发容器；既有会话仍使用原来的路径与网络。
+仓库开发容器启用 init 回收孤儿进程，使用 Unix Docker 宿主的网络，并将工作区挂载到与宿主相同的绝对路径，使发布端口、素材和证据目录在验收进程与 daemon 两侧都可访问。更新这项配置后须重建开发容器；既有会话仍使用原来的进程回收方式、路径与网络。
 
 检查默认选择空闲端口，仍可通过 `DIGITAL_DEPLOYMENT_PORT` 与 `DIGITAL_COMPOSE_CHECK_PORT` 指定独占端口。环境及证据使用本次唯一身份；成功先保存证据再回收自有资源，包括已经验证的预期失败反例，真实失败保留诊断和数据。
 

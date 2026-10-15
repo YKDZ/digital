@@ -1,5 +1,6 @@
 {
   "name": "digital",
+  "init": true,
   "build": {
     "dockerfile": "Dockerfile",
     "args": {
