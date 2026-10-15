@@ -190,23 +190,25 @@ describe("observed material association", () => {
       "a non-whole role",
       (value: ObservedMaterialAssociationSubmission) => ({
         ...value,
-        artifactAssociations: [
-          { ...value.artifactAssociations[0], role: "asset.cover" },
-          value.artifactAssociations[1],
-        ],
+        artifactAssociations: value.artifactAssociations.map(
+          (association, index) =>
+            index === 0 ? { ...association, role: "asset.cover" } : association,
+        ),
       }),
     ],
     [
       "a cross-subject association",
       (value: ObservedMaterialAssociationSubmission) => ({
         ...value,
-        artifactAssociations: [
-          {
-            ...value.artifactAssociations[0],
-            target: { kind: "entity" as const, entityId: "asset-other" },
-          },
-          value.artifactAssociations[1],
-        ],
+        artifactAssociations: value.artifactAssociations.map(
+          (association, index) =>
+            index === 0
+              ? {
+                  ...association,
+                  target: { kind: "entity" as const, entityId: "asset-other" },
+                }
+              : association,
+        ),
       }),
     ],
     [
@@ -255,8 +257,8 @@ describe("observed material association", () => {
     expect(() =>
       validateObservedMaterialAssociationSubmission({
         ...value,
-        artifactAssociations: [value.artifactAssociations[0]],
-        supports: [value.supports[0]],
+        artifactAssociations: value.artifactAssociations.slice(0, 1),
+        supports: value.supports.slice(0, 1),
       }),
     ).toThrow();
   });

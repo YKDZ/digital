@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import path from "node:path";
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
@@ -14,20 +13,6 @@ import {
   type ManagedServiceHandoff,
 } from "./support/managed-service.ts";
 
-const repositoryRoot = path.resolve(
-  import.meta.dirname,
-  "..",
-  "..",
-  "..",
-  "..",
-);
-const coverFile = path.join(
-  repositoryRoot,
-  "fixtures",
-  "controlled-source-io",
-  "responses",
-  "dlsite-cover.png",
-);
 const libraryName = "受控夹具资产库";
 const editedLibraryName = "受控夹具资产库已改名";
 const unlistedProduct = "RJ01497788";
@@ -160,7 +145,7 @@ test("受管理真实服务：浏览器从空白正式迁移起步，添加资�
   expect(subject.recognitionState).toBe("recognized");
   expect(JSON.stringify(subject.current)).toContain("RJ01668691");
 
-  const cover = await readFile(coverFile);
+  const cover = await readFile(handoff.expectedCoverFile);
   const coverDigest = createHash("sha256").update(cover).digest("hex");
 
   // 托管封面地址由同一服务在详情投影里给出，指向该产品自己按内容摘要服务的字节。

@@ -3,14 +3,30 @@
   "build": {
     "dockerfile": "Dockerfile",
     "args": {
-      "NODE_VERSION": "24",
-      "PACKAGE_MANAGER_PIN": "pnpm@11.17.0",
-      "PLAYWRIGHT_CLI_PACKAGE": "@playwright/test@^1.61.1"
+      "NODE_VERSION": "24.21.0",
+      "PLAYWRIGHT_CLI_PACKAGE": "@playwright/test@1.62.0"
     }
   },
+  "features": {
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
+  },
+  "containerEnv": {
+    "PNPM_CONFIG_STORE_DIR": "/pnpm/store",
+    "DIGITAL_DEPLOYMENT_BUILD_NETWORK": "host"
+  },
+  "mounts": [
+    {
+      "source": "${devcontainerId}-pnpm-store",
+      "target": "/pnpm/store",
+      "type": "volume"
+    }
+  ],
   "customizations": {
     "vscode": {
       "extensions": ["oxc.oxc-vscode"]
     }
-  }
+  },
+  "workspaceMount": "source=${localWorkspaceFolder},target=${localWorkspaceFolder},type=bind",
+  "workspaceFolder": "${localWorkspaceFolder}",
+  "runArgs": ["--network=host"]
 }

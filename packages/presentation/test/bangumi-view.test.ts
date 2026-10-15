@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { assert, describe, expect, it } from "vitest";
 
 import {
   generalAssetViewInformationRequirement,
@@ -159,7 +159,7 @@ function frierenFacts(): readonly AssetViewFacts[] {
     },
   };
   const episodes = (
-    workId: string,
+    workId: keyof typeof works,
     workTitle: string,
     count: number,
     continuousOffset: number,
@@ -240,6 +240,7 @@ describe("Bangumi Asset View", () => {
     const projected = projectBangumiCatalogue(bloomFacts());
 
     expect(projected).toHaveLength(1);
+    assert.isDefined(projected[0]);
     expect(projected[0]).toMatchObject({
       id: "bangumi-series:entity_bangumi-subject_243981",
       title: "终将成为你",
@@ -268,10 +269,13 @@ describe("Bangumi Asset View", () => {
     const projected = projectBangumiCatalogue(frierenFacts());
 
     expect(projected).toHaveLength(1);
+    assert.isDefined(projected[0]);
     expect(projected[0].works.map((work) => work.title)).toEqual([
       "葬送的芙莉莲",
       "葬送的芙莉莲 第二季",
     ]);
+    assert.isDefined(projected[0].works[0]);
+    assert.isDefined(projected[0].works[1]);
     expect(projected[0].works[0].episodes).toHaveLength(28);
     expect(projected[0].works[1].episodes).toHaveLength(10);
     expect(projected[0].episodes).toHaveLength(38);
@@ -293,6 +297,7 @@ describe("Bangumi Asset View", () => {
     const reversed = projectBangumiCatalogue(frierenFacts().toReversed());
 
     expect(reversed).toEqual(forward);
+    assert.isDefined(reversed[0]);
     expect(
       reversed[0].episodes.map((episode) => episode.continuousPosition),
     ).toEqual(Array.from({ length: 38 }, (_, index) => index + 1));
@@ -319,6 +324,7 @@ describe("Bangumi Asset View", () => {
     const projected = projectBangumiCatalogue(facts);
 
     expect(projected).toHaveLength(1);
+    assert.isDefined(projected[0]);
     expect(projected[0].works).toHaveLength(2);
     expect(projected[0].episodes).toHaveLength(38);
   });

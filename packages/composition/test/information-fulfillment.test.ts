@@ -9,7 +9,7 @@ import {
 } from "@digital/application";
 import { dlsiteInformationFulfillmentCapabilities } from "@digital/dlsite";
 import { SqliteCatalogue } from "@digital/sqlite";
-import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { assert, afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   composeAssetRefresh,
@@ -113,7 +113,7 @@ describe("information fulfillment composition", () => {
     const workflowClose = vi.fn(() => drain);
     const persistence = { close: vi.fn() };
     const workflow = composeOwnedAssetRefresh(
-      { close: workflowClose } as never,
+      { close: workflowClose },
       persistence,
     );
     const closing = workflow.close();
@@ -133,7 +133,7 @@ describe("information fulfillment composition", () => {
     const workflowClose = vi.fn(() => Promise.reject(terminalizationFailure));
     const persistence = { close: vi.fn() };
     const workflow = composeOwnedAssetRefresh(
-      { close: workflowClose } as never,
+      { close: workflowClose },
       persistence,
     );
 
@@ -153,7 +153,7 @@ describe("information fulfillment composition", () => {
         async close() {
           order.push("workflow");
         },
-      } as never,
+      },
       {
         close() {
           order.push("persistence");
@@ -593,6 +593,7 @@ describe("information fulfillment composition", () => {
         replacement.workflow,
         executionId!,
       );
+      assert.isDefined(recovered);
       expect(recovered.execution.reason).toBeUndefined();
       expect(recovered.execution).toMatchObject({
         status: "completed",
@@ -671,7 +672,9 @@ describe("information fulfillment composition", () => {
         intervalMilliseconds: 60_000,
         acceptTrusted: true,
       });
-      const parent = automated.initial?.execution;
+      assert.isDefined(automated.initial);
+      assert(automated.initial.status === "started");
+      const parent = automated.initial.execution;
       const subjects =
         parent === undefined
           ? []
@@ -823,6 +826,7 @@ describe("information fulfillment composition", () => {
         metadataOnly.subjects[0]!.inputs[0]!.executionReferences![0]!
           .workflowExecutionId,
       );
+      assert.isDefined(unchanged);
       expect(
         unchanged.sourceRefreshRuns!.every((run) =>
           run.scopes.every((scope) => scope.outcome === "unchanged"),
@@ -1579,9 +1583,11 @@ describe("information fulfillment composition", () => {
           (address) => address === "https://img.dlsite.jp/primary.jpg",
         ),
       ).toHaveLength(1);
+      assert.isDefined(automatic.initial);
+      assert(automatic.initial.status === "started");
       expect(
         await workflow.acceptedSubjectsOfLibraryScan(
-          automatic.initial!.execution.execution.id,
+          automatic.initial.execution.execution.id,
         ),
       ).toEqual([expect.objectContaining({ subjectId })]);
       expect(await workflow.listInspections()).toHaveLength(executionCount + 2);

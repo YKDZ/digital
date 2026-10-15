@@ -26,10 +26,11 @@
     "format:write": "oxfmt --write --config ../../oxfmt.config.ts .",
     "lint": "oxlint --quiet --format=unix --config ../../oxlint.config.ts --ignore-pattern node_modules .",
     "lint:fix": "oxlint --format=unix --config ../../oxlint.config.ts . --fix",
-    "pretest": "pnpm build",
-    "test": "vitest run --reporter=verbose",
+    "test": "vitest run --exclude '**/production-migrations.test.ts' --reporter=verbose",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
-    "dev:build": "node --conditions=digital-source ../../scripts/build-development.ts"
+    "dev:build": "pnpm --workspace-root run development:build @digital/db-migrations",
+    "dev:compile": "rm -rf .turbo/development && tsc -p tsconfig.build.json --customConditions digital-development --pretty false --incremental --outDir .turbo/development/dist --tsBuildInfoFile .turbo/development/build.tsbuildinfo",
+    "test:process": "vitest run test/production-migrations.test.ts --reporter=verbose"
   },
   "dependencies": {
     "@digital/product-data": "workspace:*",

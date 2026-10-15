@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { deflateRawSync } from "node:zlib";
 
 import type { CapabilityCoordinate } from "@digital/domain";
-import { describe, expect, it } from "vitest";
+import { assert, describe, expect, it } from "vitest";
 
 import {
   EpubEmbeddedCoverAcquirer,
@@ -14,6 +14,14 @@ import {
 function byteSource(bytes: Uint8Array, logicalLocation: string) {
   return {
     logicalLocation,
+    byteLength: bytes.byteLength,
+    modifiedAt: "2026-07-29T00:00:00.000Z",
+    async readChunk(offset: number, maximumBytes: number) {
+      return {
+        bytes: bytes.slice(offset, offset + maximumBytes),
+        done: offset + maximumBytes >= bytes.byteLength,
+      };
+    },
     async read() {
       return bytes;
     },
@@ -124,6 +132,7 @@ describe("EPUB publication inspection", () => {
     const prefixed = await inspect(
       `<dc:identifier>ISBN-13: 978-0-306-40615-7</dc:identifier>`,
     );
+    assert.isDefined(prefixed);
     const garbage = await inspect(
       `<dc:identifier>garbage9780306406157suffix</dc:identifier>`,
     );
@@ -150,7 +159,9 @@ describe("EPUB publication inspection", () => {
       conflictIsbnFirst,
       conflictIsbnLast,
     ]) {
+      assert.isDefined(rejected);
       expect(rejected.inspection?.identifiers).toEqual([]);
+      assert.isDefined(rejected);
       expect(
         new EpubLocalPublicationRecognizer().canRecognize(
           observedContext(rejected),
@@ -292,10 +303,12 @@ describe("EPUB publication inspection", () => {
       observedArtifactReference: "revision-epub2",
       byteSource: byteSource(epub2, "publication.epub"),
     });
+    assert.isDefined(epub2Evidence);
     const [epub3Evidence] = await inspector.inspect({
       observedArtifactReference: "revision-epub3",
       byteSource: byteSource(epub3, "publication.epub"),
     });
+    assert.isDefined(epub3Evidence);
 
     expect(epub2Evidence?.inspection?.metadata).toEqual(
       expect.arrayContaining([
@@ -407,7 +420,9 @@ describe("EPUB publication inspection", () => {
     });
 
     const epub2Part = epub2Evidence.inspection!.parts[0];
+    assert.isDefined(epub2Part);
     const epub3Part = epub3Evidence.inspection!.parts[0];
+    assert.isDefined(epub3Part);
     expect(epub2Part.locator).toBe(
       "epub:OPS/book.opf#/metadata/meta[@name='cover'][@content='cover2']->manifest/item[@id='cover2']->entry:OPS/images/cover.jpg",
     );
@@ -530,6 +545,7 @@ describe("EPUB publication inspection", () => {
         byteSource: byteSource(fixture(""), "local.epub"),
       })
     )[0];
+    assert.isDefined(noIsbn);
     const withIsbn = (
       await inspector.inspect({
         observedArtifactReference: "revision-official",
@@ -541,6 +557,7 @@ describe("EPUB publication inspection", () => {
         ),
       })
     )[0];
+    assert.isDefined(withIsbn);
     const conflicting = (
       await inspector.inspect({
         observedArtifactReference: "revision-conflict",
@@ -552,6 +569,7 @@ describe("EPUB publication inspection", () => {
         ),
       })
     )[0];
+    assert.isDefined(conflicting);
     const recognizer = new EpubLocalPublicationRecognizer();
     const localContext = observedContext(noIsbn);
 
@@ -586,6 +604,7 @@ describe("EPUB publication inspection", () => {
           proposal.ruleResults.some((rule) => "identities" in rule),
       ).toBe(false);
     }
+    assert.isDefined(localContext.basis.artifactRevisions[0]);
     for (const forged of forgedCoordinates(noIsbn.producer)) {
       expect(
         recognizer.canRecognize({

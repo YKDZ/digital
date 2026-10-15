@@ -1,7 +1,10 @@
 import type { AssetRefreshWorkflow } from "@digital/application";
 import { describe, expect, it } from "vitest";
 
-import { resolveAssetRefreshSelection } from "../src/index";
+import {
+  resolveAssetRefreshSelection,
+  type AssetRefreshSelectionNode,
+} from "../src/index";
 
 describe("Asset Refresh Selection resolver", () => {
   it("resolves a synthetic parent and explicit multi-selection without losing repeated subject paths", () => {
@@ -51,7 +54,7 @@ describe("Asset Refresh Selection resolver", () => {
     const parent: {
       key: string;
       label: string;
-      children: unknown[];
+      children: AssetRefreshSelectionNode[];
     } = {
       key: "parent",
       label: "Parent",
@@ -77,13 +80,20 @@ describe("Asset Refresh Selection resolver", () => {
         }
         return {
           execution: {
+            id: "selection-refresh",
+            selection: { intent: "metadata-refresh" },
+            status: "completed",
+            stage: "completed",
+            sourceRecordIds: [],
+            dispositions: [],
             targetDispositions: input.selection.subjects.map((target) => ({
               key: `subject:${target.subjectId}`,
               target: { kind: "subject" as const, subjectId: target.subjectId },
               status: "completed" as const,
             })),
           },
-        } as Awaited<ReturnType<AssetRefreshWorkflow["refreshMetadata"]>>;
+          sourceRecords: [],
+        };
       },
     } satisfies Pick<AssetRefreshWorkflow, "refreshMetadata">;
     const selection = resolveAssetRefreshSelection([

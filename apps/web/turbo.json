@@ -3,14 +3,188 @@
   "tags": ["composition-root"],
   "tasks": {
     "build": {
-      "outputs": ["dist/**"]
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"],
+      "tags": ["quality:light"]
+    },
+    "deployment": {
+      "cache": false,
+      "passThroughEnv": [
+        "DIGITAL_DEPLOYMENT_*",
+        "DIGITAL_COMPOSE_CHECK_*",
+        "DIGITAL_DEPLOYMENT_PLAYWRIGHT_CLIENT",
+        "PLAYWRIGHT_BROWSERS_PATH",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "DIGITAL_CI_EVIDENCE",
+        "DOCKER_HOST",
+        "DOCKER_CONTEXT"
+      ],
+      "tags": ["quality:heavy"],
+      "dependsOn": [
+        "build",
+        "@digital/cli#build",
+        "@digital/db-migrations#build",
+        "deployment:prepare",
+        "browser:prepare"
+      ]
+    },
+    "dev": {
+      "tags": ["work:development"],
+      "cache": false
+    },
+    "format:check": {
+      "outputs": [],
+      "tags": ["quality:light"]
+    },
+    "format:write": {
+      "dependsOn": ["lint:fix"],
+      "cache": false,
+      "tags": ["work:repair"]
+    },
+    "lint": {
+      "outputs": [],
+      "tags": ["quality:light"]
+    },
+    "lint:fix": {
+      "cache": false,
+      "tags": ["work:repair"]
+    },
+    "preview": {
+      "tags": ["work:development"],
+      "cache": false
+    },
+    "start": {
+      "tags": ["work:development"],
+      "cache": false
     },
     "test": {
-      "dependsOn": ["$TURBO_EXTENDS$", "@digital/db-migrations#build"]
+      "dependsOn": [
+        "build",
+        "@digital/db-migrations#build",
+        "@digital/sqlite#build"
+      ],
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/fixtures/controlled-source-io/**",
+        "$TURBO_ROOT$/fixtures/controlled-fanbox-session/**",
+        "$TURBO_ROOT$/fixtures/live-corpus/**"
+      ],
+      "outputs": [],
+      "tags": ["quality:light"]
     },
     "test:e2e": {
-      "dependsOn": ["$TURBO_EXTENDS$", "@digital/db-migrations#build"],
+      "dependsOn": ["build", "@digital/db-migrations#build", "browser:prepare"],
+      "cache": false,
+      "passThroughEnv": [
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "DIGITAL_CI_EVIDENCE",
+        "PLAYWRIGHT_BROWSERS_PATH"
+      ],
+      "tags": ["quality:heavy"]
+    },
+    "test:e2e:managed-service": {
+      "dependsOn": [
+        "@digital/web#build",
+        "@digital/environment#build",
+        "browser:prepare",
+        "@digital/db-migrations#build",
+        "//#acceptance:prepare"
+      ],
+      "cache": false,
+      "passThroughEnv": [
+        "DIGITAL_ACCEPTANCE_LEDGER",
+        "DIGITAL_ACCEPTANCE_ARTIFACTS",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "DIGITAL_CI_EVIDENCE",
+        "PLAYWRIGHT_BROWSERS_PATH"
+      ],
+      "tags": ["quality:heavy"]
+    },
+    "test:e2e:provided-service": {
+      "dependsOn": [
+        "@digital/web#build",
+        "browser:prepare",
+        "@digital/db-migrations#build"
+      ],
+      "cache": false,
+      "passThroughEnv": [
+        "DIGITAL_ACCEPTANCE_BASE_URL",
+        "DIGITAL_ACCEPTANCE_LEDGER",
+        "DIGITAL_ACCEPTANCE_ARTIFACTS",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "DIGITAL_CI_EVIDENCE",
+        "PLAYWRIGHT_BROWSERS_PATH"
+      ],
+      "tags": ["quality:conditional"]
+    },
+    "typecheck": {
+      "dependsOn": ["^typecheck"],
+      "outputs": [],
+      "tags": ["quality:light"]
+    },
+    "dev:serve": {
+      "dependsOn": ["^dev:build"],
+      "cache": false,
+      "inputs": [
+        "package.json",
+        "vite.config.ts",
+        "+server.ts",
+        "scripts/start-development.ts",
+        "server/**",
+        "pages/**/+*.ts",
+        "$TURBO_ROOT$/packages/workspace-automation/scripts/development-task.ts"
+      ],
+      "passThroughEnv": [
+        "DIGITAL_DEVELOPMENT_SESSION",
+        "DIGITAL_DEVELOPMENT_WORKSPACE",
+        "DIGITAL_DEVELOPMENT_ENVIRONMENT"
+      ],
+      "tags": ["work:development"]
+    },
+    "test:process": {
+      "dependsOn": ["build", "@digital/db-migrations#build"],
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP", "DIGITAL_CI_EVIDENCE"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/fixtures/controlled-source-io/**",
+        "$TURBO_ROOT$/fixtures/controlled-fanbox-session/**",
+        "$TURBO_ROOT$/fixtures/live-corpus/**"
+      ],
+      "outputs": [],
+      "tags": ["quality:heavy"],
       "cache": false
+    },
+    "browser:prepare": {
+      "tags": ["work:preparation"],
+      "cache": false,
+      "passThroughEnv": ["PLAYWRIGHT_BROWSERS_PATH"]
+    },
+    "acceptance:prepare": {
+      "tags": ["work:preparation"],
+      "cache": false
+    },
+    "deployment:prepare": {
+      "tags": ["work:preparation"],
+      "cache": false,
+      "dependsOn": ["//#acceptance:prepare"],
+      "passThroughEnv": [
+        "DIGITAL_DEPLOYMENT_*",
+        "DIGITAL_COMPOSE_CHECK_*",
+        "DIGITAL_CI_EVIDENCE",
+        "DOCKER_HOST",
+        "DOCKER_CONTEXT",
+        "DOCKER_BUILDKIT",
+        "BUILDKIT_PROGRESS"
+      ]
     }
   }
 }

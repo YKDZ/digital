@@ -2,7 +2,7 @@ import { readFile, readdir, rm, writeFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { afterEach, expect, it } from "vitest";
+import { afterEach, assert, expect, it } from "vitest";
 
 import { ArtifactFrameProofStore } from "../src/index.ts";
 
@@ -54,7 +54,9 @@ it("publishes the fixed DGFPRF01 manifest and rejects any published-bit change",
     "8113a935d2d95c93fdbf5dfc3bf047889b8e27fb453dc5fb2d96d8ad732a83bd",
   );
 
-  manifestBytes[70] ^= 1;
+  const originalByte = manifestBytes[70];
+  assert.isDefined(originalByte);
+  manifestBytes[70] = originalByte ^ 1;
   await writeFile(location, manifestBytes);
   await expect(store.inspect(proof)).resolves.toBeUndefined();
   await expect(store.open(proof)).rejects.toThrow(

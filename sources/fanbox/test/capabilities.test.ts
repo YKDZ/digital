@@ -3,7 +3,7 @@ import {
   type SourceCollectionExecutionContext,
   type SourceCollector,
 } from "@digital/application";
-import { describe, expect, it, vi } from "vitest";
+import { assert, describe, expect, it, vi } from "vitest";
 
 import {
   FanboxSessionTransportFault,
@@ -267,12 +267,14 @@ describe("FANBOX official collection", () => {
       },
     });
     const evidence = directoryEvidence("/library/customudon/25.01.01 post")[0];
+    assert.isDefined(evidence);
 
     const result = await collector.collect(evidence);
 
     expect(result.failures[0]).toMatchObject({
       failureCode: "transport-failure",
     });
+    assert.isDefined(result.failures[0]);
     expect(
       decodeFanboxCollectionFailureCode({
         capability: result.failures[0].capability,
@@ -380,6 +382,7 @@ describe("FANBOX official collection", () => {
     });
 
     const evidence = directoryEvidence("/library/customudon/25.01.01 post")[0];
+    assert.isDefined(evidence);
     const result = await collector.collect(evidence);
 
     expect(result.failures).toEqual([]);
@@ -388,6 +391,7 @@ describe("FANBOX official collection", () => {
       "fanbox.post-detail",
     ]);
     expect(result.records).toHaveLength(2);
+    assert.isDefined(result.records[1]);
     expect(JSON.parse(result.records[1].body)).toMatchObject({
       body: {
         post: {
@@ -465,6 +469,7 @@ describe("FANBOX official collection", () => {
       },
     });
     const evidence = directoryEvidence("/library/customudon/25.01.01 post")[0];
+    assert.isDefined(evidence);
 
     await expect(collector.collect(evidence)).resolves.toMatchObject({
       records: [],
@@ -505,6 +510,7 @@ describe("FANBOX official collection", () => {
       },
     });
     const evidence = directoryEvidence("/library/customudon/25.01.01 post")[0];
+    assert.isDefined(evidence);
 
     const result = await collector.collect(evidence);
 
@@ -529,6 +535,7 @@ describe("FANBOX official collection", () => {
       encodeURIComponent(secret),
     ];
     const evidence = directoryEvidence("/library/customudon/25.01.01 post")[0];
+    assert.isDefined(evidence);
 
     for (const reflected of representations) {
       const collector = scriptedCollector({
@@ -570,6 +577,7 @@ describe("FANBOX official collection", () => {
       const evidence = directoryEvidence(
         "/library/customudon/25.01.01 post",
       )[0];
+      assert.isDefined(evidence);
 
       const result = await collector.collect(evidence);
 
@@ -598,6 +606,7 @@ describe("FANBOX official collection", () => {
       }),
     });
     const evidence = directoryEvidence("/library/customudon/25.01.01 post")[0];
+    assert.isDefined(evidence);
 
     await expect(collector.collect(evidence)).resolves.toMatchObject({
       records: [],
@@ -816,6 +825,7 @@ describe("FANBOX official collection", () => {
         ),
     });
     const evidence = directoryEvidence("/library/customudon/25.01.01 post")[0];
+    assert.isDefined(evidence);
 
     const result = await collector.collect(evidence);
 
@@ -951,6 +961,7 @@ describe("FANBOX official collection", () => {
       evidence: [evidence],
       sourceRecords: result.records,
     });
+    assert.isDefined(batch);
 
     expect(result.failures).toEqual([]);
     expect(result.records).toHaveLength(2);
@@ -1073,6 +1084,7 @@ describe("FANBOX official collection", () => {
       },
     });
     const evidence = directoryEvidence("/library/customudon/25.01.01 post")[0];
+    assert.isDefined(evidence);
 
     const result = await collector.collect(evidence);
 
@@ -1125,6 +1137,7 @@ describe("FANBOX official collection", () => {
   it("retains a valid summary but no fabricated detail record when the protected endpoint is structurally malformed", async () => {
     const details = [{ body: null }];
     const evidence = directoryEvidence("/library/customudon/25.01.01 post")[0];
+    assert.isDefined(evidence);
 
     for (const detail of details) {
       const collector = scriptedCollector({
@@ -1191,6 +1204,7 @@ describe("FANBOX official collection", () => {
       },
     ];
     const evidence = directoryEvidence("/library/customudon/25.01.01 post")[0];
+    assert.isDefined(evidence);
 
     for (const detail of details) {
       const collector = scriptedCollector({
@@ -1258,6 +1272,7 @@ describe("FANBOX official collection", () => {
         ),
     });
     const evidence = directoryEvidence("/library/customudon/25.01.01 post")[0];
+    assert.isDefined(evidence);
 
     const result = await collector.collect(evidence);
 
@@ -1306,6 +1321,7 @@ describe("FANBOX official collection", () => {
         ),
     });
     const evidence = directoryEvidence("/library/customudon/25.01.01 post")[0];
+    assert.isDefined(evidence);
 
     const result = await collector.collect(evidence);
 
@@ -1353,6 +1369,7 @@ describe("FANBOX official collection", () => {
         ),
     });
     const evidence = directoryEvidence("/library/customudon/25.01.01 post")[0];
+    assert.isDefined(evidence);
 
     const result = await collector.collect(evidence);
 
@@ -1621,6 +1638,7 @@ describe("FANBOX official collection", () => {
         ),
     });
     const evidence = directoryEvidence("/library/customudon/25.01.01 post")[0];
+    assert.isDefined(evidence);
 
     const result = await collector.collect(evidence);
 
@@ -1665,6 +1683,7 @@ describe("FANBOX official collection", () => {
       }),
     });
     const evidence = directoryEvidence("/library/customudon/25.01.01 post")[0];
+    assert.isDefined(evidence);
 
     const result = await collector.collect(evidence);
 
@@ -1685,6 +1704,7 @@ describe("FANBOX official collection", () => {
       },
     });
     const evidence = directoryEvidence("/library/customudon/25.01.01 post")[0];
+    assert.isDefined(evidence);
 
     const result = await collector.collect(evidence);
 
@@ -1740,12 +1760,14 @@ describe("FANBOX official collection", () => {
       },
     });
     const evidence = directoryEvidence("/library/customudon/24.03.07 post")[0];
+    assert.isDefined(evidence);
 
     const result = await collector.collect(evidence);
     const [batch] = new FanboxSourceInterpreter().interpret({
       evidence: [evidence],
       sourceRecords: result.records,
     });
+    assert.isDefined(batch);
 
     expect(requests).toBe(2);
     expect(result.failures).toEqual([]);
@@ -1801,6 +1823,7 @@ describe("FANBOX official collection", () => {
       },
     });
     const evidence = directoryEvidence("/library/customudon/25.01.01 post")[0];
+    assert.isDefined(evidence);
 
     const result = await collector.collect(evidence);
 
@@ -1863,6 +1886,7 @@ describe("FANBOX official collection", () => {
             },
     });
     const evidence = directoryEvidence("/library/customudon/25.01.01 post")[0];
+    assert.isDefined(evidence);
 
     const result = await collector.collect(evidence);
 
@@ -2094,10 +2118,12 @@ describe("FANBOX interpretation", () => {
       evidence: [evidence],
       sourceRecords: collected.records,
     });
+    assert.isDefined(batch);
     const [reinterpreted] = new FanboxSourceInterpreter().interpret({
       evidence: [evidence],
       sourceRecords: collected.records,
     });
+    assert.isDefined(reinterpreted);
 
     expect(
       batch.metadata
@@ -2219,6 +2245,7 @@ describe("FANBOX interpretation", () => {
         evidence: [evidence],
         sourceRecords: collected.records,
       });
+      assert.isDefined(batch);
       return batch.sourceArtifacts.map((item) => [
         item.selectionEvidence?.suggestedFilename,
         item.selectionEvidence?.sourceOrdinal,
@@ -2251,6 +2278,7 @@ describe("FANBOX interpretation", () => {
         evidence: [evidence],
         sourceRecords: collected.records,
       });
+      assert.isDefined(batch);
       return {
         ordinals: batch.sourceArtifacts.map((item) => [
           item.selectionEvidence?.suggestedFilename,
@@ -2478,6 +2506,7 @@ describe("FANBOX interpretation", () => {
       true,
     );
     const [batch] = interpreter.interpret({ evidence, sourceRecords: records });
+    assert.isDefined(batch);
     const proposal = new FanboxExactRecognizer().recognize({
       evidence,
       basis: { kind: "source-interpretation", interpretation: batch },
@@ -2555,6 +2584,7 @@ describe("FANBOX interpretation", () => {
       evidence,
       sourceRecords: records,
     });
+    assert.isDefined(batch);
     const proposal = new FanboxExactRecognizer().recognize({
       evidence,
       basis: { kind: "source-interpretation", interpretation: batch },
@@ -2667,6 +2697,7 @@ describe("FANBOX interpretation", () => {
     const evidence = directoryEvidence("/library/customudon/20.12.29 post");
 
     const [batch] = interpreter.interpret({ evidence, sourceRecords: records });
+    assert.isDefined(batch);
 
     expect(batch.sourceArtifacts).toEqual([
       expect.objectContaining({
@@ -2719,6 +2750,7 @@ describe("FANBOX interpretation", () => {
     const evidence = directoryEvidence("/library/customudon/25.01.01 post");
 
     const [batch] = interpreter.interpret({ evidence, sourceRecords: records });
+    assert.isDefined(batch);
 
     expect(
       batch.sourceArtifacts.some((item) => item.role === "asset.primary-cover"),
@@ -2753,6 +2785,7 @@ describe("FANBOX interpretation", () => {
     const evidence = directoryEvidence("/library/customudon/25.01.01 post");
 
     const [batch] = interpreter.interpret({ evidence, sourceRecords: records });
+    assert.isDefined(batch);
 
     expect(batch.metadata).toEqual([]);
   });
@@ -2779,6 +2812,7 @@ describe("FANBOX interpretation", () => {
     const evidence = directoryEvidence("/library/customudon/20.12.29 post");
 
     const [batch] = interpreter.interpret({ evidence, sourceRecords: records });
+    assert.isDefined(batch);
 
     expect(
       batch.metadata.some((item) => item.property === "asset.summary"),

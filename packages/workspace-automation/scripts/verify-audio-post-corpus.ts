@@ -8,15 +8,20 @@ import {
   prepareEnvironment,
   startEnvironment,
   stopEnvironment,
-} from "../packages/environment/src/index.ts";
-import { loadControlledSourceIo } from "../packages/test-support/src/source-io.ts";
+} from "@digital/environment";
 import {
   createProductClient,
   digestDirectory,
-  intakeDirectories,
   type JsonObject,
   type JsonValue,
-} from "./preview-product.ts";
+} from "@digital/test-support/product-client";
+import { loadControlledSourceIo } from "@digital/test-support/source-io";
+
+import {
+  configureAudioPostSources,
+  intakeAudioPostCase,
+} from "./corpus-verification.ts";
+import { requireInput } from "./inputs.ts";
 
 /** 资料调用方只提交普通目录和来源配置，通过正式 HTTP 核对独立预期。 */
 type CorpusCase = {
@@ -38,17 +43,21 @@ type CorpusCase = {
   }[];
 };
 
-const workspacePath = path.resolve(import.meta.dirname, "..");
-const fixture = path.join(workspacePath, "fixtures/preview-corpus/audio-posts");
+const workspacePath = requireInput("DIGITAL_AUTOMATION_WORKSPACE");
+const fixture = requireInput("DIGITAL_AUTOMATION_SOURCE_DIRECTORY");
 const environment = process.argv[2];
-const evidencePath = process.argv[3];
+const evidenceArgument = process.argv[3];
+const evidencePath =
+  evidenceArgument === undefined
+    ? undefined
+    : path.resolve(workspacePath, evidenceArgument);
 const port = Number(process.argv[4]);
 const controller = new AbortController();
 for (const signal of ["SIGINT", "SIGTERM"] as const)
   process.once(signal, () => controller.abort(new Error(`收到 ${signal}`)));
 assert(
   environment && evidencePath && Number.isInteger(port),
-  "用法：node scripts/verify-audio-post-corpus.ts <独立环境名> <证据文件> <空闲端口> [资料ID…]",
+  "用法：pnpm verify:audio-posts <独立环境名> <证据文件> <空闲端口> [资料ID…]",
 );
 const all = JSON.parse(
   await readFile(path.join(fixture, "cases.json"), "utf8"),
@@ -132,36 +141,11 @@ try {
     signal: controller.signal,
   });
   assert.equal((await client.readiness()).ready, true);
-  if (cases.some((item) => item.kind === "post")) {
-    const browserCredential = JSON.parse(
-      await readFile(
-        path.join(fixture, "connections/synthetic-customudon.json"),
-        "utf8",
-      ),
-    ) as JsonObject;
-    const connection = await client.post("/settings/connections", {
-      source: "fanbox",
-      action: "configure",
-      creatorId: "customudon",
-      browserCredential,
-    });
-    assert.equal(connection.status, 200);
+  await configureAudioPostSources(client, fixture, cases);
+  if (cases.some((item) => item.kind === "post"))
     evidence["sessionConfigured"] = true;
-  }
   for (const item of cases) {
-    const profiles =
-      item.kind === "audio"
-        ? ["dlsite-voice"]
-        : item.kind === "post"
-          ? ["fanbox"]
-          : ["dlsite-voice", "fanbox", "books", "anime", "movies"];
-    const intake = await intakeDirectories(client, {
-      displayName: `轻量资料 ${item.id}`,
-      directories: [path.join(fixture, item.directory)],
-      recognitionProfileIds: profiles,
-      sourceIdentities: ["dlsite", "fanbox"],
-      workflowTimeoutMs: 300_000,
-    });
+    const intake = await intakeAudioPostCase(client, fixture, item);
     const rootId = intake.observedRootIds[0];
     assert(rootId);
     const observed = await client.get("/intake", { rootId });

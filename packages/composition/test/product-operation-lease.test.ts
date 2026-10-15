@@ -1,10 +1,10 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ProductDataOperations } from "@digital/product-data";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
   composeAssetRefresh,
@@ -13,22 +13,6 @@ import {
 } from "../src/runtime.ts";
 
 const temporaryRoots: string[] = [];
-
-beforeAll(() => {
-  const built = spawnSync(
-    "pnpm",
-    ["--filter", "@digital/composition", "build"],
-    {
-      cwd: path.resolve(import.meta.dirname, "../../.."),
-      encoding: "utf8",
-    },
-  );
-  if (built.status !== 0) {
-    throw new Error(
-      `could not build the production lease child: ${built.stdout}${built.stderr}`,
-    );
-  }
-});
 
 afterEach(async () => {
   await Promise.all(

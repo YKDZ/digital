@@ -50,8 +50,16 @@ it("后台轮询不接管本次启动后仍在等待来源的人工检查", asyn
   const media = await mkdtemp(path.join(tmpdir(), "digital-live-scan-"));
   await mkdir(path.join(media, "RJ01668691"));
   await writeFile(path.join(media, "RJ01668691", "notes.txt"), "音声附带材料");
-  const release = Promise.withResolvers<void>();
-  const entered = Promise.withResolvers<void>();
+  let releaseResolve!: () => void;
+  const releasePromise = new Promise<void>((resolve) => {
+    releaseResolve = resolve;
+  });
+  const release = { promise: releasePromise, resolve: releaseResolve };
+  let enteredResolve!: () => void;
+  const enteredPromise = new Promise<void>((resolve) => {
+    enteredResolve = resolve;
+  });
+  const entered = { promise: enteredPromise, resolve: enteredResolve };
   vi.stubGlobal("fetch", async (address: string) => {
     entered.resolve();
     await release.promise;
@@ -111,7 +119,9 @@ it("后台轮询不接管本次启动后仍在等待来源的人工检查", asyn
     });
     release.resolve();
     expect((await scanning).execution.outcome).toBe("accepted");
-    expect(await application.workflow.listCurrentCatalogue()).toHaveLength(1);
+    expect(
+      (await application.workflow.listCurrentCataloguePage()).items,
+    ).toHaveLength(1);
   } finally {
     release.resolve();
     await scan;

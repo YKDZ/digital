@@ -266,9 +266,17 @@ describe("可执行根的受控来源启动解析", () => {
         "https://www.dlsite.com/maniax/product/info/ajax?product_id=RJ01668691",
       ),
     ).rejects.toBeInstanceOf(ControlledRequestRefusal);
-    await expect(resolved.sessionTransport.transact()).rejects.toBeInstanceOf(
-      ControlledRequestRefusal,
-    );
+    await expect(
+      resolved.sessionTransport.transact({
+        creatorId: "offline-creator",
+        privateContext: {
+          format: "fanbox-browser-request-context/2",
+          userAgent: "offline-test",
+          cookies: [],
+        },
+        use: async (get) => await get({ kind: "login-status" }),
+      }),
+    ).rejects.toBeInstanceOf(ControlledRequestRefusal);
   });
 });
 

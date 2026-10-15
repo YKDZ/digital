@@ -22,7 +22,8 @@
     "lint:fix": "oxlint --format=unix --config ../../oxlint.config.ts . --fix",
     "test": "vitest run --reporter=verbose --passWithNoTests",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
-    "dev:build": "node --conditions=digital-source ../../scripts/build-development.ts"
+    "dev:build": "pnpm --workspace-root run development:build @digital/cli-delivery",
+    "dev:compile": "rm -rf .turbo/development && tsc -p tsconfig.build.json --customConditions digital-development --pretty false --incremental --outDir .turbo/development/dist --tsBuildInfoFile .turbo/development/build.tsbuildinfo"
   },
   "dependencies": {
     "@digital/application": "workspace:*",

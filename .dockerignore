@@ -1,5 +1,12 @@
 .git
 .scratch
+.digital
+.env
+.env.local
+.env.*.local
+*.env
+credentials/
+secrets/
 **/node_modules
 **/dist
 **/*.tsbuildinfo

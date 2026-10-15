@@ -14,10 +14,11 @@ import path from "node:path";
 import {
   assetRefreshSelectionVersion,
   type EffectiveSubjectRead,
+  type InformationRequirement,
 } from "@digital/application";
 import { ProductBangumiSourceConnection } from "@digital/bangumi";
 import { ProductSourceConnectionPrivateState } from "@digital/product-data";
-import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { assert, afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
 import { composeAssetRefresh } from "../src/runtime.ts";
 import {
@@ -162,6 +163,7 @@ describe("static source registration", () => {
         state: "awaiting-selection",
         candidates: [{}, {}],
       });
+      assert.isDefined(reopened!.candidates[1]);
       const selected = await workflow.selectSourceAssociationCandidate({
         executionId: decision.executionId,
         candidateReference: reopened!.candidates[1].reference,
@@ -180,6 +182,7 @@ describe("static source registration", () => {
         ]),
       );
       const persisted = await workflow.inspect(decision.executionId);
+      assert.isDefined(persisted);
       const secondDetailRecord = persisted.sourceRecords.find(
         (record) =>
           record.nativeAddress ===
@@ -1838,14 +1841,16 @@ describe("product-managed film source connections", () => {
       if (triggered?.status !== "started")
         throw new Error("missing automatic execution");
       await vi.waitFor(async () => {
-        expect(
-          (await workflow.inspect(triggered.execution.execution.id)).execution
-            .status,
-        ).not.toBe("running");
+        const inspection = await workflow.inspect(
+          triggered.execution.execution.id,
+        );
+        assert.isDefined(inspection);
+        expect(inspection.execution.status).not.toBe("running");
       });
       const completed = await workflow.inspect(
         triggered.execution.execution.id,
       );
+      assert.isDefined(completed);
       const scan = await workflow.inspectAssetLibraryScan(
         completed.execution.id,
       );
@@ -1853,6 +1858,7 @@ describe("product-managed film source connections", () => {
       const child = await workflow.inspect(
         scan!.directories[0]!.childExecutionId!,
       );
+      assert.isDefined(child);
       expect({ execution: child }).toMatchObject({
         execution: {
           execution: {
@@ -2499,7 +2505,7 @@ function jsonResponse(body: unknown) {
 async function scanStrictFilm(
   workflow: ReturnType<typeof composeAssetRefresh>,
   directory: string,
-  informationRequirement = {
+  informationRequirement: InformationRequirement = {
     metadataUsageContext: "asset.ordinary",
     metadata: [{ property: "asset.title", necessity: "required" as const }],
     artifactRoles: [],

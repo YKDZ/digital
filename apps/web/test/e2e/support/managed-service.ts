@@ -12,6 +12,7 @@ export type ManagedServiceHandoff = {
   readonly productDataRoot: string;
   readonly materialDirectory: string;
   readonly manifestPath: string;
+  readonly expectedCoverFile: string;
   readonly sourceMode: string;
   readonly productLogFile: string;
   readonly run: {

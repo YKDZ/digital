@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
+import path from "node:path";
 
 const externalBaseUrlName = "PLAYWRIGHT_EXTERNAL_BASE_URL";
 const externalReadinessTimeoutMs = 30_000;
@@ -98,10 +99,23 @@ if (externalServiceUrl) {
 }
 
 const command = process.platform === "win32" ? "playwright.cmd" : "playwright";
-const child = spawn(command, ["test", ...process.argv.slice(2)], {
-  env,
-  stdio: "inherit",
-});
+const child = spawn(
+  command,
+  [
+    "test",
+    ...(process.env.DIGITAL_CI_EVIDENCE === undefined
+      ? []
+      : [
+          `--output=${path.join(process.env.DIGITAL_CI_EVIDENCE, "browser")}`,
+          "--reporter=list",
+        ]),
+    ...process.argv.slice(2),
+  ],
+  {
+    env,
+    stdio: "inherit",
+  },
+);
 
 const forwardedSignals = ["SIGINT", "SIGTERM"] as const;
 const forwardSignal = (signal: NodeJS.Signals): void => {

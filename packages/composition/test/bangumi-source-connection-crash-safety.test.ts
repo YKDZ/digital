@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { ProductBangumiSourceConnection } from "@digital/bangumi";
 import { ProductSourceConnectionPrivateState } from "@digital/product-data";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { assert, afterEach, describe, expect, it, vi } from "vitest";
 
 const temporaryRoots: string[] = [];
 const environment = {
@@ -31,7 +31,8 @@ describe("Bangumi OAuth immutable private lease namespaces", () => {
     let authorizationRequests = 0;
     let refreshRequests = 0;
     const request = vi.fn(async (_input: string, init?: RequestInit) => {
-      const parameters = new URLSearchParams(init?.body);
+      assert(typeof init?.body === "string");
+      const parameters = new URLSearchParams(init.body);
       if (parameters.get("grant_type") === "authorization_code") {
         authorizationRequests += 1;
         return response({
@@ -137,7 +138,8 @@ describe("Bangumi OAuth immutable private lease namespaces", () => {
     let currentTime = new Date("2026-08-12T00:00:00.000Z");
     let refreshRequests = 0;
     const request = vi.fn(async (_input: string, init?: RequestInit) => {
-      const parameters = new URLSearchParams(init?.body);
+      assert(typeof init?.body === "string");
+      const parameters = new URLSearchParams(init.body);
       if (parameters.get("grant_type") === "authorization_code") {
         return response({
           access_token: "initial-access",
@@ -191,7 +193,8 @@ describe("Bangumi OAuth immutable private lease namespaces", () => {
       productDataDirectory,
       now: () => currentTime,
       request: async (_input, init) => {
-        const grantType = new URLSearchParams(init?.body).get("grant_type");
+        assert(typeof init?.body === "string");
+        const grantType = new URLSearchParams(init.body).get("grant_type");
         return response(
           grantType === "authorization_code"
             ? {

@@ -2,14 +2,6 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { createServer } from "node:net";
 import path from "node:path";
 
-/** 公开生命周期入口：只消费 `digital-environment` 已构建的 CLI 交付物。 */
-export const environmentCliRelativePath = path.join(
-  "packages",
-  "environment",
-  "dist",
-  "cli.js",
-);
-
 /** 本票（Web 真实 HTTP 验收）只允许使用 54001—54999 端口段。 */
 export const ownedPortRange = { first: 54_001, last: 54_999 } as const;
 
@@ -213,21 +205,28 @@ export async function claimFreePort(
 ): Promise<number> {
   for (let port = range.first; port <= range.last; port += 1) {
     const available = await probePort(port);
-    if (available) return port;
+    if (available !== undefined) return available;
   }
   throw new Error(`自有端口段 ${range.first}—${range.last} 内没有可用端口`);
 }
 
-function probePort(port: number): Promise<boolean> {
+function probePort(port: number): Promise<number | undefined> {
   return new Promise((resolve) => {
     const server = createServer();
-    const settle = (value: boolean): void => {
+    const settle = (value: number | undefined): void => {
       server.close(() => {
         resolve(value);
       });
     };
-    server.once("error", () => resolve(false));
-    server.once("listening", () => settle(true));
+    server.once("error", () => resolve(undefined));
+    server.once("listening", () => {
+      const address = server.address();
+      settle(
+        typeof address === "object" && address !== null
+          ? address.port
+          : undefined,
+      );
+    });
     server.listen(port, "127.0.0.1");
   });
 }

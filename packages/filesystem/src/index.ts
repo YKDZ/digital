@@ -1,5 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
+import {
+  constants as fsConstants,
+  type Stats,
+  type BigIntStats,
+} from "node:fs";
 import {
   access,
   lstat,
@@ -110,13 +114,13 @@ class NodeBoundDirectory {
 
 class NodeBoundFile {
   readonly handle: FileHandle;
-  readonly details: Awaited<ReturnType<FileHandle["stat"]>>;
+  readonly details: Stats | BigIntStats;
   readonly entryDirectory: FileHandle;
   readonly entryName: string;
 
   constructor(
     handle: FileHandle,
-    details: Awaited<ReturnType<FileHandle["stat"]>>,
+    details: Stats | BigIntStats,
     entryDirectory: FileHandle,
     entryName: string,
   ) {
@@ -543,7 +547,7 @@ class NodeObservedByteSource extends ObservedByteSource {
   constructor(
     handle: FileHandle,
     logicalLocation: string,
-    details: Awaited<ReturnType<FileHandle["stat"]>>,
+    details: Stats | BigIntStats,
     entryDirectory: FileHandle,
     entryName: string,
   ) {
@@ -583,7 +587,7 @@ class NodeObservedByteSource extends ObservedByteSource {
   }
 
   private async assertStable(): Promise<void> {
-    let current: Awaited<ReturnType<FileHandle["stat"]>>;
+    let current: Stats | BigIntStats;
     let currentEntry: Awaited<ReturnType<typeof stat>>;
     try {
       [current, currentEntry] = await Promise.all([
@@ -925,7 +929,7 @@ export class ReadOnlyFilesystemObserver implements ObservedFilesystemCapability 
     readonly activeDirectoryTargets: ReadonlySet<string>;
     readonly visitedDirectoryTargets: Set<string>;
   }): Promise<void> {
-    let directoryDetails: Awaited<ReturnType<FileHandle["stat"]>>;
+    let directoryDetails: Stats | BigIntStats;
     try {
       directoryDetails = await input.directory.handle.stat();
     } catch (error) {
@@ -1253,7 +1257,7 @@ function allowsDirectoryLinks(
 
 function fileObservation(
   relativePath: string,
-  details: Awaited<ReturnType<FileHandle["stat"]>>,
+  details: Stats | BigIntStats,
   objectIdentityScope: string,
 ): {
   readonly relativePath: string;
@@ -1283,7 +1287,7 @@ function fileObservation(
 }
 
 function opaqueObjectIdentity(
-  details: Awaited<ReturnType<FileHandle["stat"]>>,
+  details: Stats | BigIntStats,
   observerScope: string,
 ):
   | {
@@ -1620,10 +1624,7 @@ class NodeManagedArtifactByteSource {
   private readonly identity: string;
   private closed = false;
 
-  constructor(
-    handle: FileHandle,
-    details: Awaited<ReturnType<FileHandle["stat"]>>,
-  ) {
+  constructor(handle: FileHandle, details: Stats | BigIntStats) {
     this.handle = handle;
     this.byteLength = Number(details.size);
     this.identity = observedFileIdentity(details);

@@ -1,6 +1,6 @@
-import path from "node:path";
+import { developEnvironment } from "@digital/environment";
 
-import { developEnvironment } from "../packages/environment/src/index.ts";
+import { requireInput } from "./inputs.ts";
 
 const environment = process.argv[2];
 if (environment === undefined || process.argv.length > 3) {
@@ -10,7 +10,7 @@ if (environment === undefined || process.argv.length > 3) {
   process.exitCode = 2;
 } else {
   const result = await developEnvironment({
-    workspacePath: path.resolve(import.meta.dirname, ".."),
+    workspacePath: requireInput("DIGITAL_AUTOMATION_WORKSPACE"),
     environment,
     onOutput: (text) => process.stdout.write(text),
   });

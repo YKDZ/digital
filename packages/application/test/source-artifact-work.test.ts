@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { assert, describe, expect, it } from "vitest";
 
 import {
   CheckpointedSourceArtifactWork,
@@ -27,6 +27,7 @@ describe("checkpointed source-artifact work", () => {
           throw new Error("checkpointed storage should be used");
         },
         async stage(content) {
+          assert.isDefined(content.role);
           return {
             candidateId: content.candidateId,
             sourceRecordId: content.sourceRecordId,
@@ -59,6 +60,7 @@ describe("checkpointed source-artifact work", () => {
     };
     const proposal = {
       id: "proposal",
+      boundaries: [],
       basis: {
         kind: "source-interpretation" as const,
         interpretation: {
@@ -149,6 +151,7 @@ describe("checkpointed source-artifact work", () => {
     };
     const proposal = {
       id: "proposal",
+      boundaries: [],
       basis: {
         kind: "source-interpretation" as const,
         interpretation: {
@@ -186,6 +189,7 @@ describe("checkpointed source-artifact work", () => {
           throw new Error("not used");
         },
         async stage(content) {
+          assert.isDefined(content.role);
           return {
             candidateId: content.candidateId,
             sourceRecordId: content.sourceRecordId,

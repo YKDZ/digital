@@ -17,7 +17,7 @@ import {
   InMemoryObservedRootCleanupReporter,
   InMemoryObservedRootRegistrationStore,
 } from "@digital/test-support";
-import { describe, expect, it, vi } from "vitest";
+import { assert, describe, expect, it, vi } from "vitest";
 
 import {
   AssetRefreshWorkflow,
@@ -28,6 +28,7 @@ import {
   ObservedRootUnavailable,
   ObservedRootRegistrations,
   attachAssetRefreshAutomation,
+  emptyInformationRequirement,
   prerequisiteUnavailableFailure,
   recognitionMaterialBoundaryIntersectsScope,
   sha256,
@@ -36,6 +37,7 @@ import {
   type AssetLibraryPersistence,
   type LibraryScanDirectoryRecord,
   type AutomationCommands,
+  type AutomationDisabledReason,
   type AutomationQueries,
   type ChangeImpactCommands,
   type ChangeImpactPreview,
@@ -46,6 +48,10 @@ import {
   type InformationRequirement,
   type FilesystemObjectIdentityContract,
   type RecognitionAcceptancePersistence,
+  type RecognitionChangeImpactPersistence,
+  type SourceCollector,
+  type SourceInterpreter,
+  type Recognizer,
   type RecognitionReevaluationPersistence,
   type RecoverySourceRefreshRunCommands,
   type SourceRefreshRunPersistence,
@@ -65,11 +71,14 @@ type RefreshFixturePersistence = WorkflowExecutionCommands &
   AssetRefreshReuseQueries &
   RecognitionAcceptancePersistence &
   RecognitionReevaluationPersistence &
+  RecognitionChangeImpactPersistence &
   MetadataRefreshPersistence &
   ChangeImpactQueries &
   ChangeImpactCommands &
   AutomationQueries &
-  AutomationCommands;
+  AutomationCommands & {
+    listRunningAutomationExecutions(): Promise<readonly WorkflowExecution[]>;
+  };
 
 function bindSourceMetadata(
   metadata: SourceInterpretationBatch["metadata"],
@@ -248,15 +257,25 @@ async function refreshFixtureObservedScope(
     relativeScope: ".",
     sourceIdentity: directedSourceIdentity,
     sourceInput: { address: directedSourceAddress },
-    informationRequirement: input.informationRequirement,
-    onExecutionStarted: input.onExecutionStarted,
-    onProgress: input.onProgress,
+    ...(input.informationRequirement === undefined
+      ? {}
+      : { informationRequirement: input.informationRequirement }),
+    ...(input.onExecutionStarted === undefined
+      ? {}
+      : { onExecutionStarted: input.onExecutionStarted }),
+    ...(input.onProgress === undefined ? {} : { onProgress: input.onProgress }),
   });
 }
 
-type FixtureSelection = Parameters<
-  AssetRefreshWorkflow["refreshMetadata"]
->[0]["selection"];
+type FixtureSelection = Omit<
+  Parameters<AssetRefreshWorkflow["refreshMetadata"]>[0]["selection"],
+  "filesystemScopes"
+> & {
+  readonly filesystemScopes: readonly {
+    readonly root: string;
+    readonly explanations: readonly { readonly path: readonly string[] }[];
+  }[];
+};
 
 function fixtureRegisteredScopeFromSelection(
   selection: FixtureSelection,
@@ -704,6 +723,7 @@ function refreshFixture(options?: {
       );
       if (matches.length !== 1) return false;
       const scope = matches[0];
+      assert.isDefined(scope);
       return (
         scope.state === "terminal" &&
         (scope.outcome === "failed" || scope.outcome === "stale") &&
@@ -713,6 +733,9 @@ function refreshFixture(options?: {
     });
   };
   const persistence: RefreshFixturePersistence = {
+    async requestLibraryScanCancellation() {
+      throw new Error("本夹具不应取消资产库扫描");
+    },
     async claimResumeExecution({ executionId, token, now, expiresAt }) {
       resumeClaimAttempts += 1;
       const inspection = persisted.get(executionId);
@@ -1012,6 +1035,9 @@ function refreshFixture(options?: {
       persisted.set(execution.id, { ...inspection, execution });
       changePreviews.set(preview.id, preview);
     },
+    async finishExecutionWithRecognitionScopeAmendmentPreview() {
+      throw new Error("本夹具不应生成识别范围修订预览");
+    },
     async acceptRecognition(input) {
       recognitionAcceptanceCalls += 1;
       if (options?.acceptanceBarrier !== undefined && !acceptanceBarrierUsed) {
@@ -1169,6 +1195,12 @@ function refreshFixture(options?: {
     },
     async listExecutions() {
       return [...persisted.values()].map((inspection) => inspection.execution);
+    },
+    async inspectRawSourceRecord() {
+      throw new Error("本夹具不应读取原始来源记录");
+    },
+    async listUnrecognizedLibraryScanObservations() {
+      throw new Error("本夹具不应读取资产库未识别观察");
     },
     async listRunningExecutions() {
       return [...persisted.values()]
@@ -1463,12 +1495,13 @@ function refreshFixture(options?: {
       accepted[index] = projected;
       currentRecognitionHeadExecutionByAsset.set(next.entity.id, execution.id);
       const inspection = persisted.get(execution.id)!;
+      assert.isDefined(execution.workItems);
       persisted.set(execution.id, {
         ...inspection,
         execution,
         proposal: next.proposal,
         accepted: projected,
-        workItemInspections: execution.workItems?.map((item) =>
+        workItemInspections: execution.workItems.map((item) =>
           item.acceptedAssetId === next.entity.id
             ? { workItem: item, proposal: next.proposal, accepted: projected }
             : {
@@ -1529,6 +1562,7 @@ function refreshFixture(options?: {
           metadata: [
             ...accepted[0].metadata,
             {
+              target: { kind: "entity", entityId: accepted[0].entity.id },
               property: "user.note",
               sourceSlot: "user.note",
               value: "并发用户事实",
@@ -1543,7 +1577,23 @@ function refreshFixture(options?: {
       }
       return "complete-current-projection";
     },
+    async applySourceAssociationChangePreview() {
+      throw new Error("本夹具不应应用来源关联修订");
+    },
+    async applyRecognitionRetractionPreview() {
+      throw new Error("本夹具不应应用识别撤回");
+    },
+    async applyRecognitionScopeAmendmentPreview() {
+      throw new Error("本夹具不应应用识别范围修订");
+    },
+    async saveArtifactRoleDecisionPreview() {
+      throw new Error("本夹具不应保存制品角色决定");
+    },
+    async applyArtifactRoleDecisionPreview() {
+      throw new Error("本夹具不应应用制品角色决定");
+    },
     async applyChangeImpactPreview({ preview, plan }) {
+      assert.isDefined(preview.proposal);
       const stored = changePreviews.get(preview.id);
       if (stored === undefined || stored.status !== "awaiting-confirmation")
         return "stale";
@@ -1554,22 +1604,25 @@ function refreshFixture(options?: {
       );
       for (const [executionId, inspection] of persisted) {
         if (inspection.accepted?.entity.id !== preview.assetId) continue;
+        const {
+          recognitionSourceAssociation: _recognitionSourceAssociation,
+          ...current
+        } = inspection.accepted;
         persisted.set(executionId, {
           ...inspection,
           proposal: preview.proposal,
           accepted: {
-            ...inspection.accepted,
+            ...current,
             proposal: preview.proposal,
             sourceAssociations: preview.projected.sourceAssociations.map(
               (association, index) => ({
                 id: `preview-association-${index}`,
                 subjectId: preview.assetId,
-                proposalId: preview.proposal.id,
                 ...association,
               }),
             ),
             ...(plan.recognitionSourceAssociation === undefined
-              ? { recognitionSourceAssociation: undefined }
+              ? {}
               : {
                   recognitionSourceAssociation:
                     plan.recognitionSourceAssociation,
@@ -1593,21 +1646,24 @@ function refreshFixture(options?: {
         ({ entity }) => entity.id === preview.assetId,
       );
       const acceptedValue = accepted[acceptedIndex];
-      if (acceptedValue !== undefined)
+      if (acceptedValue !== undefined) {
+        const {
+          recognitionSourceAssociation: _recognitionSourceAssociation,
+          ...current
+        } = acceptedValue;
         accepted[acceptedIndex] = {
-          ...acceptedValue,
+          ...current,
           proposal: preview.proposal,
           recognitionDecision: plan.successorDecision,
           sourceAssociations: preview.projected.sourceAssociations.map(
             (association, index) => ({
               id: `preview-association-${index}`,
               subjectId: preview.assetId,
-              proposalId: preview.proposal.id,
               ...association,
             }),
           ),
           ...(plan.recognitionSourceAssociation === undefined
-            ? { recognitionSourceAssociation: undefined }
+            ? {}
             : {
                 recognitionSourceAssociation: plan.recognitionSourceAssociation,
               }),
@@ -1623,6 +1679,7 @@ function refreshFixture(options?: {
           artifactRevisions: preview.projected.artifactRevisions,
           artifactAssociations: preview.projected.artifactAssociations,
         };
+      }
       return "applied";
     },
     async rejectChangeImpactPreview({ previewId }) {
@@ -1897,7 +1954,10 @@ function refreshFixture(options?: {
         complete: options?.incompleteSnapshot !== true,
         excluded: [],
         observedAt: "2026-07-29T00:00:00.000Z",
-        files: options?.observedFiles ?? [
+        files: options?.observedFiles?.map((file) => ({
+          ...file,
+          modifiedAt: "2026-07-29T00:00:00.000Z",
+        })) ?? [
           {
             relativePath: "track.flac",
             size: 12,
@@ -2263,7 +2323,7 @@ function refreshFixture(options?: {
               ? []
               : ["1"],
         },
-        canCollect: (evidence) =>
+        canCollect: (evidence: Parameters<SourceCollector["canCollect"]>[0]) =>
           evidence.sourceIdentity !== "supplement" &&
           evidence.sourceIdentity !== "failing-supplement" &&
           evidence.sourceIdentity !== "surviving-supplement",
@@ -2335,7 +2395,7 @@ function refreshFixture(options?: {
               },
             }
           : {}),
-        async collect(evidence) {
+        async collect(evidence: Parameters<SourceCollector["collect"]>[0]) {
           if (options?.requireCollectorCoordinateBeforeInvocation === true) {
             const current = [...persisted.values()].at(-1)?.execution;
             if (
@@ -2486,13 +2546,18 @@ function refreshFixture(options?: {
                 kind: "source-collector",
                 interpretationContractVersions: ["1"],
               },
-              canCollect: (evidence) =>
+              canCollect: (
+                evidence: Parameters<SourceCollector["canCollect"]>[0],
+              ) =>
                 evidence.sourceIdentity === "supplement" ||
                 evidence.sourceIdentity === "failing-supplement" ||
                 evidence.sourceIdentity === "surviving-supplement",
               coverageScopeIds: () => ["supplement.complete"],
-              async collect(evidence) {
+              async collect(
+                evidence: Parameters<SourceCollector["collect"]>[0],
+              ) {
                 const sourceIdentity = evidence.sourceIdentity;
+                assert.isDefined(sourceIdentity);
                 enrichmentCollectionCalls.set(
                   sourceIdentity,
                   (enrichmentCollectionCalls.get(sourceIdentity) ?? 0) + 1,
@@ -2621,7 +2686,9 @@ function refreshFixture(options?: {
                   ? {}
                   : { interpretationContractVersions: ["1"] }),
               },
-              canCollect(evidence) {
+              canCollect(
+                evidence: Parameters<SourceCollector["canCollect"]>[0],
+              ) {
                 if (!options.dynamicRecoveryCollectorState!.enabled)
                   return false;
                 if (
@@ -2724,7 +2791,9 @@ function refreshFixture(options?: {
             );
           },
         },
-        canInterpret: ({ evidence }) =>
+        canInterpret: ({
+          evidence,
+        }: Parameters<SourceInterpreter["canInterpret"]>[0]) =>
           evidence.every(
             (item) =>
               item.sourceIdentity !== "supplement" &&
@@ -3017,9 +3086,13 @@ function refreshFixture(options?: {
                 capabilityVersion: "1",
                 contractVersion: "1",
               },
-              canInterpret: ({ evidence }) =>
+              canInterpret: ({
+                evidence,
+              }: Parameters<SourceInterpreter["canInterpret"]>[0]) =>
                 evidence.some((item) => item.sourceIdentity === "supplement"),
-              interpret: ({ sourceRecords }) => [
+              interpret: ({
+                sourceRecords,
+              }: Parameters<SourceInterpreter["interpret"]>[0]) => [
                 {
                   id: "supplement-interpretation",
                   producer: {
@@ -3069,7 +3142,9 @@ function refreshFixture(options?: {
                 capabilityVersion: "1",
                 contractVersion: "1",
               },
-              canInterpret: ({ evidence }) =>
+              canInterpret: ({
+                evidence,
+              }: Parameters<SourceInterpreter["canInterpret"]>[0]) =>
                 evidence.some(
                   (item) => item.sourceIdentity === "failing-supplement",
                 ),
@@ -3083,11 +3158,15 @@ function refreshFixture(options?: {
                 capabilityVersion: "1",
                 contractVersion: "1",
               },
-              canInterpret: ({ evidence }) =>
+              canInterpret: ({
+                evidence,
+              }: Parameters<SourceInterpreter["canInterpret"]>[0]) =>
                 evidence.some(
                   (item) => item.sourceIdentity === "surviving-supplement",
                 ),
-              interpret: ({ sourceRecords }) => [
+              interpret: ({
+                sourceRecords,
+              }: Parameters<SourceInterpreter["interpret"]>[0]) => [
                 {
                   id: "surviving-supplement-interpretation",
                   producer: {
@@ -3128,17 +3207,15 @@ function refreshFixture(options?: {
             return options?.recognizerCoordinateState?.contractVersion ?? "1";
           },
         },
-        canRecognize: (input) =>
+        canRecognize: (input: Parameters<Recognizer["canRecognize"]>[0]) =>
           input.basis.kind ===
           (options?.recognitionBasis ?? "source-interpretation"),
         recognize: (input) => {
           const evidence = input.evidence;
           const interpretation =
-            "interpretation" in input
-              ? input.interpretation
-              : input.basis.kind === "source-interpretation"
-                ? input.basis.interpretation
-                : undefined;
+            input.basis.kind === "source-interpretation"
+              ? input.basis.interpretation
+              : undefined;
           if (options?.recognizerFailureState?.enabled === true)
             throw new Error("recognizer exploded");
           const forgery = options?.recognizerProposalForgery;
@@ -3268,13 +3345,17 @@ function refreshFixture(options?: {
                 capabilityVersion: "1",
                 contractVersion: "1",
               },
-              canRecognize: (input) =>
+              canRecognize: (
+                input: Parameters<Recognizer["canRecognize"]>[0],
+              ) =>
                 input.basis.kind === "source-interpretation" &&
                 (options?.competingProposals === true ||
                   options?.ambiguousSourceAddresses?.includes(
                     input.basis.interpretation.sourceAddress,
                   ) === true),
-              recognize: ({ evidence }) => ({
+              recognize: ({
+                evidence,
+              }: Parameters<Recognizer["recognize"]>[0]) => ({
                 id: "competing-proposal",
                 ruleResults: [
                   {
@@ -3403,6 +3484,7 @@ function refreshFixture(options?: {
       : {}),
     managedStore: {
       async stage(content) {
+        assert.isDefined(content.role);
         return {
           candidateId: content.candidateId,
           sourceRecordId: content.sourceRecordId,
@@ -3492,8 +3574,12 @@ function refreshFixture(options?: {
                       role: "fanbox.attachment.file",
                       acquisitionReference: "opaque-provider-reference",
                       mediaType: "application/octet-stream",
-                      selectionEvidence:
-                        options.publicCandidateSelectionEvidence,
+                      ...(options.publicCandidateSelectionEvidence === undefined
+                        ? {}
+                        : {
+                            selectionEvidence:
+                              options.publicCandidateSelectionEvidence,
+                          }),
                     },
                     interpretationSourceRecordIds: ["record"],
                     sourceRecords: [],
@@ -4044,11 +4130,21 @@ describe("Asset Refresh acceptance", () => {
     });
     const inspection = subject.persisted.get(proposed.execution.id)!;
     const stored = inspection.proposal!;
-    const workItem = {
-      ...inspection.execution.workItems![0],
-      outcome: undefined,
-      reason: undefined,
-    };
+    const firstWorkItem = inspection.execution.workItems?.[0];
+    assert.isDefined(firstWorkItem);
+    const {
+      outcome: _itemOutcome,
+      reason: _itemReason,
+      ...workItem
+    } = firstWorkItem;
+    const {
+      outcome: _outcome,
+      reason: _reason,
+      ...runningExecution
+    } = inspection.execution;
+    const workflowInput = inspection.execution.workflowInput;
+    assert.isDefined(workflowInput);
+    assert(workflowInput.version === "asset-refresh-input/1");
     if (stored.basis.kind !== "source-interpretation")
       throw new Error("测试提案缺少来源解释依据");
     const malformedInterpretation = { ...stored.basis.interpretation };
@@ -4062,15 +4158,13 @@ describe("Asset Refresh acceptance", () => {
     subject.persisted.set(proposed.execution.id, {
       ...inspection,
       execution: {
-        ...inspection.execution,
+        ...runningExecution,
         workflowInput: {
-          ...inspection.execution.workflowInput!,
+          ...workflowInput,
           acceptTrusted: true,
         },
         status: "running",
         stage: "recognition",
-        outcome: undefined,
-        reason: undefined,
         workItems: [workItem],
       },
       proposal: {
@@ -4219,6 +4313,7 @@ describe("Asset Refresh acceptance", () => {
     // 价值保留：同一资产、同一识别决定被就地刷新，观察版本推进（新记录替换旧记录），
     // 既没有新建身份/决定，也没有重复资产。
     expect(subject.accepted).toHaveLength(1);
+    assert.isDefined(subject.accepted[0]);
     expect(subject.accepted[0].entity.id).toBe(firstEntityId);
     expect(subject.accepted[0].recognitionDecision.id).toBe(firstDecisionId);
     expect(subject.accepted[0]).not.toBe(first);
@@ -4255,6 +4350,7 @@ describe("Asset Refresh acceptance", () => {
       recognitionBasis: "observed-evidence",
     });
     await scanFixtureObservedScope(subject.workflow, { acceptTrusted: true });
+    assert.isDefined(subject.accepted[0]);
     const assetId = subject.accepted[0].entity.id;
 
     const refreshed = await subject.workflow.refreshMetadata({
@@ -4387,7 +4483,6 @@ describe("Asset Refresh acceptance", () => {
 
     const resumed = await subject.workflow.resume({
       executionId,
-      acceptTrusted: true,
     });
 
     // 执行聚合原因承载在 execution 上，具体越权字段原因现在落在 workItems[]：
@@ -4454,7 +4549,6 @@ describe("Asset Refresh acceptance", () => {
 
     const resumed = await subject.workflow.resume({
       executionId,
-      acceptTrusted: true,
     });
     // 初次采集已耐久保存，识别器尚未参与；恢复时仍须拒绝其冒用受信规则的结果。
     expect(resumed.execution).toMatchObject({
@@ -4601,6 +4695,7 @@ describe("Asset Refresh acceptance", () => {
     });
     failure.enabled = true;
 
+    assert.isDefined(subject.accepted[0]);
     const result = await refreshFixtureMetadata(
       subject.workflow,
       subject.accepted[0].entity.id,
@@ -4810,6 +4905,7 @@ describe("Asset Refresh acceptance", () => {
       informationRequirement: primaryCoverRequirement,
     });
 
+    assert.isDefined(subject.accepted[0]);
     const result = await refreshFixtureMetadata(
       subject.workflow,
       subject.accepted[0].entity.id,
@@ -4900,6 +4996,7 @@ describe("Asset Refresh acceptance", () => {
       },
     });
     const accepted = subject.accepted[0];
+    assert.isDefined(accepted);
     const localMetadata = accepted.metadata.find(
       (item) => item.sourceSlot === "format.title",
     );
@@ -5203,6 +5300,7 @@ describe("Asset Refresh acceptance", () => {
     if (result.execution.outcome !== "accepted")
       throw new Error(result.execution.reason ?? "local part was not accepted");
     const accepted = subject.accepted[0];
+    assert.isDefined(accepted);
     const local = accepted.metadata.find(
       (item) => item.sourceSlot === "format.title",
     );
@@ -5259,11 +5357,21 @@ describe("Asset Refresh acceptance", () => {
     });
     const inspection = subject.persisted.get(proposed.execution.id)!;
     const stored = inspection.proposal!;
-    const workItem = {
-      ...inspection.execution.workItems![0],
-      outcome: undefined,
-      reason: undefined,
-    };
+    const firstWorkItem = inspection.execution.workItems?.[0];
+    assert.isDefined(firstWorkItem);
+    const {
+      outcome: _itemOutcome,
+      reason: _itemReason,
+      ...workItem
+    } = firstWorkItem;
+    const {
+      outcome: _outcome,
+      reason: _reason,
+      ...runningExecution
+    } = inspection.execution;
+    const workflowInput = inspection.execution.workflowInput;
+    assert.isDefined(workflowInput);
+    assert(workflowInput.version === "asset-refresh-input/1");
     const withoutProposedParent = {
       ...stored,
       observedArtifactRevisions: [],
@@ -5271,15 +5379,13 @@ describe("Asset Refresh acceptance", () => {
     subject.persisted.set(proposed.execution.id, {
       ...inspection,
       execution: {
-        ...inspection.execution,
+        ...runningExecution,
         workflowInput: {
-          ...inspection.execution.workflowInput!,
+          ...workflowInput,
           acceptTrusted: true,
         },
         status: "running",
         stage: "recognition",
-        outcome: undefined,
-        reason: undefined,
         workItems: [workItem],
       },
       proposal: withoutProposedParent,
@@ -5350,12 +5456,12 @@ describe("Asset Refresh acceptance", () => {
       ],
     };
     expect(validateSourceInterpretationBatch(batch)).toBe(batch);
+    const firstSourceArtifact = batch.sourceArtifacts[0];
+    assert.isDefined(firstSourceArtifact);
     expect(() =>
       validateSourceInterpretationBatch({
         ...batch,
-        sourceArtifacts: [
-          { ...batch.sourceArtifacts[0], subjectId: "injected" },
-        ],
+        sourceArtifacts: [{ ...firstSourceArtifact, subjectId: "injected" }],
       }),
     ).toThrow("target must be a sourced resolved Entity");
   });
@@ -5724,11 +5830,12 @@ describe("Asset Refresh acceptance", () => {
       acceptTrusted: true,
     });
     const persisted = subject.persisted.get(initial.execution.id)!;
+    assert.isDefined(persisted.execution.workItems);
     subject.persisted.set(initial.execution.id, {
       ...persisted,
       execution: {
         ...persisted.execution,
-        workItems: persisted.execution.workItems?.map((item) => {
+        workItems: persisted.execution.workItems.map((item) => {
           const { reuseCompatibility: _reuseCompatibility, ...legacy } = item;
           return legacy;
         }),
@@ -5859,6 +5966,7 @@ describe("Asset Refresh acceptance", () => {
       directory: "/observed/work",
       acceptTrusted: true,
     });
+    assert.isDefined(subject.accepted[0]);
     const firstAssetId = subject.accepted[0].entity.id;
     const firstAssociationId =
       subject.accepted[0].recognitionSourceAssociation!.id;
@@ -5905,6 +6013,7 @@ describe("Asset Refresh acceptance", () => {
       acceptTrusted: true,
     });
 
+    assert.isDefined(current);
     expect(reevaluated.execution.workItems).toEqual([
       expect.objectContaining({
         relativePaths: ["track.flac"],
@@ -6152,9 +6261,9 @@ describe("Asset Refresh acceptance", () => {
     ).rejects.toThrow("interrupt after first boundary");
     const collectionsBeforeResume = subject.collectionCalls();
 
+    assert.isDefined(subject.executions[0]);
     const resumed = await subject.workflow.resume({
       executionId: subject.executions[0].id,
-      acceptTrusted: true,
     });
     expect(resumed.execution.outcome).toBe("accepted");
     expect(subject.collectionCalls()).toBe(collectionsBeforeResume);
@@ -6178,30 +6287,31 @@ describe("Asset Refresh acceptance", () => {
         },
       }),
     ).rejects.toThrow("interrupt before the second itemized batch");
+    assert.isDefined(subject.executions[0]);
     const executionId = subject.executions[0].id;
     const persisted = subject.persisted.get(executionId)!;
+    assert.isDefined(persisted.execution.workItems);
     subject.persisted.set(executionId, {
       ...persisted,
       execution: {
         ...persisted.execution,
-        workItems: persisted.execution.workItems?.map((item) =>
-          item.key === "second-boundary"
-            ? {
-                ...item,
-                planningEvidence: item.planningEvidence.map((evidence) => ({
-                  ...evidence,
-                  sourceIdentity: "supplement",
-                })),
-              }
-            : item,
-        ),
+        workItems: persisted.execution.workItems.map((item) => {
+          if (item.key !== "second-boundary") return item;
+          assert.isDefined(item.planningEvidence);
+          return {
+            ...item,
+            planningEvidence: item.planningEvidence.map((evidence) => ({
+              ...evidence,
+              sourceIdentity: "supplement",
+            })),
+          };
+        }),
       },
     });
     const collectionsBeforeResume = subject.collectionCalls();
 
     const resumed = await subject.workflow.resume({
       executionId,
-      acceptTrusted: true,
     });
 
     expect(resumed.execution.workItems).toEqual([
@@ -6246,9 +6356,9 @@ describe("Asset Refresh acceptance", () => {
       dynamic.enabled = true;
       const collectionsBeforeResume = subject.collectionCalls();
 
+      assert.isDefined(subject.executions[0]);
       const resumed = await subject.workflow.resume({
         executionId: subject.executions[0].id,
-        acceptTrusted: true,
       });
 
       expect(dynamic.canCollectCalls).toBe(1);
@@ -6293,9 +6403,9 @@ describe("Asset Refresh acceptance", () => {
     dynamic.enabled = true;
     const collectionsBeforeResume = subject.collectionCalls();
 
+    assert.isDefined(subject.executions[0]);
     const resumed = await subject.workflow.resume({
       executionId: subject.executions[0].id,
-      acceptTrusted: true,
     });
 
     expect(
@@ -6400,6 +6510,7 @@ describe("Asset Refresh acceptance", () => {
         }),
       ).rejects.toBe(interruption);
 
+      assert.isDefined(subject.executions[0]);
       const durable = subject.persisted.get(subject.executions[0].id);
       expect(durable?.execution.status).toBe("running");
       expect(durable?.execution.outcome).not.toBe("failed");
@@ -6469,6 +6580,8 @@ describe("Asset Refresh acceptance", () => {
         (association) => association.role === "asset.primary-cover",
       ),
     );
+    assert.isDefined(subject.accepted[1]);
+    assert.isDefined(subject.accepted[0]);
     expect(covers).toEqual([
       expect.objectContaining({
         target: {
@@ -6531,7 +6644,9 @@ describe("Asset Refresh acceptance", () => {
         >[number],
       ) => {
         if (coordinate === "sourceRecordId") {
-          const { sourceRecordId: _ignored, ...legacy } = checkpoint;
+          const legacy = { ...checkpoint };
+          // 故意破坏已持久化检查点，验证恢复入口拒绝缺失必填坐标。
+          Reflect.deleteProperty(legacy, "sourceRecordId");
           return legacy;
         }
         if (coordinate === "subjectId") {
@@ -6552,7 +6667,9 @@ describe("Asset Refresh acceptance", () => {
         >[number],
       ) => {
         if (coordinate === "sourceRecordId") {
-          const { sourceRecordId: _ignored, ...legacy } = checkpoint;
+          const legacy = { ...checkpoint };
+          // 故意破坏已持久化检查点，验证恢复入口拒绝缺失必填坐标。
+          Reflect.deleteProperty(legacy, "sourceRecordId");
           return legacy;
         }
         if (coordinate === "subjectId") {
@@ -6568,21 +6685,32 @@ describe("Asset Refresh acceptance", () => {
           blob: { ...checkpoint.blob, mediaType: "image/png" },
         };
       };
+      assert.isDefined(execution.workItems);
       subject.persisted.set(executionId, {
         ...inspection!,
         execution: {
           ...execution,
-          workItems: execution.workItems?.map((item) =>
+          workItems: execution.workItems.map((item) =>
             stage === "source-artifacts-acquired"
               ? {
                   ...item,
-                  sourceArtifactAcquisitions:
-                    item.sourceArtifactAcquisitions?.map(legacyAcquisition),
+                  ...(item.sourceArtifactAcquisitions === undefined
+                    ? {}
+                    : {
+                        sourceArtifactAcquisitions:
+                          item.sourceArtifactAcquisitions.map(
+                            legacyAcquisition,
+                          ),
+                      }),
                 }
               : {
                   ...item,
-                  managedSourceArtifacts:
-                    item.managedSourceArtifacts?.map(legacyManaged),
+                  ...(item.managedSourceArtifacts === undefined
+                    ? {}
+                    : {
+                        managedSourceArtifacts:
+                          item.managedSourceArtifacts.map(legacyManaged),
+                      }),
                 },
           ),
         },
@@ -6590,7 +6718,6 @@ describe("Asset Refresh acceptance", () => {
 
       const resumed = await subject.workflow.resume({
         executionId,
-        acceptTrusted: true,
       });
       expect(resumed.execution.outcome).toBe("accepted");
       // 托管记录失效时仍保留合法获取记录，只重存；获取记录失效时才重新获取。
@@ -6601,6 +6728,7 @@ describe("Asset Refresh acceptance", () => {
         stage === "source-artifacts-acquired" ? 1 : 2,
       );
       expect(subject.accepted).toHaveLength(1);
+      assert.isDefined(subject.accepted[0]);
       expect(subject.accepted[0].artifactAssociations).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ role: "asset.primary-cover" }),
@@ -6919,6 +7047,7 @@ describe("Asset Refresh acceptance", () => {
 
     expect(result.execution.outcome).toBe("accepted");
     const accepted = subject.accepted[0];
+    assert.isDefined(accepted);
     expect(accepted.artifacts).toHaveLength(2);
     const observed = accepted.locations.find(
       (location) => location.kind === "observed",
@@ -6997,6 +7126,7 @@ describe("Asset Refresh acceptance", () => {
 
     expect(result.execution.outcome).toBe("accepted");
     const accepted = subject.accepted[0];
+    assert.isDefined(accepted);
     expect(accepted.artifacts).toHaveLength(1);
     expect(accepted.artifactAssociations).toHaveLength(1);
     expect(accepted.locations).toEqual(
@@ -7154,7 +7284,7 @@ describe("Asset Refresh acceptance", () => {
       outcome: "failed",
       sourceRecordIds: ["record"],
     });
-    expect(result.proposal).toBeUndefined();
+    expect(result).not.toHaveProperty("proposal");
     expect(subject.retained).toEqual(["record"]);
     expect(subject.accepted).toEqual([]);
   });
@@ -7400,6 +7530,7 @@ describe("Asset Refresh acceptance", () => {
       ]),
     );
     expect(subject.accepted).toHaveLength(1);
+    assert.isDefined(subject.accepted[0]);
     expect(
       subject.accepted[0].artifactAssociations.some(
         (association) => association.role === "asset.primary-cover",
@@ -7493,6 +7624,7 @@ describe("Asset Refresh acceptance", () => {
     });
 
     expect(result.execution.outcome).toBe("accepted");
+    assert.isDefined(subject.accepted[0]);
     expect(subject.accepted[0].artifactAssociations).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ role: "asset.primary-cover" }),
@@ -7574,6 +7706,7 @@ describe("Asset Refresh acceptance", () => {
         status: "failed",
       },
     ]);
+    assert.isDefined(subject.accepted[0]);
     expect(
       subject.accepted[0].artifactAssociations.filter(
         (item) => item.role === "asset.primary-cover",
@@ -7633,6 +7766,7 @@ describe("Asset Refresh acceptance", () => {
         status: "failed",
       },
     ]);
+    assert.isDefined(subject.accepted[0]);
     expect(
       subject.accepted[0].artifactAssociations.filter(
         (item) => item.role === "asset.primary-cover",
@@ -7676,6 +7810,7 @@ describe("Asset Refresh acceptance", () => {
 
     expect(resumed.execution.outcome).toBe("accepted");
     expect(subject.accepted).toHaveLength(1);
+    assert.isDefined(subject.accepted[0]);
     expect(subject.accepted[0].entity.id).toBe(plannedAssetId);
   });
 
@@ -7726,6 +7861,7 @@ describe("Asset Refresh acceptance", () => {
       });
       expect(subject.acquisitionCalls()).toBe(2);
       if (necessity === "optional") {
+        assert.isDefined(subject.accepted[0]);
         expect(subject.accepted[0].artifactAssociations).toEqual(
           expect.arrayContaining([
             expect.objectContaining({ role: "asset.primary-cover" }),
@@ -7811,6 +7947,7 @@ describe("Asset Refresh acceptance", () => {
 
     expect(subject.acquisitionCalls()).toBe(2);
     expect(subject.accepted).toHaveLength(1);
+    assert.isDefined(subject.accepted[0]);
     expect(
       subject.accepted[0].artifactAssociations.filter(
         (association) => association.role === "asset.primary-cover",
@@ -8014,6 +8151,7 @@ describe("Asset Refresh acceptance", () => {
     const episodeB = subject.accepted[1];
     const observerCallsBeforeRefresh = subject.observerCalls();
 
+    assert.isDefined(episodeB);
     const refreshed = await subject.workflow.refreshMetadata({
       selection: {
         version: "asset-refresh-selection/1",
@@ -8042,6 +8180,7 @@ describe("Asset Refresh acceptance", () => {
     });
     const [accepted] = subject.accepted;
 
+    assert.isDefined(accepted);
     const refreshed = await subject.workflow.refreshMetadata({
       selection: {
         version: "asset-refresh-selection/1",
@@ -8106,7 +8245,9 @@ describe("Asset Refresh acceptance", () => {
       runId: string,
       withSibling = false,
     ) => {
-      const { outcome: _outcome, ...terminal } = accepted.execution;
+      const durable = subject.persisted.get(accepted.execution.id);
+      assert.isDefined(durable);
+      const { outcome: _outcome, ...terminal } = durable.execution;
       const execution: WorkflowExecution = {
         ...terminal,
         id: executionId,
@@ -8180,6 +8321,7 @@ describe("Asset Refresh acceptance", () => {
       idempotencyKey: key,
     };
     const before = await commands.inspectExecution(expected.id);
+    assert.isDefined(codes[0]);
     await expect(
       commands.commitSourceRefreshCollectionFailure({
         ...input,
@@ -8332,6 +8474,7 @@ describe("Asset Refresh acceptance", () => {
     });
     const [accepted] = subject.accepted;
 
+    assert.isDefined(accepted);
     const refreshed = await subject.workflow.refreshMetadata({
       selection: {
         version: "asset-refresh-selection/1",
@@ -8363,6 +8506,7 @@ describe("Asset Refresh acceptance", () => {
     });
     const [accepted] = subject.accepted;
 
+    assert.isDefined(accepted);
     const awaitingReview = await subject.workflow.refreshMetadata({
       selection: {
         version: "asset-refresh-selection/1",
@@ -8388,6 +8532,7 @@ describe("Asset Refresh acceptance", () => {
       changeSets: [{ disposition: "pending" }],
     });
 
+    assert.isDefined(run!.changeSets[0]);
     await expect(
       subject.workflow.reviewSourceRefreshChangeSet({
         runId: run!.id,
@@ -8492,14 +8637,16 @@ describe("Asset Refresh acceptance", () => {
     });
     const run = awaitingReview.sourceRefreshRuns?.[0];
     const durable = subject.persisted.get(awaitingReview.execution.id)!;
+    assert.isDefined(durable.execution.workflowInput);
     subject.persisted.set(awaitingReview.execution.id, {
       ...durable,
       execution: {
         ...durable.execution,
-        workflowInput: {
-          ...durable.execution.workflowInput!,
-          version: "asset-refresh-input/999" as "asset-refresh-input/1",
-        },
+        workflowInput: Object.defineProperty(
+          { ...durable.execution.workflowInput },
+          "version",
+          { value: "asset-refresh-input/999", enumerable: true },
+        ),
       },
     });
 
@@ -8672,6 +8819,7 @@ describe("Asset Refresh acceptance", () => {
     candidate.enabled = true;
     candidate.fails = true;
 
+    assert.isDefined(run!.changeSets[0]);
     await expect(
       subject.workflow.reviewSourceRefreshChangeSet({
         runId: run!.id,
@@ -8694,7 +8842,6 @@ describe("Asset Refresh acceptance", () => {
     await expect(
       subject.workflow.resume({
         executionId: awaitingReview.execution.id,
-        acceptTrusted: true,
       }),
     ).rejects.toThrow("只有未完成的刷新记录可以继续");
   });
@@ -8710,6 +8857,8 @@ describe("Asset Refresh acceptance", () => {
       acceptTrusted: true,
     });
     const [episodeA, episodeB] = subject.accepted;
+    assert.isDefined(episodeA);
+    assert.isDefined(episodeB);
     const executionCountBeforeRefresh = (
       await subject.workflow.listInspections()
     ).length;
@@ -8763,6 +8912,7 @@ describe("Asset Refresh acceptance", () => {
     const [accepted] = subject.accepted;
     const before = (await subject.workflow.listInspections()).length;
 
+    assert.isDefined(accepted);
     const refreshed = await subject.workflow.refreshMetadata({
       selection: {
         version: "asset-refresh-selection/1",
@@ -8896,6 +9046,7 @@ describe("Asset Refresh acceptance", () => {
         }),
       ).rejects.toBe(interruption);
 
+      assert.isDefined(subject.executions[0]);
       const durable = subject.persisted.get(subject.executions[0].id)!;
       expect(
         durable.execution.sourceEnrichments?.some(
@@ -8935,7 +9086,6 @@ describe("Asset Refresh acceptance", () => {
     await expect(
       subject.workflow.resume({
         executionId: failed.execution.id,
-        acceptTrusted: true,
       }),
     ).rejects.toThrow("只有未完成的刷新记录可以继续");
   });
@@ -8995,7 +9145,6 @@ describe("Asset Refresh acceptance", () => {
 
     const resumed = await subject.workflow.resume({
       executionId: pending!.execution.id,
-      acceptTrusted: true,
     });
 
     expect(subject.enrichmentCollectionCalls("failing-supplement")).toBe(1);
@@ -9074,7 +9223,6 @@ describe("Asset Refresh acceptance", () => {
 
     const resumed = await subject.workflow.resume({
       executionId: pending!.execution.id,
-      acceptTrusted: true,
     });
 
     expect(subject.enrichmentCollectionCalls("failing-supplement")).toBe(1);
@@ -9210,7 +9358,6 @@ describe("Asset Refresh acceptance", () => {
 
     const resumed = await subject.workflow.resume({
       executionId: executionId!,
-      acceptTrusted: true,
     });
 
     expect(subject.collectionCalls()).toBe(collectionCalls);
@@ -9269,7 +9416,6 @@ describe("Asset Refresh acceptance", () => {
 
     const resumed = await subject.workflow.resume({
       executionId: executionId!,
-      acceptTrusted: true,
     });
 
     expect(subject.collectionCalls()).toBe(collectionCalls);
@@ -9316,6 +9462,7 @@ describe("Asset Refresh acceptance", () => {
       "simulated process interruption before identity replacement",
     );
     const previous = subject.accepted[0];
+    assert.isDefined(previous);
     const replacement = {
       ...previous,
       recognitionSourceAssociation: {
@@ -9341,7 +9488,6 @@ describe("Asset Refresh acceptance", () => {
 
     const resumed = await subject.workflow.resume({
       executionId: executionId!,
-      acceptTrusted: true,
     });
 
     expect(resumed.execution.outcome).toBe("partially-succeeded");
@@ -9411,7 +9557,6 @@ describe("Asset Refresh acceptance", () => {
 
     const resumed = await subject.workflow.resume({
       executionId: executionId!,
-      acceptTrusted: true,
     });
 
     expect(subject.collectionCalls()).toBe(collectionCalls);
@@ -9471,7 +9616,6 @@ describe("Asset Refresh acceptance", () => {
 
     const resumed = await subject.workflow.resume({
       executionId: executionId!,
-      acceptTrusted: true,
     });
 
     expect(subject.collectionCalls()).toBe(collectionCalls);
@@ -9578,6 +9722,7 @@ describe("Asset Refresh acceptance", () => {
       ),
     ).toBe(true);
 
+    assert.isDefined(subject.accepted[0]);
     const evidence = await subject.workflow.inspectSubjectConflictEvidence(
       subject.accepted[0].entity.id,
       {
@@ -9613,6 +9758,7 @@ describe("Asset Refresh acceptance", () => {
     });
     const [accepted] = subject.accepted;
 
+    assert.isDefined(accepted);
     const refreshed = await subject.workflow.refreshMetadata({
       selection: {
         version: "asset-refresh-selection/1",
@@ -9680,6 +9826,7 @@ describe("Asset Refresh acceptance", () => {
       acceptTrusted: true,
     });
     const episodeB = subject.accepted[1];
+    assert.isDefined(episodeB);
     partialCollectionFailureState.addresses.add(
       episodeB.recognitionSourceAssociation!.nativeAddress,
     );
@@ -9746,6 +9893,7 @@ describe("Asset Refresh acceptance", () => {
       acceptTrusted: true,
       informationRequirement: primaryCoverRequirement,
     });
+    assert.isDefined(subject.accepted[0]);
     const refreshed = await refreshFixtureMetadata(
       subject.workflow,
       subject.accepted[0].entity.id,
@@ -9777,6 +9925,7 @@ describe("Asset Refresh acceptance", () => {
       acceptTrusted: true,
     });
 
+    assert.isDefined(subject.accepted[0]);
     const refreshed = await refreshFixtureMetadata(
       subject.workflow,
       subject.accepted[0].entity.id,
@@ -9794,6 +9943,7 @@ describe("Asset Refresh acceptance", () => {
       acceptTrusted: true,
     });
 
+    assert.isDefined(subject.accepted[0]);
     const refreshed = await refreshFixtureMetadata(
       subject.workflow,
       subject.accepted[0].entity.id,
@@ -9815,6 +9965,7 @@ describe("Asset Refresh acceptance", () => {
       acceptTrusted: true,
     });
 
+    assert.isDefined(subject.accepted[0]);
     const refreshed = await refreshFixtureMetadata(
       subject.workflow,
       subject.accepted[0].entity.id,
@@ -9845,6 +9996,7 @@ describe("Asset Refresh acceptance", () => {
     expect(subject.accepted).toHaveLength(1);
     const stored = [...subject.changePreviews.values()][0];
     const current = subject.accepted[0];
+    assert.isDefined(current);
     const oldCoverId = current.artifactAssociations.find(
       (association) => association.role === "asset.primary-cover",
     )?.artifactId;
@@ -9862,7 +10014,8 @@ describe("Asset Refresh acceptance", () => {
         metadata: [{ property: "asset.title", value: "Other Work" }],
       },
     });
-    expect(stored.projected.primaryCoverArtifactId).toBeUndefined();
+    assert.isDefined(stored);
+    expect(stored.projected).not.toHaveProperty("primaryCoverArtifactId");
     expect(
       stored.projected.artifactAssociations.filter(
         (association) => association.role === "asset.primary-cover",
@@ -9900,6 +10053,7 @@ describe("Asset Refresh acceptance", () => {
       }),
     ).resolves.toMatchObject({ status: "applied" });
     const applied = subject.accepted[0];
+    assert.isDefined(applied);
     const appliedCoverId = applied.artifactAssociations.find(
       ({ role }) => role === "asset.primary-cover",
     )?.artifactId;
@@ -10005,6 +10159,7 @@ describe("Asset Refresh acceptance", () => {
       directory: "/observed/work",
       acceptTrusted: true,
     });
+    assert.isDefined(subject.accepted[0]);
     const prepared = await subject.workflow.prepareConflictedEstablishment({
       assetId: subject.accepted[0].entity.id,
       sourceIdentity: "source",
@@ -10043,6 +10198,7 @@ describe("Asset Refresh acceptance", () => {
       acceptTrusted: true,
     });
     const current = subject.accepted[0];
+    assert.isDefined(current);
     const preview = await subject.workflow.prepareRecognitionRetraction({
       assetId: current.entity.id,
       predecessorDecisionId: current.recognitionDecision.id,
@@ -10071,6 +10227,7 @@ describe("Asset Refresh acceptance", () => {
     });
     const current = subject.accepted[0];
     const staleArtifact = { id: "stale-source-artifact" };
+    assert.isDefined(current);
     const staleAssociation = {
       id: "stale-source-artifact-association",
       // ArtifactAssociation 现要求 target: DescriptionTarget，不再是 subjectId
@@ -10145,6 +10302,7 @@ describe("Asset Refresh acceptance", () => {
       acceptTrusted: true,
     });
 
+    assert.isDefined(subject.accepted[0]);
     const prepared = await subject.workflow.prepareConflictedEstablishment({
       assetId: subject.accepted[0].entity.id,
       sourceIdentity: "source",
@@ -10234,6 +10392,7 @@ describe("Asset Refresh acceptance", () => {
       directory: "/observed/work",
       acceptTrusted: true,
     });
+    assert.isDefined(subject.accepted[0]);
     const prepared = await subject.workflow.prepareConflictedEstablishment({
       assetId: subject.accepted[0].entity.id,
       sourceIdentity: "source",
@@ -10252,6 +10411,7 @@ describe("Asset Refresh acceptance", () => {
     expect(generic?.execution).not.toHaveProperty("sourceAssociationDecision");
     expect(JSON.stringify(generic)).not.toContain("interpretation");
 
+    assert.isDefined(prepared.candidates[1]);
     const selected = await subject.workflow.selectSourceAssociationCandidate({
       executionId: prepared.executionId,
       candidateReference: prepared.candidates[1].reference,
@@ -10288,6 +10448,7 @@ describe("Asset Refresh acceptance", () => {
       acceptTrusted: true,
     });
 
+    assert.isDefined(subject.accepted[0]);
     const prepared = await subject.workflow.prepareConflictedEstablishment({
       assetId: subject.accepted[0].entity.id,
       sourceIdentity: "source",
@@ -10322,6 +10483,7 @@ describe("Asset Refresh acceptance", () => {
         acceptTrusted: true,
       });
 
+      assert.isDefined(subject.accepted[0]);
       await expect(
         subject.workflow.prepareConflictedEstablishment({
           assetId: subject.accepted[0].entity.id,
@@ -10351,6 +10513,7 @@ describe("Asset Refresh acceptance", () => {
       acceptTrusted: true,
     });
 
+    assert.isDefined(subject.accepted[0]);
     await expect(
       subject.workflow.prepareConflictedEstablishment({
         assetId: subject.accepted[0].entity.id,
@@ -10370,6 +10533,7 @@ describe("Asset Refresh acceptance", () => {
       directory: "/observed/work",
       acceptTrusted: true,
     });
+    assert.isDefined(subject.accepted[0]);
     const first = await subject.workflow.prepareConflictedEstablishment({
       assetId: subject.accepted[0].entity.id,
       sourceIdentity: "source",
@@ -10401,6 +10565,7 @@ describe("Asset Refresh acceptance", () => {
     const callsBefore = subject.collectionCalls();
     const shutdown = new Error("host is closing");
 
+    assert.isDefined(subject.accepted[0]);
     await expect(
       subject.workflow.prepareConflictedEstablishment({
         assetId: subject.accepted[0].entity.id,
@@ -10439,6 +10604,7 @@ describe("Asset Refresh acceptance", () => {
       acceptTrusted: true,
     });
     armed = true;
+    assert.isDefined(subject.accepted[0]);
     const preparing = subject.workflow.prepareConflictedEstablishment({
       assetId: subject.accepted[0].entity.id,
       sourceIdentity: "source",
@@ -10496,6 +10662,7 @@ describe("Asset Refresh acceptance", () => {
       acceptTrusted: true,
     });
 
+    assert.isDefined(subject.accepted[0]);
     const result = await subject.workflow.prepareConflictedEstablishment({
       assetId: subject.accepted[0].entity.id,
       sourceIdentity: "source",
@@ -10916,8 +11083,12 @@ describe("Asset Refresh acceptance", () => {
           },
         },
         automationCommands: {
-          async setAutomationIntentEnabled(id, enabled, reason) {
-            disabled.push({ id, reason });
+          async setAutomationIntentEnabled(
+            id: string,
+            enabled: boolean,
+            reason?: AutomationDisabledReason,
+          ) {
+            disabled.push({ id, ...(reason === undefined ? {} : { reason }) });
             (intent as { enabled: boolean }).enabled = enabled;
           },
           async releaseAutomationTrigger() {},
@@ -11000,7 +11171,11 @@ describe("Asset Refresh acceptance", () => {
           },
         },
         automationCommands: {
-          async setAutomationIntentEnabled(_id, enabled, reason) {
+          async setAutomationIntentEnabled(
+            _id: string,
+            enabled: boolean,
+            reason?: AutomationDisabledReason,
+          ) {
             disabled.push(reason ?? "");
             (intent as { enabled: boolean }).enabled = enabled;
           },
@@ -11404,7 +11579,9 @@ describe("Asset Refresh acceptance", () => {
               root,
             };
           },
-          async closeBoundScope(scope) {
+          async closeBoundScope(
+            scope: Parameters<ObservedRootRegistrations["closeBoundScope"]>[0],
+          ) {
             await filesystem.closeScope(scope);
           },
         },
@@ -11650,14 +11827,17 @@ describe("Asset Refresh acceptance", () => {
     ).rejects.toThrow("simulated process interruption");
 
     const durable = subject.persisted.get(executionId)!;
+    const {
+      requestedSelection: _requestedSelection,
+      resolvedSelection: _resolvedSelection,
+      ...legacyExecution
+    } = durable.execution;
     subject.persisted.set(executionId, {
       ...durable,
       execution: {
-        ...durable.execution,
+        ...legacyExecution,
         // 这是旧版持久解码器可为原 `{ root }` 选择生成的唯一结构：保留历史目录证据，
         // 但不提供可执行文件系统范围。
-        requestedSelection: undefined,
-        resolvedSelection: undefined,
       },
     });
 
@@ -11690,7 +11870,6 @@ describe("Asset Refresh acceptance", () => {
 
     const resumed = await subject.workflow.resume({
       executionId,
-      acceptTrusted: true,
     });
     expect(resumed.execution).toMatchObject({
       id: executionId,
@@ -11732,12 +11911,12 @@ describe("Asset Refresh acceptance", () => {
       }),
     ).rejects.toThrow("freeze ordinary recovery checkpoint");
     const durable = subject.persisted.get(executionId)!;
+    const { workItems: _workItems, ...legacyExecution } = durable.execution;
     subject.persisted.set(executionId, {
       ...durable,
       execution: {
-        ...durable.execution,
+        ...legacyExecution,
         stage: "recognition",
-        workItems: undefined,
         sourceRecordIds: [],
         dispositions: [
           ...durable.execution.dispositions.filter(
@@ -11824,7 +12003,6 @@ describe("Asset Refresh acceptance", () => {
 
     const resumed = await subject.workflow.resume({
       executionId,
-      acceptTrusted: true,
     });
 
     expect(resumed.execution.outcome).toBe("failed");
@@ -11853,14 +12031,17 @@ describe("Asset Refresh acceptance", () => {
     const durable = subject.persisted.get(initial.execution.id)!;
     // 这是接受识别与开始可选候选规划之间的精确持久接受状态。新进程必须以终态记录
     // 候选项失败，而不是让本次执行保持可复用。
+    const {
+      outcome: _outcome,
+      reason: _reason,
+      ...runningExecution
+    } = durable.execution;
     subject.persisted.set(initial.execution.id, {
       ...durable,
       execution: {
-        ...durable.execution,
+        ...runningExecution,
         status: "running",
         stage: "source-artifacts-stored",
-        outcome: undefined,
-        reason: undefined,
       },
     });
     candidate.enabled = true;
@@ -11868,7 +12049,6 @@ describe("Asset Refresh acceptance", () => {
 
     const failed = await subject.workflow.resume({
       executionId: initial.execution.id,
-      acceptTrusted: true,
     });
 
     expect(failed.execution).toMatchObject({
@@ -11884,7 +12064,6 @@ describe("Asset Refresh acceptance", () => {
     await expect(
       subject.workflow.resume({
         executionId: initial.execution.id,
-        acceptTrusted: true,
       }),
     ).rejects.toThrow("只有未完成的刷新记录可以继续");
   });
@@ -11946,7 +12125,7 @@ describe("Asset Refresh acceptance", () => {
     ).rejects.toThrow("simulated process interruption");
 
     await expect(
-      subject.workflow.resume({ executionId, acceptTrusted: true }),
+      subject.workflow.resume({ executionId }),
     ).resolves.toMatchObject({
       execution: { status: "completed", outcome: "proposal" },
     });
@@ -11986,14 +12165,16 @@ describe("Asset Refresh acceptance", () => {
       "simulated crash valid-input-version",
     );
     const corrupt = subject.persisted.get("unknown-input-version")!;
+    assert.isDefined(corrupt.execution.workflowInput);
     subject.persisted.set("unknown-input-version", {
       ...corrupt,
       execution: {
         ...corrupt.execution,
-        workflowInput: {
-          ...corrupt.execution.workflowInput!,
-          version: "asset-refresh-input/999" as "asset-refresh-input/1",
-        },
+        workflowInput: Object.defineProperty(
+          { ...corrupt.execution.workflowInput },
+          "version",
+          { value: "asset-refresh-input/999", enumerable: true },
+        ),
       },
     });
 
@@ -12055,12 +12236,11 @@ describe("Asset Refresh acceptance", () => {
 
     const winner = subject.workflow.resume({
       executionId,
-      acceptTrusted: true,
     });
     await firstEntered;
-    await expect(
-      subject.workflow.resume({ executionId, acceptTrusted: true }),
-    ).rejects.toThrow("刷新记录正在由另一个进程继续");
+    await expect(subject.workflow.resume({ executionId })).rejects.toThrow(
+      "刷新记录正在由另一个进程继续",
+    );
     expect(subject.acquisitionCalls()).toBe(1);
     release();
     await expect(winner).resolves.toMatchObject({
@@ -12176,16 +12356,15 @@ describe("Asset Refresh acceptance", () => {
 
     const winner = subject.workflow.resume({
       executionId,
-      acceptTrusted: true,
     });
     await firstEntered;
     now = new Date("2026-07-29T00:00:20.000Z");
     heartbeat?.();
     await Promise.resolve();
     now = new Date("2026-07-29T00:00:35.000Z");
-    await expect(
-      subject.workflow.resume({ executionId, acceptTrusted: true }),
-    ).rejects.toThrow("刷新记录正在由另一个进程继续");
+    await expect(subject.workflow.resume({ executionId })).rejects.toThrow(
+      "刷新记录正在由另一个进程继续",
+    );
     release();
     await expect(winner).resolves.toMatchObject({
       execution: { outcome: "accepted" },
@@ -12310,7 +12489,6 @@ describe("Asset Refresh acceptance", () => {
     await expect(
       subject.workflow.resume({
         executionId: failed.execution.id,
-        acceptTrusted: true,
       }),
     ).rejects.toThrow("只有未完成的刷新记录可以继续");
   });
@@ -12676,6 +12854,7 @@ describe("Automation host", () => {
           return undefined;
         },
         async triggerDueAutomation(current) {
+          assert.isDefined(current);
           calls.push(`due:${current.toISOString()}`);
           return [];
         },
@@ -12751,7 +12930,7 @@ describe("Automation host", () => {
           receivedLifecycle = lifecycle !== undefined;
           entered();
           await barrier;
-          lifecycle?.onCheckpoint();
+          lifecycle?.onCheckpoint?.();
           continuedAfterCheckpoint = true;
           return [];
         },
@@ -12838,7 +13017,7 @@ describe("Automation host", () => {
         async continueRunningExecution(_executionId, lifecycle) {
           entered();
           await barrier;
-          lifecycle?.onCheckpoint();
+          lifecycle?.onCheckpoint?.();
           continuedAfterCheckpoint = true;
           return undefined;
         },

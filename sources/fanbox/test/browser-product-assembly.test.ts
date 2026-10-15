@@ -2,7 +2,7 @@ import { rm, stat } from "node:fs/promises";
 import { setImmediate as yieldToFilesystem } from "node:timers/promises";
 
 import { knownSourceAssociationEvidenceCapability } from "@digital/application";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { assert, beforeEach, describe, expect, it, vi } from "vitest";
 
 const renderer = vi.hoisted(() => ({
   launches: 0,
@@ -156,43 +156,37 @@ vi.mock("playwright", () => ({
                   ) {
                     const previousFetch = globalThis.fetch;
                     let reads = 0;
-                    globalThis.fetch = (async () => ({
-                      status: 403,
-                      headers: {
-                        get: (name: string) =>
-                          name.toLowerCase() === "content-type"
-                            ? "text/html"
-                            : null,
-                      },
-                      body: {
-                        async cancel() {
-                          renderer.challengeCancels += 1;
+                    globalThis.fetch = async () =>
+                      new Response(
+                        new ReadableStream<Uint8Array>(
+                          {
+                            pull(controller) {
+                              reads += 1;
+                              if (reads === 1)
+                                controller.enqueue(
+                                  new TextEncoder().encode(
+                                    renderer.challengeMarker,
+                                  ),
+                                );
+                              else if (reads === 2)
+                                controller.enqueue(
+                                  new TextEncoder().encode(
+                                    "body-must-not-cross-seam",
+                                  ),
+                                );
+                              else controller.close();
+                            },
+                            cancel() {
+                              renderer.challengeCancels += 1;
+                            },
+                          },
+                          { highWaterMark: 0 },
+                        ),
+                        {
+                          status: 403,
+                          headers: { "content-type": "text/html" },
                         },
-                        getReader: () => ({
-                          async read() {
-                            reads += 1;
-                            if (reads === 1)
-                              return {
-                                done: false,
-                                value: new TextEncoder().encode(
-                                  renderer.challengeMarker,
-                                ),
-                              };
-                            if (reads === 2)
-                              return {
-                                done: false,
-                                value: new TextEncoder().encode(
-                                  "body-must-not-cross-seam",
-                                ),
-                              };
-                            return { done: true, value: undefined };
-                          },
-                          async cancel() {
-                            renderer.challengeCancels += 1;
-                          },
-                        }),
-                      },
-                    })) as typeof fetch;
+                      );
                     try {
                       return await callback(input);
                     } finally {
@@ -598,6 +592,7 @@ describe("FANBOX browser product assembly", () => {
       }),
     ).rejects.toThrow("FANBOX 来源连接验证失败");
     expect(renderer.serverKills).toBe(1);
+    assert.isDefined(renderer.launchOptions!.env.HOME);
     await expect(stat(renderer.launchOptions!.env.HOME)).rejects.toMatchObject({
       code: "ENOENT",
     });

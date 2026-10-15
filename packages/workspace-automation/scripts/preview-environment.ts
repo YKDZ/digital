@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 /**
  * 开发预览仓库入口：显式组合公开环境操作与正式产品目录接入。
  *
@@ -6,13 +7,12 @@
  * 之后通过正常产品 HTTP 入口发起目录接入，并按产品工作流结果判断接入，绝不用就绪
  * 掩盖接入失败，也不按资产数量代产品宣布成功。
  *
- * 来源默认受控：受控清单由使用者显式选择；真实来源必须显式启用并说明成立条件。
+ * 日常来源默认离线，资料目录必须显式选择；验收默认受控，真实来源须显式启用。
  * 自建环境按调用方约定收尾（成功后停止并回收，失败后停止并保留可重启现场）；由他人
  * 提供的环境无论成功、失败还是中断都不被本入口收尾。
  */
-
-import { createHash } from "node:crypto";
 import {
+  appendFile,
   cp,
   mkdir,
   readFile,
@@ -34,8 +34,7 @@ import {
   type InspectEnvironmentResult,
   type PrepareOperationResult,
   type StartOperationResult,
-} from "../packages/environment/src/index.ts";
-import { loadControlledSourceIo } from "../packages/test-support/src/source-io.ts";
+} from "@digital/environment";
 import {
   createProductClient,
   digestDirectory,
@@ -44,31 +43,17 @@ import {
   type JsonObject,
   type JsonValue,
   type ProductClient,
-} from "./preview-product.ts";
+} from "@digital/test-support/product-client";
+import { loadControlledSourceIo } from "@digital/test-support/source-io";
 
-const repositoryRoot = path.resolve(import.meta.dirname, "..");
-/**
- * 环境把工作区视为一份代码检出：构建产物与产品入口都相对它解析，容器落在
- * `<工作区>/.digital/environments/<环境>`。默认取本仓根，因此换工作区必须换一份检出。
- */
-const defaultWorkspace = repositoryRoot;
-const defaultMaterial = path.join(
-  repositoryRoot,
-  "fixtures",
-  "controlled-source-io",
-  "material",
-  "RJ01668691",
-);
-const defaultManifest = path.join(
-  repositoryRoot,
-  "fixtures",
-  "controlled-source-io",
-  "manifest.json",
-);
+import { requireInput } from "./inputs.ts";
+
+const defaultWorkspace = requireInput("DIGITAL_AUTOMATION_WORKSPACE");
+const sourceDirectory = requireInput("DIGITAL_AUTOMATION_SOURCE_DIRECTORY");
+const defaultMaterial = path.join(sourceDirectory, "material", "RJ01668691");
+const defaultManifest = path.join(sourceDirectory, "manifest.json");
 const defaultCoverResponse = path.join(
-  repositoryRoot,
-  "fixtures",
-  "controlled-source-io",
+  sourceDirectory,
   "responses",
   "dlsite-cover.png",
 );
@@ -158,6 +143,8 @@ export type PreviewRequest = {
   readonly skipIntake: boolean;
   readonly cases: readonly string[];
   readonly evidencePath?: string;
+  /** CI 成功运行先停服留存，上传核验后的删除仍由公共环境入口完成。 */
+  readonly handoffDirectory?: string;
   /** 信号取消条件：由入口持有，贯穿环境操作与产品 HTTP 轮询。 */
   readonly signal?: AbortSignal | undefined;
 };
@@ -172,7 +159,7 @@ export type RunningState = {
   failureFinished: boolean;
 };
 
-export const usage = `用法：node scripts/preview-environment.ts [命令] [选项]
+export const usage = `用法：pnpm preview [命令] [选项]
 
 命令（缺省为 up）：
   up        无环境记录时准备并启动，已有就绪世代则原样复用；再通过产品入口完成目录接入
@@ -188,9 +175,9 @@ export const usage = `用法：node scripts/preview-environment.ts [命令] [选
 
 选项：
   --workspace <目录>          代码检出根目录，默认本仓根；运行数据落在 <工作区>/.digital/environments/<环境>
-  --environment <名称>        环境名，日常入口默认 completion-01-preview，verify 默认 completion-01-verify
-  --material <目录>           普通资料目录，可重复；默认 06 代表目录
-  --source-mode <模式>        controlled（默认）| real | offline
+  --environment <名称>        环境名，日常入口默认 completion-01-preview，verify 每次分配独立名称
+  --material <目录>           普通资料目录，可重复；日常必须选择，verify 默认受控代表目录
+  --source-mode <模式>        offline（日常默认）| real | controlled（verify 默认）
   --manifest <路径>           受控来源清单绝对路径，由使用者显式选择
   --content-identity <身份>   期望的清单内容身份，缺省按清单重算
   --allow-real-source         真实来源的显式开关，必须同时给出 --real-condition
@@ -286,7 +273,9 @@ export function parseRequest(argv: readonly string[]): PreviewRequest {
       throw new PreviewUsageError(`选项 ${option} 需要非负整数：${raw}`);
     return parsed;
   };
-  const sourceMode = values["--source-mode"] ?? "controlled";
+  const sourceMode =
+    values["--source-mode"] ??
+    (command === "verify" ? "controlled" : "offline");
   if (!["controlled", "real", "offline"].includes(sourceMode))
     throw new PreviewUsageError(
       `来源模式只能是 controlled、real 或 offline：${sourceMode}`,
@@ -302,23 +291,38 @@ export function parseRequest(argv: readonly string[]): PreviewRequest {
   };
   const requestedPort = readNumber("--port", values["--port"]);
   if (requestedPort !== 0) assertPreviewPort(requestedPort);
+  const environment =
+    values["--environment"] ??
+    (command === "verify"
+      ? `${defaultVerifyEnvironment}-${randomUUID()}`
+      : defaultPreviewEnvironment);
+  const ciEvidence = process.env.DIGITAL_CI_EVIDENCE;
+  const handoffDirectory =
+    command === "verify" && ciEvidence !== undefined && ciEvidence.length > 0
+      ? path.resolve(ciEvidence)
+      : undefined;
+  const evidencePath =
+    values["--evidence"] ??
+    (handoffDirectory === undefined
+      ? undefined
+      : path.join(handoffDirectory, "preview", environment, "outcome.json"));
 
   return {
     command,
-    workspacePath: path.resolve(values["--workspace"] ?? defaultWorkspace),
-    environment:
-      values["--environment"] ??
-      (command === "verify"
-        ? defaultVerifyEnvironment
-        : defaultPreviewEnvironment),
+    workspacePath: path.resolve(defaultWorkspace, values["--workspace"] ?? "."),
+    environment,
     materials:
       materials.length === 0
-        ? [defaultMaterial]
+        ? command === "verify"
+          ? [defaultMaterial]
+          : []
         : materials.map((item) => requireAbsolute("--material", item)),
     sourceMode: sourceMode as PreviewSourceMode,
     manifestPath:
       values["--manifest"] === undefined
-        ? defaultManifest
+        ? command === "verify"
+          ? defaultManifest
+          : ""
         : requireAbsolute("--manifest", values["--manifest"]),
     ...(values["--content-identity"] === undefined
       ? {}
@@ -335,9 +339,10 @@ export function parseRequest(argv: readonly string[]): PreviewRequest {
     explicitMaterials,
     skipIntake: flags.has("--no-intake"),
     cases,
-    ...(values["--evidence"] === undefined
+    ...(evidencePath === undefined
       ? {}
-      : { evidencePath: path.resolve(values["--evidence"]) }),
+      : { evidencePath: path.resolve(defaultWorkspace, evidencePath) }),
+    ...(handoffDirectory === undefined ? {} : { handoffDirectory }),
   };
 }
 
@@ -376,7 +381,9 @@ export function assertSourceSelection(request: {
   )
     throw new PreviewUsageError("受控来源清单必须是绝对路径");
   if (request.materials.length === 0)
-    throw new PreviewUsageError("至少要有一个普通资料目录");
+    throw new PreviewUsageError(
+      "请通过 --material 明确选择至少一个普通资料目录",
+    );
   for (const material of request.materials)
     if (!path.isAbsolute(material))
       throw new PreviewUsageError(`资料目录必须是绝对路径：${material}`);
@@ -681,8 +688,14 @@ async function runIntake(
   const intake = await intakeDirectories(client, {
     displayName: options.libraryName ?? request.libraryName,
     directories,
-    recognitionProfileIds: ["dlsite-voice"],
-    sourceIdentities: ["dlsite"],
+    recognitionProfileIds:
+      request.command === "verify"
+        ? ["dlsite-voice"]
+        : ["dlsite-voice", "fanbox", "books", "anime", "movies"],
+    sourceIdentities:
+      request.command === "verify"
+        ? ["dlsite"]
+        : ["dlsite", "fanbox", "nbinet", "bangumi", "tmdb", "omdb"],
     workflowTimeoutMs: request.workflowTimeoutMs,
   });
   reporter.fact("资产库标识", intake.assetLibraryId);
@@ -1424,6 +1437,30 @@ export function requestValidationCases(): readonly {
   };
   return [
     {
+      name: "日常目录与受控验收分开",
+      detail: "日常入口不暗中选择测试资料或合成来源，受控验收保持显式独立",
+      run: () => {
+        const preview = parseRequest([]);
+        if (preview.materials.length !== 0 || preview.sourceMode !== "offline")
+          throw new Error("日常预览不得默认导入测试目录或受控来源");
+        const verify = parseRequest(["verify"]);
+        if (
+          verify.materials.length !== 1 ||
+          verify.materials[0] !== defaultMaterial ||
+          verify.manifestPath !== defaultManifest ||
+          verify.sourceMode !== "controlled"
+        )
+          throw new Error("受控代表verify必须保持原代表目录及清单");
+        const subset = parseRequest(["up", "--material", "/ordinary/selected"]);
+        if (
+          subset.materials.length !== 1 ||
+          subset.materials[0] !== "/ordinary/selected" ||
+          subset.sourceMode !== "offline"
+        )
+          throw new Error("显式普通目录专项不能被完整默认选择覆盖");
+      },
+    },
+    {
       name: "真实来源默认关闭",
       detail: "没有显式开关就拒绝，不触达任何来源",
       run: () =>
@@ -1574,11 +1611,20 @@ async function runVerify(
       ? exitCodes.okay
       : exitCodes.intakeFailed;
 
-  const staging = path.join(
-    repositoryRoot,
-    ".scratch",
-    "completion-01-staging",
-  );
+  const staging =
+    request.handoffDirectory === undefined
+      ? path.join(
+          defaultWorkspace,
+          ".scratch",
+          "preview-verification",
+          randomUUID(),
+        )
+      : path.join(
+          request.handoffDirectory,
+          "preview",
+          request.environment,
+          "inputs",
+        );
   const subsetDirectory = path.join(staging, "预览子集");
   const multiLeftDirectory = path.join(staging, "多目录甲");
   const multiRightDirectory = path.join(staging, "多目录乙");
@@ -1608,13 +1654,21 @@ async function runVerify(
       `环境 ${request.environment} 在本次运行之前留下上次准备失败的记录（状态 failed）：本入口按恢复处理——重新准备并拥有本次启动的服务，但那条记录与它的日志、数据载体仍归原使用者，本次成功也不删除它。`,
     );
   }
+  if (request.handoffDirectory !== undefined && recycle === "delete") {
+    await mkdir(request.handoffDirectory, { recursive: true, mode: 0o700 });
+    await appendFile(
+      path.join(request.handoffDirectory, "owners.ndjson"),
+      `${JSON.stringify({ workspacePath: request.workspacePath, environment: request.environment })}\n`,
+      { mode: 0o600 },
+    );
+  }
+  let result: number | undefined;
   try {
-    await rm(staging, { recursive: true, force: true });
     await mkdir(path.dirname(subsetDirectory), { recursive: true });
     await copySubsetMaterial(subsetDirectory);
     await copyMaterialForDirectory(multiLeftDirectory);
     await copyMaterialForDirectory(multiRightDirectory);
-    return await runLifecycleScenarios(
+    result = await runLifecycleScenarios(
       request,
       reporter,
       running,
@@ -1622,8 +1676,17 @@ async function runVerify(
       lifecycleCases,
       { subsetDirectory, multiLeftDirectory, multiRightDirectory },
     );
+    return result;
   } finally {
-    await rm(staging, { recursive: true, force: true });
+    if (
+      result === exitCodes.okay &&
+      reporter.failures.length === 0 &&
+      recycle === "delete" &&
+      request.handoffDirectory === undefined &&
+      request.signal?.aborted !== true
+    )
+      await rm(staging, { recursive: true, force: true });
+    else reporter.fact("保留验收输入（与环境现场一同供复现）", staging);
   }
 }
 
@@ -1771,7 +1834,15 @@ async function runLifecycleScenarios(
   }
   if (recycle === "delete") {
     reporter.section("按归属收尾（自建环境）");
-    await recycleOwned(request, reporter, running);
+    if (request.handoffDirectory === undefined)
+      await recycleOwned(request, reporter, running);
+    else {
+      await ownedStop(request, reporter);
+      running.startedHere = false;
+      reporter.say(
+        "自建环境已停止并保留数据、日志与输入；CI 核实上传后再经公共删除入口回收。",
+      );
+    }
   } else if (recycle === "stop") {
     reporter.section("按归属收尾（恢复上次失败记录）");
     await ownedStop(request, reporter);
@@ -1807,24 +1878,32 @@ async function copyMaterialForDirectory(targetRoot: string): Promise<void> {
   );
 }
 
-function reportPreviewHandoff(
+async function reportPreviewHandoff(
   request: PreviewRequest,
   client: ProductClient,
   intake: IntakeOutcome,
   reporter: PreviewReporter,
-): void {
+): Promise<void> {
   reporter.section("开发预览可用");
   reporter.fact("浏览地址", client.address);
+  const libraries = (await client.libraries()).filter((library) =>
+    library.observedRootIds.some((id) => intake.observedRootIds.includes(id)),
+  );
   reporter.fact(
     "资产库",
-    `${intake.assetLibraryId}（接入资产 ${String(intake.assetIds.length)} 个）`,
+    libraries.map((library) => ({
+      id: library.id,
+      name: library.displayName,
+      directories: [...library.directories],
+    })),
   );
+  reporter.fact("合计接入资产", intake.assetIds.length);
   reporter.say(
-    "停止服务：node scripts/preview-environment.ts stop --workspace " +
+    "停止服务：pnpm preview stop --workspace " +
       `${request.workspacePath} --environment ${request.environment}`,
   );
   reporter.say(
-    "再次启动（保留修改，无需重新接入）：node scripts/preview-environment.ts start --workspace " +
+    "再次启动（保留修改，无需重新接入）：pnpm preview start --workspace " +
       `${request.workspacePath} --environment ${request.environment}`,
   );
 }
@@ -1902,25 +1981,22 @@ async function runSingleCommand(
         : inspect.environment.inputs.length === 0
           ? undefined
           : inspect.environment.inputs;
-      const intake = await runIntake(
+      await runIntake(
         request,
         client,
         reporter,
         directories === undefined ? {} : { directories },
       );
-      if (intake.assetIds.length === 0) {
-        reporter.fail(
-          `产品对请求目录没有产生任何可浏览资产（资产库 ${intake.assetLibraryId}，工作流 ${intake.executionId}=${intake.executionStatus}／${intake.executionOutcome ?? "无"}），接入未成功。`,
-        );
-        return exitCodes.intakeFailed;
-      }
       return exitCodes.okay;
     }
     case "up": {
       let client: ProductClient | undefined;
+      let directories = request.materials;
       if (request.provided) {
         const state = await readEnvironmentState(request, reporter);
         client = state.client;
+        if (!request.explicitMaterials)
+          directories = state.inspect.environment.inputs;
         if (client === undefined) {
           reporter.fail("提供的环境没有就绪结论，接入阶段未执行。");
           return exitCodes.operationFailed;
@@ -1930,6 +2006,11 @@ async function runSingleCommand(
           workspacePath: request.workspacePath,
           environment: request.environment,
         });
+        if (
+          !request.explicitMaterials &&
+          precondition.environment.inputs.length > 0
+        )
+          directories = precondition.environment.inputs;
         const upOwnership = planOwnership(
           classifyEnvironmentPrecondition(precondition.state, request.provided),
         );
@@ -1993,13 +2074,20 @@ async function runSingleCommand(
         client = createProductClient(address, { signal: request.signal });
       }
       if (request.skipIntake) return exitCodes.okay;
+      if (!request.explicitMaterials) {
+        const libraries = await client.libraries();
+        if (libraries.length > 0)
+          directories = [
+            ...new Set(
+              libraries.flatMap((library) => [...library.directories]),
+            ),
+          ];
+      }
       try {
-        const intake = await runIntake(request, client, reporter);
-        if (intake.assetIds.length === 0)
-          throw new Error(
-            `产品对接入请求没有产生任何可浏览资产（资产库 ${intake.assetLibraryId}，工作流 ${intake.executionId}=${intake.executionStatus}／${intake.executionOutcome ?? "无"}）`,
-          );
-        reportPreviewHandoff(request, client, intake, reporter);
+        const intake = await runIntake(request, client, reporter, {
+          directories,
+        });
+        await reportPreviewHandoff(request, client, intake, reporter);
       } catch (error) {
         // 主因先落账，再对本次真正启动的自有服务收尾；复用他人服务不动。
         reporter.fail(`接入阶段失败：${describeError(error)}`);
@@ -2095,8 +2183,12 @@ export async function main(
         ? exitCodes.invalidUsage
         : exitCodes.operationFailed;
   }
-  // 取消之后业务立即停止，但仍以可用的清理上下文对自有服务收尾并保存证据。
-  if (cancellation.signal.aborted) {
+  if (mainError !== undefined) reporter.fail(describeError(mainError));
+  let cancellationFinished = false;
+  // 保存也可能被首次取消打断；已观察取消时独立收尾，保留本次启动的数据与日志。
+  const finishCancellation = async (): Promise<boolean> => {
+    if (!cancellation.signal.aborted || cancellationFinished) return false;
+    cancellationFinished = true;
     const needsEntryCleanup =
       !running.failureFinished &&
       ["verify", "up", "prepare", "start"].includes(request.command);
@@ -2111,35 +2203,40 @@ export async function main(
       for (const error of cleanupErrors)
         reporter.say(`收尾错误（不覆盖主错误）：${error}`);
     }
-    if (mainError === undefined)
+    if (mainError === undefined) {
       mainError = new Error("收到中断信号，业务已取消");
+      reporter.fail(describeError(mainError));
+    }
     exit = interruptedExitCode(cancellation.signal.reason as NodeJS.Signals);
-  }
-  if (mainError !== undefined) reporter.fail(describeError(mainError));
+    return true;
+  };
+  await finishCancellation();
   if (exit === exitCodes.okay && reporter.failures.length > 0) {
     exit = exitCodes.intakeFailed;
   }
-  try {
-    await writeEvidence(requestWithSignal, reporter, exit, mainError);
-  } catch (error) {
-    reporter.fail(
-      `结果保存失败（保存错误，不覆盖主错误）：${describeError(error)}`,
-    );
-    if (exit === exitCodes.okay) exit = exitCodes.operationFailed;
-    if (!running.failureFinished && running.startedHere) {
-      const cleanupErrors = await finishOwnedFailure(
-        requestWithSignal,
-        reporter,
-        running.ownsService,
-        running.startedHere,
+  const saveResult = async (): Promise<void> => {
+    try {
+      await writeEvidence(requestWithSignal, reporter, exit, mainError);
+    } catch (error) {
+      reporter.fail(
+        `结果保存失败（保存错误，不覆盖主错误）：${describeError(error)}`,
       );
-      for (const cleanupError of cleanupErrors)
-        reporter.say(`收尾错误（不覆盖主错误）：${cleanupError}`);
-      running.failureFinished = true;
+      if (exit === exitCodes.okay) exit = exitCodes.operationFailed;
+      if (!running.failureFinished && running.startedHere) {
+        const cleanupErrors = await finishOwnedFailure(
+          requestWithSignal,
+          reporter,
+          running.ownsService,
+          running.startedHere,
+        );
+        for (const cleanupError of cleanupErrors)
+          reporter.say(`收尾错误（不覆盖主错误）：${cleanupError}`);
+        running.failureFinished = true;
+      }
     }
-  }
-  if (cancellation.signal.aborted)
-    exit = interruptedExitCode(cancellation.signal.reason as NodeJS.Signals);
+  };
+  await saveResult();
+  if (await finishCancellation()) await saveResult();
   reporter.print();
   return exit;
 }

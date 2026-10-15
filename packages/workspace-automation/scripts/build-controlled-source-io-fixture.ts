@@ -2,18 +2,15 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { deflateSync } from "node:zlib";
 
-import { loadControlledSourceIo } from "../packages/test-support/src/source-io.ts";
+import { loadControlledSourceIo } from "@digital/test-support/source-io";
+
+import { requireInput } from "./inputs.ts";
 
 /**
  * 受控外部来源 I/O 夹具的生成器：把轻量的合成媒体写进夹具目录，并给出清单的内容身份。
  * 输出完全确定，因此内容身份只有在清单文本或响应字节被改动后才会变化。
  */
-const fixtureDirectory = path.resolve(
-  import.meta.dirname,
-  "..",
-  "fixtures",
-  "controlled-source-io",
-);
+const fixtureDirectory = requireInput("DIGITAL_AUTOMATION_OUTPUT_DIRECTORY");
 
 const workTitle =
   "塩対応な義妹ちゃん、大好きな兄さんの濃厚快感責めでメロ堕ち♡〜逆転イチャあま同棲ASMR〜";
