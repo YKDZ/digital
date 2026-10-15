@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { prerequisiteUnavailableFailure } from "@digital/application";
-import { describe, expect, it } from "vitest";
+import { assert, describe, expect, it } from "vitest";
 
 import {
   TmdbArtifactAcquirer,
@@ -258,11 +258,13 @@ describe("TMDB collection and interpretation", () => {
     });
     const evidence = filmEvidence("/library/恐怖直播 (2013)");
 
+    assert.isDefined(evidence[0]);
     const collected = await collector.collect(evidence[0]);
     const [interpreted] = new TmdbSourceInterpreter().interpret({
       evidence,
       sourceRecords: collected.records,
     });
+    assert.isDefined(interpreted);
 
     expect(collected.failures).toEqual([]);
     expect(collected.records.map((record) => record.coverage.id)).toEqual([
@@ -320,11 +322,13 @@ describe("TMDB collection and interpretation", () => {
     });
     const evidence = filmEvidence("/library/恐怖直播 (2013)");
 
+    assert.isDefined(evidence[0]);
     const collection = await collector.collect(evidence[0]);
     const [interpreted] = new TmdbSourceInterpreter().interpret({
       evidence,
       sourceRecords: collection.records,
     });
+    assert.isDefined(interpreted);
 
     const translation = collection.records.find(
       (record) => record.coverage.id === "tmdb.translations",
@@ -380,11 +384,13 @@ describe("TMDB collection and interpretation", () => {
     });
     const evidence = filmEvidence("/library/恐怖直播 (2013)");
 
+    assert.isDefined(evidence[0]);
     const collection = await collector.collect(evidence[0]);
     const [interpreted] = new TmdbSourceInterpreter().interpret({
       evidence,
       sourceRecords: collection.records,
     });
+    assert.isDefined(interpreted);
     const rejectedTranslation = collection.records.find(
       (record) => record.coverage.id === "tmdb.translations.subject-mismatch",
     );
@@ -440,6 +446,7 @@ describe("TMDB collection and interpretation", () => {
     });
     const evidence = filmEvidence("/library/恐怖直播 (2013)");
 
+    assert.isDefined(evidence[0]);
     const collected = await collector.collect(evidence[0]);
 
     expect(
@@ -468,6 +475,7 @@ describe("TMDB collection and interpretation", () => {
     });
     const evidence = filmEvidence("/library/不存在的作品 (2013)");
 
+    assert.isDefined(evidence[0]);
     const collected = await collector.collect(evidence[0]);
 
     expect(collected.failures).toEqual([]);
@@ -512,6 +520,7 @@ describe("TMDB collection and interpretation", () => {
     });
     const evidence = filmEvidence("/library/恐怖直播 (2013)");
 
+    assert.isDefined(evidence[0]);
     const collected = await collector.collect(evidence[0]);
 
     expect(collected.records.map((record) => record.coverage.id)).toEqual([
@@ -547,6 +556,7 @@ describe("TMDB collection and interpretation", () => {
     });
     const evidence = filmEvidence("/library/恐怖直播 (2013)");
 
+    assert.isDefined(evidence[0]);
     const collected = await collector.collect(evidence[0]);
 
     expect(collected.records.map((record) => record.coverage.id)).toEqual([
@@ -644,11 +654,14 @@ describe("TMDB collection and interpretation", () => {
       },
     });
     const evidence = filmEvidence("/library/恐怖直播 (2013)");
+    assert.isDefined(evidence[0]);
     const collected = await collector.collect(evidence[0]);
     const [interpreted] = new TmdbSourceInterpreter().interpret({
       evidence,
       sourceRecords: collected.records,
     });
+    assert.isDefined(interpreted);
+    assert.isDefined(interpreted);
     const proposal = new TmdbStrictFilmRecognizer().recognize({
       evidence,
       basis: { kind: "source-interpretation", interpretation: interpreted },
@@ -752,6 +765,11 @@ describe("TMDB collection and interpretation", () => {
       creditsRecord,
       translationsRecord,
     ] = collected.records;
+    assert.isDefined(searchRecord);
+    assert.isDefined(translationsRecord);
+    assert.isDefined(creditsRecord);
+    assert.isDefined(directorsRecord);
+    assert.isDefined(detailRecord);
     expect(interpreted.sourceRecordIds).toEqual([
       detailRecord.id,
       directorsRecord.id,
@@ -809,6 +827,7 @@ describe("TMDB collection and interpretation", () => {
       evidence,
       sourceRecords: collected.records,
     });
+    assert.isDefined(interpreted);
     const proposal = new TmdbStrictFilmRecognizer().recognize({
       evidence,
       basis: { kind: "source-interpretation", interpretation: interpreted },
@@ -825,6 +844,7 @@ describe("TMDB collection and interpretation", () => {
       ruleId: "exact-directed-official-address",
       outcome: "satisfied",
     });
+    assert.isDefined(collected.records[0]);
     expect(proposal.ruleResults[0]?.evidenceReferences).toEqual([
       {
         kind: "source-record",
@@ -944,6 +964,7 @@ describe("TMDB collection and interpretation", () => {
 
   it("does not copy an Authorization-bearing request failure into its public collection result", async () => {
     const evidence = filmEvidence("/library/Private Failure Film (2004)")[0];
+    assert.isDefined(evidence);
     const result = await new TmdbCollector({
       accessToken: "tmdb-error-token",
       delay: async () => {},
@@ -1096,6 +1117,7 @@ describe("TMDB collection and interpretation", () => {
       evidence,
       sourceRecords: [detail, directorCredits, credits],
     });
+    assert.isDefined(interpreted);
 
     expect(interpreted.sourceArtifacts).toContainEqual(
       expect.objectContaining({
@@ -1175,6 +1197,7 @@ describe("TMDB collection and interpretation", () => {
       evidence,
       sourceRecords: [detail, directorCredits, credits],
     });
+    assert.isDefined(interpreted);
 
     expect(detail.body).toBe(detailBody);
     expect(directorCredits.body).toBe(creditsBody);

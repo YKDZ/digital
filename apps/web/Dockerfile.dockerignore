@@ -13,6 +13,7 @@ apps/web/node_modules/.tmp
 
 # 本地机密、agent 上下文与教学资料不得进入生产构建上下文。
 .scratch/
+credentials/
 .agents/
 AGENTS.md
 GLOSSARY*.md

@@ -2,7 +2,7 @@ import { rm, stat } from "node:fs/promises";
 import { setImmediate as yieldToFilesystem } from "node:timers/promises";
 
 import { knownSourceAssociationEvidenceCapability } from "@digital/application";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { assert, beforeEach, describe, expect, it, vi } from "vitest";
 
 const renderer = vi.hoisted(() => ({
   launches: 0,
@@ -156,43 +156,37 @@ vi.mock("playwright", () => ({
                   ) {
                     const previousFetch = globalThis.fetch;
                     let reads = 0;
-                    globalThis.fetch = (async () => ({
-                      status: 403,
-                      headers: {
-                        get: (name: string) =>
-                          name.toLowerCase() === "content-type"
-                            ? "text/html"
-                            : null,
-                      },
-                      body: {
-                        async cancel() {
-                          renderer.challengeCancels += 1;
+                    globalThis.fetch = async () =>
+                      new Response(
+                        new ReadableStream<Uint8Array>(
+                          {
+                            pull(controller) {
+                              reads += 1;
+                              if (reads === 1)
+                                controller.enqueue(
+                                  new TextEncoder().encode(
+                                    renderer.challengeMarker,
+                                  ),
+                                );
+                              else if (reads === 2)
+                                controller.enqueue(
+                                  new TextEncoder().encode(
+                                    "body-must-not-cross-seam",
+                                  ),
+                                );
+                              else controller.close();
+                            },
+                            cancel() {
+                              renderer.challengeCancels += 1;
+                            },
+                          },
+                          { highWaterMark: 0 },
+                        ),
+                        {
+                          status: 403,
+                          headers: { "content-type": "text/html" },
                         },
-                        getReader: () => ({
-                          async read() {
-                            reads += 1;
-                            if (reads === 1)
-                              return {
-                                done: false,
-                                value: new TextEncoder().encode(
-                                  renderer.challengeMarker,
-                                ),
-                              };
-                            if (reads === 2)
-                              return {
-                                done: false,
-                                value: new TextEncoder().encode(
-                                  "body-must-not-cross-seam",
-                                ),
-                              };
-                            return { done: true, value: undefined };
-                          },
-                          async cancel() {
-                            renderer.challengeCancels += 1;
-                          },
-                        }),
-                      },
-                    })) as typeof fetch;
+                      );
                     try {
                       return await callback(input);
                     } finally {
@@ -352,6 +346,46 @@ beforeEach(() => {
 });
 
 describe("FANBOX browser product assembly", () => {
+  it("生产连接验证不经 Node fetch 发出端点请求", async () => {
+    const nodeFetch = vi.fn(async () => {
+      throw new Error("Node transport must be unreachable");
+    });
+    vi.stubGlobal("fetch", nodeFetch);
+    renderer.connectedChallenge = true;
+    const assembly = createFanboxProductAssembly();
+    try {
+      await expect(
+        assembly.validatedBrowserCredential({
+          creatorId: "customudon",
+          browserCredential: {
+            userAgent: "test-browser/1",
+            cookies: [
+              {
+                name: "FANBOXSESSID",
+                value: "test-private-session",
+                domain: ".fanbox.cc",
+                path: "/",
+              },
+            ],
+          },
+        }),
+      ).rejects.toThrow("FANBOX 来源连接验证失败");
+      expect(nodeFetch).not.toHaveBeenCalled();
+      expect(renderer.launches).toBe(1);
+      expect(renderer.operations).toContainEqual({
+        context: 1,
+        pathname: "/post.info",
+        credentials: "include",
+      });
+    } finally {
+      try {
+        await assembly.close();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    }
+  }, 30_000);
+
   it("验证与采集各用 fresh context，并在同一采集 session 只追加一次 public detail", async () => {
     const assembly = createFanboxProductAssembly();
     const privateConfiguration = await assembly.validatedBrowserCredential({
@@ -598,6 +632,7 @@ describe("FANBOX browser product assembly", () => {
       }),
     ).rejects.toThrow("FANBOX 来源连接验证失败");
     expect(renderer.serverKills).toBe(1);
+    assert.isDefined(renderer.launchOptions!.env.HOME);
     await expect(stat(renderer.launchOptions!.env.HOME)).rejects.toMatchObject({
       code: "ENOENT",
     });

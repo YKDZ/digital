@@ -19,12 +19,13 @@
     "format:write": "oxfmt --write --config ../../oxfmt.config.ts .",
     "lint": "oxlint --quiet --format=unix --config ../../oxlint.config.ts --ignore-pattern node_modules .",
     "lint:fix": "oxlint --format=unix --config ../../oxlint.config.ts . --fix",
-    "test:public-interface": "pnpm build && tsc -p tsconfig.public-interface.json --noEmit --pretty false",
+    "test:public-interface": "tsc -p tsconfig.public-interface.json --noEmit --pretty false",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
     "test": "vitest run --reporter=verbose --exclude '**/*.live.test.ts'",
     "test:corpus-real": "vitest run test/fixed-corpus-observation.live.test.ts --reporter=verbose",
     "build": "tsc -b tsconfig.build.json --force --pretty false",
-    "dev:build": "node --conditions=digital-source ../../scripts/build-development.ts"
+    "dev:build": "pnpm --workspace-root run development:build @digital/filesystem",
+    "dev:compile": "rm -rf .turbo/development && tsc -p tsconfig.build.json --customConditions digital-development --pretty false --incremental --outDir .turbo/development/dist --tsBuildInfoFile .turbo/development/build.tsbuildinfo"
   },
   "dependencies": {
     "@digital/application": "workspace:*"

@@ -14,33 +14,28 @@ import {
   deleteEnvironment,
   inspectEnvironment,
   stopEnvironment,
-} from "../packages/environment/src/index.ts";
+} from "@digital/environment";
+import { manageContainerEnvironment } from "@digital/environment/container";
 
-type Capability = "root" | "cli" | "web";
+import { requireInput } from "./inputs.ts";
+
 type Owner = { workspacePath: string; environment: string };
 type Collection = {
   owners: Owner[];
+  containerOwners: Owner[];
   saveErrors: string[];
   cleanupErrors: string[];
   collected: string[];
 };
-const workspacePath = path.resolve(import.meta.dirname, "..");
-const [phase, rawCapability] = process.argv.slice(2);
-if (
-  rawCapability !== "root" &&
-  rawCapability !== "cli" &&
-  rawCapability !== "web"
-)
-  throw new Error(
-    "用法：ci-environment.ts <run|collect|delete|result> <root|cli|web>",
-  );
-const capability: Capability = rawCapability;
+const workspacePath = requireInput("DIGITAL_AUTOMATION_WORKSPACE");
+const [phase, ...extraArguments] = process.argv.slice(2);
+if (extraArguments.length > 0)
+  throw new Error("用法：ci-environment.ts <run|collect|delete|result>");
 const evidence = path.resolve(
   process.env.DIGITAL_CI_EVIDENCE ??
-    path.join(workspacePath, ".scratch", "ci", capability),
+    path.join(workspacePath, ".scratch", "ci", "full"),
 );
-const ledger = path.join(evidence, "owners.ndjson");
-const environment = `completion-18-web-${process.env.GITHUB_RUN_ID ?? process.pid}-${process.env.GITHUB_RUN_ATTEMPT ?? 1}`;
+const containerLedger = path.join(evidence, "container-owners.ndjson");
 const privateValues = Object.entries(process.env)
   .filter(
     ([name, value]) =>
@@ -75,62 +70,22 @@ async function readJson<T>(name: string): Promise<T> {
 
 async function run(): Promise<number> {
   await mkdir(evidence, { recursive: true, mode: 0o700 });
-  if (capability === "root") {
-    const initial = await environmentNames();
-    if (initial.length !== 0)
-      throw new Error(
-        "根 CI 需要独占 fresh checkout；发现既有环境，不认领它们",
-      );
-    await save("initial-environments.json", {
-      workspacePath,
-      names: initial,
-      observedAt: new Date().toISOString(),
-    });
-  }
-  if (capability === "web")
-    await appendFile(
-      ledger,
-      `${JSON.stringify({ workspacePath, environment, issuedAt: new Date().toISOString() })}\n`,
-    );
-  const command =
-    capability === "root"
-      ? "pnpm"
-      : capability === "cli"
-        ? "pnpm"
-        : process.execPath;
-  const args =
-    capability === "root"
-      ? ["run", "check"]
-      : capability === "cli"
-        ? [
-            "--filter",
-            "@digital/cli",
-            "run",
-            "test:e2e",
-            "--retain-on-success",
-            "--evidence-directory",
-            path.join(evidence, "journeys"),
-            "--handoff-ledger",
-            ledger,
-          ]
-        : [
-            "apps/web/scripts/run-managed-service-acceptance.ts",
-            "--mode",
-            "owned",
-            "--environment",
-            environment,
-            "--workspace",
-            workspacePath,
-            "--artifacts",
-            path.join(evidence, "web"),
-            "--ledger",
-            path.join(evidence, "web-ledger.ndjson"),
-            "--keep-on-success",
-            "true",
-          ];
+  const initial = await environmentNames();
+  if (initial.length !== 0)
+    throw new Error("CI 需要独占的新检出；发现既有环境，不认领它们");
+  await save("initial-environments.json", {
+    workspacePath,
+    names: initial,
+    observedAt: new Date().toISOString(),
+  });
+  const command = process.execPath;
+  const args = [
+    "--conditions=digital-source",
+    "scripts/task-gates.ts",
+    "check:full",
+  ];
   const startedAt = new Date().toISOString();
   await save("execution.json", {
-    capability,
     workspacePath,
     command,
     args,
@@ -154,13 +109,18 @@ async function run(): Promise<number> {
       "COREPACK_HOME",
       "PNPM_HOME",
       "PLAYWRIGHT_BROWSERS_PATH",
+      "DOCKER_HOST",
+      "DOCKER_CONTEXT",
+      "DOCKER_BUILDKIT",
+      "BUILDKIT_PROGRESS",
+      "DIGITAL_DEPLOYMENT_BUILD_NETWORK",
     ].flatMap((name) =>
       process.env[name] === undefined ? [] : [[name, process.env[name]!]],
     ),
   );
   const child = spawn(command, args, {
     cwd: workspacePath,
-    env: childEnvironment,
+    env: { ...childEnvironment, DIGITAL_CI_EVIDENCE: evidence },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let interrupted: string | null = null;
@@ -214,7 +174,6 @@ async function run(): Promise<number> {
   process.off("SIGINT", onInt);
   process.off("SIGTERM", onTerm);
   await save("execution.json", {
-    capability,
     workspacePath,
     command,
     args,
@@ -231,21 +190,10 @@ async function run(): Promise<number> {
     : 1;
 }
 
-async function owners(errors: string[]): Promise<Owner[]> {
-  if (capability === "root") {
-    const initial = await readJson<{ workspacePath: string; names: string[] }>(
-      "initial-environments.json",
-    );
-    if (initial.workspacePath !== workspacePath || initial.names.length !== 0)
-      throw new Error("缺少独占工作区的空初态，不能认领根检查环境");
-    return (await environmentNames()).map((environment) => ({
-      workspacePath,
-      environment,
-    }));
-  }
+async function containerOwners(errors: string[]): Promise<Owner[]> {
   let lines: string;
   try {
-    lines = await readFile(ledger, "utf8");
+    lines = await readFile(containerLedger, "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
@@ -256,18 +204,27 @@ async function owners(errors: string[]): Promise<Owner[]> {
       const owner = JSON.parse(line) as Owner;
       if (
         owner.workspacePath !== workspacePath ||
-        !/^completion-(02|18)-[A-Za-z0-9._-]+$/u.test(owner.environment)
+        !/^completion-(15|16)-[A-Za-z0-9._-]+$/u.test(owner.environment)
       )
-        throw new Error("交接归属不属于本作业工作区");
-      result.set(owner.environment, {
-        workspacePath,
-        environment: owner.environment,
-      });
+        throw new Error("容器交接归属不属于本作业工作区");
+      result.set(owner.environment, owner);
     } catch (error) {
-      errors.push(`归属交接记录: ${errorText(error)}`);
+      errors.push(`容器交接记录: ${errorText(error)}`);
     }
   }
   return [...result.values()];
+}
+
+async function owners(containers: readonly Owner[]): Promise<Owner[]> {
+  const initial = await readJson<{ workspacePath: string; names: string[] }>(
+    "initial-environments.json",
+  );
+  if (initial.workspacePath !== workspacePath || initial.names.length !== 0)
+    throw new Error("缺少独占工作区的空初态，不能认领检查环境");
+  const containerNames = new Set(containers.map((owner) => owner.environment));
+  return (await environmentNames())
+    .filter((name) => !containerNames.has(name))
+    .map((environment) => ({ workspacePath, environment }));
 }
 
 async function environmentNames(): Promise<string[]> {
@@ -298,8 +255,10 @@ async function collect(): Promise<number> {
   } catch (error) {
     saveErrors.push(`执行记录保存状态: ${errorText(error)}`);
   }
+  const containers = await containerOwners(saveErrors);
   const result: Collection = {
-    owners: await owners(saveErrors),
+    owners: await owners(containers),
+    containerOwners: containers,
     saveErrors,
     cleanupErrors: [],
     collected: [],
@@ -418,44 +377,83 @@ async function collect(): Promise<number> {
       );
     }
   }
-  if (capability === "root") {
-    // 根默认 CLI 仍写原正式结果路径；其命令结果与场景结局也属于本次上传。
-    const journeyResults = path.join(workspacePath, "run", "02-evidence");
+  for (const owner of containers) {
+    let stopped:
+      | Awaited<ReturnType<typeof manageContainerEnvironment>>
+      | undefined;
+    let observed:
+      | Awaited<ReturnType<typeof manageContainerEnvironment>>
+      | undefined;
     try {
-      for (const entry of await readdir(journeyResults, {
-        withFileTypes: true,
-      })) {
-        if (!entry.isFile()) continue;
-        try {
-          const target = path.join(evidence, "journeys");
-          await mkdir(target, { recursive: true, mode: 0o700 });
-          await writeFile(
-            path.join(target, entry.name),
-            redact(
-              await readFile(path.join(journeyResults, entry.name), "utf8"),
-            ),
-          );
-        } catch (error) {
-          result.saveErrors.push(
-            `CLI 场景结果 ${entry.name}: ${errorText(error)}`,
-          );
-        }
-      }
+      stopped = await manageContainerEnvironment({ ...owner, action: "stop" });
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT")
-        result.saveErrors.push(`CLI 场景结果枚举: ${errorText(error)}`);
+      result.cleanupErrors.push(
+        `${owner.environment} stop: ${errorText(error)}`,
+      );
     }
-    for (const name of ["test-results", "playwright-report"]) {
-      try {
-        await cp(
-          path.join(workspacePath, "apps", "web", name),
-          path.join(evidence, "browser", name),
-          { recursive: true },
+    try {
+      observed = await manageContainerEnvironment({
+        ...owner,
+        action: "inspect",
+      });
+    } catch (error) {
+      result.cleanupErrors.push(
+        `${owner.environment} inspect: ${errorText(error)}`,
+      );
+    }
+    for (const operation of [stopped, observed]) {
+      result.cleanupErrors.push(...(operation?.cleanupErrors ?? []));
+      result.saveErrors.push(...(operation?.saveErrors ?? []));
+    }
+    try {
+      await save(`${owner.environment}-stopped.json`, { stopped, observed });
+    } catch (error) {
+      result.saveErrors.push(
+        `${owner.environment} 停止结果: ${errorText(error)}`,
+      );
+    }
+    if (
+      stopped?.status !== "ok" ||
+      observed?.status !== "ok" ||
+      observed.observation?.objects.some(
+        (object) => object.running === true || object.state === "unknown",
+      )
+    ) {
+      result.cleanupErrors.push(
+        `${owner.environment}: 容器停止或独立退出未确认`,
+      );
+      continue;
+    }
+    if (observed.remaining.length === 0 && !observed.observation?.dataPresent)
+      continue;
+    let saved:
+      | Awaited<ReturnType<typeof manageContainerEnvironment>>
+      | undefined;
+    try {
+      saved = await manageContainerEnvironment({
+        ...owner,
+        action: "save",
+        includeData: true,
+        directory: path.join(evidence, "containers", owner.environment),
+      });
+      result.saveErrors.push(...saved.saveErrors);
+      result.cleanupErrors.push(...saved.cleanupErrors);
+      if (saved.status !== "ok" || saved.evidence?.dataSaved !== true)
+        result.saveErrors.push(
+          `${owner.environment}: 容器数据及日志未完整保存`,
         );
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT")
-          result.saveErrors.push(`浏览器诊断 ${name}: ${errorText(error)}`);
-      }
+      else result.collected.push(owner.environment);
+    } catch (error) {
+      result.saveErrors.push(
+        `${owner.environment} 容器数据及日志: ${errorText(error)}`,
+      );
+    }
+    try {
+      await save(`${owner.environment}-collected.json`, saved);
+    } catch (error) {
+      result.saveErrors.push(
+        `${owner.environment} 收集结果: ${errorText(error)}`,
+      );
     }
   }
   await save("collection.json", result);
@@ -521,6 +519,42 @@ async function remove(): Promise<number> {
         deletion.cleanup.errors.length > 0 ||
         after.state !== "unprepared" ||
         after.run.processLiveness !== "absent"
+      )
+        failed = true;
+    } catch (error) {
+      failed = true;
+      results.push({ owner, error: errorText(error) });
+    }
+  }
+  for (const owner of collection.containerOwners) {
+    try {
+      const before = await manageContainerEnvironment({
+        ...owner,
+        action: "inspect",
+      });
+      if (
+        before.status !== "ok" ||
+        before.observation?.objects.some(
+          (object) => object.running === true || object.state === "unknown",
+        )
+      )
+        throw new Error("容器删除前退出状态未确认");
+      const deletion = await manageContainerEnvironment({
+        ...owner,
+        action: "delete",
+        deleteData: true,
+      });
+      const after = await manageContainerEnvironment({
+        ...owner,
+        action: "inspect",
+      });
+      results.push({ owner, before, deletion, after });
+      if (
+        deletion.status !== "ok" ||
+        deletion.cleanupErrors.length > 0 ||
+        after.status !== "ok" ||
+        after.remaining.length > 0 ||
+        after.observation?.dataPresent
       )
         failed = true;
     } catch (error) {

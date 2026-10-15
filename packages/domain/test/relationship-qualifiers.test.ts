@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
 
-import { validateSourceInterpretationBatch } from "../src/index.ts";
+import {
+  validateSourceInterpretationBatch,
+  type SourceInterpretationBatch,
+} from "../src/index.ts";
 
 describe("Entity Relationship qualifiers", () => {
-  const batch = (relationship: Record<string, unknown>) => ({
+  const batch = (
+    relationship: NonNullable<
+      SourceInterpretationBatch["relationships"]
+    >[number],
+  ) => ({
     id: "batch",
     producer: {
       capabilityId: "test",

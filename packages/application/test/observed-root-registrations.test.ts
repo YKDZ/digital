@@ -2,12 +2,13 @@ import {
   InMemoryObservedFilesystemCapability,
   InMemoryObservedRootRegistrationStore,
 } from "@digital/test-support";
-import { describe, expect, it } from "vitest";
+import { assert, describe, expect, it } from "vitest";
 
 import {
   ObservedRootConfigurationConflict,
   ObservedRootRegistrations,
   type ObservedRootRegistration,
+  type ExecutionHost,
 } from "../src/index.ts";
 
 const localLibraryId = "library-local";
@@ -43,12 +44,10 @@ function registrationsFor(
         readonly reportCleanupReportingFailure?: (
           value: unknown,
         ) => void | Promise<void>;
-        readonly operationSupervisor?: {
-          invalidateObservedRoot(input: {
-            readonly registrationId: string;
-            readonly keepVersion?: number;
-          }): void;
-        };
+        readonly operationSupervisor?: Pick<
+          ExecutionHost,
+          "invalidateObservedRoot" | "invalidateLibraryDirectory"
+        >;
         readonly store?: InMemoryObservedRootRegistrationStore<ObservedRootRegistration>;
       } = {},
 ): {
@@ -108,6 +107,9 @@ describe("Observed Root Registrations", () => {
       new InMemoryObservedFilesystemCapability(),
       {
         operationSupervisor: {
+          invalidateLibraryDirectory() {
+            throw new Error("撤销登记不应失效库目录");
+          },
           invalidateObservedRoot(input) {
             invalidated.push(input);
           },
@@ -548,6 +550,7 @@ describe("Observed Root Registrations", () => {
     expect(before.directoryAuthorityVersion).toBe(1);
     const configVersion =
       store.libraryLedger.read(localLibraryId)?.configVersion;
+    assert.isDefined(configVersion);
     const receipt = store.authorization.saveLibrary({
       libraryId: localLibraryId,
       expectedConfigVersion: configVersion,
@@ -700,11 +703,12 @@ describe("Observed Root Registrations", () => {
       },
     );
     const current = store.libraryLedger.read(localLibraryId);
+    assert.isDefined(current);
 
     expect(
       store.authorization.saveLibrary({
         libraryId: localLibraryId,
-        expectedConfigVersion: (current?.configVersion ?? 0) + 5,
+        expectedConfigVersion: (current.configVersion ?? 0) + 5,
         directories: [
           {
             observedRootId: "registered-root",
@@ -727,10 +731,11 @@ describe("Observed Root Registrations", () => {
       observedRootId: "registered-root",
     });
     const removed = store.libraryLedger.read(localLibraryId);
+    assert.isDefined(removed);
     expect(
       store.authorization.saveLibrary({
         libraryId: localLibraryId,
-        expectedConfigVersion: current?.configVersion,
+        expectedConfigVersion: current.configVersion,
         directories: [
           { observedRootId: "retained-root", symlinkMode: "follow-file-links" },
         ],
@@ -755,15 +760,16 @@ describe("Observed Root Registrations", () => {
       new InMemoryObservedFilesystemCapability(),
     );
     const current = store.libraryLedger.read(localLibraryId);
+    assert.isDefined(current);
 
     expect(
       store.authorization.saveLibrary({
         libraryId: localLibraryId,
-        expectedConfigVersion: current?.configVersion,
+        expectedConfigVersion: current.configVersion,
         directories: [],
       }),
     ).toEqual({
-      configVersion: (current?.configVersion ?? 0) + 1,
+      configVersion: (current.configVersion ?? 0) + 1,
       invalidations: [
         { assetLibraryId: localLibraryId, observedRootId: "registered-root" },
       ],
@@ -801,10 +807,11 @@ describe("Observed Root Registrations", () => {
     });
     // 普通保存不能代替点名重连，也不能让原绑定范围沿旧授权重新取得访问。
     const removed = store.libraryLedger.read(localLibraryId);
+    assert.isDefined(removed);
     expect(() =>
       store.authorization.saveLibrary({
         libraryId: localLibraryId,
-        expectedConfigVersion: removed?.configVersion,
+        expectedConfigVersion: removed.configVersion,
         directories: [
           {
             observedRootId: "registered-root",

@@ -5,12 +5,6 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch:
-    inputs:
-      deployment:
-        description: 显式构建镜像并执行已有 Docker 部署入口
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -22,15 +16,12 @@ concurrency:
 
 jobs:
   check:
-    name: ${{ matrix.capability }}
+    name: 完整轻重验收
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        capability: [root, cli, web]
+    timeout-minutes: 150
     env:
-      DIGITAL_CI_EVIDENCE: ${{ github.workspace }}/.scratch/ci/${{ matrix.capability }}
+      DIGITAL_AUTOMATION_WORKSPACE: ${{ github.workspace }}
+      DIGITAL_CI_EVIDENCE: ${{ github.workspace }}/.scratch/ci/full
     steps:
       - name: 检出独立工作区
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -48,90 +39,59 @@ jobs:
           cache: true
       - name: 准备本作业临时目录
         run: |
-          ci_tmp="$RUNNER_TEMP/d18-${{ matrix.capability }}"
-          mkdir -m 700 -p "$ci_tmp"
+          # 私有控制通道使用 Unix socket，作业临时根保持短路径。
+          ci_tmp="$(mktemp -d /tmp/digital-ci.XXXXXXXX)"
           printf 'TMPDIR=%s\n' "$ci_tmp" >> "$GITHUB_ENV"
       - name: 安装锁定依赖
         run: pnpm install --frozen-lockfile
-      - name: 安装 Chromium
-        run: pnpm --filter @digital/web exec playwright install --with-deps chromium
-      - name: 构建场景正式依赖
-        if: matrix.capability != 'root'
-        run: pnpm exec turbo run build --filter=@digital/web --filter=@digital/cli --filter=@digital/db-migrations
       - name: 运行相同本地入口
         id: execution
-        timeout-minutes: 30
+        timeout-minutes: 120
         env:
-          TURBO_CONCURRENCY: ${{ matrix.capability == 'root' && '2' || '10' }}
-        run: node --conditions=digital-source scripts/ci-environment.ts run ${{ matrix.capability }}
+          TURBO_CONCURRENCY: "2"
+        run: pnpm --filter @digital/workspace-automation exec node --conditions=digital-source scripts/ci-environment.ts run
       - name: 停止自有环境并收集真实数据及完整日志
         id: collection
         if: always()
-        run: node --conditions=digital-source scripts/ci-environment.ts collect ${{ matrix.capability }}
+        run: pnpm --filter @digital/workspace-automation exec node --conditions=digital-source scripts/ci-environment.ts collect
       - name: 上传场景证据
         id: upload
         if: always()
         uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4
         with:
-          name: ci-${{ matrix.capability }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ci-full-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.DIGITAL_CI_EVIDENCE }}
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+      - name: 上传可独立下载的产品数据与完整日志
+        id: product_upload
+        if: always()
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4
+        with:
+          name: ci-product-data-and-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          # 完整包保留容器文件系统快照；此包只排除这些大快照。
+          path: |
+            ${{ env.DIGITAL_CI_EVIDENCE }}
+            !${{ env.DIGITAL_CI_EVIDENCE }}/**/*-stopped-container.tar
+            !${{ env.DIGITAL_CI_EVIDENCE }}/**/stopped-web.tar
+            !${{ env.DIGITAL_CI_EVIDENCE }}/**/browser-client-diagnostic.tar
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
       - name: 核实上传产物后显式删除自有环境
         id: deletion
-        if: always() && steps.collection.outcome == 'success' && steps.upload.outcome == 'success'
+        if: always() && steps.collection.outcome == 'success' && steps.upload.outcome == 'success' && steps.product_upload.outcome == 'success'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           DIGITAL_CI_ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
-          DIGITAL_CI_ARTIFACT_NAME: ci-${{ matrix.capability }}-${{ github.run_id }}-${{ github.run_attempt }}
-        run: node --conditions=digital-source scripts/ci-environment.ts delete ${{ matrix.capability }}
+          DIGITAL_CI_ARTIFACT_NAME: ci-full-${{ github.run_id }}-${{ github.run_attempt }}
+        run: pnpm --filter @digital/workspace-automation exec node --conditions=digital-source scripts/ci-environment.ts delete
       - name: 分别报告执行、保存、上传与清理结果
         if: always()
         env:
           DIGITAL_CI_EXECUTION_OUTCOME: ${{ steps.execution.outcome }}
           DIGITAL_CI_COLLECTION_OUTCOME: ${{ steps.collection.outcome }}
-          DIGITAL_CI_UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
+          DIGITAL_CI_UPLOAD_OUTCOME: ${{ steps.upload.outcome == 'success' && steps.product_upload.outcome == 'success' && 'success' || 'failure' }}
           DIGITAL_CI_DELETION_OUTCOME: ${{ steps.deletion.outcome }}
-        run: node --conditions=digital-source scripts/ci-environment.ts result ${{ matrix.capability }}
-
-  deployment:
-    name: 显式 Docker 部署
-    if: github.event_name == 'workflow_dispatch' && inputs.deployment
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
-        with:
-          node-version-file: package.json
-          package-manager-cache: false
-      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
-        with:
-          cache: true
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      - name: 安装依赖与浏览器
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm --filter @digital/web exec playwright install --with-deps chromium
-      - name: 构建正式部署镜像与 checker 依赖
-        run: |
-          pnpm exec turbo run build --filter=@digital/web --filter=@digital/cli --filter=@digital/db-migrations
-          docker build -f apps/web/Dockerfile --target standalone -t completion-ci-standalone:${{ github.run_id }} .
-          docker build -f apps/web/Dockerfile --target runtime -t completion-ci-runtime:${{ github.run_id }} .
-      - name: 调用原部署入口
-        env:
-          DIGITAL_DEPLOYMENT_STANDALONE_IMAGE: completion-ci-standalone:${{ github.run_id }}
-          DIGITAL_DEPLOYMENT_RUNTIME_IMAGE: completion-ci-runtime:${{ github.run_id }}
-          DIGITAL_DEPLOYMENT_ARTIFACTS: ${{ github.workspace }}/.scratch/ci/deployment/standalone
-          DIGITAL_COMPOSE_CHECK_ARTIFACTS: ${{ github.workspace }}/.scratch/ci/deployment/compose
-        run: pnpm run check:deployment
-      - name: 上传部署诊断
-        if: always()
-        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4
-        with:
-          name: deployment-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .scratch/ci/deployment
-          if-no-files-found: error
-          retention-days: 7
+        run: pnpm --filter @digital/workspace-automation exec node --conditions=digital-source scripts/ci-environment.ts result

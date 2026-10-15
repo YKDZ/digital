@@ -17,9 +17,9 @@ TMDB 与 OMDb 的电影、IMDb 编号及年份来自原参考；来源响应中�
 在仓库根目录运行，环境名、证据文件和端口须由调用者独占：
 
 ```bash
-node scripts/verify-publication-screen-corpus.ts publication-screen-demo /tmp/publication-screen-demo.json 54013
-node scripts/verify-publication-screen-corpus.ts publication-only /tmp/publication-only.json 54014 epub-1 pdf-three
-node scripts/verify-publication-screen-corpus.ts screen-only /tmp/screen-only.json 54015 anime-frieren film-directed
+pnpm verify:publication-screen publication-screen-demo /tmp/publication-screen-demo.json 54013
+pnpm verify:publication-screen publication-only /tmp/publication-only.json 54014 epub-1 pdf-three
+pnpm verify:publication-screen screen-only /tmp/screen-only.json 54015 anime-frieren film-directed
 ```
 
 实际结果及失败范围由每次证据文件给出。该集合证明普通目录接入、实际格式解析、身份与关系、来源贡献及封面可读性，不代表完整阅读、播放、性能或真实网络验收。

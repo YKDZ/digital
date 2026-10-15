@@ -4,24 +4,29 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "boundaries": "turbo boundaries --no-color",
+    "boundaries": "node --conditions=digital-source scripts/run-turbo-boundaries.ts && node --conditions=digital-source scripts/check-toolchain-versions.ts",
     "db:migrate": "pnpm --filter @digital/db-migrations prepare-only",
     "environment": "pnpm --filter @digital/environment cli",
-    "check": "pnpm boundaries && turbo run format:check lint typecheck build test test:e2e --continue=dependencies-successful --output-logs=errors-only --log-order=grouped --log-prefix=task",
-    "check:cli-environment": "turbo run test:e2e:environment --filter=@digital/cli --output-logs=errors-only --log-order=grouped --log-prefix=task",
-    "check:corpus-real": "turbo run test:corpus-real --output-logs=errors-only --log-order=grouped --log-prefix=task",
-    "check:deployment": "turbo run deployment --output-logs=errors-only --log-order=grouped --log-prefix=task",
-    "fix": "turbo run lint:fix format:write --continue=dependencies-successful --output-logs=full --log-order=grouped --log-prefix=task",
-    "format:check": "oxfmt --list-different --config oxfmt.config.ts package.json pnpm-workspace.yaml pnpm-lock.yaml turbo.json tsconfig.json tsconfig.config.json oxfmt.config.ts oxlint.config.ts .gitignore .vscode .github .devcontainer scripts",
-    "format:write": "oxfmt --write --config oxfmt.config.ts package.json pnpm-workspace.yaml pnpm-lock.yaml turbo.json tsconfig.json tsconfig.config.json oxfmt.config.ts oxlint.config.ts .gitignore .vscode .github .devcontainer scripts",
-    "lint": "oxlint --quiet --format=unix --type-aware --config oxlint.config.ts oxfmt.config.ts oxlint.config.ts scripts",
-    "lint:fix": "oxlint --format=unix --type-aware --config oxlint.config.ts oxfmt.config.ts oxlint.config.ts scripts --fix",
-    "preview": "node scripts/preview-environment.ts",
-    "preview:verify": "node scripts/preview-environment.ts verify",
-    "verify:web:http": "turbo run test:e2e:managed-service",
-    "verify:web:http:provided": "turbo run test:e2e:provided-service",
+    "check": "node --conditions=digital-source scripts/task-gates.ts check",
+    "fix": "node --conditions=digital-source scripts/task-gates.ts fix",
+    "format:check": "oxfmt --list-different --config oxfmt.config.ts package.json pnpm-workspace.yaml pnpm-lock.yaml turbo.json tsconfig.json tsconfig.config.json *.config.ts .gitignore .dockerignore docker-compose.yml .vscode .github .devcontainer scripts",
+    "format:write": "oxfmt --write --config oxfmt.config.ts package.json pnpm-workspace.yaml pnpm-lock.yaml turbo.json tsconfig.json tsconfig.config.json *.config.ts .gitignore .dockerignore docker-compose.yml .vscode .github .devcontainer scripts",
+    "lint": "oxlint --quiet --format=unix --type-aware --config oxlint.config.ts *.config.ts scripts",
+    "lint:fix": "oxlint --format=unix --type-aware --config oxlint.config.ts *.config.ts scripts --fix",
+    "preview": "DIGITAL_AUTOMATION_WORKSPACE=\"$PWD\" DIGITAL_AUTOMATION_SOURCE_DIRECTORY=\"$PWD/fixtures/controlled-source-io\" pnpm --filter @digital/workspace-automation exec node --conditions=digital-source scripts/preview-environment.ts",
+    "preview:verify": "DIGITAL_AUTOMATION_WORKSPACE=\"$PWD\" DIGITAL_AUTOMATION_SOURCE_DIRECTORY=\"$PWD/fixtures/controlled-source-io\" pnpm --filter @digital/workspace-automation exec node --conditions=digital-source scripts/preview-environment.ts verify",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
-    "preview:dev": "node --conditions=digital-source scripts/development-environment.ts"
+    "preview:dev": "DIGITAL_AUTOMATION_WORKSPACE=\"$PWD\" pnpm --filter @digital/workspace-automation exec node --conditions=digital-source scripts/development-environment.ts",
+    "check:heavy": "node --conditions=digital-source scripts/task-gates.ts check:heavy",
+    "check:full": "node --conditions=digital-source scripts/task-gates.ts check:full",
+    "test": "node --test scripts/test/*.test.ts",
+    "development:build": "DIGITAL_AUTOMATION_WORKSPACE=\"$PWD\" pnpm --filter @digital/workspace-automation exec node --conditions=digital-source scripts/build-development.ts",
+    "development:serve": "DIGITAL_AUTOMATION_WORKSPACE=\"$PWD\" pnpm --filter @digital/workspace-automation exec node --conditions=digital-source scripts/development-task.ts",
+    "acceptance:prepare": "pnpm --filter @digital/web run acceptance:prepare --workspace \"$PWD\" --source-directory \"$PWD/fixtures/controlled-source-io\" --compose-file \"$PWD/docker-compose.yml\"",
+    "verify:audio-posts": "DIGITAL_AUTOMATION_WORKSPACE=\"$PWD\" DIGITAL_AUTOMATION_SOURCE_DIRECTORY=\"$PWD/fixtures/preview-corpus/audio-posts\" pnpm --filter @digital/workspace-automation exec node --conditions=digital-source scripts/verify-audio-post-corpus.ts",
+    "verify:publication-screen": "DIGITAL_AUTOMATION_WORKSPACE=\"$PWD\" DIGITAL_AUTOMATION_SOURCE_DIRECTORY=\"$PWD/fixtures/preview-corpus/publication-screen\" pnpm --filter @digital/workspace-automation exec node --conditions=digital-source scripts/verify-publication-screen-corpus.ts",
+    "fixture:source-io": "DIGITAL_AUTOMATION_OUTPUT_DIRECTORY=\"$PWD/fixtures/controlled-source-io\" pnpm --filter @digital/workspace-automation exec node --conditions=digital-source scripts/build-controlled-source-io-fixture.ts",
+    "fixture:fanbox-session": "DIGITAL_AUTOMATION_OUTPUT_DIRECTORY=\"$PWD/fixtures/controlled-fanbox-session\" pnpm --filter @digital/workspace-automation exec node --conditions=digital-source scripts/build-controlled-fanbox-session-fixture.ts"
   },
   "devDependencies": {
     "@types/node": "catalog:",
@@ -32,7 +37,7 @@
     "typescript-7": "catalog:"
   },
   "engines": {
-    "node": "24"
+    "node": "24.21.0"
   },
   "packageManager": "pnpm@12.3.4+sha512.961aa41fb077da3a04a441d9f8e15ebc0c96da8ef710b2eb67bf9ee7cb0610eabd48f1fd85f51cffe73846785fa0f87c56a3a872a1d893f8446741b5cce45457"
 }

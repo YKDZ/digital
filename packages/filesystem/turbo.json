@@ -1,1 +1,86 @@
-{ "extends": ["//"], "tags": ["infrastructure"] }
+{
+  "extends": ["//"],
+  "tags": ["infrastructure"],
+  "tasks": {
+    "format:check": {
+      "outputs": [],
+      "tags": ["quality:light"]
+    },
+    "format:write": {
+      "dependsOn": ["lint:fix"],
+      "cache": false,
+      "tags": ["work:repair"]
+    },
+    "lint": {
+      "outputs": [],
+      "tags": ["quality:light"]
+    },
+    "lint:fix": {
+      "cache": false,
+      "tags": ["work:repair"]
+    },
+    "test:public-interface": {
+      "tags": ["quality:light"],
+      "dependsOn": ["build"]
+    },
+    "typecheck": {
+      "dependsOn": ["^typecheck"],
+      "outputs": [],
+      "tags": ["quality:light"]
+    },
+    "test": {
+      "dependsOn": ["build"],
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/fixtures/controlled-source-io/**",
+        "$TURBO_ROOT$/fixtures/controlled-fanbox-session/**",
+        "$TURBO_ROOT$/fixtures/live-corpus/**"
+      ],
+      "outputs": [],
+      "tags": ["quality:light"]
+    },
+    "test:corpus-real": {
+      "dependsOn": ["build"],
+      "cache": false,
+      "passThroughEnv": [
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "DIGITAL_TMDB_ACCESS_TOKEN",
+        "DIGITAL_OMDB_API_KEY",
+        "DIGITAL_BANGUMI_LIVE_PRODUCT_DATA",
+        "DIGITAL_BANGUMI_CLIENT_ID",
+        "DIGITAL_BANGUMI_CLIENT_SECRET",
+        "DIGITAL_BANGUMI_REDIRECT_URI",
+        "DIGITAL_FANBOX_LIVE_FAILURE_EVIDENCE_PATH",
+        "DIGITAL_CI_EVIDENCE"
+      ],
+      "tags": ["quality:conditional"]
+    },
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"],
+      "tags": ["quality:light"]
+    },
+    "dev:build": {
+      "dependsOn": ["^dev:build"],
+      "cache": false,
+      "inputs": [
+        "src/**",
+        "tsconfig*.json",
+        "package.json",
+        "$TURBO_ROOT$/packages/workspace-automation/scripts/build-development.ts"
+      ],
+      "outputs": [".turbo/development/**"],
+      "tags": ["work:development"],
+      "passThroughEnv": ["DIGITAL_DEVELOPMENT_*"]
+    },
+    "dev:compile": {
+      "tags": ["work:development"],
+      "cache": false,
+      "outputs": [".turbo/development/**"],
+      "passThroughEnv": ["DIGITAL_DEVELOPMENT_*"]
+    }
+  }
+}

@@ -2,14 +2,142 @@
   "extends": ["//"],
   "tags": ["composition-root"],
   "tasks": {
-    "build": { "outputs": ["dist/**"] },
-    "test": { "dependsOn": ["build", "@digital/sqlite#build"] },
-    "test:e2e": {
-      "dependsOn": ["build", "@digital/sqlite#build"],
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"],
+      "tags": ["quality:light"]
+    },
+    "format:check": {
+      "outputs": [],
+      "tags": ["quality:light"]
+    },
+    "format:write": {
+      "dependsOn": ["lint:fix"],
+      "cache": false,
+      "tags": ["work:repair"]
+    },
+    "lint": {
+      "outputs": [],
+      "tags": ["quality:light"]
+    },
+    "lint:fix": {
+      "cache": false,
+      "tags": ["work:repair"]
+    },
+    "postbuild": {
+      "tags": ["work:lifecycle"],
       "cache": false
+    },
+    "prepack": {
+      "tags": ["work:lifecycle"],
+      "cache": false
+    },
+    "test": {
+      "dependsOn": ["build", "@digital/sqlite#build"],
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/fixtures/controlled-source-io/**",
+        "$TURBO_ROOT$/fixtures/controlled-fanbox-session/**",
+        "$TURBO_ROOT$/fixtures/live-corpus/**"
+      ],
+      "outputs": [],
+      "tags": ["quality:light"]
+    },
+    "test:e2e": {
+      "dependsOn": [
+        "build",
+        "@digital/sqlite#build",
+        "@digital/web#build",
+        "@digital/web#test:e2e"
+      ],
+      "cache": false,
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP", "DIGITAL_CI_EVIDENCE"],
+      "tags": ["quality:heavy"]
+    },
+    "test:corpus-real": {
+      "dependsOn": ["build"],
+      "cache": false,
+      "passThroughEnv": [
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "DIGITAL_TMDB_ACCESS_TOKEN",
+        "DIGITAL_OMDB_API_KEY",
+        "DIGITAL_BANGUMI_LIVE_PRODUCT_DATA",
+        "DIGITAL_BANGUMI_CLIENT_ID",
+        "DIGITAL_BANGUMI_CLIENT_SECRET",
+        "DIGITAL_BANGUMI_REDIRECT_URI",
+        "DIGITAL_FANBOX_LIVE_FAILURE_EVIDENCE_PATH",
+        "DIGITAL_CI_EVIDENCE"
+      ],
+      "tags": ["quality:conditional"]
+    },
+    "test:e2e:bangumi-live": {
+      "dependsOn": ["build"],
+      "cache": false,
+      "passThroughEnv": [
+        "DIGITAL_BANGUMI_LIVE_PRODUCT_DATA",
+        "DIGITAL_BANGUMI_CLIENT_ID",
+        "DIGITAL_BANGUMI_CLIENT_SECRET",
+        "DIGITAL_BANGUMI_REDIRECT_URI",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "DIGITAL_CI_EVIDENCE"
+      ],
+      "tags": ["quality:conditional"]
+    },
+    "test:e2e:fanbox-live": {
+      "tags": ["quality:conditional"],
+      "cache": false,
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP", "DIGITAL_CI_EVIDENCE"]
+    },
+    "test:e2e:pdf-live": {
+      "tags": ["quality:conditional"],
+      "cache": false,
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP", "DIGITAL_CI_EVIDENCE"]
+    },
+    "test:e2e:tmdb-omdb-live": {
+      "dependsOn": ["build"],
+      "cache": false,
+      "passThroughEnv": [
+        "DIGITAL_TMDB_ACCESS_TOKEN",
+        "DIGITAL_OMDB_API_KEY",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "DIGITAL_CI_EVIDENCE"
+      ],
+      "tags": ["quality:conditional"]
+    },
+    "test:e2e:deep-integrity": {
+      "tags": ["quality:conditional"],
+      "cache": false,
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP", "DIGITAL_CI_EVIDENCE"]
     },
     "test:e2e:environment": {
       "dependsOn": ["build", "@digital/sqlite#build"],
+      "cache": false,
+      "tags": ["quality:heavy"],
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP", "DIGITAL_CI_EVIDENCE"]
+    },
+    "typecheck": {
+      "dependsOn": ["^typecheck"],
+      "outputs": [],
+      "tags": ["quality:light"]
+    },
+    "test:product": {
+      "dependsOn": ["build", "@digital/sqlite#build"],
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP", "DIGITAL_CI_EVIDENCE"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/fixtures/controlled-source-io/**",
+        "$TURBO_ROOT$/fixtures/controlled-fanbox-session/**",
+        "$TURBO_ROOT$/fixtures/live-corpus/**"
+      ],
+      "outputs": [],
+      "tags": ["quality:heavy"],
       "cache": false
     }
   }

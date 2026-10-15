@@ -46,7 +46,7 @@ function description(
     EffectiveDescriptionRead["metadata"][number]["result"],
     { status: "resolved" }
   >["values"];
-  const valuesByProperty = new Map<string, ResolvedValues>();
+  const valuesByProperty = new Map<string, ResolvedValues[number][]>();
   for (const [property, value] of properties) {
     const selected = valuesByProperty.get(property) ?? [];
     selected.push({

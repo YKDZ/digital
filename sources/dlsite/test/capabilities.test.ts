@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { assert, describe, expect, it } from "vitest";
 
 import {
   DlsiteArtifactAcquirer,
@@ -453,6 +453,7 @@ describe("DLsite collection and interpretation", () => {
       evidence: [evidence],
       sourceRecords: [json, html],
     });
+    assert.isDefined(batch);
     const proposal = new DlsiteExactRecognizer().recognize({
       evidence: [evidence],
       basis: { kind: "source-interpretation", interpretation: batch },
@@ -635,6 +636,7 @@ describe("DLsite collection and interpretation", () => {
       evidence: [evidence],
       sourceRecords: [json, html],
     });
+    assert.isDefined(batch);
 
     expect(batch.metadata).toContainEqual(
       expect.objectContaining({
@@ -722,6 +724,7 @@ describe("DLsite collection and interpretation", () => {
       evidence: [evidence],
       sourceRecords: [json, html],
     });
+    assert.isDefined(batch);
 
     expect(batch.metadata).toEqual(
       expect.arrayContaining([
@@ -821,6 +824,7 @@ describe("DLsite collection and interpretation", () => {
       evidence: [evidence],
       sourceRecords: [json, html],
     });
+    assert.isDefined(batch);
 
     expect(batch.entities).toEqual([]);
     expect(batch.entityMentions).toEqual([]);
@@ -1025,6 +1029,7 @@ describe("DLsite collection and interpretation", () => {
         },
       ],
     });
+    assert.isDefined(batch);
     expect(
       batch.entities?.find(
         (entity) => entity.identityNamespace === "dlsite.circle",

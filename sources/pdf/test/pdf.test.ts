@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { createCanvas, loadImage } from "@napi-rs/canvas";
-import { describe, expect, it } from "vitest";
+import { assert, describe, expect, it } from "vitest";
 
 import { createPdfRecognitionCapabilities } from "../src/index.ts";
 
@@ -323,6 +323,7 @@ describe("PDF 本地格式能力", () => {
         "single.pdf",
       ),
     });
+    assert.isDefined(single);
     const [multiple] = await formatInspectors[0].inspect({
       observedArtifactReference: "multiple-isbn",
       byteSource: byteSource(
@@ -334,6 +335,7 @@ describe("PDF 本地格式能力", () => {
         "multiple.pdf",
       ),
     });
+    assert.isDefined(multiple);
     const [infoOnly] = await formatInspectors[0].inspect({
       observedArtifactReference: "info-title",
       byteSource: byteSource(
@@ -345,6 +347,7 @@ describe("PDF 本地格式能力", () => {
         "info-title.pdf",
       ),
     });
+    assert.isDefined(infoOnly);
     const [matchingTitles] = await formatInspectors[0].inspect({
       observedArtifactReference: "matching-title",
       byteSource: byteSource(
@@ -357,6 +360,7 @@ describe("PDF 本地格式能力", () => {
         "matching-title.pdf",
       ),
     });
+    assert.isDefined(matchingTitles);
 
     expect(single.inspection!.identifiers).toEqual([
       {
@@ -429,6 +433,7 @@ describe("PDF 本地格式能力", () => {
         "structured.pdf",
       ),
     });
+    assert.isDefined(evidence);
     const [directTitle] = await formatInspectors[0].inspect({
       observedArtifactReference: "direct-title",
       byteSource: byteSource(
@@ -441,6 +446,7 @@ describe("PDF 本地格式能力", () => {
         "direct-title.pdf",
       ),
     });
+    assert.isDefined(directTitle);
 
     expect(evidence.inspection!.identifiers).toEqual([
       {
@@ -475,7 +481,9 @@ describe("PDF 本地格式能力", () => {
       observedArtifactReference: "cover.pdf",
       byteSource: byteSource(bytes, "cover.pdf"),
     });
+    assert.isDefined(evidence);
     const part = evidence.inspection!.parts[0];
+    assert.isDefined(part);
     const candidate = {
       ...part,
       id: "pdf-cover",
@@ -524,6 +532,7 @@ describe("PDF 本地格式能力", () => {
 function byteSource(bytes: Uint8Array, logicalLocation: string) {
   return {
     byteLength: bytes.byteLength,
+    modifiedAt: "2026-07-29T00:00:00.000Z",
     logicalLocation,
     readChunk: async (offset: number, maximumBytes: number) => ({
       bytes: bytes.slice(offset, offset + maximumBytes),
@@ -655,6 +664,7 @@ function serializePdf(
 ): Uint8Array {
   const chunks: Uint8Array[] = [ascii("%PDF-1.7\n")];
   const offsets = [0];
+  assert.isDefined(chunks[0]);
   let length = chunks[0].byteLength;
   for (const [index, object] of objects.entries()) {
     offsets.push(length);

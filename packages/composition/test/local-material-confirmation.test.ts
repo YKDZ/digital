@@ -23,7 +23,7 @@ import {
   type WorkflowExecution,
 } from "@digital/application";
 import { SqliteCatalogue } from "@digital/sqlite";
-import { afterAll, expect, it, vi } from "vitest";
+import { assert, afterAll, expect, it, vi } from "vitest";
 
 import { composeAssetRefresh } from "../src/runtime.ts";
 import {
@@ -83,7 +83,9 @@ it("等大小同修改时间的内容变更重扫不伪造来源溯源且保留�
       informationRequirement: coverRequirement,
     });
     expect(first.itemResults).toHaveLength(1);
+    assert.isDefined(first.itemResults![0]);
     const assetId = first.itemResults![0].accepted!.entity.id;
+    assert.isDefined(first.itemResults![0]);
     expect(
       first.itemResults![0].accepted!.artifactAssociations.some(
         (association) =>
@@ -105,16 +107,19 @@ it("等大小同修改时间的内容变更重扫不伪造来源溯源且保留�
     });
 
     expect(second.itemResults).toHaveLength(1);
+    assert.isDefined(second.itemResults![0]);
     expect(second.itemResults![0].accepted!.entity.id).toBe(assetId);
     expect(
       second.execution.outcome,
       JSON.stringify(second.execution.dispositions),
     ).toBe("accepted");
+    assert.isDefined(second.itemResults![0]);
     expect(
       second.itemResults![0].accepted!.metadata.find(
         (assertion) => assertion.property === "pdf.document-author",
       )?.value,
     ).toBe("Two");
+    assert.isDefined(second.itemResults![0]);
     expect(
       second.itemResults![0].accepted!.artifactAssociations.some(
         (association) =>
@@ -152,6 +157,7 @@ it("等大小同修改时间的内容变更重扫不伪造来源溯源且保留�
       ),
     ).toBe(true);
     // PDF 格式事实属于精确载体修订，不属于资产实体；普通读取必须在新修订目标下读取它。
+    assert.isDefined(second.itemResults![0]);
     const revision = second.itemResults![0].accepted!.metadata.find(
       (assertion) => assertion.property === "pdf.document-author",
     )!.target;
@@ -1039,6 +1045,7 @@ it("真实旧封面历史的载体经实际字节确认后，错误实体封面�
     const history = await workflow.inspect(
       String(closure.workflow_executions![0]!.id),
     );
+    assert.isDefined(history);
     expect(history.execution.id).toBe(closure.workflow_executions![0]!.id);
     // 当前公共角色排除错误封面；原历史关联仍保留且受完整性检查，而非被硬删除。
     const reopenedDatabase = new DatabaseSync(

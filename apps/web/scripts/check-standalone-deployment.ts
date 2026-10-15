@@ -11,17 +11,28 @@ import {
   type ContainerRequest,
 } from "@digital/environment/container";
 
-import { fileCommandJournal, runCommand } from "./environment-lifecycle.ts";
+import { deploymentImages } from "./deployment-preparation.ts";
+import {
+  appendLedger,
+  claimFreePort,
+  fileCommandJournal,
+  runCommand,
+} from "./environment-lifecycle.ts";
 
-const repositoryRoot = path.resolve(import.meta.dirname, "../../..");
+const {
+  workspacePath: repositoryRoot,
+  sourceDirectory: fixture,
+  standaloneImage,
+  runtimeImage,
+} = await deploymentImages();
 const uniqueId = `completion-15-${process.pid}-${Date.now()}`;
 const artifacts = path.resolve(
-  process.env.DIGITAL_DEPLOYMENT_ARTIFACTS ?? `.scratch/deployment/${uniqueId}`,
+  process.env.DIGITAL_DEPLOYMENT_ARTIFACTS ??
+    path.join(
+      process.env.DIGITAL_CI_EVIDENCE ?? ".scratch/deployment",
+      uniqueId,
+    ),
 );
-const standaloneImage = process.env.DIGITAL_DEPLOYMENT_STANDALONE_IMAGE;
-const runtimeImage = process.env.DIGITAL_DEPLOYMENT_RUNTIME_IMAGE;
-if (!standaloneImage || !runtimeImage)
-  throw new Error("必须显式提供已构建的 standalone 和 runtime 镜像引用");
 const endpoint: ContainerEndpoint = {
   command: process.env.DIGITAL_DEPLOYMENT_DOCKER_COMMAND ?? "docker",
   arguments: JSON.parse(
@@ -29,8 +40,10 @@ const endpoint: ContainerEndpoint = {
   ) as string[],
   host: process.env.DOCKER_HOST ?? "unix:///var/run/docker.sock",
 };
-const port = Number(process.env.DIGITAL_DEPLOYMENT_PORT ?? "8080");
-const fixture = path.join(repositoryRoot, "fixtures/controlled-source-io");
+const port =
+  process.env.DIGITAL_DEPLOYMENT_PORT === undefined
+    ? await claimFreePort({ first: 0, last: 0 })
+    : Number(process.env.DIGITAL_DEPLOYMENT_PORT);
 const controller = new AbortController();
 for (const signal of ["SIGINT", "SIGTERM"] as const)
   process.once(signal, () => controller.abort(new Error(`收到 ${signal}`)));
@@ -49,6 +62,7 @@ const archiveArguments = JSON.parse(
 const saveErrors: string[] = [];
 const cleanupErrors: string[] = [];
 let mainError: string | undefined;
+let executionCompleted = false;
 
 async function operate(
   request: ContainerRequest,
@@ -99,6 +113,11 @@ async function prepare(
     environment: `${uniqueId}-${name}`,
   };
   environments.push(reference);
+  if (process.env.DIGITAL_CI_EVIDENCE !== undefined)
+    await appendLedger(
+      path.join(process.env.DIGITAL_CI_EVIDENCE, "container-owners.ndjson"),
+      reference,
+    );
   requireSuccess(
     await operate({
       ...reference,
@@ -285,6 +304,7 @@ async function finish(reference: ContainerReference) {
     true,
   );
   requireSuccess(saved);
+  if (process.env.DIGITAL_CI_EVIDENCE !== undefined) return;
   requireSuccess(
     await operate({ ...reference, action: "delete", deleteData: true }, true),
   );
@@ -331,6 +351,9 @@ async function browser(
       productDataRoot: "/data",
       materialDirectory: "/controlled-source/material/RJ01668691",
       manifestPath: path.join(fixture, "manifest.json"),
+      expectedCoverFile: containerClient
+        ? "/client-controlled-source/responses/dlsite-cover.png"
+        : path.join(fixture, "responses", "dlsite-cover.png"),
       sourceMode: "controlled",
       productLogFile: "",
       run: {
@@ -353,9 +376,9 @@ async function browser(
           ...reference,
           action: "build",
           contextPath: repositoryRoot,
-          dockerfile: path.join(
-            repositoryRoot,
-            "apps/web/Dockerfile.playwright-client",
+          dockerfile: path.resolve(
+            import.meta.dirname,
+            "../Dockerfile.playwright-client",
           ),
         }),
       );
@@ -376,6 +399,11 @@ async function browser(
         timeoutMilliseconds: 600_000,
         mounts: [
           { source: repositoryRoot, target: "/workspace", readonly: true },
+          {
+            source: fixture,
+            target: "/client-controlled-source",
+            readonly: true,
+          },
           { source: browsers, target: "/playwright-browsers", readonly: true },
           { source: handoff, target: "/browser-handoff.json", readonly: true },
         ],
@@ -420,8 +448,6 @@ async function browser(
   const args =
     input === undefined
       ? [
-          "--dir",
-          "apps/web",
           "exec",
           "playwright",
           "test",
@@ -437,7 +463,7 @@ async function browser(
     phase: "browser",
     command: process.env.DIGITAL_DEPLOYMENT_BROWSER_COMMAND ?? "pnpm",
     args,
-    cwd: repositoryRoot,
+    cwd: path.resolve(import.meta.dirname, ".."),
     env: {
       ...process.env,
       DIGITAL_ACCEPTANCE_HANDOFF: handoff,
@@ -478,6 +504,11 @@ try {
     assert.equal(Object.keys(prepareOnly.ports ?? {}).length, 0);
   } else {
     environments.push(prepared);
+    if (process.env.DIGITAL_CI_EVIDENCE !== undefined)
+      await appendLedger(
+        path.join(process.env.DIGITAL_CI_EVIDENCE, "container-owners.ndjson"),
+        prepared,
+      );
     // 显式接续已登记环境；先保全上次失败数据，不重做已证明的空卷/仅准备步骤。
     requireSuccess(
       await operate(
@@ -594,7 +625,7 @@ try {
     damaged,
     `const {DatabaseSync}=await import('node:sqlite');const db=new DatabaseSync('/data/catalogue.sqlite',{readOnly:true});const failure=db.prepare('SELECT id,message FROM __digital_catalogue_migration_failures').get();if(failure?.id!=='20260820000000_v1_catalogue_baseline'||failure.message!=='Error')throw Error('failure ledger changed');if(!db.prepare('SELECT 1 FROM schema_migrations WHERE id=?').get(${JSON.stringify(marker)}))throw Error('original state lost');console.log(JSON.stringify({failure,retained:true}));db.close();`,
   );
-  // 失败现场只保存；删除留给后续明确动作，container export 不作为卷备份。
+  // 先证明失败现场可完整保存；整体验收通过后再按归属回收。
   requireSuccess(
     await operate(
       {
@@ -606,19 +637,63 @@ try {
       true,
     ),
   );
+  executionCompleted = true;
 } catch (error) {
   mainError = String(error);
   process.exitCode = 1;
   console.error(error);
 } finally {
   for (const reference of environments) {
-    const result = await operate({ ...reference, action: "stop" }, true);
-    cleanupErrors.push(...result.cleanupErrors);
-    saveErrors.push(...result.saveErrors);
-    if (result.status !== "ok")
-      cleanupErrors.push(
-        `${reference.environment}: ${result.failure?.message ?? result.status}`,
+    try {
+      const result = await operate({ ...reference, action: "stop" }, true);
+      cleanupErrors.push(...result.cleanupErrors);
+      saveErrors.push(...result.saveErrors);
+      if (result.status !== "ok")
+        cleanupErrors.push(
+          `${reference.environment}: ${result.failure?.message ?? result.status}`,
+        );
+    } catch (error) {
+      cleanupErrors.push(`${reference.environment}: ${String(error)}`);
+    }
+  }
+  if (
+    executionCompleted &&
+    saveErrors.length === 0 &&
+    cleanupErrors.length === 0 &&
+    process.env.DIGITAL_CI_EVIDENCE === undefined
+  ) {
+    for (const reference of environments) {
+      const observed = await operate({ ...reference, action: "inspect" }, true);
+      if (observed.status !== "ok") {
+        cleanupErrors.push(`${reference.environment}: 回收前状态未确认`);
+        continue;
+      }
+      if (observed.remaining.length === 0 && !observed.observation?.dataPresent)
+        continue;
+      const saved = await operate(
+        {
+          ...reference,
+          action: "save",
+          includeData: true,
+          directory: path.join(artifacts, `${reference.environment}-final`),
+        },
+        true,
       );
+      if (saved.status !== "ok") {
+        saveErrors.push(`${reference.environment}: 回收前证据保存失败`);
+        continue;
+      }
+      const deleted = await operate(
+        { ...reference, action: "delete", deleteData: true },
+        true,
+      );
+      if (
+        deleted.status !== "ok" ||
+        deleted.remaining.length > 0 ||
+        deleted.observation?.dataPresent
+      )
+        cleanupErrors.push(`${reference.environment}: 资源回收未完成`);
+    }
   }
   await writeFile(
     path.join(artifacts, "outcome.json"),

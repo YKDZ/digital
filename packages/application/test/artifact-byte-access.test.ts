@@ -4,7 +4,6 @@ import { expect, it } from "vitest";
 
 import {
   ApplicationArtifactByteAccess,
-  ArtifactByteAccessError,
   ExecutionHost,
   type ArtifactByteCleanupReporter,
   type ArtifactByteSource,
@@ -372,6 +371,7 @@ it.each([
       },
       onOpen(count) {
         if (failure === "content-change" && count === 3) return "changed";
+        return undefined;
       },
       onClose() {
         closes += 1;
@@ -389,7 +389,7 @@ it.each([
 
     await expect(
       access.describe({ artifactRevisionId: "revision-inspected-describe" }),
-    ).rejects.toMatchObject<ArtifactByteAccessError>({
+    ).rejects.toMatchObject({
       code:
         failure === "root-revoke"
           ? "artifact-location-revoked"
@@ -430,7 +430,7 @@ it("keeps inspected descriptors inside the shared 256KiB logical probe budget", 
 
   await expect(
     access.describe({ artifactRevisionId: "revision-inspected-describe" }),
-  ).rejects.toMatchObject<ArtifactByteAccessError>({
+  ).rejects.toMatchObject({
     code: "artifact-integrity-failed",
   });
   expect(closes).toBe(2);
@@ -489,7 +489,7 @@ function confirmationAccess(input: {
         return {
           source: {
             ...source("good"),
-            close: input.closeSource,
+            close: async () => await input.closeSource(),
           },
           suggestedFilename: "file.txt",
           observedBinding: {
@@ -550,7 +550,7 @@ it("does not publish a managed descriptor after source close starts Host shutdow
 
   await expect(
     access.describe({ artifactRevisionId: "revision-describe" }),
-  ).rejects.toMatchObject<ArtifactByteAccessError>({
+  ).rejects.toMatchObject({
     code: "application-shutting-down",
   });
   await expect(shutdown).resolves.toBeUndefined();
@@ -616,11 +616,11 @@ it("keeps observed-root cancellation primary when candidate close and cleanup re
 
   await expect(
     access.describe({ artifactRevisionId: "revision-describe" }),
-  ).rejects.toMatchObject<ArtifactByteAccessError>({
+  ).rejects.toMatchObject({
     code: "artifact-location-revoked",
   });
   expect(sourceCloseAttempts).toBe(1);
-  expect(cleanupPrimary).toMatchObject<ArtifactByteAccessError>({
+  expect(cleanupPrimary).toMatchObject({
     code: "artifact-location-revoked",
   });
   await expect(host.close()).resolves.toBeUndefined();
@@ -676,7 +676,7 @@ it("preserves observed-root cancellation before a candidate can be returned", as
 
   await expect(
     access.describe({ artifactRevisionId: "revision-describe" }),
-  ).rejects.toMatchObject<ArtifactByteAccessError>({
+  ).rejects.toMatchObject({
     code: "artifact-location-revoked",
   });
   expect(sourceClosed).toBe(1);
@@ -741,7 +741,7 @@ it("keeps an observed binding active through the final describe cancellation che
 
   await expect(
     access.describe({ artifactRevisionId: "revision-describe" }),
-  ).rejects.toMatchObject<ArtifactByteAccessError>({
+  ).rejects.toMatchObject({
     code: "artifact-location-revoked",
   });
   expect(bindingReleased).toBe(true);
@@ -778,7 +778,7 @@ it("preserves managed shutdown when an adapter closes its source and returns no 
 
   await expect(
     access.describe({ artifactRevisionId: "revision-describe" }),
-  ).rejects.toMatchObject<ArtifactByteAccessError>({
+  ).rejects.toMatchObject({
     code: "application-shutting-down",
   });
   expect(opens).toBe(1);
@@ -804,7 +804,7 @@ it("preserves shutdown when proof rebuild has no candidate to try", async () => 
 
   await expect(
     access.describe({ artifactRevisionId: "revision-describe" }),
-  ).rejects.toMatchObject<ArtifactByteAccessError>({
+  ).rejects.toMatchObject({
     code: "application-shutting-down",
   });
   await expect(shutdown).resolves.toBeUndefined();
@@ -835,7 +835,7 @@ it("keeps confirmation binding active through its final result-publication check
 
   await expect(
     access.confirmObservedFileSelection("selection-confirm"),
-  ).rejects.toMatchObject<ArtifactByteAccessError>({
+  ).rejects.toMatchObject({
     code: "artifact-location-revoked",
   });
   expect(committed).toBe(true);
@@ -867,10 +867,10 @@ it("keeps confirmation shutdown primary when source cleanup and reporting fail",
 
   await expect(
     access.confirmObservedFileSelection("selection-confirm"),
-  ).rejects.toMatchObject<ArtifactByteAccessError>({
+  ).rejects.toMatchObject({
     code: "application-shutting-down",
   });
-  expect(cleanupPrimary).toMatchObject<ArtifactByteAccessError>({
+  expect(cleanupPrimary).toMatchObject({
     code: "application-shutting-down",
   });
   expect(bindingReleased).toBe(false);
@@ -1098,7 +1098,7 @@ it("cancels confirmation proof I/O and drains its one operation reservation befo
       },
       async build(_source, cancellation) {
         announceStarted();
-        await new Promise<never>((_resolve, reject) => {
+        return await new Promise<never>((_resolve, reject) => {
           cancellation.onCancel(() => reject(new Error("cancelled")));
         });
       },
@@ -1110,7 +1110,7 @@ it("cancels confirmation proof I/O and drains its one operation reservation befo
   await started;
   await host.close();
 
-  await expect(confirmation).rejects.toMatchObject<ArtifactByteAccessError>({
+  await expect(confirmation).rejects.toMatchObject({
     code: "application-shutting-down",
   });
   expect(sourceClosed).toBe(true);
@@ -1205,7 +1205,7 @@ it("keeps first-frame integrity as primary while reporting every source and mani
       expectedBlobDigest: digest,
       interval: { startInclusive: 0, endInclusive: 3 },
     }),
-  ).rejects.toMatchObject<ArtifactByteAccessError>({
+  ).rejects.toMatchObject({
     code: "artifact-integrity-failed",
   });
   expect(cleanup).toEqual(["media-source", "proof-manifest"]);
@@ -1319,7 +1319,7 @@ it("fails before returning a lease when its observed root is invalidated after f
       expectedBlobDigest: digest,
       interval: { startInclusive: 0, endInclusive: 3 },
     }),
-  ).rejects.toMatchObject<ArtifactByteAccessError>({
+  ).rejects.toMatchObject({
     code: "artifact-location-revoked",
   });
   expect(sourceClosed).toBe(1);
@@ -1432,11 +1432,11 @@ it("cleans an observed source when its root is invalidated before candidate owne
       expectedBlobDigest: digest,
       interval: { startInclusive: 0, endInclusive: 3 },
     }),
-  ).rejects.toMatchObject<ArtifactByteAccessError>({
+  ).rejects.toMatchObject({
     code: "artifact-location-revoked",
   });
   expect(sourceCloseAttempts).toBe(1);
-  expect(cleanupPrimary).toMatchObject<ArtifactByteAccessError>({
+  expect(cleanupPrimary).toMatchObject({
     code: "artifact-location-revoked",
   });
   expect(manifestClosed).toBe(1);
@@ -1606,7 +1606,7 @@ it("rejects every interval for an empty Blob before opening its proof or candida
       expectedBlobDigest: digest,
       interval: { startInclusive: 0, endInclusive: -1 },
     }),
-  ).rejects.toMatchObject<ArtifactByteAccessError>({
+  ).rejects.toMatchObject({
     code: "artifact-integrity-failed",
   });
   expect(proofReads).toBe(0);

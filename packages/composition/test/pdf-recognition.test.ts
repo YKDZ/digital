@@ -13,7 +13,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { SqliteCatalogue } from "@digital/sqlite";
-import { afterAll, expect, it, vi } from "vitest";
+import { assert, afterAll, expect, it, vi } from "vitest";
 
 import { composeAssetRefresh } from "../src/runtime.ts";
 import {
@@ -86,7 +86,9 @@ it("带有效 ISBN 的 PDF 自动接受为本地出版物但不伪造官方来�
     try {
       const persisted = await catalogue.inspectExecution(result.execution.id);
       expect(persisted?.workItemInspections).toHaveLength(1);
+      assert.isDefined(persisted!.workItemInspections![0]);
       expect(persisted!.workItemInspections![0].accepted).not.toBeUndefined();
+      assert.isDefined(persisted!.workItemInspections![0]);
       expect(
         persisted!.workItemInspections![0].proposal!.ruleResults,
       ).toMatchObject([
@@ -335,6 +337,7 @@ it("从上级检查 RJ 目录时台本与音轨属于同一音声，重扫不另
     // 原断言先做子范围重扫再数目录；现断言把「一个音声只有一个主体」在重扫之前也验证一次，
     // 这样重扫的固定反例（见下方 D3）不会挡住其余业务断言。
     expect(await workflow.listCurrentCatalogue()).toHaveLength(1);
+    assert.isDefined(accepted[0]);
     const refreshed = await workflow.refreshMetadata({
       selection: {
         version: "asset-refresh-selection/1",
@@ -732,11 +735,13 @@ it("运行时目录包上的识别取代预演不会伪造包内文件位置与�
              FROM observed_material_acceptances a
              INNER JOIN locations l ON l.id = a.location_id ORDER BY l.address, a.acceptance_kind`,
           )
-          .all() as readonly {
-          kind: string;
-          reference: string;
-          address: string;
-        }[],
+          .all()
+          .map(({ kind, reference, address }) => {
+            assert(typeof kind === "string");
+            assert(typeof reference === "string");
+            assert(typeof address === "string");
+            return { kind, reference, address };
+          }),
         boundaries: database
           .prepare(
             `SELECT b.material_kind AS kind, b.derivation_kind AS derivation,
@@ -744,11 +749,13 @@ it("运行时目录包上的识别取代预演不会伪造包内文件位置与�
              FROM observed_material_boundaries b
              INNER JOIN locations l ON l.id = b.location_id ORDER BY l.address`,
           )
-          .all() as readonly {
-          kind: string;
-          derivation: string;
-          address: string;
-        }[],
+          .all()
+          .map(({ kind, derivation, address }) => {
+            assert(typeof kind === "string");
+            assert(typeof derivation === "string");
+            assert(typeof address === "string");
+            return { kind, derivation, address };
+          }),
         supportCount: (
           database
             .prepare(
@@ -1057,7 +1064,9 @@ it("通过真实产品把另一观察根的完整普通文件和 PDF 关联到�
     // 现断言：现行当前目录项就是生效主体读取（id + descriptions + locations +
     // sourceAssociations + relationships）；「准备阶段不改当前事实」改由整份主体读取逐项相等
     // 保护，「确认阶段恰好新增三条材料关联」由公共操作返回的 associationIds 保护。
+    assert.isDefined(beforeCatalogue[0]);
     const targetId = beforeCatalogue[0].id;
+    assert.isDefined(beforeCatalogue[0]);
     const originalSources = beforeCatalogue[0].sourceAssociations;
     const materialRegistration =
       await workflow.observedRootRegistrations.create({
@@ -1120,6 +1129,7 @@ it("通过真实产品把另一观察根的完整普通文件和 PDF 关联到�
     // 原断言：准备阶段当前目录项的关联数量不变。
     // 现断言：同一保护用现行主体读取整体相等表达——准备只留下待确认检查点，不改动任何
     // 当前事实（含来源关联、描述、位置与关系）。
+    assert.isDefined(beforeCatalogue[0]);
     expect(beforeCatalogue[0].locations).not.toHaveLength(0);
     expect(await workflow.listCurrentCatalogue()).toEqual(beforeCatalogue);
 
@@ -1144,13 +1154,16 @@ it("通过真实产品把另一观察根的完整普通文件和 PDF 关联到�
         .status,
     ).toBe("accepted");
     const [current] = await workflow.listCurrentCatalogue();
+    assert.isDefined(current);
     expect(current.id).toBe(targetId);
     expect(current.sourceAssociations).toEqual(originalSources);
     // 原断言：metadata 逐项不变、当前关联数量恰好「原值 + 3」。
     // 现断言：来源解释不被材料关联改动，由 sourceAssociations/descriptions/relationships
     // 逐项相等保护；「恰好新增三条材料关联」由公共确认操作返回的 associationIds 精确表达，
     // 材料成为该主体的当前位置则由下面逐项出现与共享/独立产物的别名判定保护。
+    assert.isDefined(beforeCatalogue[0]);
     expect(current.descriptions).toEqual(beforeCatalogue[0].descriptions);
+    assert.isDefined(beforeCatalogue[0]);
     expect(current.relationships).toEqual(beforeCatalogue[0].relationships);
     expect(confirmed.associationIds ?? []).toHaveLength(3);
     const deliveredNames = new Set(
@@ -1308,6 +1321,7 @@ it("确认期硬链接 alias 拆分使观察材料关联过期且不产生部分
       executionId: initialReview.executionId,
     });
     const before = (await workflow.listCurrentCatalogue())[0];
+    assert.isDefined(before);
     const prepared = await workflow.prepareObservedMaterialAssociation({
       targetAssetId: accepted.content.entity.id,
       registrationId: root.id,
@@ -1367,7 +1381,9 @@ it("观察材料等待确认在重开后保持，确认恢复续行且畸形检�
     });
     expect(initial.execution.outcome).toBe("accepted");
     // 现行当前目录项即生效主体读取：主体标识在 id 上。
-    const targetId = (await workflow.listCurrentCatalogue())[0].id;
+    const [target] = await workflow.listCurrentCatalogue();
+    assert.isDefined(target);
+    const targetId = target.id;
     await writeFile(path.join(observed, "appendix.txt"), "recovery material");
     const prepared = await workflow.prepareObservedMaterialAssociation({
       targetAssetId: targetId,

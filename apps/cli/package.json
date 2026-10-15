@@ -20,7 +20,8 @@
       "digital-source": "./src/main.ts",
       "types": "./dist/main.d.ts",
       "default": "./dist/main.js"
-    }
+    },
+    "./cli": "./dist/cli.js"
   },
   "publishConfig": {
     "access": "public"
@@ -33,9 +34,7 @@
     "lint:fix": "oxlint --format=unix --config ../../oxlint.config.ts . --fix",
     "postbuild": "node -e \"if (process.platform !== 'win32') require('node:fs').chmodSync('dist/cli.js', 0o755)\"",
     "prepack": "pnpm exec turbo run build --filter=.",
-    "pretest": "pnpm --filter @digital/sqlite build",
-    "pretest:e2e": "pnpm --filter @digital/sqlite build && pnpm --filter @digital/cli build",
-    "test": "vitest run test/unit test/integration --reporter=verbose",
+    "test": "vitest run test/unit test/integration --exclude '**/controlled-fanbox-session.test.ts' --exclude '**/offline-backup.test.ts' --reporter=verbose",
     "test:e2e": "node --conditions=digital-source test/e2e/run-journeys.ts --default source distribution",
     "test:corpus-real": "node --conditions=digital-source test/e2e/run-journeys.ts --real source distribution",
     "test:e2e:bangumi-live": "DIGITAL_E2E_JOURNEY=bangumi-episodic-live node --conditions=digital-source test/e2e/run-journeys.ts source distribution",
@@ -43,9 +42,9 @@
     "test:e2e:pdf-live": "DIGITAL_E2E_JOURNEY=pdf-publication-live node --conditions=digital-source test/e2e/run-journeys.ts source distribution",
     "test:e2e:tmdb-omdb-live": "DIGITAL_E2E_JOURNEY=tmdb-omdb-live node --conditions=digital-source test/e2e/run-journeys.ts source distribution",
     "test:e2e:deep-integrity": "DIGITAL_DEEP_CORPUS_INTEGRITY=1 node --conditions=digital-source test/e2e/run-journeys.ts source distribution",
-    "pretest:e2e:environment": "pnpm --filter @digital/sqlite build && pnpm --filter @digital/cli build",
     "test:e2e:environment": "node --conditions=digital-source test/e2e/environment-contracts.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false"
+    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
+    "test:product": "vitest run test/integration/controlled-fanbox-session.test.ts test/integration/offline-backup.test.ts --reporter=verbose"
   },
   "dependencies": {
     "@digital/cli-delivery": "workspace:*",

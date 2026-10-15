@@ -98,144 +98,122 @@
     }
   },
   "tasks": {
-    "//#format:check": {
-      "outputs": []
+    "//#boundaries": {
+      "tags": ["quality:light"],
+      "cache": false,
+      "passThroughEnv": ["CI"]
     },
-    "//#lint": {
-      "outputs": []
+    "//#db:migrate": {
+      "tags": ["work:preparation"],
+      "cache": false
+    },
+    "//#environment": {
+      "tags": ["work:on-demand"],
+      "cache": false
+    },
+    "//#check": {
+      "tags": ["quality:entry"],
+      "cache": false
+    },
+    "//#fix": {
+      "tags": ["work:repair"],
+      "cache": false
+    },
+    "//#format:check": {
+      "outputs": [],
+      "tags": ["quality:light"]
     },
     "//#format:write": {
       "dependsOn": ["//#lint:fix"],
-      "cache": false
+      "cache": false,
+      "tags": ["work:repair"]
+    },
+    "//#lint": {
+      "outputs": [],
+      "tags": ["quality:light"]
     },
     "//#lint:fix": {
+      "cache": false,
+      "tags": ["work:repair"]
+    },
+    "//#preview": {
+      "tags": ["work:development"],
       "cache": false
     },
-    "//#typecheck": {
-      "outputs": []
-    },
-    "format:check": {
-      "outputs": []
-    },
-    "lint": {
-      "outputs": []
-    },
-    "typecheck": {
-      "dependsOn": ["^typecheck"],
-      "outputs": []
-    },
-    "build": {
-      "dependsOn": ["^build"],
-      "outputs": ["dist/**"]
-    },
-    "test": {
-      "dependsOn": ["build"],
-      "passThroughEnv": ["TMPDIR", "TMP", "TEMP"],
-      "inputs": [
-        "$TURBO_DEFAULT$",
-        "$TURBO_ROOT$/fixtures/controlled-source-io/**",
-        "$TURBO_ROOT$/fixtures/controlled-fanbox-session/**",
-        "$TURBO_ROOT$/fixtures/live-corpus/**"
+    "//#preview:verify": {
+      "tags": ["quality:heavy"],
+      "cache": false,
+      "dependsOn": [
+        "@digital/web#build",
+        "@digital/cli#build",
+        "@digital/db-migrations#build"
       ],
-      "outputs": []
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP", "DIGITAL_CI_EVIDENCE"]
     },
-    "test:e2e": {
-      "dependsOn": ["build"],
+    "//#typecheck": {
+      "outputs": [],
+      "tags": ["quality:light"]
+    },
+    "//#preview:dev": {
+      "tags": ["work:development"],
+      "cache": false,
+      "passThroughEnv": ["DIGITAL_DEVELOPMENT_*"]
+    },
+    "//#check:heavy": {
+      "tags": ["quality:entry"],
+      "cache": false
+    },
+    "//#check:full": {
+      "tags": ["quality:entry"],
+      "cache": false
+    },
+    "//#test": {
+      "tags": ["quality:light"],
       "cache": false,
       "passThroughEnv": ["TMPDIR", "TMP", "TEMP"]
     },
-    "test:corpus-real": {
-      "dependsOn": ["build"],
+    "//#development:build": {
+      "tags": ["work:development"],
       "cache": false,
-      "passThroughEnv": [
-        "TMPDIR",
-        "TMP",
-        "TEMP",
-        "DIGITAL_TMDB_ACCESS_TOKEN",
-        "DIGITAL_OMDB_API_KEY",
-        "DIGITAL_BANGUMI_LIVE_PRODUCT_DATA",
-        "DIGITAL_BANGUMI_CLIENT_ID",
-        "DIGITAL_BANGUMI_CLIENT_SECRET",
-        "DIGITAL_BANGUMI_REDIRECT_URI",
-        "DIGITAL_FANBOX_LIVE_FAILURE_EVIDENCE_PATH"
-      ]
+      "passThroughEnv": ["DIGITAL_DEVELOPMENT_*"]
     },
-    "test:e2e:tmdb-omdb-live": {
-      "dependsOn": ["build"],
+    "//#development:serve": {
+      "tags": ["work:development"],
       "cache": false,
-      "passThroughEnv": ["DIGITAL_TMDB_ACCESS_TOKEN", "DIGITAL_OMDB_API_KEY"]
+      "passThroughEnv": ["DIGITAL_DEVELOPMENT_*"]
     },
-    "test:e2e:bangumi-live": {
-      "dependsOn": ["build"],
+    "//#acceptance:prepare": {
+      "tags": ["work:preparation"],
       "cache": false,
-      "passThroughEnv": [
-        "DIGITAL_BANGUMI_LIVE_PRODUCT_DATA",
-        "DIGITAL_BANGUMI_CLIENT_ID",
-        "DIGITAL_BANGUMI_CLIENT_SECRET",
-        "DIGITAL_BANGUMI_REDIRECT_URI"
-      ]
+      "passThroughEnv": ["DIGITAL_CI_EVIDENCE"]
     },
-    "test:e2e:managed-service": {
-      "dependsOn": ["@digital/web#build", "@digital/environment#build"],
+    "//#verify:audio-posts": {
+      "tags": ["quality:conditional"],
       "cache": false,
-      "passThroughEnv": [
-        "DIGITAL_ACCEPTANCE_LEDGER",
-        "DIGITAL_ACCEPTANCE_ARTIFACTS"
-      ]
+      "dependsOn": [
+        "@digital/web#build",
+        "@digital/cli#build",
+        "@digital/db-migrations#build"
+      ],
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP"]
     },
-    "test:e2e:provided-service": {
-      "dependsOn": ["@digital/web#build"],
+    "//#verify:publication-screen": {
+      "tags": ["quality:conditional"],
       "cache": false,
-      "passThroughEnv": [
-        "DIGITAL_ACCEPTANCE_BASE_URL",
-        "DIGITAL_ACCEPTANCE_LEDGER",
-        "DIGITAL_ACCEPTANCE_ARTIFACTS"
-      ]
+      "dependsOn": [
+        "@digital/web#build",
+        "@digital/cli#build",
+        "@digital/db-migrations#build"
+      ],
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP"]
     },
-    "deployment": {
-      "cache": false,
-      "passThroughEnv": [
-        "DIGITAL_DEPLOYMENT_*",
-        "DIGITAL_COMPOSE_CHECK_*",
-        "DIGITAL_DEPLOYMENT_PLAYWRIGHT_CLIENT",
-        "PLAYWRIGHT_BROWSERS_PATH"
-      ]
-    },
-    "format:write": {
-      "dependsOn": ["lint:fix"],
+    "//#fixture:source-io": {
+      "tags": ["work:on-demand"],
       "cache": false
     },
-    "lint:fix": {
+    "//#fixture:fanbox-session": {
+      "tags": ["work:on-demand"],
       "cache": false
-    },
-    "dev:build": {
-      "dependsOn": ["^dev:build"],
-      "cache": false,
-      "inputs": [
-        "src/**",
-        "tsconfig*.json",
-        "package.json",
-        "$TURBO_ROOT$/scripts/build-development.ts"
-      ],
-      "outputs": [".turbo/development/**"]
-    },
-    "dev:serve": {
-      "dependsOn": ["^dev:build"],
-      "cache": false,
-      "inputs": [
-        "package.json",
-        "vite.config.ts",
-        "+server.ts",
-        "scripts/start-development.ts",
-        "server/**",
-        "pages/**/+*.ts",
-        "$TURBO_ROOT$/scripts/development-task.ts"
-      ],
-      "passThroughEnv": [
-        "DIGITAL_DEVELOPMENT_SESSION",
-        "DIGITAL_DEVELOPMENT_WORKSPACE",
-        "DIGITAL_DEVELOPMENT_ENVIRONMENT"
-      ]
     }
   }
 }

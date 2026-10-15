@@ -1,21 +1,23 @@
 # syntax=docker/dockerfile:1.7
 
+# @template-mirror NODE_VERSION
+ARG NODE_VERSION="24.21.0"
+# @end-template-mirror
+
 ARG DEPLOYMENT_BUILD_ID="local"
 
-FROM node:24-bookworm-slim AS base
-# 与根 package.json 的 packageManager 保持一致：pruner 的 `pnpm fetch` 在 package.json 就位前
-# 运行（用此激活版本），`pnpm install --offline` 在其后运行（corepack 读 packageManager）。
-# 两者若跨 pnpm 主版本，fetch 写入的离线元数据命名空间与 install 读取的不兼容，报
-# ERR_PNPM_NO_OFFLINE_META。统一为工作区声明的 pnpm@12.3.4 以保证同一版本与裁剪一致性。
-ARG PACKAGE_MANAGER_PIN="pnpm@12.3.4"
+FROM node:${NODE_VERSION}-bookworm-slim AS base
 ENV COREPACK_HOME="/corepack"
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"
 WORKDIR /repo
-RUN install -d -m 0755 "$COREPACK_HOME" "$PNPM_HOME" \
+COPY package.json /root-manifest.json
+RUN install -d -m 0755 "$COREPACK_HOME" "$PNPM_HOME" "$PNPM_HOME/bin" \
   && corepack enable --install-directory "$PNPM_HOME" \
+  && package_manager="$(node -p "require('/root-manifest.json').packageManager")" \
+  && rm /root-manifest.json \
   && for attempt in 1 2 3; do \
-    if corepack prepare "$PACKAGE_MANAGER_PIN" --activate; then break; fi; \
+    if corepack prepare "$package_manager" --activate; then break; fi; \
     [ "$attempt" -lt 3 ] || exit 1; \
     sleep 2; \
   done \
@@ -37,10 +39,10 @@ COPY --from=pruner /repo/tsconfig.json /repo/tsconfig.config.json ./
 RUN pnpm fetch
 COPY --from=pruner /repo/out/json/ ./
 RUN pnpm install --offline --frozen-lockfile
-COPY --from=pruner /repo/out/full/ ./
 # FANBOX production transport 与 package 中固定的 Playwright 版本共用同一 Chromium revision。
 ENV PLAYWRIGHT_BROWSERS_PATH="/ms-playwright"
 RUN pnpm --filter @digital/fanbox exec playwright install chromium
+COPY --from=pruner /repo/out/full/ ./
 # 由 Turbo 按正式 workspace 依赖图构建交付所需包，再由 deploy 在隔离的部署目录中定点
 # 注入其发布文件。裁剪只决定包的存在，构建顺序与闭包由 Turbo 计算。
 RUN TURBO_TELEMETRY_DISABLED=1 pnpm exec turbo run build \
@@ -48,7 +50,7 @@ RUN TURBO_TELEMETRY_DISABLED=1 pnpm exec turbo run build \
 RUN pnpm --config.inject-workspace-packages=true --filter ./apps/web deploy --prod /runtime-deploy
 RUN pnpm --config.inject-workspace-packages=true --filter ./packages/db-migrations deploy --prod /migration-deploy
 
-FROM node:24-bookworm-slim AS application-runtime
+FROM node:${NODE_VERSION}-bookworm-slim AS application-runtime
 ARG DEPLOYMENT_BUILD_ID
 LABEL org.opencontainers.image.version="$DEPLOYMENT_BUILD_ID"
 ENV NODE_ENV="production" \

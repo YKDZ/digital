@@ -8,7 +8,9 @@ import {
   loadControlledSourceIo,
   type ControlledRequestEntryInput,
   type ControlledSessionEntryInput,
-} from "../packages/test-support/src/source-io.ts";
+} from "@digital/test-support/source-io";
+
+import { requireInput } from "./inputs.ts";
 
 /**
  * 受控 FANBOX 会话夹具的维护脚本：写出缩减资料、封闭端点响应字节、合成凭据与各份清单，
@@ -18,12 +20,7 @@ import {
  * `expectations/customudon-7225781.reviewed-oracle.json` 记录的独立审阅结论；
  * 其余字段只是既有解析契约要求的协议代表值，见本目录 README。
  */
-const fixtureDirectory = path.resolve(
-  import.meta.dirname,
-  "..",
-  "fixtures",
-  "controlled-fanbox-session",
-);
+const fixtureDirectory = requireInput("DIGITAL_AUTOMATION_OUTPUT_DIRECTORY");
 
 const creatorId = "customudon";
 const postId = "7225781";

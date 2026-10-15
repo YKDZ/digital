@@ -15,6 +15,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   mergeCommandEnvironment,
   prepareScenarioEnvironment,
+  journeyEvidenceDirectory,
   recycleOwnedEnvironment,
   reserveFreePort,
   retainProvidedEnvironment,
@@ -421,11 +422,11 @@ export type JourneyEnvironmentLifecycle = {
   }): Promise<OwnedRecycling>;
 };
 
-const evidenceRoot = path.join(workspaceRoot, "run", "02-evidence");
+const evidenceRoot = journeyEvidenceDirectory;
 
 /**
  * 自有场景世代：环境容器由环境包公开布局放在本树工作区内（`.digital/environments/`），
- * 名字始终带 completion-02- 前缀；调用方只在 `run/` 下保存证据，绝不把工作区当成临时目录删除。
+ * 名字始终带 completion-02- 前缀；调用方只在明确的临时证据目录保存结果，绝不把工作区当成临时目录删除。
  * 世代记录里的 Web 端口一律先在本票区间内实际探测空闲：宁可显式给一个探测过的端口，
  * 也不让环境包按名字哈希算出区间外的监听口。
  */
@@ -992,7 +993,17 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
       retainOnSuccess?: boolean;
       handoffLedger?: string;
       evidenceDirectory?: string;
-    } = {};
+    } =
+      process.env.DIGITAL_CI_EVIDENCE === undefined
+        ? {}
+        : {
+            retainOnSuccess: true,
+            handoffLedger: path.join(
+              process.env.DIGITAL_CI_EVIDENCE,
+              "owners.ndjson",
+            ),
+            evidenceDirectory: evidenceRoot,
+          };
     const modes: string[] = [];
     for (let index = 0; index < args.length; index++) {
       const argument = args[index]!;

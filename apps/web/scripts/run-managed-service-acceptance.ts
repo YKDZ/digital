@@ -2,11 +2,12 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { copyFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
+import { acceptanceInputs } from "./acceptance-inputs.ts";
 import {
   appendLedger,
   claimFreePort,
-  environmentCliRelativePath,
   fileCommandJournal,
   lifecycleResult,
   nestedRun,
@@ -15,16 +16,9 @@ import {
   type LifecycleResult,
 } from "./environment-lifecycle.ts";
 
-const repositoryRoot = path.resolve(import.meta.dirname, "..", "..", "..");
 const webPackageRoot = path.resolve(import.meta.dirname, "..");
-const environmentCliPath = path.join(
-  repositoryRoot,
-  environmentCliRelativePath,
-);
-const fixtureDirectory = path.join(
-  repositoryRoot,
-  "fixtures",
-  "controlled-source-io",
+const environmentCliPath = fileURLToPath(
+  import.meta.resolve("@digital/environment/cli"),
 );
 const acceptanceConfig = "playwright.acceptance.config.ts";
 const productChainSpec = "test/e2e/managed-service-product-chain.spec.ts";
@@ -32,12 +26,8 @@ const providedVerificationSpec =
   "test/e2e/provided-service-verification.spec.ts";
 const readyPath = "/api/ready";
 /** 直接运行本包的 Playwright CLI，让浏览器场景自成可取消的进程组。 */
-const playwrightCli = path.join(
-  webPackageRoot,
-  "node_modules",
-  "@playwright",
-  "test",
-  "cli.js",
+const playwrightCli = fileURLToPath(
+  import.meta.resolve("@playwright/test/cli"),
 );
 
 /** 浏览器在取消后仍可能收尾较慢；超过这个时限就强制结束整个子进程。 */
@@ -53,6 +43,7 @@ type Options = {
   readonly artifactsDirectory: string;
   readonly materialDirectory: string;
   readonly manifestPath: string;
+  readonly expectedCoverFile: string;
   readonly contentIdentity: string;
   readonly sourceMode: string;
   readonly baseUrl?: string;
@@ -81,7 +72,7 @@ function requireFact(value: string, label: string): string {
   return value;
 }
 
-function parseArgs(argv: readonly string[]): Options {
+async function parseArgs(argv: readonly string[]): Promise<Options> {
   const flags = new Map<string, string>();
   for (let index = 0; index < argv.length; index += 2) {
     const key = argv[index];
@@ -93,11 +84,14 @@ function parseArgs(argv: readonly string[]): Options {
   const mode = flags.get("mode");
   if (mode !== "owned" && mode !== "provided")
     throw new Error("必须给出 --mode owned 或 --mode provided");
+  const inputs = mode === "owned" ? await acceptanceInputs() : undefined;
+  const workspacePath = path.resolve(
+    flags.get("workspace") ?? inputs?.workspacePath ?? webPackageRoot,
+  );
   const stamp = new Date().toISOString().replace(/[:.]/gu, "-");
   const defaultArtifacts = path.join(
-    repositoryRoot,
-    ".scratch",
-    "acceptance",
+    process.env.DIGITAL_CI_EVIDENCE ??
+      path.join(webPackageRoot, ".turbo", "acceptance", "runs"),
     `${mode}-${stamp}`,
   );
   const providedBaseUrl =
@@ -105,7 +99,7 @@ function parseArgs(argv: readonly string[]): Options {
   return {
     mode,
     environment: flags.get("environment") ?? `completion-03-${mode}-${stamp}`,
-    workspacePath: path.resolve(flags.get("workspace") ?? repositoryRoot),
+    workspacePath,
     ledgerPath: path.resolve(
       flags.get("ledger") ??
         process.env.DIGITAL_ACCEPTANCE_LEDGER ??
@@ -116,19 +110,28 @@ function parseArgs(argv: readonly string[]): Options {
         process.env.DIGITAL_ACCEPTANCE_ARTIFACTS ??
         defaultArtifacts,
     ),
-    materialDirectory: path.resolve(
-      flags.get("material") ??
-        path.join(fixtureDirectory, "material", "RJ01668691"),
-    ),
-    manifestPath: path.resolve(
-      flags.get("manifest") ?? path.join(fixtureDirectory, "manifest.json"),
-    ),
+    materialDirectory: flags.has("material")
+      ? path.resolve(flags.get("material")!)
+      : inputs === undefined
+        ? ""
+        : path.join(inputs.sourceDirectory, "material", "RJ01668691"),
+    manifestPath: flags.has("manifest")
+      ? path.resolve(flags.get("manifest")!)
+      : inputs === undefined
+        ? ""
+        : path.join(inputs.sourceDirectory, "manifest.json"),
+    expectedCoverFile:
+      inputs === undefined
+        ? ""
+        : path.join(inputs.sourceDirectory, "responses", "dlsite-cover.png"),
     contentIdentity:
       flags.get("identity") ??
       "sha256:0595bf9c66f739a60b67ac434391e7e274d5f268df5509637c48b73c4fefa6e8",
     sourceMode: flags.get("source-mode") ?? "controlled",
     ...(providedBaseUrl === undefined ? {} : { baseUrl: providedBaseUrl }),
-    keepOnSuccess: flags.get("keep-on-success") === "true",
+    keepOnSuccess:
+      flags.get("keep-on-success") === "true" ||
+      (mode === "owned" && process.env.DIGITAL_CI_EVIDENCE !== undefined),
     prepareTimeoutMs: Number(flags.get("prepare-timeout-ms") ?? 900_000),
     startTimeoutMs: Number(flags.get("start-timeout-ms") ?? 300_000),
   };
@@ -383,7 +386,7 @@ function describeError(error: unknown): string {
 }
 
 async function main(argv: readonly string[]): Promise<number> {
-  const options = parseArgs(argv);
+  const options = await parseArgs(argv);
   const journal = fileCommandJournal(
     path.join(options.artifactsDirectory, "commands.ndjson"),
   );
@@ -647,6 +650,7 @@ async function main(argv: readonly string[]): Promise<number> {
       productDataRoot,
       materialDirectory: options.materialDirectory,
       manifestPath: options.manifestPath,
+      expectedCoverFile: options.expectedCoverFile,
       contentIdentity: options.contentIdentity,
       ...(options.mode === "owned"
         ? { sourceMode: options.sourceMode }
@@ -824,6 +828,48 @@ async function main(argv: readonly string[]): Promise<number> {
   let reclaimed = false;
   const ownerPreserved = options.mode === "provided";
 
+  let interruptedKeepFinished = false;
+  const finishInterruptedKeep = async (): Promise<void> => {
+    if (
+      options.mode !== "owned" ||
+      !interrupted ||
+      !serviceLeftRunning ||
+      interruptedKeepFinished
+    )
+      return;
+    interruptedKeepFinished = true;
+    dataRetained = true;
+    try {
+      const stopped = await lifecycle("stop", [], false);
+      if (stopped !== undefined)
+        cleanupErrors.push(...cleanupErrorsOf(stopped, "stop"));
+      if (
+        stopped === undefined ||
+        (stopped.status !== "stopped" && stopped.status !== "already-stopped")
+      )
+        cleanupErrors.push(
+          stopped === undefined
+            ? "取消留服务时 stop 没有返回结构化结果：现场按未知存活保留"
+            : `取消留服务时 stop 返回 ${stopped.status}：现场按实况保留`,
+        );
+      const observed = await lifecycle("inspect", [], false);
+      ownerConfirmation = summarizeObserved(observed);
+      const liveness = statusFact(nestedRun(observed?.record ?? {}), [
+        "processLiveness",
+      ]);
+      serviceLeftRunning = liveness !== "exited" && liveness !== "absent";
+      if (serviceLeftRunning)
+        cleanupErrors.push(
+          `取消留服务后的独立退出确认未通过：进程存活 ${liveness || "未知"}`,
+        );
+      const tailCopy = await copyLogs(logSourceFiles(observed), logsDirectory);
+      saveErrors.push(...tailCopy.failures);
+      retainedLogs = [...new Set([...retainedLogs, ...tailCopy.copied])];
+    } catch (error) {
+      cleanupErrors.push(`取消留服务时收尾异常：${describeError(error)}`);
+    }
+  };
+
   // 先保存执行结果与证据，再停止/删除自有资源。
   // 收尾序列自身的异常也必须留下可辨认的记录，不能把自有服务丢成无人认领的活进程。
   try {
@@ -839,7 +885,7 @@ async function main(argv: readonly string[]): Promise<number> {
         dataRetained = true;
         const observed = await lifecycle("inspect", [], false);
         ownerConfirmation = summarizeObserved(observed);
-      } else if (executionSucceeded && options.keepOnSuccess) {
+      } else if (executionSucceeded && !interrupted && options.keepOnSuccess) {
         // 调用方有意把自己拥有的服务留作外部提供方便：不调用 stop/delete，只如实记录实况。
         serviceLeftRunning = true;
         dataRetained = true;
@@ -876,8 +922,8 @@ async function main(argv: readonly string[]): Promise<number> {
         saveErrors.push(...tailCopy.failures);
         retainedLogs = [...new Set([...retainedLogs, ...tailCopy.copied])];
 
-        if (!executionSucceeded) {
-          // 失败：停止自有服务，保留可显式重启的产品数据与完整脱敏日志。
+        if (!executionSucceeded || interrupted) {
+          // 失败或取消：停止自有服务，保留可显式重启的产品数据与完整脱敏日志。
           dataRetained = true;
         } else if (saveErrors.length > 0) {
           // 证据保存失败：只停止自有服务，不删除任何证据载体，保存失败单列。
@@ -954,52 +1000,62 @@ async function main(argv: readonly string[]): Promise<number> {
     }
   }
 
-  // 收尾结果单独入账：执行成功与停止、删除、证据保存失败必须分别可辨。
-  if (options.mode === "owned") {
-    try {
-      await appendLedger(options.ledgerPath, {
-        event: "outcome",
-        mode: options.mode,
-        environment: options.environment,
-        port: outcome.port ?? null,
-        executionSucceeded,
-        interrupted,
-        dataRetained,
-        serviceLeftRunning,
-        reclaimed,
-        mainError,
-        cleanupErrors,
-        saveErrors,
-      });
-    } catch (error) {
-      saveErrors.push({
-        stage: "ledger:outcome",
-        target: options.ledgerPath,
-        message: describeError(error),
-      });
+  const saveFinalOutcome = async (): Promise<void> => {
+    // 收尾结果单独入账：执行成功与停止、删除、证据保存失败必须分别可辨。
+    if (options.mode === "owned") {
+      try {
+        await appendLedger(options.ledgerPath, {
+          event: "outcome",
+          mode: options.mode,
+          environment: options.environment,
+          port: outcome.port ?? null,
+          executionSucceeded,
+          interrupted,
+          dataRetained,
+          serviceLeftRunning,
+          reclaimed,
+          mainError,
+          cleanupErrors,
+          saveErrors,
+        });
+      } catch (error) {
+        saveErrors.push({
+          stage: "ledger:outcome",
+          target: options.ledgerPath,
+          message: describeError(error),
+        });
+      }
+    } else {
+      try {
+        await appendLedger(options.ledgerPath, {
+          event: "outcome",
+          mode: options.mode,
+          baseUrl,
+          executionSucceeded,
+          interrupted,
+          lifecycleCalls: (outcome.lifecycleCalls as string[]).length,
+          ownerPreserved,
+          mainError,
+          saveErrors,
+        });
+      } catch (error) {
+        saveErrors.push({
+          stage: "ledger:outcome",
+          target: options.ledgerPath,
+          message: describeError(error),
+        });
+      }
     }
-  } else {
-    try {
-      await appendLedger(options.ledgerPath, {
-        event: "outcome",
-        mode: options.mode,
-        baseUrl,
-        executionSucceeded,
-        interrupted,
-        lifecycleCalls: (outcome.lifecycleCalls as string[]).length,
-        ownerPreserved,
-        mainError,
-        saveErrors,
-      });
-    } catch (error) {
-      saveErrors.push({
-        stage: "ledger:outcome",
-        target: options.ledgerPath,
-        message: describeError(error),
-      });
-    }
+    await writeOutcome("final");
+  };
+
+  await finishInterruptedKeep();
+  const interruptedBeforeFinalSave = interrupted;
+  await saveFinalOutcome();
+  if (interrupted && !interruptedBeforeFinalSave) {
+    await finishInterruptedKeep();
+    await saveFinalOutcome();
   }
-  await writeOutcome("final");
 
   process.off("SIGINT", onSignal);
   process.off("SIGTERM", onSignal);

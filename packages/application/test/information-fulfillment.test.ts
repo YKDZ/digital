@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   InformationFulfillment,
   type InformationRequirement,
+  type InformationSubjectFacts,
 } from "../src/index.ts";
 
 const titleRequirement: InformationRequirement = {
@@ -17,7 +18,7 @@ describe("Information Fulfillment", () => {
     const starts: unknown[] = [];
     const fulfillment = new InformationFulfillment({
       async readSubjects({ subjectIds }) {
-        return subjectIds.flatMap((subjectId) => {
+        return subjectIds.flatMap<InformationSubjectFacts>((subjectId) => {
           if (subjectId === "available") {
             return [
               {
@@ -66,6 +67,9 @@ describe("Information Fulfillment", () => {
         {
           declaration: {
             identity: "source-a.refresh",
+            capabilityId: "source-a.refresh",
+            capabilityVersion: "1",
+            contractVersion: "1",
             implementationVersion: "1",
             kind: "source-refresh",
             interpretationContractVersions: ["1"],
@@ -79,6 +83,9 @@ describe("Information Fulfillment", () => {
         {
           declaration: {
             identity: "source-b.refresh",
+            capabilityId: "source-b.refresh",
+            capabilityVersion: "1",
+            contractVersion: "1",
             implementationVersion: "1",
             kind: "source-refresh",
             interpretationContractVersions: ["1"],
@@ -159,6 +166,9 @@ describe("Information Fulfillment", () => {
         {
           declaration: {
             identity: "permitted.enrichment",
+            capabilityId: "permitted.enrichment",
+            capabilityVersion: "1",
+            contractVersion: "1",
             implementationVersion: "1",
             kind: "source-enrichment",
             interpretationContractVersions: ["1"],
@@ -172,6 +182,9 @@ describe("Information Fulfillment", () => {
         {
           declaration: {
             identity: "unrelated.enrichment",
+            capabilityId: "unrelated.enrichment",
+            capabilityVersion: "1",
+            contractVersion: "1",
             implementationVersion: "1",
             kind: "source-enrichment",
             interpretationContractVersions: ["1"],
@@ -240,6 +253,9 @@ describe("Information Fulfillment", () => {
         {
           declaration: {
             identity: "source.refresh",
+            capabilityId: "source.refresh",
+            capabilityVersion: "1",
+            contractVersion: "1",
             implementationVersion: "1",
             kind: "source-refresh",
             interpretationContractVersions: ["1"],
@@ -328,6 +344,9 @@ describe("Information Fulfillment", () => {
         {
           declaration: {
             identity: "source.refresh",
+            capabilityId: "source.refresh",
+            capabilityVersion: "1",
+            contractVersion: "1",
             implementationVersion: "1",
             kind: "source-refresh",
             interpretationContractVersions: ["1"],
@@ -382,6 +401,9 @@ describe("Information Fulfillment", () => {
         {
           declaration: {
             identity: "source.refresh",
+            capabilityId: "source.refresh",
+            capabilityVersion: "1",
+            contractVersion: "1",
             implementationVersion: "1",
             kind: "source-refresh",
             interpretationContractVersions: ["1"],
@@ -474,6 +496,9 @@ describe("Information Fulfillment", () => {
           {
             declaration: {
               identity: "source.artifact",
+              capabilityId: "source.artifact",
+              capabilityVersion: "1",
+              contractVersion: "1",
               implementationVersion: "1",
               kind: "source-artifact-acquirer",
               interpretationContractVersions: ["1"],
@@ -552,6 +577,9 @@ describe("Information Fulfillment", () => {
         {
           declaration: {
             identity: "source.refresh",
+            capabilityId: "source.refresh",
+            capabilityVersion: "1",
+            contractVersion: "1",
             implementationVersion: "1",
             kind: "source-refresh",
             interpretationContractVersions: ["1"],

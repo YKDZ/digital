@@ -4,7 +4,7 @@
 
 `pnpm check` 使用随仓库取得的受控代表资料，不运行这些私人语料旅程，也不继承终端里的旅程选择或真实来源凭据。CLI 的普通检查保留受控资产库旅程、未识别目录旅程及基础命令；其他业务单元和页面专项继续运行。
 
-`pnpm check:corpus-real` 显式运行原真实语料观察和 CLI 旅程。素材需自行放在工作区的 `.scratch/acceptance-corpus/assets/`，相对目录与 `files-from.txt` 一致；该目录保持不跟踪。范围仍为 29 根安全观察、24 根识别、5 根明确未识别，不要求产生 29 个资产。
+`pnpm exec turbo run test:corpus-real` 显式运行原真实语料观察和 CLI 旅程。素材需自行放在工作区的 `.scratch/acceptance-corpus/assets/`，相对目录与 `files-from.txt` 一致；该目录保持不跟踪。范围仍为 29 根安全观察、24 根识别、5 根明确未识别，不要求产生 29 个资产。
 
 来源条件沿原专项入口：TMDB/OMDb 需要其访问凭据，Bangumi 需要已有有效授权的数据根，FANBOX 需要已配置的浏览器连接。缺少素材或授权属于条件缺失；具备条件后的请求或业务失败属于验收失败。受控验证通过不能替代真实来源采集成功。各来源仍可通过 CLI 包的 `test:e2e:*live` 命令单独运行。
 

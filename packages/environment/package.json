@@ -21,7 +21,8 @@
       "digital-development": "./.turbo/development/dist/container-environment.js",
       "types": "./dist/container-environment.d.ts",
       "default": "./dist/container-environment.js"
-    }
+    },
+    "./cli": "./dist/cli.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json --pretty false",
@@ -34,7 +35,8 @@
     "prepack": "pnpm exec turbo run build --filter=.",
     "test": "vitest run --reporter=verbose --passWithNoTests",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
-    "dev:build": "node --conditions=digital-source ../../scripts/build-development.ts"
+    "dev:build": "pnpm --workspace-root run development:build @digital/environment",
+    "dev:compile": "rm -rf .turbo/development && tsc -p tsconfig.build.json --customConditions digital-development --pretty false --incremental --outDir .turbo/development/dist --tsBuildInfoFile .turbo/development/build.tsbuildinfo"
   },
   "dependencies": {
     "@valibot/to-json-schema": "catalog:",

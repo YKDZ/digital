@@ -6,7 +6,7 @@ import {
   startEnvironment,
   stopEnvironment,
   updateDevelopmentEnvironment,
-} from "../packages/environment/src/index.ts";
+} from "@digital/environment";
 
 const workspacePath = process.env.DIGITAL_DEVELOPMENT_WORKSPACE;
 const environment = process.env.DIGITAL_DEVELOPMENT_ENVIRONMENT;

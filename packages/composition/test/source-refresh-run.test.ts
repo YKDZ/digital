@@ -8,7 +8,7 @@ import type {
   SourceRecord,
 } from "@digital/domain";
 import { SqliteCatalogue } from "@digital/sqlite";
-import { afterAll, afterEach, describe, expect, test } from "vitest";
+import { assert, afterAll, afterEach, describe, expect, test } from "vitest";
 
 import {
   disposePreparedCatalogueTemplate,
@@ -175,6 +175,7 @@ describe("Source Refresh Run SQLite authority", () => {
       ],
     });
 
+    assert.isDefined(staged.changeSets[0]);
     const applied = await catalogue.applySourceRefreshChangeSet({
       runId: "run-1",
       changeSetId: staged.changeSets[0].id,
@@ -461,16 +462,15 @@ describe("Source Refresh Run SQLite authority", () => {
         "Source Refresh collection failure codes are malformed",
       );
     }
+    const failureWithAdjacentData = {
+      capability: sourceCollectorProducer,
+      code: "transport-failure",
+      adjacent: "must-not-be-persisted",
+    };
     await expect(
       reopened.commitSourceRefreshCollectionFailure({
         ...input,
-        sourceFailureCodes: [
-          {
-            capability: sourceCollectorProducer,
-            code: "transport-failure",
-            adjacent: "must-not-be-persisted",
-          },
-        ],
+        sourceFailureCodes: [failureWithAdjacentData],
         resumeClaim: claim,
       }),
     ).rejects.toThrow("codes are malformed");
@@ -560,12 +560,14 @@ describe("Source Refresh Run SQLite authority", () => {
       ],
     });
 
+    assert.isDefined(awaitingReview.changeSets[0]);
     const approved = await catalogue.reviewSourceRefreshChangeSet({
       runId: "retraction-run",
       changeSetId: awaitingReview.changeSets[0].id,
       disposition: "approved",
     });
     expect(approved.phase).toBe("applying");
+    assert.isDefined(awaitingReview.changeSets[0]);
     await expect(
       catalogue.applySourceRefreshChangeSet({
         runId: "retraction-run",
@@ -647,17 +649,20 @@ describe("Source Refresh Run SQLite authority", () => {
       candidateSourceRecordId: newerCandidate.id,
       interpretation: interpretation(newerCandidate),
     });
+    assert.isDefined(newer.changeSets[0]);
     await catalogue.applySourceRefreshChangeSet({
       runId: "newer-run",
       changeSetId: newer.changeSets[0].id,
     });
 
+    assert.isDefined(awaitingReview.changeSets[0]);
     const approved = await catalogue.reviewSourceRefreshChangeSet({
       runId: "review-run",
       changeSetId: awaitingReview.changeSets[0].id,
       disposition: "approved",
     });
     expect(approved.phase).toBe("applying");
+    assert.isDefined(awaitingReview.changeSets[0]);
     await expect(
       catalogue.applySourceRefreshChangeSet({
         runId: "review-run",
@@ -730,6 +735,7 @@ describe("Source Refresh Run SQLite authority", () => {
       candidateSourceRecordId: updatedTitle.id,
       interpretation: interpretation(updatedTitle),
     });
+    assert.isDefined(staged.changeSets[0]);
     await catalogue.applySourceRefreshChangeSet({
       runId: "partial-run",
       changeSetId: staged.changeSets[0].id,
@@ -785,7 +791,7 @@ function sourceRecord(
   title: string,
   options: {
     readonly coverageId?: string;
-    readonly completeness?: "complete" | "partial";
+    readonly completeness?: "complete" | "incomplete";
   } = {},
 ): SourceRecord {
   return {
@@ -835,6 +841,7 @@ function metadata(
   return {
     property,
     sourceSlot: `source.${property.slice("asset.".length)}`,
+    target: { kind: "entity", entityId: "asset-1" },
     value,
     sourceRecordIds: [record.id],
     producer: sourceInterpreterProducer,
@@ -920,7 +927,6 @@ function accepted(
       subjectId: "asset-1",
       sourceIdentity: "source",
       nativeAddress: "opaque:asset-1",
-      proposalId: proposal.id,
     },
     sourceAssociations: [
       {
@@ -928,7 +934,6 @@ function accepted(
         subjectId: "asset-1",
         sourceIdentity: "source",
         nativeAddress: "opaque:asset-1",
-        proposalId: proposal.id,
       },
     ],
     recognitionDecision: {

@@ -21,7 +21,8 @@
     "lint:fix": "oxlint --format=unix --config ../../oxlint.config.ts . --fix",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
     "test": "vitest run --reporter=verbose",
-    "dev:build": "node --conditions=digital-source ../../scripts/build-development.ts --source"
+    "dev:build": "pnpm --workspace-root run development:build @digital/presentation",
+    "dev:compile": "tsc -p tsconfig.json --customConditions digital-development --pretty false --noEmit"
   },
   "dependencies": {
     "@digital/application": "workspace:*",

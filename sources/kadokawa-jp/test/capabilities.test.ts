@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { assert, describe, expect, it } from "vitest";
 
 import { createKadokawaJapanSource } from "../src/index.ts";
 
@@ -119,6 +119,8 @@ describe("KADOKAWA 日本来源", () => {
       `https://www.kadokawa.co.jp/product/${first}/`,
       `https://www.kadokawa.co.jp/product/${second}/`,
     ]);
+    assert.isDefined(collected.records[2]);
+    assert.isDefined(batches[1]);
     expect(batches[1].metadata).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -366,6 +368,7 @@ describe("KADOKAWA 日本来源", () => {
       evidence: [evidence],
       sourceRecords: collected.records,
     });
+    assert.isDefined(batch);
     expect(
       source.associationInterpreter.canInterpret({
         evidence,
@@ -373,6 +376,7 @@ describe("KADOKAWA 日本来源", () => {
       }),
     ).toBe(true);
     const candidate = batch.sourceArtifacts[0];
+    assert.isDefined(candidate);
     await expect(
       source.artifactAcquirer.acquire(candidate),
     ).resolves.toMatchObject({ mediaType: "image/webp" });
@@ -411,6 +415,7 @@ describe("KADOKAWA 日本来源", () => {
       evidence: [evidence],
       sourceRecords: collected.records,
     });
+    assert.isDefined(batch);
     expect(batch.metadata).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -456,6 +461,7 @@ describe("KADOKAWA 日本来源", () => {
       evidence: [driftEvidence],
       sourceRecords: driftCollected.records,
     });
+    assert.isDefined(driftBatch);
     expect(driftBatch.metadata.map((fact) => fact.property)).not.toEqual(
       expect.arrayContaining(["book.contributor", "book.contributor-role"]),
     );
@@ -479,6 +485,7 @@ describe("KADOKAWA 日本来源", () => {
       evidence: [evidence],
       sourceRecords: collected.records,
     });
+    assert.isDefined(batch);
     const directed = collector.sourceAddressing.normalize({ isbn });
     if (directed.status !== "accepted") throw new Error("expected ISBN input");
     expect(
@@ -523,6 +530,7 @@ describe("KADOKAWA 日本来源", () => {
       }),
     ).toBe(false);
     const candidate = batch.sourceArtifacts[0];
+    assert.isDefined(candidate);
     for (const failed of [
       response("", candidate.acquisitionReference, "image/webp", 500),
       response("", candidate.acquisitionReference, "image/webp"),
@@ -563,6 +571,7 @@ describe("KADOKAWA 日本来源", () => {
       evidence: [evidence],
       sourceRecords: collected.records,
     });
+    assert.isDefined(batch);
     expect(batch.metadata).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ property: "book.isbn-13", value: isbn }),
@@ -592,6 +601,8 @@ describe("KADOKAWA 日本来源", () => {
       metadata: [
         {
           property: "book.isbn-13",
+          sourceSlot: "book.isbn-13",
+          target: { kind: "entity" as const, entityId: "asset" },
           value: "9789577435064",
           sourceRecordIds: ["existing"],
         },

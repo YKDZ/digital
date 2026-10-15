@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { assert, describe, expect, it } from "vitest";
 
 import { createTaiwanKadokawaSource } from "../src/index.ts";
 
@@ -67,10 +67,7 @@ function response(
     },
     arrayBuffer: async () => {
       if (options.bodyReadFails) throw new Error("讀取中斷");
-      return bytes.buffer.slice(
-        bytes.byteOffset,
-        bytes.byteOffset + bytes.byteLength,
-      );
+      return bytes.slice().buffer;
     },
   };
 }
@@ -233,6 +230,7 @@ describe("台灣角川 ISBN 產品頁來源", () => {
       page({ products: [{ ...product, sku: "" }] }),
       page().replace('{"@type":"WebSite","name":"台灣角川"}', "{"),
     ];
+    assert.isDefined(record);
     for (const body of invalidBodies)
       expect(() =>
         source.interpreter.interpret({
@@ -252,10 +250,13 @@ describe("台灣角川 ISBN 產品頁來源", () => {
       evidence: [evidence],
       sourceRecords: collected.records,
     });
+    assert.isDefined(batch);
+    assert.isDefined(collected.records[0]);
     expect(batch).toMatchObject({
       sourceAddress: address,
       sourceRecordIds: [collected.records[0].id],
     });
+    assert.isDefined(collected.records[0]);
     expect(batch.metadata).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -304,6 +305,7 @@ describe("台灣角川 ISBN 產品頁來源", () => {
         }),
       ]),
     );
+    assert.isDefined(collected.records[0]);
     expect(batch.sourceArtifacts).toEqual([
       expect.objectContaining({
         role: "asset.primary-cover",
@@ -329,6 +331,7 @@ describe("台灣角川 ISBN 產品頁來源", () => {
         },
       ],
     });
+    assert.isDefined(withoutDerived);
     expect(malformed.records).toHaveLength(1);
     expect(withoutDerived.metadata.map((fact) => fact.property)).not.toEqual(
       expect.arrayContaining([
@@ -355,6 +358,7 @@ describe("台灣角川 ISBN 產品頁來源", () => {
         },
       ],
     });
+    assert.isDefined(withoutDescription);
     expect(withoutDescription.metadata).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ property: "book.isbn-13", value: isbn }),
@@ -417,6 +421,7 @@ describe("台灣角川 ISBN 產品頁來源", () => {
         evidence: [normalized.evidence],
         sourceRecords: collected.records,
       });
+      assert.isDefined(batch);
       expect(batch).toMatchObject({ sourceAddress: expectedAddress });
       expect(batch.metadata).toEqual(
         expect.arrayContaining([
@@ -452,6 +457,7 @@ describe("台灣角川 ISBN 產品頁來源", () => {
       evidence: [evidence],
       sourceRecords: collected.records,
     });
+    assert.isDefined(batch);
     const subject = {
       subjectId: "asset",
       recognitionDecisionId: "decision",
@@ -479,6 +485,8 @@ describe("台灣角川 ISBN 產品頁來源", () => {
           metadata: [
             {
               property: "book.isbn-13",
+              sourceSlot: "book.isbn-13",
+              target: { kind: "entity", entityId: "asset" },
               value: isbn,
               sourceRecordIds: ["local"],
             },
@@ -495,6 +503,8 @@ describe("台灣角川 ISBN 產品頁來源", () => {
           metadata: [
             {
               property: "book.isbn-13",
+              sourceSlot: "book.isbn-13",
+              target: { kind: "entity", entityId: "asset" },
               value: "9789577439680",
               sourceRecordIds: ["local"],
             },
@@ -518,6 +528,8 @@ describe("台灣角川 ISBN 產品頁來源", () => {
           metadata: [
             {
               property: "book.isbn-13",
+              sourceSlot: "book.isbn-13",
+              target: { kind: "entity", entityId: "asset" },
               value: "9784049131291",
               sourceRecordIds: ["local"],
             },
@@ -541,6 +553,7 @@ describe("台灣角川 ISBN 產品頁來源", () => {
       }),
     ).toBe(false);
     const candidate = batch.sourceArtifacts[0];
+    assert.isDefined(candidate);
     await expect(
       source.artifactAcquirer.acquire(candidate),
     ).resolves.toMatchObject({
@@ -577,7 +590,9 @@ describe("台灣角川 ISBN 產品頁來源", () => {
       evidence: [evidence],
       sourceRecords: collected.records,
     });
+    assert.isDefined(batch);
     const candidate = batch.sourceArtifacts[0];
+    assert.isDefined(candidate);
     for (const failedResponse of [
       response(new Uint8Array([1]), {
         status: 404,

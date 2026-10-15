@@ -2,8 +2,80 @@
   "extends": ["//"],
   "tags": ["composition"],
   "tasks": {
+    "format:check": {
+      "outputs": [],
+      "tags": ["quality:light"]
+    },
+    "format:write": {
+      "dependsOn": ["lint:fix"],
+      "cache": false,
+      "tags": ["work:repair"]
+    },
+    "lint": {
+      "outputs": [],
+      "tags": ["quality:light"]
+    },
+    "lint:fix": {
+      "cache": false,
+      "tags": ["work:repair"]
+    },
+    "typecheck": {
+      "dependsOn": ["^typecheck"],
+      "outputs": [],
+      "tags": ["quality:light"]
+    },
     "test": {
-      "dependsOn": ["$TURBO_EXTENDS$", "@digital/db-migrations#build"]
+      "dependsOn": ["build", "@digital/db-migrations#build"],
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/fixtures/controlled-source-io/**",
+        "$TURBO_ROOT$/fixtures/controlled-fanbox-session/**",
+        "$TURBO_ROOT$/fixtures/live-corpus/**"
+      ],
+      "outputs": [],
+      "tags": ["quality:light"]
+    },
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"],
+      "tags": ["quality:light"]
+    },
+    "dev:build": {
+      "dependsOn": ["^dev:build"],
+      "cache": false,
+      "inputs": [
+        "src/**",
+        "tsconfig*.json",
+        "package.json",
+        "$TURBO_ROOT$/packages/workspace-automation/scripts/build-development.ts"
+      ],
+      "outputs": [".turbo/development/**"],
+      "tags": ["work:development"],
+      "passThroughEnv": ["DIGITAL_DEVELOPMENT_*"]
+    },
+    "dev:compile": {
+      "tags": ["work:development"],
+      "cache": false,
+      "outputs": [".turbo/development/**"],
+      "passThroughEnv": ["DIGITAL_DEVELOPMENT_*"]
+    },
+    "test:process": {
+      "dependsOn": [
+        "build",
+        "@digital/db-migrations#build",
+        "@digital/cli#build"
+      ],
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP", "DIGITAL_CI_EVIDENCE"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/fixtures/controlled-source-io/**",
+        "$TURBO_ROOT$/fixtures/controlled-fanbox-session/**",
+        "$TURBO_ROOT$/fixtures/live-corpus/**"
+      ],
+      "outputs": [],
+      "tags": ["quality:heavy"],
+      "cache": false
     }
   }
 }

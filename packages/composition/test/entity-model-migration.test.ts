@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { SqliteCatalogue } from "@digital/sqlite";
-import { expect, it } from "vitest";
+import { assert, expect, it } from "vitest";
 
 import { runProduct } from "../src/index.ts";
 import { prepareWithFormalMigration } from "./prepared-catalogue.ts";
@@ -40,7 +40,7 @@ type CatalogueRelationshipView = {
     readonly entityId: string;
     readonly role: string;
   }[];
-  readonly qualifiers: readonly unknown[];
+  readonly qualifiers?: readonly unknown[] | undefined;
   readonly sources: readonly {
     readonly sourceIdentity: string;
     readonly nativeAddress: string;
@@ -84,7 +84,9 @@ type EntityE02Manifest = {
   readonly audioEntity: AudioEntitySnapshot;
   readonly afterAudioRefresh: AudioEntitySnapshot;
   readonly unidentifiedAsset: { readonly id: string };
-  readonly unidentifiedAssetMetadata: readonly unknown[];
+  readonly unidentifiedAssetMetadata: readonly (FrozenMetadataFact & {
+    readonly contributingAssertions: readonly unknown[];
+  })[];
   readonly enrichment: {
     readonly executionId: string;
     readonly sourceEnrichments: readonly unknown[];
@@ -347,7 +349,8 @@ it("新装配的产品数据不引导人物节点，交互状态仍按稳定用�
     const accepted = await workflow.confirmLocalContent({
       executionId: review.executionId,
     });
-    const [location] = accepted.content.locations as [{ id: string }];
+    const [location] = accepted.content.locations;
+    assert.isDefined(location);
     const selectionId = await application.observedFileSelectionForLocation(
       location.id,
     );
@@ -470,9 +473,9 @@ it("人物与活动身份硬迁移后公开读取保全身份、资料、关系�
         sourceSlot: expected.sourceSlot,
         subjectId: manifest.unidentifiedAsset.id,
         selectedAssertion: expected.selectedAssertion,
-        contributingAssertions: expect.arrayContaining(
-          expected.contributingAssertions,
-        ),
+        contributingAssertions: expect.arrayContaining([
+          ...expected.contributingAssertions,
+        ]),
       });
     expect(
       unidentifiedMetadata.find(({ property }) => property === "book.isbn-13"),
@@ -864,6 +867,8 @@ it("迁移后的普通实体经正式公开操作贯通预演、合并、合并�
         },
       ],
     });
+    assert.isDefined(manualPreview.changes[0]);
+    assert(manualPreview.changes[0].kind === "create");
     expect(
       manualPreview.changes[0].relationship!.participants.find(
         ({ role }) => role === "illustration",

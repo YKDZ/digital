@@ -10,7 +10,15 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { cp, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -25,6 +33,7 @@ import {
   fingerprintEnvironment,
   openProvidedEnvironment,
   prepareScenarioEnvironment,
+  journeyEvidenceDirectory,
   processStartTimeTicks,
   recycleOwnedEnvironment,
   reserveFreePort,
@@ -55,8 +64,8 @@ const fixtureRoot = path.resolve(
   "fixtures",
   "controlled-source-io",
 );
-/** 与验收运行器共用的证据目录：父终端污染检查据此核对本次新增的那一份。 */
-const evidenceRoot = path.join(workspaceRoot, "run", "02-evidence");
+/** 所属证据根；正式子进程各自分配独立目录和交接台账。 */
+const evidenceRoot = journeyEvidenceDirectory;
 
 /** 本套件自己拥有的环境一律带 completion-02- 前缀，端口只取 53001—53999 内的空闲结果。 */
 function nameFor(purpose: string): { runId: string; environment: string } {
@@ -227,13 +236,12 @@ function waitForAbort(
  */
 async function waitForOwnedSceneInFlight(
   environmentsRoot: string,
-  before: ReadonlySet<string>,
+  handoffLedger: string,
   timeoutMs: number,
 ): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    for (const entry of await readdir(environmentsRoot).catch(() => [])) {
-      if (before.has(entry) || !entry.startsWith("completion-02-")) continue;
+    for (const entry of await childOwnedEnvironments(handoffLedger)) {
       const opened = await stat(
         path.join(environmentsRoot, entry, "product-data", "catalogue.sqlite"),
       ).then(
@@ -903,8 +911,9 @@ const checks: readonly Check[] = [
     name: "polluted-parent-terminal-never-reaches-production-entry",
     async run({ signal }) {
       const pollutedRoot = await mkdtemp(path.join(tmpdir(), "02-polluted-"));
-      const beforeEvidence = new Set(
-        await readdir(evidenceRoot).catch(() => []),
+      await mkdir(evidenceRoot, { recursive: true });
+      const evidenceDirectory = await mkdtemp(
+        path.join(evidenceRoot, "parent-pollution-"),
       );
       const polluted = {
         ...process.env,
@@ -922,8 +931,10 @@ const checks: readonly Check[] = [
         const result = await runNode(
           [
             "--conditions=digital-source",
-            "apps/cli/test/e2e/run-journeys.ts",
+            path.join(e2eRoot, "run-journeys.ts"),
             "distribution",
+            "--evidence-directory",
+            evidenceDirectory,
           ],
           polluted,
           signal,
@@ -943,7 +954,7 @@ const checks: readonly Check[] = [
           [],
           `父终端遗留的产品根不得被写入：${written.join("、")}`,
         );
-        const evidence = await readNewestEvidence(evidenceRoot, beforeEvidence);
+        const evidence = await readSingleEvidence(evidenceDirectory);
         assert.equal(stringField(evidence, "sourceMode"), "controlled");
         assert.match(
           stringField(evidence, "productDataRoot") ?? "",
@@ -1388,18 +1399,21 @@ const checks: readonly Check[] = [
         ".digital",
         "environments",
       );
-      const beforeDirectories = new Set(
-        await readdir(environmentsRoot).catch(() => []),
+      await mkdir(evidenceRoot, { recursive: true });
+      const evidenceDirectory = await mkdtemp(
+        path.join(evidenceRoot, "formal-entry-signal-"),
       );
-      const beforeEvidence = new Set(
-        await readdir(evidenceRoot).catch(() => []),
-      );
+      const handoffLedger = path.join(evidenceDirectory, "owners.ndjson");
       const child = spawn(
         process.execPath,
         [
           "--conditions=digital-source",
-          "apps/cli/test/e2e/run-journeys.ts",
+          path.join(e2eRoot, "run-journeys.ts"),
           "distribution",
+          "--evidence-directory",
+          evidenceDirectory,
+          "--handoff-ledger",
+          handoffLedger,
         ],
         {
           cwd: workspaceRoot,
@@ -1430,11 +1444,7 @@ const checks: readonly Check[] = [
       let observed = "";
       try {
         observed = await Promise.race([
-          waitForOwnedSceneInFlight(
-            environmentsRoot,
-            beforeDirectories,
-            120_000,
-          ),
+          waitForOwnedSceneInFlight(environmentsRoot, handoffLedger, 120_000),
           exitCode.then((code) => {
             throw new Error(
               `正式入口在收到信号前就结束了（exit=${String(code)}），窗口不足以证明中断收尾：\n${stdout}\n${stderr}`,
@@ -1444,7 +1454,7 @@ const checks: readonly Check[] = [
         child.kill("SIGINT");
         const exited = await exitCode;
         assert.notEqual(exited, 0, "被信号中断的正式入口不得报告成功");
-        const evidence = await readNewestEvidence(evidenceRoot, beforeEvidence);
+        const evidence = await readSingleEvidence(evidenceDirectory);
         assert.equal(stringField(evidence, "outcome"), "interrupted");
         assert.equal(
           evidence["deleteStatus"],
@@ -1509,12 +1519,8 @@ const checks: readonly Check[] = [
         if (child.exitCode === null && child.signalCode === null)
           child.kill("SIGINT");
         await exitCode.catch(() => undefined);
-        for (const entry of await readdir(environmentsRoot).catch(() => []))
-          if (
-            !beforeDirectories.has(entry) &&
-            entry.startsWith("completion-02-")
-          )
-            await finalizeOwnedEnvironment(entry, signal);
+        for (const environment of await childOwnedEnvironments(handoffLedger))
+          await finalizeOwnedEnvironment(environment, signal);
       }
     },
   },
@@ -1891,22 +1897,29 @@ async function loadControlledJourney(): Promise<CliJourney> {
   return loaded.default;
 }
 
-/** 共享证据目录会累积历次结果：只采信本次运行新增的那一份。 */
-async function readNewestEvidence(
-  directory: string,
-  before: ReadonlySet<string>,
-): Promise<JsonObject> {
-  const entries = await readdir(directory);
-  const fresh = entries.filter(
-    (entry) => entry.endsWith(".json") && !before.has(entry),
-  );
-  const [name] = fresh;
-  assert.ok(
-    name !== undefined && fresh.length === 1,
-    `本次运行应只新增一份证据，实际 ${fresh.length} 份`,
-  );
-  const text = await readFile(path.join(directory, name), "utf8");
-  return jsonObject(text, "证据");
+/** 只采信本次正式子进程在 prepare 前交出的资源归属，不认领目录增量。 */
+async function childOwnedEnvironments(
+  ledgerPath: string,
+): Promise<readonly string[]> {
+  let contents: string;
+  try {
+    contents = await readFile(ledgerPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  // 写入尚未完成的末行没有交接意义；prepare 只在完整追加成功后开始。
+  return contents
+    .split("\n")
+    .slice(0, -1)
+    .map((line) => {
+      const owner = jsonObject(line, "子进程交接台账");
+      const environment = stringField(owner, "environment");
+      assert.equal(owner["workspacePath"], workspaceRoot);
+      assert(typeof environment === "string");
+      assert(environment.startsWith("completion-02-"));
+      return environment;
+    });
 }
 
 async function readSingleEvidence(directory: string): Promise<JsonObject> {

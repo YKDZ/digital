@@ -678,15 +678,16 @@ export async function processStartTimeTicks(
 
 const runtimeRoot = path.dirname(fileURLToPath(import.meta.url));
 
-/** 本票独占的启动登记表：位于作者树 run/ 下，前缀 02-。 */
-export const startLedgerPath = path.resolve(
-  runtimeRoot,
-  "..",
-  "..",
-  "..",
-  "..",
-  "run",
-  "02-start-ledger.ndjson",
+/** 本地证据归 CLI 的临时输出；CI 显式提供统一的证据根。 */
+export const journeyEvidenceDirectory = path.join(
+  process.env.DIGITAL_CI_EVIDENCE === undefined
+    ? path.resolve(runtimeRoot, "../..", ".turbo/acceptance")
+    : path.resolve(process.env.DIGITAL_CI_EVIDENCE, "cli"),
+  "journeys",
+);
+export const startLedgerPath = path.join(
+  journeyEvidenceDirectory,
+  "start-ledger.ndjson",
 );
 
 export async function appendStartLedger(

@@ -15,21 +15,35 @@ import {
   intakeDirectories,
 } from "@digital/test-support/product-client";
 
-import { fileCommandJournal, runCommand } from "./environment-lifecycle.ts";
+import { deploymentImages } from "./deployment-preparation.ts";
+import {
+  appendLedger,
+  claimFreePort,
+  fileCommandJournal,
+  runCommand,
+} from "./environment-lifecycle.ts";
 
-const repositoryRoot = path.resolve(import.meta.dirname, "../../..");
+const {
+  workspacePath: repositoryRoot,
+  sourceDirectory,
+  composeFile,
+  standaloneImage: migrationImage,
+  runtimeImage,
+} = await deploymentImages();
 const uniqueId = `completion-16-${process.pid}-${Date.now()}`;
 const artifacts = path.resolve(
   process.env.DIGITAL_COMPOSE_CHECK_ARTIFACTS ??
-    `.scratch/deployment/${uniqueId}`,
+    path.join(
+      process.env.DIGITAL_CI_EVIDENCE ?? ".scratch/deployment",
+      uniqueId,
+    ),
 );
-const port = Number(process.env.DIGITAL_COMPOSE_CHECK_PORT ?? "3000");
+const port =
+  process.env.DIGITAL_COMPOSE_CHECK_PORT === undefined
+    ? await claimFreePort({ first: 0, last: 0 })
+    : Number(process.env.DIGITAL_COMPOSE_CHECK_PORT);
 const uid = Number(process.env.DIGITAL_COMPOSE_CHECK_UID ?? "1001");
 const gid = Number(process.env.DIGITAL_COMPOSE_CHECK_GID ?? "1001");
-const migrationImage = process.env.DIGITAL_DEPLOYMENT_STANDALONE_IMAGE;
-const runtimeImage = process.env.DIGITAL_DEPLOYMENT_RUNTIME_IMAGE;
-if (!migrationImage || !runtimeImage)
-  throw new Error("必须显式提供已构建的迁移及运行镜像引用");
 const endpoint = {
   command: process.env.DIGITAL_DEPLOYMENT_DOCKER_COMMAND ?? "docker",
   arguments: JSON.parse(
@@ -46,6 +60,7 @@ const operations: unknown[] = [];
 const saveErrors: string[] = [];
 const cleanupErrors: string[] = [];
 let mainError: string | undefined;
+let executionCompleted = false;
 let saveNumber = 0;
 
 async function saveOperations(): Promise<void> {
@@ -109,6 +124,11 @@ async function prepare(
     environment: `${uniqueId}-${suffix}`,
   };
   environments.push(reference);
+  if (process.env.DIGITAL_CI_EVIDENCE !== undefined)
+    await appendLedger(
+      path.join(process.env.DIGITAL_CI_EVIDENCE, "container-owners.ndjson"),
+      reference,
+    );
   success(
     await operate({
       ...reference,
@@ -116,7 +136,7 @@ async function prepare(
       endpoint,
       image: migrationImage!,
       compose: {
-        file: path.join(repositoryRoot, "docker-compose.yml"),
+        file: composeFile,
         configuration: {
           DIGITAL_MIGRATION_IMAGE: migrationImage!,
           DIGITAL_RUNTIME_IMAGE: runtimeImage!,
@@ -207,6 +227,7 @@ async function save(reference: ContainerReference): Promise<void> {
 }
 async function remove(reference: ContainerReference): Promise<void> {
   await save(reference);
+  if (process.env.DIGITAL_CI_EVIDENCE !== undefined) return;
   success(
     await operate({ ...reference, action: "delete", deleteData: true }, true),
   );
@@ -266,11 +287,9 @@ async function assertOwnersStopped(
 
 try {
   await mkdir(artifacts, { recursive: true, mode: 0o700 });
-  await cp(
-    path.join(repositoryRoot, "fixtures/controlled-source-io/material"),
-    observed,
-    { recursive: true },
-  );
+  await cp(path.join(sourceDirectory, "material"), observed, {
+    recursive: true,
+  });
   await chmod(observed, 0o755);
   const materialsBefore = await digestDirectory(observed);
   const normal = await prepare("normal");
@@ -403,6 +422,7 @@ try {
   await stop(failed, false);
   await save(failed);
   assert.equal(await digestDirectory(observed), materialsBefore);
+  executionCompleted = true;
 } catch (error) {
   mainError =
     error instanceof Error ? (error.stack ?? error.message) : String(error);
@@ -417,6 +437,27 @@ try {
       if (stopped.observation?.dataPresent) await save(reference);
     } catch (error) {
       cleanupErrors.push(`${reference.environment}: ${String(error)}`);
+    }
+  }
+  if (
+    executionCompleted &&
+    saveErrors.length === 0 &&
+    cleanupErrors.length === 0 &&
+    process.env.DIGITAL_CI_EVIDENCE === undefined
+  ) {
+    for (const reference of environments) {
+      const observed = await operate({ ...reference, action: "inspect" }, true);
+      if (observed.status !== "ok") {
+        cleanupErrors.push(`${reference.environment}: 回收前状态未确认`);
+        continue;
+      }
+      if (observed.remaining.length === 0 && !observed.observation?.dataPresent)
+        continue;
+      try {
+        await remove(reference);
+      } catch (error) {
+        cleanupErrors.push(`${reference.environment}: ${String(error)}`);
+      }
     }
   }
   await saveOperations();

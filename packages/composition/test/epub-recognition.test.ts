@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { afterAll, expect, it, vi } from "vitest";
+import { assert, afterAll, expect, it, vi } from "vitest";
 
 import { composeAssetRefresh } from "../src/runtime.ts";
 import {
@@ -158,6 +158,7 @@ it("普通组合资产刷新保持 exact ISBN 的官方来源依据", async () =
       ]),
     );
     const sourceRelationship = contributorFacts!.relationships[0];
+    assert.isDefined(sourceRelationship);
     expect(sourceRelationship.sources).toEqual([
       expect.objectContaining({ sourceIdentity: "nbinet" }),
     ]);
