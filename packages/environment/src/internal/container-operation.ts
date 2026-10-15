@@ -275,7 +275,10 @@ export async function runContainerOperation(
           ) ||
           (object.kind === "network" &&
             diagnostic ===
-              `Error response from daemon: network ${object.id ?? object.name} not found`)
+              `Error response from daemon: network ${object.id ?? object.name} not found`) ||
+          (object.kind === "volume" &&
+            diagnostic ===
+              `Error response from daemon: get ${object.name}: no such volume`)
         ) {
           object.state = "absent";
           object.running = false;

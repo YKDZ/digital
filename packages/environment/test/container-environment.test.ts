@@ -8,8 +8,8 @@ import { manageContainerEnvironment } from "../src/index.ts";
 
 /** 仅在 Docker 命令外部边界模拟应答丢失；对象状态和收尾结果由公开操作观察。 */
 test.each(["legacy", "current"])(
-  "创建应答丢失及 %s 网络不存在应答：保留数据和首因，只收尾自有资源",
-  async (missingNetworkDiagnostic) => {
+  "创建应答丢失及 %s 对象不存在应答：保留数据和首因，只收尾自有资源",
+  async (missingObjectDiagnostic) => {
     const root = await mkdtemp(
       path.join(tmpdir(), "digital-container-response-loss-"),
     );
@@ -19,7 +19,7 @@ test.each(["legacy", "current"])(
     await writeFile(
       state,
       JSON.stringify({
-        missingNetworkDiagnostic,
+        missingObjectDiagnostic,
         containers: [
           {
             Id: "external-id",
@@ -52,7 +52,7 @@ else if(args[1]==='create'&&args[0]!=='container'){
  const name=args[args.indexOf('--name')+1],o={Id:'owned-id',Name:'/'+name,Config:{Labels:labels()},Image:'sha256:image-one',State:{Running:true,Pid:42,ExitCode:0,OOMKilled:false},NetworkSettings:{Ports:{}}};state.containers.push(o);fs.writeFileSync(file,JSON.stringify(state));console.error('creation response lost');process.exit(77);
 }else if(args[1]==='ls')output=list(args[0]).filter(matches).map(o=>args[0]==='volume'?o.Name:o.Id).join('\\n');
 else if(args[1]==='inspect'){
- const o=find(args[0]);if(!o){console.error(args[0]==='network'&&state.missingNetworkDiagnostic==='current'?'Error response from daemon: network '+args.at(-1)+' not found':'Error: No such '+args[0]+': '+args.at(-1));process.exit(1)}output=JSON.stringify([o]);
+ const o=find(args[0]);if(!o){console.error(state.missingObjectDiagnostic==='current'&&args[0]==='network'?'Error response from daemon: network '+args.at(-1)+' not found':state.missingObjectDiagnostic==='current'&&args[0]==='volume'?'Error response from daemon: get '+args.at(-1)+': no such volume':'Error: No such '+args[0]+': '+args.at(-1));process.exit(1)}output=JSON.stringify([o]);
 }else if(args[0]==='container'&&args[1]==='stop'){
  const o=find('container');if(!o)throw Error('missing');o.State={Running:false,Pid:0,ExitCode:143,OOMKilled:false};output=o.Id;
 }else if(args[0]==='container'&&args[1]==='logs')output='full diagnostic';
@@ -117,6 +117,23 @@ fs.writeFileSync(file,JSON.stringify(state));console.log(output);
           (object) => object.kind === "volume",
         ),
       ).toMatchObject({ state: "present" });
+      const withoutNetwork = JSON.parse(await readFile(state, "utf8")) as {
+        volumes: unknown[];
+      };
+      await writeFile(
+        state,
+        JSON.stringify({ ...withoutNetwork, volumes: [] }),
+      );
+      const volumeRemoved = await manageContainerEnvironment({
+        ...reference,
+        action: "inspect",
+      });
+      expect(volumeRemoved.status).toBe("ok");
+      expect(
+        volumeRemoved.observation?.objects.find(
+          (object) => object.kind === "volume",
+        ),
+      ).toMatchObject({ state: "absent" });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
