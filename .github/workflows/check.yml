@@ -64,9 +64,24 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
+      - name: 上传可独立下载的产品数据与完整日志
+        id: product_upload
+        if: always()
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4
+        with:
+          name: ci-product-data-and-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          # 完整包保留容器文件系统快照；此包只排除这些大快照。
+          path: |
+            ${{ env.DIGITAL_CI_EVIDENCE }}
+            !${{ env.DIGITAL_CI_EVIDENCE }}/**/*-stopped-container.tar
+            !${{ env.DIGITAL_CI_EVIDENCE }}/**/stopped-web.tar
+            !${{ env.DIGITAL_CI_EVIDENCE }}/**/browser-client-diagnostic.tar
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
       - name: 核实上传产物后显式删除自有环境
         id: deletion
-        if: always() && steps.collection.outcome == 'success' && steps.upload.outcome == 'success'
+        if: always() && steps.collection.outcome == 'success' && steps.upload.outcome == 'success' && steps.product_upload.outcome == 'success'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           DIGITAL_CI_ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
@@ -77,6 +92,6 @@ jobs:
         env:
           DIGITAL_CI_EXECUTION_OUTCOME: ${{ steps.execution.outcome }}
           DIGITAL_CI_COLLECTION_OUTCOME: ${{ steps.collection.outcome }}
-          DIGITAL_CI_UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
+          DIGITAL_CI_UPLOAD_OUTCOME: ${{ steps.upload.outcome == 'success' && steps.product_upload.outcome == 'success' && 'success' || 'failure' }}
           DIGITAL_CI_DELETION_OUTCOME: ${{ steps.deletion.outcome }}
         run: pnpm --filter @digital/workspace-automation exec node --conditions=digital-source scripts/ci-environment.ts result
