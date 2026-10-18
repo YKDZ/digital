@@ -15,7 +15,10 @@ export type ProcessTemporaryRootOwner = {
 export async function claimProcessTemporaryRoot(
   environment: NodeJS.ProcessEnv,
   options: {
-    readonly prefix: "digital-cli-process-" | "digital-web-process-";
+    readonly prefix:
+      | "digital-cli-process-"
+      | "digital-web-process-"
+      | "digital-product-service-process-";
     readonly parentDirectory?: string;
   },
 ): Promise<ProcessTemporaryRootOwner> {

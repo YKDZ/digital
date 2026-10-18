@@ -7,6 +7,8 @@ export type { ProductOrdinaryRequest, ProductSourceIo } from "./source-io.ts";
 
 export type ProductConfiguration = {
   readonly productDataDirectory?: string;
+  readonly initialAssetLibraryConfigurationDirectory?: string;
+  readonly dataGeneration?: string;
   readonly environment: Readonly<Record<string, string | undefined>>;
   /** 缺席即真实默认装配；受控装配必须同时给出普通请求实现与会话 transport。 */
   readonly sourceIo?: ProductSourceIo;

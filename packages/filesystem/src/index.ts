@@ -1,5 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
+import {
+  constants as fsConstants,
+  type Stats,
+  type BigIntStats,
+} from "node:fs";
 import {
   access,
   lstat,
@@ -110,13 +114,13 @@ class NodeBoundDirectory {
 
 class NodeBoundFile {
   readonly handle: FileHandle;
-  readonly details: Awaited<ReturnType<FileHandle["stat"]>>;
+  readonly details: Stats | BigIntStats;
   readonly entryDirectory: FileHandle;
   readonly entryName: string;
 
   constructor(
     handle: FileHandle,
-    details: Awaited<ReturnType<FileHandle["stat"]>>,
+    details: Stats | BigIntStats,
     entryDirectory: FileHandle,
     entryName: string,
   ) {
@@ -543,7 +547,7 @@ class NodeObservedByteSource extends ObservedByteSource {
   constructor(
     handle: FileHandle,
     logicalLocation: string,
-    details: Awaited<ReturnType<FileHandle["stat"]>>,
+    details: Stats | BigIntStats,
     entryDirectory: FileHandle,
     entryName: string,
   ) {
@@ -583,7 +587,7 @@ class NodeObservedByteSource extends ObservedByteSource {
   }
 
   private async assertStable(): Promise<void> {
-    let current: Awaited<ReturnType<FileHandle["stat"]>>;
+    let current: Stats | BigIntStats;
     let currentEntry: Awaited<ReturnType<typeof stat>>;
     try {
       [current, currentEntry] = await Promise.all([
@@ -925,7 +929,7 @@ export class ReadOnlyFilesystemObserver implements ObservedFilesystemCapability 
     readonly activeDirectoryTargets: ReadonlySet<string>;
     readonly visitedDirectoryTargets: Set<string>;
   }): Promise<void> {
-    let directoryDetails: Awaited<ReturnType<FileHandle["stat"]>>;
+    let directoryDetails: Stats | BigIntStats;
     try {
       directoryDetails = await input.directory.handle.stat();
     } catch (error) {
@@ -1253,7 +1257,7 @@ function allowsDirectoryLinks(
 
 function fileObservation(
   relativePath: string,
-  details: Awaited<ReturnType<FileHandle["stat"]>>,
+  details: Stats | BigIntStats,
   objectIdentityScope: string,
 ): {
   readonly relativePath: string;
@@ -1283,7 +1287,7 @@ function fileObservation(
 }
 
 function opaqueObjectIdentity(
-  details: Awaited<ReturnType<FileHandle["stat"]>>,
+  details: Stats | BigIntStats,
   observerScope: string,
 ):
   | {
@@ -1448,12 +1452,8 @@ export class ContentAddressedManagedArtifactStore implements ManagedArtifactStor
 
   /** 将内部文件位置收窄为交付安全的内容摘要。 */
   reference(address: string): { readonly digest: string } | undefined {
-    const resolved = path.resolve(address);
-    if (!resolved.startsWith(`${this.root}${path.sep}`)) return undefined;
-    const digest = path.basename(resolved);
-    if (!/^[a-f0-9]{64}$/u.test(digest)) return undefined;
-    const expected = path.join(this.root, digest.slice(0, 2), digest);
-    return resolved === expected ? { digest } : undefined;
+    const digest = this.digestAtManagedLocation(address);
+    return digest === undefined ? undefined : { digest };
   }
 
   /** 通过摘要读取一个正式托管产物，不接受文件系统路径。 */
@@ -1606,11 +1606,37 @@ export class ContentAddressedManagedArtifactStore implements ManagedArtifactStor
   }
 
   async isAvailable(address: string): Promise<boolean> {
+    const digest = this.digestAtManagedLocation(address);
+    if (digest === undefined) return false;
     try {
-      return (await stat(address)).isFile();
+      return (
+        await stat(path.join(this.root, digest.slice(0, 2), digest))
+      ).isFile();
     } catch {
       return false;
     }
+  }
+
+  /**
+   * 托管位置以产品根内的内容摘要命名。离线恢复复制同一托管根时，Catalogue
+   * 保留原绝对地址；只要原地址仍精确指向 managed-artifacts/<摘要前缀>/<摘要>，
+   * 就按当前产品根中的同一内容身份读取。观察素材路径不经过此映射。
+   */
+  private digestAtManagedLocation(address: string): string | undefined {
+    const resolved = path.resolve(address);
+    const digest = path.basename(resolved);
+    if (!/^[a-f0-9]{64}$/u.test(digest)) return undefined;
+    const shard = path.dirname(resolved);
+    if (path.basename(shard) !== digest.slice(0, 2)) return undefined;
+    const currentLocation = path.join(this.root, digest.slice(0, 2), digest);
+    if (resolved === currentLocation) return digest;
+    if (
+      path.isAbsolute(address) &&
+      path.basename(this.root) === "managed-artifacts" &&
+      path.basename(path.dirname(shard)) === "managed-artifacts"
+    )
+      return digest;
+    return undefined;
   }
 }
 
@@ -1620,10 +1646,7 @@ class NodeManagedArtifactByteSource {
   private readonly identity: string;
   private closed = false;
 
-  constructor(
-    handle: FileHandle,
-    details: Awaited<ReturnType<FileHandle["stat"]>>,
-  ) {
+  constructor(handle: FileHandle, details: Stats | BigIntStats) {
     this.handle = handle;
     this.byteLength = Number(details.size);
     this.identity = observedFileIdentity(details);

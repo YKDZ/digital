@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   deriveEffectiveMetadata,
+  projectMetadataDecisionHead,
   type EffectiveMetadataInput,
+  type MetadataDecision,
   type MetadataAssertion,
   type MetadataPolicy,
   type MetadataPolicyRule,
@@ -77,6 +79,291 @@ function derive(rules: readonly MetadataPolicyRule[]) {
 }
 
 describe("Effective Metadata", () => {
+  it("坐标内的人工 pin 覆盖来源值和旧本地人工事实，且不改写其余属性", () => {
+    const initialManual = {
+      property: "asset.title",
+      sourceSlot: "manual-boundary",
+      value: "最初录入标题",
+      sourceRecordIds: [],
+      authoredBy: { initiatedBy: "local-user", proposalId: "initial" },
+    };
+    const decision: MetadataDecision = {
+      id: "decision-1",
+      target: assetTarget,
+      property: "asset.title",
+      metadataUsageContext: "asset.ordinary",
+      kind: "pin",
+      value: "人工修订标题",
+      initiatedBy: "local-user",
+    };
+    const projection = deriveAssetMetadata({
+      metadataUsageContext: "asset.ordinary",
+      sourceRecords: [{ id: "source-1", sourceIdentity: "source-a" }],
+      metadata: [
+        initialManual,
+        {
+          property: "asset.title",
+          sourceSlot: "source.title",
+          value: "来源标题",
+          sourceRecordIds: ["source-1"],
+        },
+        {
+          property: "asset.title.year",
+          sourceSlot: "source.year",
+          value: "2026",
+          sourceRecordIds: ["source-1"],
+        },
+      ],
+      metadataDecisions: [decision],
+    });
+
+    expect(projection.conflicts).toEqual([]);
+    expect(projection.values).toEqual([
+      expect.objectContaining({
+        property: "asset.title",
+        value: "人工修订标题",
+        sourceIdentity: "user",
+        sourceRecordIds: [],
+        selectedAssertion: expect.objectContaining({
+          sourceSlot: "manual.metadata-decision",
+          value: "人工修订标题",
+        }),
+      }),
+      expect.objectContaining({ property: "asset.title.year", value: "2026" }),
+    ]);
+  });
+
+  it("清除坐标 pin 后重新采用当前基础事实，包括最初的人工边界判断", () => {
+    const initialManual = {
+      property: "asset.title",
+      sourceSlot: "manual-boundary",
+      value: "最初录入标题",
+      sourceRecordIds: [],
+      authoredBy: { initiatedBy: "local-user", proposalId: "initial" },
+    };
+    const clear: MetadataDecision = {
+      id: "decision-2",
+      target: assetTarget,
+      property: "asset.title",
+      metadataUsageContext: "asset.ordinary",
+      kind: "clear",
+      predecessorDecisionId: "decision-1",
+      initiatedBy: "local-user",
+    };
+    const projection = deriveAssetMetadata({
+      metadataUsageContext: "asset.ordinary",
+      sourceRecords: [{ id: "source-1", sourceIdentity: "source-a" }],
+      metadata: [
+        initialManual,
+        {
+          property: "asset.title",
+          sourceSlot: "source.title",
+          value: "来源标题",
+          sourceRecordIds: ["source-1"],
+        },
+      ],
+      metadataDecisions: [clear],
+    });
+
+    expect(projection.conflicts).toEqual([]);
+    expect(projection.values).toEqual([
+      expect.objectContaining({
+        property: "asset.title",
+        value: "最初录入标题",
+        sourceIdentity: "user",
+        selectedAssertion: expect.objectContaining({
+          sourceSlot: "manual-boundary",
+        }),
+      }),
+    ]);
+  });
+
+  it("采纳真实冲突候选后固定该值并保留精确候选依据", () => {
+    const decision: MetadataDecision = {
+      id: "decision-3",
+      target: assetTarget,
+      property: "asset.title",
+      metadataUsageContext: "asset.ordinary",
+      kind: "pin",
+      value: "候选甲",
+      initiatedBy: "local-user",
+      adoptedFrom: {
+        sourceIdentity: "source-a",
+        sourceSlot: "source.title",
+        sourceRecordIds: ["source-a-record"],
+      },
+    };
+    const input: Omit<EffectiveMetadataInput, "target" | "metadata"> & {
+      readonly metadata: readonly Omit<MetadataAssertion, "target">[];
+    } = {
+      metadataUsageContext: "asset.ordinary",
+      policies: [
+        policy([
+          {
+            property: "asset.title",
+            preferredSourceIdentities: [],
+            cardinality: "one",
+          },
+        ]),
+      ],
+      sourceRecords: [
+        { id: "source-a-record", sourceIdentity: "source-a" },
+        { id: "source-b-record", sourceIdentity: "source-b" },
+      ],
+      metadata: [
+        {
+          property: "asset.title",
+          sourceSlot: "source.title",
+          value: "候选甲",
+          sourceRecordIds: ["source-a-record"],
+        },
+        {
+          property: "asset.title",
+          sourceSlot: "source.title",
+          value: "候选乙",
+          sourceRecordIds: ["source-b-record"],
+        },
+      ],
+      metadataDecisions: [decision],
+    };
+    const projection = deriveAssetMetadata(input);
+
+    expect(projection.conflicts).toEqual([]);
+    expect(projection.values).toEqual([
+      expect.objectContaining({
+        value: "候选甲",
+        sourceIdentity: "user",
+        sourceRecordIds: [],
+      }),
+    ]);
+    expect(decision.adoptedFrom).toEqual({
+      sourceIdentity: "source-a",
+      sourceSlot: "source.title",
+      sourceRecordIds: ["source-a-record"],
+    });
+  });
+
+  it("人工 pin 越过元数据策略冲突，clear 后重新显示当前冲突", () => {
+    const sourceAssertions = [
+      {
+        property: "asset.title",
+        sourceSlot: "source-a.title",
+        value: "来源甲标题",
+        sourceRecordIds: ["source-a-record"],
+      },
+      {
+        property: "asset.title",
+        sourceSlot: "source-b.title",
+        value: "来源乙标题",
+        sourceRecordIds: ["source-b-record"],
+      },
+    ] as const;
+    const policies = [
+      {
+        ...policy([
+          {
+            property: "asset.title",
+            preferredSourceIdentities: ["source-a"],
+            cardinality: "one",
+          },
+        ]),
+        id: "policy-a",
+      },
+      {
+        ...policy([
+          {
+            property: "asset.title",
+            preferredSourceIdentities: ["source-b"],
+            cardinality: "one",
+          },
+        ]),
+        id: "policy-b",
+      },
+    ];
+    const base = {
+      metadataUsageContext: "asset.ordinary",
+      policies,
+      sourceRecords: [
+        { id: "source-a-record", sourceIdentity: "source-a" },
+        { id: "source-b-record", sourceIdentity: "source-b" },
+      ],
+      metadata: sourceAssertions,
+    } as const;
+    const original = deriveAssetMetadata(base);
+    expect(original.values).toEqual([]);
+    expect(original.conflicts).toEqual([
+      expect.objectContaining({ kind: "policy-conflict" }),
+    ]);
+
+    const pin: MetadataDecision = {
+      id: "pin-1",
+      target: assetTarget,
+      property: "asset.title",
+      metadataUsageContext: "asset.ordinary",
+      kind: "pin",
+      value: "人工优先标题",
+      initiatedBy: "local-user",
+    };
+    const pinned = deriveAssetMetadata({ ...base, metadataDecisions: [pin] });
+    expect(pinned.conflicts).toEqual([]);
+    expect(pinned.values).toEqual([
+      expect.objectContaining({
+        property: "asset.title",
+        value: "人工优先标题",
+        sourceIdentity: "user",
+      }),
+    ]);
+
+    const clear: MetadataDecision = {
+      id: "clear-1",
+      target: assetTarget,
+      property: "asset.title",
+      metadataUsageContext: "asset.ordinary",
+      kind: "clear",
+      predecessorDecisionId: pin.id,
+      initiatedBy: "local-user",
+    };
+    const cleared = deriveAssetMetadata({
+      ...base,
+      metadataDecisions: [clear],
+    });
+    expect(cleared.values).toEqual([]);
+    expect(cleared.conflicts).toEqual([
+      expect.objectContaining({ kind: "policy-conflict" }),
+    ]);
+  });
+
+  it("新决定只替换相同目标、属性和语境坐标的头", () => {
+    const first: MetadataDecision = {
+      id: "title-ordinary",
+      target: assetTarget,
+      property: "asset.title",
+      metadataUsageContext: "asset.ordinary",
+      kind: "pin",
+      value: "人工标题",
+      initiatedBy: "local-user",
+    };
+    const otherContext: MetadataDecision = {
+      ...first,
+      id: "title-email",
+      metadataUsageContext: "email.subject",
+    };
+    const next: MetadataDecision = {
+      id: "title-ordinary-next",
+      target: assetTarget,
+      property: "asset.title",
+      metadataUsageContext: "asset.ordinary",
+      kind: "clear",
+      predecessorDecisionId: first.id,
+      initiatedBy: "local-user",
+    };
+
+    expect(projectMetadataDecisionHead([first, otherContext], next)).toEqual([
+      otherContext,
+      next,
+    ]);
+  });
+
   it("单值语境不会从同一优先来源的不同值中任选首项", () => {
     const projection = deriveAssetMetadata({
       metadataUsageContext: "asset.ordinary",

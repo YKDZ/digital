@@ -26,8 +26,8 @@ import {
   createOperationId,
   normalizeInputDirectories,
   verifyDataOwnership,
-  webEntryPath,
-  webTurboTarget,
+  serviceEntryPath,
+  serviceTurboTarget,
   type EnvironmentLayout,
 } from "./paths.ts";
 import {
@@ -46,7 +46,6 @@ import { observeLiveness } from "./run-observation.ts";
 import { requireSourceSelectionEnvironment } from "./source-selection.ts";
 
 const migrationEntry = path.join("packages", "db-migrations", "dist", "cli.js");
-const cliEntry = path.join("apps", "cli", "dist", "cli.js");
 
 /**
  * 在持有同一环境锁的进程内执行一次完整准备：容器与记录归属、Turbo 目标构建、
@@ -223,9 +222,8 @@ export async function runPreparationStages(
         "turbo",
         "run",
         "build",
-        "--filter=@digital/cli",
         "--filter=@digital/db-migrations",
-        `--filter=${webTurboTarget}`,
+        `--filter=${serviceTurboTarget}`,
       ],
       cwd: layout.workspacePath,
       env: filteredEnvironment(),
@@ -300,17 +298,11 @@ export async function runPreparationStages(
     await note(operationLog, logErrors, "阶段 migrate 完成（退出码 0）");
 
     const read = await runCancellableStage(cancellation, held, {
-      command: process.execPath,
-      args: [
-        path.join(layout.workspacePath, cliEntry),
-        "catalogue-surface",
-        "--surface",
-        "current-catalogue",
-      ],
+      command: "pnpm",
+      args: ["--filter=@digital/service", "run", "prepare:verify"],
       cwd: layout.workspacePath,
       env: productEnv,
       logFile: path.join(logDirectory, "read.log"),
-      captureStdout: true,
       secretValues: [],
       held,
     });
@@ -321,9 +313,7 @@ export async function runPreparationStages(
       readRun.spawnError ??
       (readRun.exitCode !== 0 || readRun.signal !== null
         ? `正式产品读取命令退出码 ${String(readRun.exitCode)} 信号 ${String(readRun.signal)}`
-        : readRun.stdoutOverflowed
-          ? "正式产品读取输出超出可核验范围"
-          : cataloguePageProblem(readRun.stdout));
+        : undefined);
     const readProblem = stageProblem(
       readRun,
       readLogProblem,
@@ -770,8 +760,7 @@ async function checkArtifacts(
   if (!buildExitedCleanly) return "构建命令未成功退出（见构建日志）";
   const artifacts = [
     path.join(workspacePath, migrationEntry),
-    path.join(workspacePath, cliEntry),
-    webEntryPath(workspacePath),
+    serviceEntryPath(workspacePath),
   ];
   for (const artifact of artifacts) {
     try {
@@ -780,24 +769,6 @@ async function checkArtifacts(
       return `构建后缺少交付产物：${path.relative(workspacePath, artifact)}`;
     }
   }
-  return undefined;
-}
-
-/** 空目录页是合法结果；只核验结构，不以数量判断资料接入。 */
-function cataloguePageProblem(stdout: string | undefined): string | undefined {
-  if (stdout === undefined) return "缺少输出捕获";
-  const line = stdout.trim().split("\n").at(-1);
-  if (line === undefined || line.length === 0) return "输出为空";
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(line);
-  } catch {
-    return "输出不是单个 JSON 分页";
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
-    return "分页不是对象";
-  const items = (parsed as { items?: unknown }).items;
-  if (!Array.isArray(items)) return "分页缺少 items 数组";
   return undefined;
 }
 

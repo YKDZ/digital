@@ -12,6 +12,7 @@ export * from "./effective-metadata.ts";
 export * from "./effective-artifact-association.ts";
 export * from "./artifact-role-decision.ts";
 export * from "./metadata-assertion.ts";
+export * from "./metadata-decision.ts";
 export * from "./source-refresh-run.ts";
 export * from "./recognition-material-boundary.ts";
 export * from "./library-scan-plan.ts";

@@ -25,13 +25,27 @@ describe("Observed Root Execution", () => {
   it("owns registered resolution, frozen selection, invocation, and descriptor cleanup", async () => {
     const events: string[] = [];
     const filesystem = new InMemoryObservedFilesystemCapability({
-      onBind: () => events.push("bind"),
-      onClose: () => events.push("close"),
+      onBind: () => {
+        events.push("bind");
+      },
+      onClose: () => {
+        events.push("close");
+      },
     });
     const registrations: Pick<
       ObservedRootRegistrations,
-      "resolveActiveScope" | "closeBoundScope" | "reportCleanupFailure"
+      | "resolveActiveScope"
+      | "rebindFrozenScope"
+      | "closeBoundScope"
+      | "reportCleanupFailure"
+      | "bindDirectoryOperation"
     > = {
+      async rebindFrozenScope() {
+        throw new Error("本用例不应重绑冻结范围");
+      },
+      bindDirectoryOperation() {
+        throw new Error("本用例不应绑定库目录操作");
+      },
       async resolveActiveScope({ registrationId, relativeScope }) {
         events.push("resolve");
         const observedRoot = root(registrationId);
@@ -89,8 +103,18 @@ describe("Observed Root Execution", () => {
     let closed = 0;
     const registrations: Pick<
       ObservedRootRegistrations,
-      "resolveActiveScope" | "closeBoundScope" | "reportCleanupFailure"
+      | "resolveActiveScope"
+      | "rebindFrozenScope"
+      | "closeBoundScope"
+      | "reportCleanupFailure"
+      | "bindDirectoryOperation"
     > = {
+      async rebindFrozenScope() {
+        throw new Error("本用例不应重绑冻结范围");
+      },
+      bindDirectoryOperation() {
+        throw new Error("本用例不应绑定库目录操作");
+      },
       async resolveActiveScope({ registrationId, relativeScope }) {
         const observedRoot = root(registrationId);
         return {
@@ -131,8 +155,18 @@ describe("Observed Root Execution", () => {
     const filesystem = new InMemoryObservedFilesystemCapability();
     const registrations: Pick<
       ObservedRootRegistrations,
-      "resolveActiveScope" | "closeBoundScope" | "reportCleanupFailure"
+      | "resolveActiveScope"
+      | "rebindFrozenScope"
+      | "closeBoundScope"
+      | "reportCleanupFailure"
+      | "bindDirectoryOperation"
     > = {
+      async rebindFrozenScope() {
+        throw new Error("本用例不应重绑冻结范围");
+      },
+      bindDirectoryOperation() {
+        throw new Error("本用例不应绑定库目录操作");
+      },
       async resolveActiveScope({ registrationId, relativeScope }) {
         const observedRoot = root(registrationId);
         const scope = await filesystem.bindScope({
@@ -235,7 +269,11 @@ describe("Observed Root Execution", () => {
         },
       } as unknown as Pick<
         ObservedRootRegistrations,
-        "resolveActiveScope" | "closeBoundScope" | "reportCleanupFailure"
+        | "resolveActiveScope"
+        | "rebindFrozenScope"
+        | "closeBoundScope"
+        | "reportCleanupFailure"
+        | "bindDirectoryOperation"
       >;
       const execution = new ObservedRootExecution(registrations);
 
@@ -312,7 +350,11 @@ describe("Observed Root Execution", () => {
       },
     } as unknown as Pick<
       ObservedRootRegistrations,
-      "resolveActiveScope" | "closeBoundScope" | "reportCleanupFailure"
+      | "resolveActiveScope"
+      | "rebindFrozenScope"
+      | "closeBoundScope"
+      | "reportCleanupFailure"
+      | "bindDirectoryOperation"
     >;
     const execution = new ObservedRootExecution(registrations);
 
@@ -331,8 +373,18 @@ describe("Observed Root Execution", () => {
     const filesystem = new InMemoryObservedFilesystemCapability();
     const registrations: Pick<
       ObservedRootRegistrations,
-      "resolveActiveScope" | "closeBoundScope" | "reportCleanupFailure"
+      | "resolveActiveScope"
+      | "rebindFrozenScope"
+      | "closeBoundScope"
+      | "reportCleanupFailure"
+      | "bindDirectoryOperation"
     > = {
+      async rebindFrozenScope() {
+        throw new Error("本用例不应重绑冻结范围");
+      },
+      bindDirectoryOperation() {
+        throw new Error("本用例不应绑定库目录操作");
+      },
       async resolveActiveScope({ registrationId, relativeScope }) {
         const observedRoot = root(registrationId);
         return {

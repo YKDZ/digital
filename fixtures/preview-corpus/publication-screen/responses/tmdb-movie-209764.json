@@ -1,20 +1,299 @@
 {
-  "id": 209764,
-  "title": "恐怖直播",
-  "original_title": "더 테러 라이브",
-  "release_date": "2013-07-31",
-  "overview": "TMDB 受控简介 209764",
-  "runtime": 98,
+  "adult": false,
+  "backdrop_path": "/opEzQcK0hVCCTZq30XcMUrIdpSl.jpg",
+  "belongs_to_collection": null,
+  "budget": 0,
   "genres": [
+    {
+      "id": 80,
+      "name": "犯罪"
+    },
+    {
+      "id": 18,
+      "name": "剧情"
+    },
     {
       "id": 53,
       "name": "惊悚"
     }
   ],
-  "poster_path": "/corpus-209764-poster.png",
-  "backdrop_path": "/corpus-209764-backdrop.png",
+  "homepage": "",
+  "id": 209764,
   "imdb_id": "tt2990738",
+  "origin_country": [
+    "KR"
+  ],
+  "original_language": "ko",
+  "original_title": "더 테러 라이브",
+  "overview": "曾经是韩国顶级电视新闻主播的尹英华，如今被调到广播电台主持时事节目。一天早晨的直播中，一名自称朴鲁圭的建筑工人突然打来电话，声称要炸毁汉江上的麻浦大桥。尹英华起初只当这是恶作剧，甚至出言挑衅，没想到几分钟后，窗外的麻浦大桥真的发生爆炸。意识到这场突发事件可能成为自己重返电视新闻台的机会，尹英华没有立即将独家线索交给警方，而是开始与来电者进行直播连线。对方声称多年前维修大桥时有工人因事故死亡，却始终没有得到应有的道歉，并要求总统亲自公开致歉。随着警方、电视台和政府相继介入，这场原本被尹英华视为事业翻身机会的独家直播，也逐渐演变成一场完全超出他掌控的生死危机……",
+  "popularity": 2.5883,
+  "poster_path": "/jN0uey1Q7oAGfcDPXeDNSPkc2fk.jpg",
+  "production_companies": [
+    {
+      "id": 4580,
+      "logo_path": null,
+      "name": "Cine2000",
+      "origin_country": "KR"
+    }
+  ],
+  "production_countries": [
+    {
+      "iso_3166_1": "KR",
+      "name": "South Korea"
+    }
+  ],
+  "release_date": "2013-07-31",
+  "revenue": 35659824,
+  "runtime": 97,
+  "softcore": false,
+  "spoken_languages": [
+    {
+      "english_name": "Korean",
+      "iso_639_1": "ko",
+      "name": "한국어/조선말"
+    }
+  ],
+  "status": "Released",
+  "tagline": "",
+  "title": "恐怖直播",
+  "video": false,
+  "vote_average": 7.19,
+  "vote_count": 287,
   "alternative_titles": {
-    "titles": []
+    "titles": [
+      {
+        "iso_3166_1": "US",
+        "title": "The Terror, LIVE",
+        "type": ""
+      },
+      {
+        "iso_3166_1": "KR",
+        "title": "Deu tae-ro ra-i-beu",
+        "type": "revised romanization"
+      },
+      {
+        "iso_3166_1": "KR",
+        "title": "더테러 라이브",
+        "type": ""
+      },
+      {
+        "iso_3166_1": "JP",
+        "title": "Tero, Raibu",
+        "type": ""
+      },
+      {
+        "iso_3166_1": "HK",
+        "title": "恐怖直播",
+        "type": ""
+      },
+      {
+        "iso_3166_1": "RU",
+        "title": "Теракт в прямом эфире",
+        "type": ""
+      },
+      {
+        "iso_3166_1": "RS",
+        "title": "Teror uživo",
+        "type": ""
+      },
+      {
+        "iso_3166_1": "IR",
+        "title": "Terror e Zende",
+        "type": ""
+      },
+      {
+        "iso_3166_1": "JP",
+        "title": "テロ、ライブ：2013",
+        "type": ""
+      }
+    ]
+  },
+  "images": {
+    "backdrops": [
+      {
+        "aspect_ratio": 1.778,
+        "height": 1080,
+        "iso_3166_1": null,
+        "iso_639_1": null,
+        "file_path": "/opEzQcK0hVCCTZq30XcMUrIdpSl.jpg",
+        "vote_average": 3.334,
+        "vote_count": 1,
+        "width": 1920
+      },
+      {
+        "aspect_ratio": 1.778,
+        "height": 1080,
+        "iso_3166_1": null,
+        "iso_639_1": null,
+        "file_path": "/dYgppG1ZYkV9dv0VoOYufbGih6C.jpg",
+        "vote_average": 3.334,
+        "vote_count": 1,
+        "width": 1920
+      },
+      {
+        "aspect_ratio": 1.778,
+        "height": 1260,
+        "iso_3166_1": null,
+        "iso_639_1": null,
+        "file_path": "/niQy8JQ3YOioONryVEqi3F7IX4f.jpg",
+        "vote_average": 2.278,
+        "vote_count": 3,
+        "width": 2240
+      },
+      {
+        "aspect_ratio": 1.778,
+        "height": 2160,
+        "iso_3166_1": null,
+        "iso_639_1": null,
+        "file_path": "/pv7Pb5e9f4lbxsulnjH8yq6dEmD.jpg",
+        "vote_average": 1.75,
+        "vote_count": 2,
+        "width": 3840
+      },
+      {
+        "aspect_ratio": 1.778,
+        "height": 2160,
+        "iso_3166_1": null,
+        "iso_639_1": null,
+        "file_path": "/ilhjk2HfPE2MpnpU585wtMp4eD5.jpg",
+        "vote_average": 0.0,
+        "vote_count": 0,
+        "width": 3840
+      },
+      {
+        "aspect_ratio": 1.777,
+        "height": 1055,
+        "iso_3166_1": null,
+        "iso_639_1": null,
+        "file_path": "/iws6MLmJKN0ECUwtbWnbMPbhkrz.jpg",
+        "vote_average": 0.0,
+        "vote_count": 0,
+        "width": 1875
+      },
+      {
+        "aspect_ratio": 1.778,
+        "height": 1037,
+        "iso_3166_1": null,
+        "iso_639_1": null,
+        "file_path": "/PpZKOXe3Xqr3TWgaxeV2vIp318.jpg",
+        "vote_average": 0.0,
+        "vote_count": 0,
+        "width": 1844
+      },
+      {
+        "aspect_ratio": 1.778,
+        "height": 1041,
+        "iso_3166_1": null,
+        "iso_639_1": null,
+        "file_path": "/vIJKWUDrRmfiSDgFKz6IqrUwubJ.jpg",
+        "vote_average": 0.0,
+        "vote_count": 0,
+        "width": 1851
+      }
+    ],
+    "logos": [
+      {
+        "aspect_ratio": 2.974,
+        "height": 661,
+        "iso_3166_1": "CN",
+        "iso_639_1": "zh",
+        "file_path": "/arHZla2NixQk9JF7cfVODSErQM6.png",
+        "vote_average": 3.334,
+        "vote_count": 1,
+        "width": 1966
+      },
+      {
+        "aspect_ratio": 1.674,
+        "height": 586,
+        "iso_3166_1": "CN",
+        "iso_639_1": "zh",
+        "file_path": "/pw3CFVvL9IHtyDB5dYmOBgAdtqb.png",
+        "vote_average": 0.166,
+        "vote_count": 1,
+        "width": 981
+      },
+      {
+        "aspect_ratio": 2.838,
+        "height": 704,
+        "iso_3166_1": "TW",
+        "iso_639_1": "zh",
+        "file_path": "/gU2DSXYhU9mgMYu2HTwXTRgKhTP.png",
+        "vote_average": 0.0,
+        "vote_count": 0,
+        "width": 1998
+      }
+    ],
+    "posters": [
+      {
+        "aspect_ratio": 0.667,
+        "height": 3000,
+        "iso_3166_1": "US",
+        "iso_639_1": "en",
+        "file_path": "/9VFBtfMRKh5Yfd8jQ4kPhhD441D.jpg",
+        "vote_average": 3.334,
+        "vote_count": 2,
+        "width": 2000
+      },
+      {
+        "aspect_ratio": 0.667,
+        "height": 1500,
+        "iso_3166_1": "CN",
+        "iso_639_1": "zh",
+        "file_path": "/jN0uey1Q7oAGfcDPXeDNSPkc2fk.jpg",
+        "vote_average": 3.334,
+        "vote_count": 2,
+        "width": 1000
+      },
+      {
+        "aspect_ratio": 0.698,
+        "height": 2048,
+        "iso_3166_1": "TW",
+        "iso_639_1": "zh",
+        "file_path": "/lVTC1LGI9lvE1XvV94OG778DOgN.jpg",
+        "vote_average": 1.75,
+        "vote_count": 2,
+        "width": 1429
+      },
+      {
+        "aspect_ratio": 0.667,
+        "height": 3000,
+        "iso_3166_1": "US",
+        "iso_639_1": "en",
+        "file_path": "/vgkX1kqxXutd15st53ob0X1S8W.jpg",
+        "vote_average": 1.222,
+        "vote_count": 3,
+        "width": 2000
+      },
+      {
+        "aspect_ratio": 0.698,
+        "height": 2048,
+        "iso_3166_1": "TW",
+        "iso_639_1": "zh",
+        "file_path": "/fnlseFvOWRNFRktl1fliTLPLHvh.jpg",
+        "vote_average": 0.0,
+        "vote_count": 0,
+        "width": 1429
+      },
+      {
+        "aspect_ratio": 0.698,
+        "height": 1547,
+        "iso_3166_1": "US",
+        "iso_639_1": "en",
+        "file_path": "/JPxdo8GELvHRzOnZqBBtltCGq4.jpg",
+        "vote_average": 0.0,
+        "vote_count": 0,
+        "width": 1080
+      },
+      {
+        "aspect_ratio": 0.667,
+        "height": 3000,
+        "iso_3166_1": "HK",
+        "iso_639_1": "zh",
+        "file_path": "/cQoidck8G6sjkRtCIzioDEafgNU.jpg",
+        "vote_average": 0.0,
+        "vote_count": 0,
+        "width": 2000
+      }
+    ]
   }
 }

@@ -40,7 +40,7 @@ const seriesRelationship = {
 
 const directoryCapability = declareCapability({
   identity: "epub.publication-inspection",
-  implementationVersion: "2",
+  implementationVersion: "3",
   kind: "artifact-format-inspector",
   contractVersion: "2",
   interpretationContractVersions: ["2"],
@@ -54,7 +54,7 @@ const acquirerCapability = declareCapability({
 });
 const localRecognizerCapability = declareCapability({
   identity: "epub.local-publication-recognizer",
-  implementationVersion: "3",
+  implementationVersion: "4",
   kind: "recognizer",
   contractVersion: "2",
   interpretationContractVersions: ["2"],
@@ -64,7 +64,7 @@ export const trustedEpubLocalPublicationRule = {
   capabilityId: localRecognizerCapability.capabilityId,
   capabilityVersion: localRecognizerCapability.capabilityVersion,
   ruleId: "epub.valid-single-publication-revision",
-  ruleVersion: "3",
+  ruleVersion: "4",
 } as const;
 
 export type EpubPublication = {
@@ -76,6 +76,7 @@ export type EpubPublication = {
   }[];
   readonly invalidIsbnCount: number;
   readonly title?: string;
+  readonly descriptionFacts: readonly LocatedText[];
   readonly contributors: readonly string[];
   readonly contributorFacts: readonly {
     readonly role: "creator" | "contributor";
@@ -108,12 +109,17 @@ export function inspectEpubPublication(bytes: Uint8Array): EpubPublication {
   const container = archive.text("META-INF/container.xml");
   requireClosedXmlRoot(container, "container");
   requireClosedXmlRoot(container, "rootfiles");
-  const rootfilesBody = container.match(
-    /<rootfiles\b[^>]*>([\s\S]*?)<\/rootfiles\s*>/iu,
-  )?.[1];
+  const rootfilesBody = new RegExp(
+    `<(${elementNamePattern("rootfiles")})(?=[\\s>])[^>]*>([\\s\\S]*?)<\\/\\1\\s*>`,
+    "iu",
+  ).exec(container)?.[2];
   if (rootfilesBody === undefined)
     throw new Error("EPUB container rootfiles wrapper is malformed");
-  const rootfiles = [...rootfilesBody.matchAll(/<rootfile\b[^>]*>/giu)];
+  const rootfiles = [
+    ...rootfilesBody.matchAll(
+      new RegExp(`<${elementNamePattern("rootfile")}(?=[\\s/>])[^>]*>`, "giu"),
+    ),
+  ];
   if (rootfiles.length !== 1)
     throw new Error("EPUB container must declare one OPF rootfile");
   const rootfilePaths = [
@@ -125,6 +131,7 @@ export function inspectEpubPublication(bytes: Uint8Array): EpubPublication {
   const opf = archive.text(rootfile);
   requireClosedXmlRoot(opf, "package");
   const title = firstElementText(opf, "dc:title");
+  const descriptionFacts = elementFacts(opf, "dc:description", rootfile);
   const contributorFacts = [
     ...elementFacts(opf, "dc:creator", rootfile).map((fact) => ({
       role: "creator" as const,
@@ -253,6 +260,7 @@ export function inspectEpubPublication(bytes: Uint8Array): EpubPublication {
     invalidIsbnCount: isbnIdentifiers.filter((identifier) => !identifier.valid)
       .length,
     ...(title === undefined ? {} : { title }),
+    descriptionFacts,
     contributors,
     contributorFacts,
     ...(language === undefined ? {} : { language }),
@@ -321,6 +329,12 @@ export class EpubPublicationInspector implements ArtifactFormatInspector {
                     locator: elementLocator(publication.opfPath, "dc:title", 1),
                   },
                 ]),
+            ...publication.descriptionFacts.map((item, index) => ({
+              property: "asset.introduction",
+              sourceSlot: `opf.description.${index + 1}`,
+              value: item.value,
+              locator: item.locator,
+            })),
             ...(publication.language === undefined
               ? []
               : [
@@ -675,7 +689,10 @@ function elementFacts(
 ): readonly (LocatedText & { readonly attributes: string })[] {
   return [
     ...source.matchAll(
-      new RegExp(`<${name}\\b([^>]*)>([\\s\\S]*?)</${name}>`, "giu"),
+      new RegExp(
+        `<${elementNamePattern(name)}(?=[\\s>])([^>]*)>([\\s\\S]*?)</${elementNamePattern(name)}\\s*>`,
+        "giu",
+      ),
     ),
   ].flatMap((match, index) => {
     const value = decodeXml(match[2]!.replaceAll(/<[^>]+>/gu, "").trim());
@@ -720,19 +737,20 @@ function declaredContributorRole(
 function metaElements(
   opf: string,
 ): readonly { readonly tag: string; readonly value?: string }[] {
-  return [...opf.matchAll(/<meta\b([^>]*?)(?:\/>|>([\s\S]*?)<\/meta>)/giu)].map(
-    (match) => {
-      const tag = `<meta${match[1]!}>`;
-      const body = decodeXml(
-        (match[2] ?? "").replaceAll(/<[^>]+>/gu, "").trim(),
-      );
-      const content = attribute(tag, "content");
-      const value = body || content;
-      return value === undefined || value.length === 0
-        ? { tag }
-        : { tag, value };
-    },
-  );
+  return [
+    ...opf.matchAll(
+      new RegExp(
+        `<(${elementNamePattern("meta")})(?=[\\s/>])([^>]*?)(?:\\/>|>([\\s\\S]*?)<\\/\\1\\s*>)`,
+        "giu",
+      ),
+    ),
+  ].map((match) => {
+    const tag = `<meta${match[2]!}>`;
+    const body = decodeXml((match[3] ?? "").replaceAll(/<[^>]+>/gu, "").trim());
+    const content = attribute(tag, "content");
+    const value = body || content;
+    return value === undefined || value.length === 0 ? { tag } : { tag, value };
+  });
 }
 
 function refinedMeta(
@@ -849,7 +867,11 @@ type ManifestItem = {
 };
 
 function manifestItems(opf: string): readonly ManifestItem[] {
-  return [...opf.matchAll(/<item\b[^>]*>/giu)].flatMap((match) => {
+  return [
+    ...opf.matchAll(
+      new RegExp(`<${elementNamePattern("item")}(?=[\\s/>])[^>]*>`, "giu"),
+    ),
+  ].flatMap((match) => {
     const id = attribute(match[0], "id");
     const href = attribute(match[0], "href");
     const mediaType = attribute(match[0], "media-type");
@@ -880,7 +902,10 @@ function firstElementText(source: string, name: string): string | undefined {
 function elementTexts(source: string, name: string): readonly string[] {
   return [
     ...source.matchAll(
-      new RegExp(`<${name}\\b[^>]*>([\\s\\S]*?)</${name}>`, "giu"),
+      new RegExp(
+        `<${elementNamePattern(name)}(?=[\\s>])[^>]*>([\\s\\S]*?)</${elementNamePattern(name)}\\s*>`,
+        "giu",
+      ),
     ),
   ]
     .map((match) => decodeXml(match[1]!.replaceAll(/<[^>]+>/gu, "").trim()))
@@ -897,14 +922,30 @@ function decodeXml(value: string): string {
 }
 
 function requireClosedXmlRoot(source: string, name: string): void {
-  const openings = [...source.matchAll(new RegExp(`<${name}\\b[^>]*>`, "giu"))];
-  const closings = [...source.matchAll(new RegExp(`</${name}\\s*>`, "giu"))];
+  const openings = [
+    ...source.matchAll(
+      new RegExp(`<(${elementNamePattern(name)})(?=[\\s>])[^>]*>`, "giu"),
+    ),
+  ];
+  const closings = [
+    ...source.matchAll(
+      new RegExp(`</(${elementNamePattern(name)})\\s*>`, "giu"),
+    ),
+  ];
   if (
     openings.length !== 1 ||
     closings.length !== 1 ||
+    openings[0]![1] !== closings[0]![1] ||
     closings[0]!.index <= openings[0]!.index
   )
     throw new Error(`EPUB ${name} XML root is malformed`);
+}
+
+function elementNamePattern(name: string): string {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return name.includes(":")
+    ? escaped
+    : `(?:[\\p{L}_][\\p{L}\\p{N}_.-]*:)?${escaped}`;
 }
 
 function resolveHref(opf: string, href: string): string {

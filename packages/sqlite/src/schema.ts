@@ -1014,6 +1014,65 @@ export const artifactRoleDecisionHeads = sqliteTable(
   ],
 );
 
+/** 精确属性坐标的仅追加人工决定；pin 固定值，clear 恢复既有求值。 */
+export const metadataDecisions = sqliteTable(
+  "metadata_decisions",
+  {
+    id: text().notNull(),
+    targetKind: text("target_kind").notNull(),
+    targetEntityId: text("target_entity_id"),
+    targetArtifactId: text("target_artifact_id"),
+    targetRevisionId: text("target_revision_id"),
+    property: text().notNull(),
+    metadataUsageContext: text("metadata_usage_context").notNull(),
+    kind: text().notNull(),
+    value: text(),
+    qualifiersJson: text("qualifiers_json"),
+    adoptedFromJson: text("adopted_from_json"),
+    predecessorDecisionId: text("predecessor_decision_id"),
+    initiatedBy: text("initiated_by").notNull(),
+  },
+  (table) => [
+    primaryKey({ name: "metadata_decisions_pk", columns: [table.id] }),
+    check(
+      "metadata_decisions_target",
+      sql.raw(
+        "(target_kind = 'entity' AND target_entity_id IS NOT NULL AND target_artifact_id IS NULL AND target_revision_id IS NULL) OR (target_kind = 'artifact-revision' AND target_entity_id IS NULL AND target_artifact_id IS NOT NULL AND target_revision_id IS NOT NULL)",
+      ),
+    ),
+    check(
+      "metadata_decisions_value",
+      sql.raw(
+        "(kind = 'pin' AND value IS NOT NULL) OR (kind = 'clear' AND value IS NULL AND qualifiers_json IS NULL AND adopted_from_json IS NULL)",
+      ),
+    ),
+    index("metadata_decisions_predecessor").on(table.predecessorDecisionId),
+    index("metadata_decisions_coordinate").on(
+      table.targetKind,
+      table.targetEntityId,
+      table.targetArtifactId,
+      table.targetRevisionId,
+      table.property,
+      table.metadataUsageContext,
+    ),
+  ],
+);
+
+/** 每个精确目标、属性和使用语境最多一个当前决定头。 */
+export const metadataDecisionHeads = sqliteTable(
+  "metadata_decision_heads",
+  {
+    targetKey: text("target_key").notNull(),
+    decisionId: text("decision_id").notNull(),
+  },
+  (table) => [
+    primaryKey({
+      name: "metadata_decision_heads_pk",
+      columns: [table.targetKey],
+    }),
+  ],
+);
+
 /** 仅追加的相关实体身份合并；事实的原始主体不随之改写。 */
 export const entityIdentityMerges = sqliteTable(
   "entity_identity_merges",
@@ -1902,6 +1961,8 @@ export const catalogueSchema = {
   relationshipManualSupports,
   artifactRoleDecisions,
   artifactRoleDecisionHeads,
+  metadataDecisions,
+  metadataDecisionHeads,
   entityIdentityMerges,
   entityIdentityMergeRetractions,
   entityMentions,

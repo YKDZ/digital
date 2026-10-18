@@ -21,16 +21,16 @@
 
 ## 真实、缩减与代表性取值
 
-| 项目 | 取值来源 | 说明 |
-| --- | --- | --- |
-| creatorId `customudon`、postId `7225781`、`2023-12-31T17:10:55+09:00`、标题 `Movie \| コスプレ4`、形态 `file`、封面 present | 真实参考 | 与独立审阅 oracle 一致 |
-| 真实根与文件层级 | 真实参考（只读核对） | `.scratch/acceptance-corpus/assets/media/animation/Custom Udon/23.12.31 コスプレ4`，原文件为 `Season 1/S01E01 - Cosplay4.mp4`（533393220 字节）、`Specials/S00E01 - Voice.mp4`（346704967 字节）、`poster.jpg`（67869 字节）；本夹具不改原根 |
-| 缩减父目录名 `customudon` | 输入变换 | 既有创作者标识规则不接受空格，`Custom Udon` 无法命中约定，故改为 oracle 已确认的 creatorId |
-| 缩减目录内的 MP4 | 自造 | 由 `scripts/build-controlled-fanbox-session-fixture.ts` 生成的结构正确最小盒序列，不是可播放视频，也不是原帖附件字节 |
-| 摘要与详情里的 `feeRequired`、`user.name`、附件 `f1` 的名称／大小／扩展名／地址 | 协议代表值 | 按既有解析契约给出，只覆盖实际走到的分支；不声称完整创作者历史，也不声称附件字节 |
-| 主图地址与 PNG 字节 | 协议代表值 | oracle 只记录封面 present，未保留地址与字节；不得写成该帖真实封面下载录像 |
-| `login-status` 的 `{ "body": 0 }` | 协议代表值 | 连接验证要求的成功信封形态 |
-| 合成 userAgent／Cookie 值 | 自造 | 没有真实登录能力；`manifest-mismatched-context.json` 声明另一个合成上下文摘要，用于证明摘要属于请求键 |
+| 项目                                                                                                                        | 取值来源             | 说明                                                                                                                                                                                                                                         |
+| --------------------------------------------------------------------------------------------------------------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| creatorId `customudon`、postId `7225781`、`2023-12-31T17:10:55+09:00`、标题 `Movie \| コスプレ4`、形态 `file`、封面 present | 真实参考             | 与独立审阅 oracle 一致                                                                                                                                                                                                                       |
+| 真实根与文件层级                                                                                                            | 真实参考（只读核对） | `.scratch/acceptance-corpus/assets/media/animation/Custom Udon/23.12.31 コスプレ4`，原文件为 `Season 1/S01E01 - Cosplay4.mp4`（533393220 字节）、`Specials/S00E01 - Voice.mp4`（346704967 字节）、`poster.jpg`（67869 字节）；本夹具不改原根 |
+| 缩减父目录名 `customudon`                                                                                                   | 输入变换             | 既有创作者标识规则不接受空格，`Custom Udon` 无法命中约定，故改为 oracle 已确认的 creatorId                                                                                                                                                   |
+| 缩减目录内的 MP4                                                                                                            | 自造                 | 由 `@digital/workspace-automation` 的受控会话生成器 生成的结构正确最小盒序列，不是可播放视频，也不是原帖附件字节                                                                                                                             |
+| 摘要与详情里的 `feeRequired`、`user.name`、附件 `f1` 的名称／大小／扩展名／地址                                             | 协议代表值           | 按既有解析契约给出，只覆盖实际走到的分支；不声称完整创作者历史，也不声称附件字节                                                                                                                                                             |
+| 主图地址与 PNG 字节                                                                                                         | 协议代表值           | oracle 只记录封面 present，未保留地址与字节；不得写成该帖真实封面下载录像                                                                                                                                                                    |
+| `login-status` 的 `{ "body": 0 }`                                                                                           | 协议代表值           | 连接验证要求的成功信封形态                                                                                                                                                                                                                   |
+| 合成 userAgent／Cookie 值                                                                                                   | 自造                 | 没有真实登录能力；`manifest-mismatched-context.json` 声明另一个合成上下文摘要，用于证明摘要属于请求键                                                                                                                                        |
 
 ## 清单内容身份
 
@@ -59,7 +59,7 @@
 ## 重新生成与核验
 
 ```
-node scripts/build-controlled-fanbox-session-fixture.ts
+pnpm fixture:fanbox-session
 ```
 
 脚本重写资料、响应与合成凭据文件，打印各清单的绝对路径与内容身份，以及合成上下文的摘要标识，

@@ -37,12 +37,27 @@ export async function createOfflineProductDataBackup(input: {
   await assertNoSymlinkAncestors(source, false);
   await assertNoSymlinkAncestors(destination, true);
   const maintenance = ProductDataOperations.forRoot(source).startMaintenance();
+  const failures: unknown[] = [];
   try {
     ProductDataOperations.forRoot(source).assertRestoreCanStart();
     await assertEmptyDirectory(destination, "备份目录");
     await copyDurableProductRoot(source, destination);
+  } catch (error) {
+    failures.push(error);
   } finally {
-    maintenance.close();
+    try {
+      maintenance.close();
+    } catch (cleanupError) {
+      failures.push(cleanupError);
+    }
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) {
+    throw new AggregateError(
+      failures,
+      "离线备份主操作失败，且维护租约收尾失败；所有失败均已保留",
+      { cause: failures[0] },
+    );
   }
 }
 
@@ -71,6 +86,7 @@ export async function restoreOfflineProductDataBackup(input: {
   let stagingRoot: Awaited<ReturnType<typeof open>> | undefined;
   let stage: Awaited<ReturnType<typeof open>> | undefined;
   const stageName = `restore-${cryptoRandomName()}`;
+  const failures: unknown[] = [];
   try {
     destinationRoot = await openVerifiedDirectory(
       destination,
@@ -108,19 +124,40 @@ export async function restoreOfflineProductDataBackup(input: {
     await publishDurableEntries(stage, destinationRoot);
     removeRestoreInProgressMarker(destinationRoot.fd);
   } catch (error) {
+    failures.push(error);
     // 只通过已经验证的父描述符清理仍在原位的暂存项；遭重绑的路径绝不触碰。
     if (stagingRoot !== undefined) {
-      await rm(path.join(descriptorPath(stagingRoot.fd), stageName), {
-        recursive: true,
-        force: true,
-      }).catch(() => undefined);
+      try {
+        await rm(path.join(descriptorPath(stagingRoot.fd), stageName), {
+          recursive: true,
+          force: true,
+        });
+      } catch (cleanupError) {
+        failures.push(cleanupError);
+      }
     }
-    throw error;
   } finally {
-    await stage?.close();
-    await stagingRoot?.close();
-    await destinationRoot?.close();
-    maintenance.close();
+    for (const handle of [stage, stagingRoot, destinationRoot]) {
+      if (handle === undefined) continue;
+      try {
+        await handle.close();
+      } catch (cleanupError) {
+        failures.push(cleanupError);
+      }
+    }
+    try {
+      maintenance.close();
+    } catch (cleanupError) {
+      failures.push(cleanupError);
+    }
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) {
+    throw new AggregateError(
+      failures,
+      `离线恢复主操作失败，且 ${failures.length - 1} 项收尾失败；所有失败均已保留`,
+      { cause: failures[0] },
+    );
   }
 }
 
@@ -148,24 +185,36 @@ async function copyDurableProductRoot(
   existingDestination?: Awaited<ReturnType<typeof open>>,
 ): Promise<void> {
   const sourceRoot = await openVerifiedDirectory(source, "备份源产品数据目录");
+  let destinationRoot: Awaited<ReturnType<typeof open>> | undefined;
+  const failures: unknown[] = [];
   try {
     const names = await readdir(descriptorPath(sourceRoot.fd));
     if (!names.includes("catalogue.sqlite"))
       throw new Error("备份源缺少产品 Catalogue；拒绝创建不完整副本");
-    const destinationRoot =
+    destinationRoot =
       existingDestination ??
       (await createVerifiedDirectory(destination!, 0o700));
-    try {
-      for (const name of names) {
-        if (disposableProductRootEntries.has(name)) continue;
-        await copyEntry(sourceRoot.fd, destinationRoot.fd, name);
-      }
-    } finally {
-      if (existingDestination === undefined) await destinationRoot.close();
+    for (const name of names) {
+      if (disposableProductRootEntries.has(name)) continue;
+      await copyEntry(sourceRoot.fd, destinationRoot.fd, name);
     }
+  } catch (error) {
+    failures.push(error);
   } finally {
-    await sourceRoot.close();
+    if (destinationRoot !== undefined && existingDestination === undefined) {
+      try {
+        await destinationRoot.close();
+      } catch (cleanupError) {
+        failures.push(cleanupError);
+      }
+    }
+    try {
+      await sourceRoot.close();
+    } catch (cleanupError) {
+      failures.push(cleanupError);
+    }
   }
+  throwCollectedFailures(failures, "产品数据根复制");
 }
 
 /**
@@ -187,23 +236,45 @@ async function openVerifiedDirectory(
     .split(path.sep)
     .filter((component) => component.length > 0);
   let directory: Awaited<ReturnType<typeof open>> | undefined;
+  let nextDirectory: Awaited<ReturnType<typeof open>> | undefined;
+  let directoryCloseAttempted = false;
   try {
     directory = await open(
       parsed.root,
       constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
     );
     for (const component of components) {
-      const next = await open(
+      nextDirectory = await open(
         path.join(descriptorPath(directory.fd), component),
         constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
       );
+      directoryCloseAttempted = true;
       await directory.close();
-      directory = next;
+      directory = nextDirectory;
+      nextDirectory = undefined;
+      directoryCloseAttempted = false;
     }
     return directory;
-  } catch {
-    await directory?.close();
-    throw new Error(`${label}无法安全打开`);
+  } catch (error) {
+    const failures: unknown[] = [
+      new Error(`${label}无法安全打开`, { cause: error }),
+    ];
+    if (nextDirectory !== undefined) {
+      try {
+        await nextDirectory.close();
+      } catch (cleanupError) {
+        failures.push(cleanupError);
+      }
+    }
+    if (directory !== undefined && !directoryCloseAttempted) {
+      try {
+        await directory.close();
+      } catch (cleanupError) {
+        failures.push(cleanupError);
+      }
+    }
+    throwCollectedFailures(failures, `${label}目录打开`);
+    throw failures[0];
   }
 }
 
@@ -218,32 +289,60 @@ async function createVerifiedDirectory(
   );
   const name = path.basename(absolute);
   const childPath = path.join(descriptorPath(parent.fd), name);
+  let primaryError: unknown;
+  let mayOpenChild = true;
   try {
     await mkdir(childPath, { recursive: false, mode });
   } catch (error) {
     if (errorCode(error) !== "EEXIST") {
-      await parent.close();
-      throw error;
+      primaryError = error;
+      mayOpenChild = false;
     }
   }
   let child: Awaited<ReturnType<typeof open>> | undefined;
-  try {
-    child = await open(
-      childPath,
-      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-    );
-    if ((await readdir(descriptorPath(child.fd))).length !== 0)
-      throw new Error("复制目标目录必须为空");
-    await child.chmod(mode);
-    return child;
-  } catch (error) {
-    await child?.close();
-    if (error instanceof Error && error.message === "复制目标目录必须为空")
-      throw error;
-    throw new Error("复制目标目录必须是非符号链接目录", { cause: error });
-  } finally {
-    await parent.close();
+  if (mayOpenChild) {
+    try {
+      child = await open(
+        childPath,
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+      );
+      if ((await readdir(descriptorPath(child.fd))).length !== 0)
+        throw new Error("复制目标目录必须为空");
+      await child.chmod(mode);
+    } catch (error) {
+      primaryError =
+        error instanceof Error && error.message === "复制目标目录必须为空"
+          ? error
+          : new Error("复制目标目录必须是非符号链接目录", { cause: error });
+    }
   }
+  const failures: unknown[] = primaryError === undefined ? [] : [primaryError];
+  let childCloseAttempted = false;
+  if (failures.length > 0 && child !== undefined) {
+    childCloseAttempted = true;
+    try {
+      await child.close();
+    } catch (cleanupError) {
+      failures.push(cleanupError);
+    }
+  }
+  try {
+    await parent.close();
+  } catch (cleanupError) {
+    failures.push(cleanupError);
+  }
+  if (failures.length > 0) {
+    if (!childCloseAttempted && child !== undefined) {
+      try {
+        await child.close();
+      } catch (cleanupError) {
+        failures.push(cleanupError);
+      }
+    }
+    throwCollectedFailures(failures, "复制目标目录初始化");
+  }
+  if (child === undefined) throw new Error("复制目标目录未能打开");
+  return child;
 }
 
 async function createChildVerifiedDirectory(
@@ -265,7 +364,13 @@ async function createChildVerifiedDirectory(
     await child.chmod(mode);
     return child;
   } catch (error) {
-    await child.close();
+    const failures = [error];
+    try {
+      await child.close();
+    } catch (cleanupError) {
+      failures.push(cleanupError);
+    }
+    throwCollectedFailures(failures, "复制目标目录项初始化");
     throw error;
   }
 }
@@ -288,11 +393,13 @@ async function copyEntry(
   if (status.isDirectory()) {
     await mkdir(destination, { mode: status.mode & 0o777 });
     const sourceChild = await openAnchoredDirectory(source, "产品数据目录项");
-    const destinationChild = await openAnchoredDirectory(
-      destination,
-      "复制目标目录项",
-    );
+    let destinationChild: Awaited<ReturnType<typeof open>> | undefined;
+    const failures: unknown[] = [];
     try {
+      destinationChild = await openAnchoredDirectory(
+        destination,
+        "复制目标目录项",
+      );
       await assertSameIdentity(
         status,
         await sourceChild.stat(),
@@ -301,10 +408,23 @@ async function copyEntry(
       await destinationChild.chmod(status.mode & 0o777);
       for (const child of await readdir(descriptorPath(sourceChild.fd)))
         await copyEntry(sourceChild.fd, destinationChild.fd, child);
+    } catch (error) {
+      failures.push(error);
     } finally {
-      await destinationChild.close();
-      await sourceChild.close();
+      if (destinationChild !== undefined) {
+        try {
+          await destinationChild.close();
+        } catch (cleanupError) {
+          failures.push(cleanupError);
+        }
+      }
+      try {
+        await sourceChild.close();
+      } catch (cleanupError) {
+        failures.push(cleanupError);
+      }
     }
+    throwCollectedFailures(failures, "产品目录项复制");
     return;
   }
   if (!status.isFile())
@@ -314,6 +434,7 @@ async function copyEntry(
     constants.O_RDONLY | constants.O_NOFOLLOW,
   );
   let destinationFile: Awaited<ReturnType<typeof open>> | undefined;
+  const failures: unknown[] = [];
   try {
     const sourceStatus = await sourceFile.stat();
     if (!sourceStatus.isFile())
@@ -365,10 +486,23 @@ async function copyEntry(
     if (destinationStatus.size !== sourceStatus.size)
       throw new Error("产品数据文件复制大小不一致；拒绝发布不完整副本");
     await destinationFile.chmod(sourceStatus.mode & 0o777);
+  } catch (error) {
+    failures.push(error);
   } finally {
-    await destinationFile?.close();
-    await sourceFile.close();
+    if (destinationFile !== undefined) {
+      try {
+        await destinationFile.close();
+      } catch (cleanupError) {
+        failures.push(cleanupError);
+      }
+    }
+    try {
+      await sourceFile.close();
+    } catch (cleanupError) {
+      failures.push(cleanupError);
+    }
   }
+  throwCollectedFailures(failures, "产品文件复制");
 }
 
 async function openAnchoredDirectory(
@@ -480,9 +614,11 @@ async function publishDurableEntries(
       }
     }
     if (rollbackErrors.length > 0) {
-      throw new Error("恢复发布未完成；回滚失败，删除失败目标后从备份恢复", {
-        cause: error,
-      });
+      throw new AggregateError(
+        [error, ...rollbackErrors],
+        `恢复发布主操作失败，且 ${rollbackErrors.length} 项回滚失败；删除失败目标后从备份恢复`,
+        { cause: error },
+      );
     }
     throw error;
   }
@@ -508,12 +644,19 @@ function writeRestoreInProgressMarker(
     constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
     0o600,
   );
+  const failures: unknown[] = [];
   try {
     writeFileSync(file, contents, "utf8");
     fsyncSync(file);
-  } finally {
-    closeSync(file);
+  } catch (error) {
+    failures.push(error);
   }
+  try {
+    closeSync(file);
+  } catch (cleanupError) {
+    failures.push(cleanupError);
+  }
+  throwCollectedFailures(failures, "恢复标记写入");
   renameSync(temporary, marker);
   fsyncDirectory(path.dirname(marker));
 }
@@ -534,11 +677,18 @@ function fsyncDirectory(directory: string): void {
     directory,
     constants.O_RDONLY | constants.O_DIRECTORY,
   );
+  const failures: unknown[] = [];
   try {
     fsyncSync(descriptor);
-  } finally {
-    closeSync(descriptor);
+  } catch (error) {
+    failures.push(error);
   }
+  try {
+    closeSync(descriptor);
+  } catch (cleanupError) {
+    failures.push(cleanupError);
+  }
+  throwCollectedFailures(failures, "目录同步");
 }
 
 async function assertDescriptorIdentity(
@@ -562,6 +712,20 @@ async function assertSameIdentity(
 
 function cryptoRandomName(): string {
   return randomUUID();
+}
+
+function throwCollectedFailures(
+  failures: readonly unknown[],
+  label: string,
+): void {
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) {
+    throw new AggregateError(
+      failures,
+      `${label}主操作或资源收尾失败；所有失败均已保留`,
+      { cause: failures[0] },
+    );
+  }
 }
 
 function assertDistinctRoots(source: string, destination: string): void {

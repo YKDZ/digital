@@ -8,12 +8,14 @@ import {
   type AssetRefreshInspection,
 } from "@digital/application";
 import { dlsiteInformationFulfillmentCapabilities } from "@digital/dlsite";
+import { productAutomationInformationPlanner } from "@digital/product-application";
 import { SqliteCatalogue } from "@digital/sqlite";
-import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { assert, afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   composeAssetRefresh,
   composeAssetRefreshRuntime,
+  composeProductApplication,
   composeOwnedAssetRefresh,
   type ComposedAssetRefresh,
 } from "../src/runtime.ts";
@@ -113,7 +115,7 @@ describe("information fulfillment composition", () => {
     const workflowClose = vi.fn(() => drain);
     const persistence = { close: vi.fn() };
     const workflow = composeOwnedAssetRefresh(
-      { close: workflowClose } as never,
+      { close: workflowClose },
       persistence,
     );
     const closing = workflow.close();
@@ -133,7 +135,7 @@ describe("information fulfillment composition", () => {
     const workflowClose = vi.fn(() => Promise.reject(terminalizationFailure));
     const persistence = { close: vi.fn() };
     const workflow = composeOwnedAssetRefresh(
-      { close: workflowClose } as never,
+      { close: workflowClose },
       persistence,
     );
 
@@ -153,7 +155,7 @@ describe("information fulfillment composition", () => {
         async close() {
           order.push("workflow");
         },
-      } as never,
+      },
       {
         close() {
           order.push("persistence");
@@ -593,6 +595,7 @@ describe("information fulfillment composition", () => {
         replacement.workflow,
         executionId!,
       );
+      assert.isDefined(recovered);
       expect(recovered.execution.reason).toBeUndefined();
       expect(recovered.execution).toMatchObject({
         status: "completed",
@@ -671,7 +674,9 @@ describe("information fulfillment composition", () => {
         intervalMilliseconds: 60_000,
         acceptTrusted: true,
       });
-      const parent = automated.initial?.execution;
+      assert.isDefined(automated.initial);
+      assert(automated.initial.status === "started");
+      const parent = automated.initial.execution;
       const subjects =
         parent === undefined
           ? []
@@ -696,6 +701,174 @@ describe("information fulfillment composition", () => {
       });
     } finally {
       await workflow.close();
+    }
+  });
+
+  it("产品装配重启后按旧冻结坐标继续自动刷新信息计划", async () => {
+    const root = await mkdtemp(
+      path.join(tmpdir(), "digital-product-frozen-planner-recovery-"),
+    );
+    temporaryRoots.push(root);
+    const productData = path.join(root, "product-data");
+    await prepareCatalogueAt(productData);
+    const observed = path.join(root, "RJ01668691");
+    await mkdir(observed);
+    await writeFile(path.join(observed, "track.wav"), "observed bytes");
+    vi.stubGlobal("fetch", async (input: string | URL | Request) => {
+      const address =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      if (address.includes("/product/info/ajax")) {
+        return new Response(
+          JSON.stringify({
+            RJ01668691: {
+              site_id: "maniax",
+              work_name: "Frozen planner work",
+              regist_date: "2026-08-01",
+              price: 880,
+              maker_id: "circle-1",
+              maker_name: "Frozen Circle",
+              work_image: "//img.dlsite.jp/frozen.jpg",
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      if (address === "https://img.dlsite.jp/frozen.jpg")
+        return new Response(new Uint8Array([1, 2, 3, 4]), {
+          headers: { "content-type": "image/jpeg" },
+        });
+      return new Response("<html></html>", {
+        headers: { "content-type": "text/html" },
+      });
+    });
+
+    const product = composeProductApplication({
+      productDataDirectory: productData,
+      environment: {},
+    });
+    let parentExecutionId: string | undefined;
+    let restartedProduct:
+      | ReturnType<typeof composeProductApplication>
+      | undefined;
+    let productClosed = false;
+    try {
+      const libraries = product.application.workflow.assetLibraries;
+      const library = await libraries.save({
+        displayName: "冻结需求恢复库",
+        directories: [observed],
+        recognitionProfileIds: libraries.recognitionProfiles.map(
+          (profile) => profile.id,
+        ),
+        sourceIdentities: libraries.sources.map((source) => source.id),
+      });
+      await expect(
+        product.application.workflow.enableAutomation({
+          assetLibraryId: library.id,
+          observedRootId: library.rootIds[0]!,
+          relativeScope: ".",
+          intervalMilliseconds: 60_000,
+          acceptTrusted: true,
+          onInitialExecutionStarted(execution) {
+            parentExecutionId = execution.id;
+          },
+          onInitialCheckpoint(execution) {
+            if (execution.id === parentExecutionId)
+              throw new Error("在信息计划之前中断");
+          },
+        }),
+      ).rejects.toThrow("在信息计划之前中断");
+      if (parentExecutionId === undefined)
+        throw new Error("自动刷新未记录可恢复的父执行");
+      const interruptedParentExecutionId = parentExecutionId;
+
+      await expect(
+        product.application.workflow.inspect(interruptedParentExecutionId),
+      ).resolves.toMatchObject({ execution: { status: "running" } });
+      await expect(
+        product.application.workflow.inspectAssetLibraryScan(
+          interruptedParentExecutionId,
+        ),
+      ).resolves.toMatchObject({
+        parentExecutionId: interruptedParentExecutionId,
+        status: "running",
+      });
+
+      await product.close();
+      productClosed = true;
+      restartedProduct = composeProductApplication({
+        productDataDirectory: productData,
+        environment: {},
+      });
+      await restartedProduct.application.startAutomation();
+      await expect
+        .poll(
+          async () =>
+            (
+              await restartedProduct!.application.workflow.inspect(
+                interruptedParentExecutionId,
+              )
+            )?.execution.status,
+        )
+        .toBe("completed");
+      const recoveredScan =
+        await restartedProduct.application.workflow.inspectAssetLibraryScan(
+          interruptedParentExecutionId,
+        );
+      expect(recoveredScan).toMatchObject({
+        parentExecutionId: interruptedParentExecutionId,
+        status: "completed",
+        directories: [
+          expect.objectContaining({ outcome: "accepted", workItemCount: 1 }),
+        ],
+      });
+      const acceptedAssetId = recoveredScan?.directories
+        .flatMap((directory) => directory.workItems)
+        .find((item) => item.acceptedAssetId !== undefined)?.acceptedAssetId;
+      if (acceptedAssetId === undefined)
+        throw new Error("同一扫描结果没有公开已接受主体");
+      const acceptedFacts =
+        await restartedProduct.application.workflow.inspectCurrentCatalogueSubject(
+          acceptedAssetId,
+        );
+      if (acceptedFacts === undefined)
+        throw new Error("重启后无法公开查询已接受主体");
+      const requirement =
+        productAutomationInformationPlanner.requirementForAcceptedSubject(
+          acceptedFacts,
+        );
+      const recoveredFacts =
+        await restartedProduct.application.workflow.inspectCurrentCatalogueSubject(
+          acceptedAssetId,
+          requirement,
+        );
+      const recoveredDescription = recoveredFacts?.descriptions.find(
+        (description) =>
+          description.target.kind === "entity" &&
+          description.target.entityId === acceptedAssetId,
+      );
+      const recoveredMetadata =
+        recoveredDescription?.metadata.flatMap((metadata) =>
+          metadata.result.status === "resolved" ? metadata.result.values : [],
+        ) ?? [];
+      expect(recoveredMetadata).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            property: "asset.title",
+            value: "Frozen planner work",
+          }),
+          expect.objectContaining({
+            property: "dlsite.product.price-jpy",
+            value: "880",
+          }),
+        ]),
+      );
+    } finally {
+      if (!productClosed) await product.close();
+      await restartedProduct?.close();
     }
   });
 
@@ -823,6 +996,7 @@ describe("information fulfillment composition", () => {
         metadataOnly.subjects[0]!.inputs[0]!.executionReferences![0]!
           .workflowExecutionId,
       );
+      assert.isDefined(unchanged);
       expect(
         unchanged.sourceRefreshRuns!.every((run) =>
           run.scopes.every((scope) => scope.outcome === "unchanged"),
@@ -1579,9 +1753,11 @@ describe("information fulfillment composition", () => {
           (address) => address === "https://img.dlsite.jp/primary.jpg",
         ),
       ).toHaveLength(1);
+      assert.isDefined(automatic.initial);
+      assert(automatic.initial.status === "started");
       expect(
         await workflow.acceptedSubjectsOfLibraryScan(
-          automatic.initial!.execution.execution.id,
+          automatic.initial.execution.execution.id,
         ),
       ).toEqual([expect.objectContaining({ subjectId })]);
       expect(await workflow.listInspections()).toHaveLength(executionCount + 2);

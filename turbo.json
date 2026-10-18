@@ -18,6 +18,11 @@
           ]
         }
       },
+      "client": {
+        "dependencies": {
+          "allow": ["client", "public-api", "tooling"]
+        }
+      },
       "delivery": {
         "dependencies": {
           "allow": [
@@ -25,6 +30,39 @@
             "presentation",
             "application",
             "domain",
+            "test-support",
+            "tooling"
+          ]
+        }
+      },
+      "http-delivery": {
+        "dependencies": {
+          "allow": [
+            "http-delivery",
+            "public-api",
+            "application",
+            "domain",
+            "test-support",
+            "tooling"
+          ]
+        }
+      },
+      "public-api": {
+        "dependencies": {
+          "allow": ["public-api", "tooling"]
+        }
+      },
+      "service-host": {
+        "dependencies": {
+          "allow": [
+            "service-host",
+            "public-api",
+            "composition",
+            "delivery",
+            "application",
+            "domain",
+            "integration",
+            "infrastructure",
             "test-support",
             "tooling"
           ]
@@ -43,7 +81,11 @@
             "infrastructure",
             "test-support",
             "tooling",
-            "environment"
+            "environment",
+            "http-delivery",
+            "public-api",
+            "service-host",
+            "client"
           ]
         }
       },
@@ -54,7 +96,7 @@
       },
       "environment": {
         "dependencies": {
-          "allow": ["tooling"]
+          "allow": ["public-api", "test-support", "tooling"]
         }
       },
       "infrastructure": {
@@ -98,144 +140,180 @@
     }
   },
   "tasks": {
-    "//#format:check": {
-      "outputs": []
+    "//#boundaries": {
+      "tags": ["quality:light"],
+      "cache": false,
+      "passThroughEnv": ["CI"]
     },
-    "//#lint": {
-      "outputs": []
+    "//#db:migrate": {
+      "tags": ["work:preparation"],
+      "cache": false
+    },
+    "//#environment": {
+      "tags": ["work:on-demand"],
+      "cache": false
+    },
+    "//#product:maintenance": {
+      "tags": ["work:on-demand"],
+      "cache": false
+    },
+    "//#check": {
+      "tags": ["quality:entry"],
+      "cache": false
+    },
+    "//#fix": {
+      "tags": ["work:repair"],
+      "cache": false
+    },
+    "//#format:check": {
+      "outputs": [],
+      "tags": ["quality:light"]
     },
     "//#format:write": {
       "dependsOn": ["//#lint:fix"],
-      "cache": false
+      "cache": false,
+      "tags": ["work:repair"]
+    },
+    "//#lint": {
+      "outputs": [],
+      "tags": ["quality:light"]
     },
     "//#lint:fix": {
-      "cache": false
+      "cache": false,
+      "tags": ["work:repair"]
+    },
+    "//#preview:verify": {
+      "tags": ["quality:heavy"],
+      "cache": false,
+      "dependsOn": ["@digital/service#build", "@digital/db-migrations#build"],
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP", "DIGITAL_CI_EVIDENCE"]
     },
     "//#typecheck": {
-      "outputs": []
+      "outputs": [],
+      "tags": ["quality:light"]
     },
-    "format:check": {
-      "outputs": []
+    "//#preview:dev": {
+      "tags": ["work:development"],
+      "cache": false,
+      "passThroughEnv": ["DIGITAL_DEVELOPMENT_*"]
     },
-    "lint": {
-      "outputs": []
+    "//#check:heavy": {
+      "tags": ["quality:entry"],
+      "cache": false
     },
-    "typecheck": {
-      "dependsOn": ["^typecheck"],
-      "outputs": []
+    "//#check:full": {
+      "tags": ["quality:entry"],
+      "cache": false
     },
-    "build": {
-      "dependsOn": ["^build"],
-      "outputs": ["dist/**"]
-    },
-    "test": {
-      "dependsOn": ["build"],
-      "passThroughEnv": ["TMPDIR", "TMP", "TEMP"],
-      "inputs": [
-        "$TURBO_DEFAULT$",
-        "$TURBO_ROOT$/fixtures/controlled-source-io/**",
-        "$TURBO_ROOT$/fixtures/controlled-fanbox-session/**",
-        "$TURBO_ROOT$/fixtures/live-corpus/**"
-      ],
-      "outputs": []
-    },
-    "test:e2e": {
-      "dependsOn": ["build"],
+    "//#test": {
+      "tags": ["quality:light"],
       "cache": false,
       "passThroughEnv": ["TMPDIR", "TMP", "TEMP"]
     },
-    "test:corpus-real": {
-      "dependsOn": ["build"],
+    "//#development:build": {
+      "tags": ["work:development"],
+      "cache": false,
+      "passThroughEnv": ["DIGITAL_DEVELOPMENT_*"]
+    },
+    "development:controlled": {
+      "tags": ["work:preparation"],
+      "cache": false
+    },
+    "//#development:serve": {
+      "tags": ["work:development"],
+      "cache": false,
+      "passThroughEnv": ["DIGITAL_DEVELOPMENT_*"]
+    },
+    "//#verify:audio-posts": {
+      "tags": ["quality:conditional"],
+      "cache": false,
+      "dependsOn": ["@digital/service#build", "@digital/db-migrations#build"],
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP"]
+    },
+    "//#verify:bangumi-live": {
+      "tags": ["quality:conditional"],
+      "cache": false,
+      "dependsOn": ["@digital/service#build", "@digital/db-migrations#build"],
+      "passThroughEnv": [
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "DIGITAL_AUTOMATION_WORKSPACE"
+      ]
+    },
+    "//#verify:deep-integrity": {
+      "tags": ["quality:conditional"],
       "cache": false,
       "passThroughEnv": [
         "TMPDIR",
         "TMP",
         "TEMP",
-        "DIGITAL_TMDB_ACCESS_TOKEN",
-        "DIGITAL_OMDB_API_KEY",
-        "DIGITAL_BANGUMI_LIVE_PRODUCT_DATA",
-        "DIGITAL_BANGUMI_CLIENT_ID",
-        "DIGITAL_BANGUMI_CLIENT_SECRET",
-        "DIGITAL_BANGUMI_REDIRECT_URI",
-        "DIGITAL_FANBOX_LIVE_FAILURE_EVIDENCE_PATH"
+        "DIGITAL_AUTOMATION_WORKSPACE"
       ]
     },
-    "test:e2e:tmdb-omdb-live": {
-      "dependsOn": ["build"],
+    "//#verify:dlsite-eight-live": {
+      "tags": ["quality:conditional"],
       "cache": false,
-      "passThroughEnv": ["DIGITAL_TMDB_ACCESS_TOKEN", "DIGITAL_OMDB_API_KEY"]
-    },
-    "test:e2e:bangumi-live": {
-      "dependsOn": ["build"],
-      "cache": false,
+      "dependsOn": ["@digital/service#build", "@digital/db-migrations#build"],
       "passThroughEnv": [
-        "DIGITAL_BANGUMI_LIVE_PRODUCT_DATA",
-        "DIGITAL_BANGUMI_CLIENT_ID",
-        "DIGITAL_BANGUMI_CLIENT_SECRET",
-        "DIGITAL_BANGUMI_REDIRECT_URI"
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "DIGITAL_AUTOMATION_WORKSPACE"
       ]
     },
-    "test:e2e:managed-service": {
-      "dependsOn": ["@digital/web#build", "@digital/environment#build"],
+    "//#verify:fanbox-five-live": {
+      "tags": ["quality:conditional"],
       "cache": false,
+      "dependsOn": ["@digital/service#build", "@digital/db-migrations#build"],
       "passThroughEnv": [
-        "DIGITAL_ACCEPTANCE_LEDGER",
-        "DIGITAL_ACCEPTANCE_ARTIFACTS"
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "DIGITAL_AUTOMATION_WORKSPACE"
       ]
     },
-    "test:e2e:provided-service": {
-      "dependsOn": ["@digital/web#build"],
+    "//#verify:publication-screen": {
+      "tags": ["quality:conditional"],
       "cache": false,
-      "passThroughEnv": [
-        "DIGITAL_ACCEPTANCE_BASE_URL",
-        "DIGITAL_ACCEPTANCE_LEDGER",
-        "DIGITAL_ACCEPTANCE_ARTIFACTS"
-      ]
+      "dependsOn": ["@digital/service#build", "@digital/db-migrations#build"],
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP"]
     },
-    "deployment": {
+    "//#verify:publications-live": {
+      "tags": ["quality:conditional"],
       "cache": false,
+      "dependsOn": ["@digital/service#build", "@digital/db-migrations#build"],
       "passThroughEnv": [
-        "DIGITAL_DEPLOYMENT_*",
-        "DIGITAL_COMPOSE_CHECK_*",
-        "DIGITAL_DEPLOYMENT_PLAYWRIGHT_CLIENT",
-        "PLAYWRIGHT_BROWSERS_PATH"
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "DIGITAL_AUTOMATION_WORKSPACE"
       ]
     },
-    "format:write": {
-      "dependsOn": ["lint:fix"],
+    "//#verify:tmdb-omdb-live": {
+      "tags": ["quality:conditional"],
+      "cache": false,
+      "dependsOn": ["@digital/service#build", "@digital/db-migrations#build"],
+      "passThroughEnv": [
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "DIGITAL_AUTOMATION_WORKSPACE"
+      ]
+    },
+    "//#verify:controlled-default": {
+      "tags": ["quality:heavy"],
+      "cache": false,
+      "dependsOn": ["@digital/service#build", "@digital/db-migrations#build"],
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP"]
+    },
+    "//#fixture:source-io": {
+      "tags": ["work:on-demand"],
       "cache": false
     },
-    "lint:fix": {
+    "//#fixture:fanbox-session": {
+      "tags": ["work:on-demand"],
       "cache": false
-    },
-    "dev:build": {
-      "dependsOn": ["^dev:build"],
-      "cache": false,
-      "inputs": [
-        "src/**",
-        "tsconfig*.json",
-        "package.json",
-        "$TURBO_ROOT$/scripts/build-development.ts"
-      ],
-      "outputs": [".turbo/development/**"]
-    },
-    "dev:serve": {
-      "dependsOn": ["^dev:build"],
-      "cache": false,
-      "inputs": [
-        "package.json",
-        "vite.config.ts",
-        "+server.ts",
-        "scripts/start-development.ts",
-        "server/**",
-        "pages/**/+*.ts",
-        "$TURBO_ROOT$/scripts/development-task.ts"
-      ],
-      "passThroughEnv": [
-        "DIGITAL_DEVELOPMENT_SESSION",
-        "DIGITAL_DEVELOPMENT_WORKSPACE",
-        "DIGITAL_DEVELOPMENT_ENVIRONMENT"
-      ]
     }
   }
 }

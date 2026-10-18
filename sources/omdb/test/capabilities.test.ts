@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { prerequisiteUnavailableFailure } from "@digital/application";
-import { describe, expect, it } from "vitest";
+import { assert, describe, expect, it } from "vitest";
 
 import {
   OmdbArtifactAcquirer,
@@ -47,18 +47,21 @@ const input = {
       sourceSlot: "catalogue-a.imdb-id",
       value: "tt1234567",
       sourceRecordIds: ["catalogue-a-record"],
+      target: { kind: "entity", entityId: "asset-1" },
     },
     {
       property: "asset.title",
       sourceSlot: "catalogue-a.title",
       value: "Example Film",
       sourceRecordIds: ["catalogue-a-record"],
+      target: { kind: "entity", entityId: "asset-1" },
     },
     {
       property: "asset.release-date",
       sourceSlot: "catalogue-a.release-date",
       value: "2004-01-01",
       sourceRecordIds: ["catalogue-a-record"],
+      target: { kind: "entity", entityId: "asset-1" },
     },
   ],
   informationRequirement: {
@@ -99,6 +102,7 @@ async function associationOutcome(
     evidence: [evidence],
     sourceRecords: collection.records,
   });
+  assert.isDefined(interpretation);
   return new OmdbSourceAssociationInterpreter().interpret({
     subject,
     evidence,
@@ -108,9 +112,12 @@ async function associationOutcome(
 
 describe("OMDb film source enrichment", () => {
   it("does not propose or validate enrichment without a recognition source", () => {
+    const {
+      recognitionSourceAssociation: _recognitionSourceAssociation,
+      ...observedInput
+    } = input;
     const observedSubject = {
-      ...input,
-      recognitionSourceAssociation: undefined,
+      ...observedInput,
       sourceAssociations: [],
     };
     const evidence = {
@@ -219,6 +226,7 @@ describe("OMDb film source enrichment", () => {
       sourceRecords: collection.records,
     });
 
+    assert.isDefined(interpretation);
     expect(
       associationInterpreter.interpret({
         subject: input,
@@ -296,6 +304,7 @@ describe("OMDb film source enrichment", () => {
       evidence: [evidence],
       sourceRecords: result.records,
     });
+    assert.isDefined(interpretation);
 
     expect(result.failures).toEqual([]);
     expect(evidence).toMatchObject({
@@ -394,6 +403,7 @@ describe("OMDb film source enrichment", () => {
       sourceRecords: result.records,
     });
 
+    assert.isDefined(interpretation);
     expect(result.records).toHaveLength(1);
     expect(result.failures).toEqual([]);
     expect(
@@ -464,6 +474,7 @@ describe("OMDb film source enrichment", () => {
     expect(result.failures).toEqual([]);
     expect(result.records).toHaveLength(1);
     const record = result.records[0];
+    assert.isDefined(record);
     expect(record.body).toContain("[REDACTED]");
     expect(record.body).not.toContain(apiKey);
     expect(record.mediaType).toBe("application/json");
@@ -555,6 +566,7 @@ describe("OMDb film source enrichment", () => {
       evidence: [evidence],
       sourceRecords: collected.records,
     });
+    assert.isDefined(interpretation);
 
     expect(collected.failures).toEqual([]);
     expect(interpretation).toMatchObject({

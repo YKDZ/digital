@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -13,6 +14,7 @@ const workspaceRoot = path.resolve(
 );
 const corpusDirectory = path.join(workspaceRoot, ".scratch/acceptance-corpus");
 const corpusAssetsDirectory = path.join(corpusDirectory, "assets");
+const packageRequire = createRequire(import.meta.url);
 
 function logicalRootDirectory(logicalRoot: string): string {
   const normalized = path.posix.normalize(logicalRoot.replace(/\/+$/u, ""));
@@ -30,7 +32,7 @@ function logicalRootDirectory(logicalRoot: string): string {
 
 async function fixedLogicalRoots(): Promise<readonly string[]> {
   const manifest = await readFile(
-    path.join(workspaceRoot, "fixtures/live-corpus/files-from.txt"),
+    packageRequire.resolve("@digital/preview-corpus/live/files-from.txt"),
     "utf8",
   );
   return manifest

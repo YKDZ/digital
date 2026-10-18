@@ -42,8 +42,24 @@ export function observeProcessIdentity(
 export function observeProcessLifecycle(
   identity: ProcessIdentity,
 ): LifecycleObservation {
+  let bootId: string;
   try {
-    if (readBootId() !== identity.bootId) return "exited";
+    bootId = readBootId();
+  } catch {
+    return "unknown";
+  }
+  if (bootId !== identity.bootId) return "exited";
+
+  let observerNamespace: string;
+  try {
+    observerNamespace = readNamespace("self", "pid");
+  } catch {
+    return "unknown";
+  }
+  // PID 只在所属命名空间中有意义；当前 /proc 视图无法证明另一个命名空间里的进程已退出。
+  if (observerNamespace !== identity.pidNamespace) return "unknown";
+
+  try {
     const startTimeTicks = readStartTimeTicks(identity.pid);
     if (startTimeTicks !== identity.startTimeTicks) return "exited";
     if (readNamespace(identity.pid, "pid") !== identity.pidNamespace)
@@ -109,7 +125,7 @@ function readStartTimeTicks(pid: number): string {
 }
 
 /** 命名空间条目是 magic symlink，只能 readlink，读取内容会失败。 */
-function readNamespace(pid: number, kind: "pid"): string {
+function readNamespace(pid: number | "self", kind: "pid"): string {
   const value = readlinkSync(`/proc/${pid}/ns/${kind}`);
   if (!/^[a-z]+:\[[0-9]+\]$/u.test(value))
     throw new Error(`进程 ${String(pid)} 的 ${kind} 命名空间不可识别`);

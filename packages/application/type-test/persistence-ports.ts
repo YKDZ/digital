@@ -14,10 +14,16 @@ const inspectionOnlyDouble: WorkflowExecutionQueries = {
   async inspectExecution() {
     return undefined;
   },
+  async readWorkflowExecution() {
+    return undefined;
+  },
   async listExecutions() {
     return [];
   },
   async listRunningExecutions() {
+    return [];
+  },
+  async listCommittedSourceRefreshRecordIdsForSubject() {
     return [];
   },
   async inspectRawSourceRecord() {
@@ -27,7 +33,7 @@ const inspectionOnlyDouble: WorkflowExecutionQueries = {
     return undefined;
   },
   async listUnrecognizedLibraryScanObservations() {
-    return [];
+    return { items: [] };
   },
 };
 

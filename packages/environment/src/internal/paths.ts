@@ -15,6 +15,7 @@ export const managementDirectorySegments = [
 export const lockDirectorySegments = [".digital", "locks"] as const;
 export const recordFileName = "record.json";
 export const productDataDirectorySegment = "product-data";
+export const initialConfigurationDirectorySegment = "initial-configuration";
 export const logsDirectorySegment = "logs";
 
 const environmentNamePattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u;
@@ -26,6 +27,7 @@ export type EnvironmentLayout = {
   readonly containerDirectory: string;
   readonly recordPath: string;
   readonly productDataRoot: string;
+  readonly initialConfigurationDirectory: string;
   readonly logsRoot: string;
   readonly lockDirectory: string;
   readonly lockPath: string;
@@ -77,6 +79,10 @@ export function createLayout(
     containerDirectory,
     recordPath: path.join(containerDirectory, recordFileName),
     productDataRoot: path.join(containerDirectory, productDataDirectorySegment),
+    initialConfigurationDirectory: path.join(
+      containerDirectory,
+      initialConfigurationDirectorySegment,
+    ),
     logsRoot: path.join(containerDirectory, logsDirectorySegment),
     lockDirectory,
     // 固定锁文件位于工作区管理级锁区，不随单个环境删除。
@@ -89,18 +95,28 @@ export function createOperationId(now: Date): string {
   return `${stamp}-${randomUUID().slice(0, 8)}`;
 }
 
-/** 正式 Web 交付入口与 Turbo 目标：start 只消费已准备好的产物。 */
-export const webEntrySegments = [
+/** 正式产品服务入口与 Turbo 目标：start 只消费已准备好的产物。 */
+export const serviceEntrySegments = [
   "apps",
-  "web",
+  "service",
   "dist",
-  "server",
-  "index.mjs",
+  "main.js",
 ] as const;
-export const webTurboTarget = "@digital/web";
+/** 开发世代直接运行服务源码；依赖包由 Turbo 的 `dev:build` 输出供 Node 条件解析。 */
+export const developmentServiceEntrySegments = [
+  "apps",
+  "service",
+  "src",
+  "main.ts",
+] as const;
+export const serviceTurboTarget = "@digital/service";
 
-export function webEntryPath(workspacePath: string): string {
-  return path.join(workspacePath, ...webEntrySegments);
+export function serviceEntryPath(workspacePath: string): string {
+  return path.join(workspacePath, ...serviceEntrySegments);
+}
+
+export function developmentServiceEntryPath(workspacePath: string): string {
+  return path.join(workspacePath, ...developmentServiceEntrySegments);
 }
 
 /**

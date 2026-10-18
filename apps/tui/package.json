@@ -1,0 +1,39 @@
+{
+  "name": "@digital/tui",
+  "version": "0.0.0",
+  "private": true,
+  "bin": {
+    "digital-tui": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json --pretty false && node -e \"if (process.platform !== 'win32') require('node:fs').chmodSync('dist/cli.js', 0o755)\"",
+    "format:check": "oxfmt --list-different --config ../../oxfmt.config.ts .",
+    "format:write": "oxfmt --write --config ../../oxfmt.config.ts .",
+    "lint": "oxlint --quiet --format=unix --config ../../oxlint.config.ts --ignore-pattern node_modules .",
+    "lint:fix": "oxlint --format=unix --config ../../oxlint.config.ts . --fix",
+    "test": "vitest run --reporter=verbose --passWithNoTests",
+    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false"
+  },
+  "dependencies": {
+    "@digital/public-api": "workspace:*",
+    "ink": "6.3.1",
+    "react": "19.3.1"
+  },
+  "devDependencies": {
+    "@digital/typescript-config": "workspace:*",
+    "@types/node": "catalog:",
+    "@types/react": "^19.2.0",
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:",
+    "oxlint-tsgolint": "catalog:",
+    "typescript-7": "catalog:",
+    "vitest": "catalog:"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

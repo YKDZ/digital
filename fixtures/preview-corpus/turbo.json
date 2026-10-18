@@ -1,0 +1,11 @@
+{
+  "extends": ["//"],
+  "tags": ["test-support"],
+  "tasks": {
+    "build": {
+      "inputs": ["package.json", "audio-posts/**", "publication-screen/**"],
+      "outputs": []
+    },
+    "typecheck": { "inputs": ["package.json"], "outputs": [] }
+  }
+}

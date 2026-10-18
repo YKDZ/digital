@@ -39,7 +39,7 @@ import {
   TmdbSourceInterpreter,
   TmdbStrictFilmRecognizer,
 } from "@digital/tmdb";
-import { afterAll, afterEach, expect, it, vi } from "vitest";
+import { assert, afterAll, afterEach, expect, it, vi } from "vitest";
 
 import { runProduct } from "../src/index.ts";
 import { composeAssetRefresh } from "../src/runtime.ts";
@@ -130,7 +130,7 @@ function instrumentedObservedRootRegistrations(
     ["RJ01668691", "/observed/RJ01668691"],
     ["same-title-a", "/observed/same-title-a"],
     ["same-title-b", "/observed/same-title-b"],
-  ];
+  ] as const;
   const store =
     new InMemoryObservedRootRegistrationStore<ObservedRootRegistration>(
       directories.map(([id, logicalDirectory]) =>
@@ -473,6 +473,8 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
     policyVersion: "local-policy/1",
     capabilityCoordinates: ["epub-inspector@1/epub/3"],
   };
+  assert.isDefined(observed.execution.workflowInput);
+  assert.isDefined(observed.execution.resolvedSelection);
   const running = {
     ...runningExecution(),
     id: "local-execution",
@@ -497,8 +499,7 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
         {
           key: "local-book",
           relativePaths: ["book.epub"],
-          stage: "completed",
-          status: "completed",
+          sourceRecordIds: [],
           outcome: "accepted",
           proposalId: proposal.id,
           acceptedAssetId: accepted.entity.id,
@@ -622,6 +623,9 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
       evidence: [nextEvidence],
     })),
   };
+  assert.isDefined(nextObservation.execution.snapshot);
+  assert.isDefined(nextObservation.execution.workflowInput);
+  assert.isDefined(nextObservation.execution.resolvedSelection);
   const reevaluation = {
     ...runningExecution(),
     id: "local-reevaluation",
@@ -900,6 +904,7 @@ it("reopens and enumerates an observed-evidence recognition without a source ass
   const successorDecision = {
     id: "local-decision-3",
     proposalId: replacementProposal.id,
+    boundaries: replacementProposal.boundaries,
     assetId: accepted.entity.id,
     acceptedRuleResults: replacementProposal.ruleResults,
   };
@@ -1071,6 +1076,7 @@ it("uses only Drizzle queries while a real OMDb source result advances one persi
     interpretation: candidate.interpretation,
   });
 
+  assert.isDefined(staged.changeSets[0]);
   await expect(
     catalogue.applySourceRefreshChangeSet({
       runId: run.id,
@@ -1133,7 +1139,6 @@ it("uses only Drizzle writes through the public Metadata Refresh persistence por
       subjectId: "omdb-film",
       sourceIdentity: "omdb",
       nativeAddress: "omdb:imdb:tt1234567",
-      proposalId: "omdb-initial-proposal",
     },
     coverageIds: [candidate.record.coverage.id],
   });
@@ -1150,7 +1155,6 @@ it("uses only Drizzle writes through the public Metadata Refresh persistence por
           subjectId: "omdb-film",
           sourceIdentity: "omdb",
           nativeAddress: "omdb:imdb:tt1234567",
-          proposalId: "omdb-initial-proposal",
         },
         sourceRecords: [candidate.record],
         interpretation: candidate.interpretation,
@@ -1191,7 +1195,6 @@ it("uses only Drizzle writes through the public Metadata Refresh persistence por
       subjectId: "omdb-film",
       sourceIdentity: "omdb",
       nativeAddress: "omdb:imdb:tt1234567",
-      proposalId: "omdb-initial-proposal",
     },
     coverageIds: [foreignRecord.record.coverage.id],
   });
@@ -1207,7 +1210,6 @@ it("uses only Drizzle writes through the public Metadata Refresh persistence por
           subjectId: "omdb-film",
           sourceIdentity: "omdb",
           nativeAddress: "omdb:imdb:tt1234567",
-          proposalId: "omdb-initial-proposal",
         },
         sourceRecords: [foreignRecord.record],
         interpretation: foreignRecord.interpretation,
@@ -1280,6 +1282,7 @@ it("preflights every Metadata Refresh batch failure before SQLite can write", as
 
   const factsBefore = adoptionFactCounts(root);
   rejectAllMetadataRefreshDml();
+  assert.isDefined(heads[0]);
   const scenarios: readonly {
     readonly name: string;
     readonly sourceRecords: readonly SourceRecord[];
@@ -1733,6 +1736,7 @@ it("uses shipped TMDB collection and interpretation while OMDb enrichment establ
 
   rejectDirectDatabaseWrites();
 
+  assert.isDefined(baseline.accepted.recognitionSourceAssociation);
   await expect(
     catalogue.applySourceEnrichment({
       ...sourceEnrichmentAuthority(
@@ -1756,6 +1760,7 @@ it("uses shipped TMDB collection and interpretation while OMDb enrichment establ
     }),
   ).resolves.toBeUndefined();
 
+  assert.isDefined(baseline.accepted.recognitionSourceAssociation);
   await expect(
     catalogue.findAcceptedForSubjects(["tmdb-film"]),
   ).resolves.toEqual([
@@ -1892,7 +1897,7 @@ it("uses shipped TMDB collection and interpretation while OMDb enrichment establ
       ...partialSource.record,
       coverage: {
         ...partialSource.record.coverage,
-        completeness: "partial" as const,
+        completeness: "incomplete" as const,
       },
     },
   };
@@ -1920,6 +1925,7 @@ it("uses shipped TMDB collection and interpretation while OMDb enrichment establ
     candidateSourceRecordId: partial.record.id,
     interpretation: partial.interpretation,
   });
+  assert.isDefined(partialStaged.changeSets[0]);
   await expect(
     catalogue.applySourceRefreshChangeSet({
       runId: partialRun.id,
@@ -1974,11 +1980,13 @@ it("uses shipped TMDB collection and interpretation while OMDb enrichment establ
       expect.objectContaining({ kind: "retracted" }),
     ]),
   });
+  assert.isDefined(completeStaged.changeSets[0]);
   await catalogue.reviewSourceRefreshChangeSet({
     runId: completeRun.id,
     changeSetId: completeStaged.changeSets[0].id,
     disposition: "approved",
   });
+  assert.isDefined(completeStaged.changeSets[0]);
   await expect(
     catalogue.applySourceRefreshChangeSet({
       runId: completeRun.id,
@@ -2114,6 +2122,7 @@ it("reuses an exact durable enrichment association and rejects a replay before f
   await retainSourceRecords(catalogue, pending.id, [source.record]);
   rejectDirectDatabaseWrites();
 
+  assert.isDefined(baseline.accepted.recognitionSourceAssociation);
   const input = {
     ...sourceEnrichmentAuthority(
       association.id,
@@ -2160,6 +2169,7 @@ it("reuses an exact durable enrichment association and rejects a replay before f
   await catalogue.createExecution(laterPending);
   await retainSourceRecords(catalogue, laterPending.id, [laterSource.record]);
   const factsBeforeLineageConflict = adoptionFactCounts(root);
+  assert.isDefined(baseline.accepted.recognitionSourceAssociation);
   await expect(
     catalogue.applySourceEnrichment({
       ...sourceEnrichmentAuthority(
@@ -2262,6 +2272,7 @@ it("rejects an enrichment identity conflict when another current subject already
 
   const factsBefore = adoptionFactCounts(root);
   rejectAllMetadataRefreshDml();
+  assert.isDefined(target.accepted.recognitionSourceAssociation);
   await expect(
     catalogue.applySourceEnrichment({
       ...sourceEnrichmentAuthority(
@@ -2342,10 +2353,11 @@ it("preflights an enrichment batch before creating its optional association", as
     sourceAssociation: association,
     stage: "association-interpreted",
   });
+  assert.isDefined(pendingBase.sourceEnrichments);
   const pending: WorkflowExecution = {
     ...pendingBase,
     sourceRecordIds: [first.record.id, second.record.id],
-    sourceEnrichments: pendingBase.sourceEnrichments?.map((checkpoint) => ({
+    sourceEnrichments: pendingBase.sourceEnrichments.map((checkpoint) => ({
       ...checkpoint,
       interpretation,
       sourceRecordIds: [first.record.id, second.record.id],
@@ -2358,10 +2370,11 @@ it("preflights an enrichment batch before creating its optional association", as
     sourceAssociation: association,
     stage: "applied",
   });
+  assert.isDefined(appliedBase.sourceEnrichments);
   const applied: WorkflowExecution = {
     ...appliedBase,
     sourceRecordIds: [first.record.id, second.record.id],
-    sourceEnrichments: appliedBase.sourceEnrichments?.map((checkpoint) => ({
+    sourceEnrichments: appliedBase.sourceEnrichments.map((checkpoint) => ({
       ...checkpoint,
       interpretation,
       sourceRecordIds: [first.record.id, second.record.id],
@@ -2375,6 +2388,7 @@ it("preflights an enrichment batch before creating its optional association", as
 
   const factsBefore = adoptionFactCounts(root);
   rejectAllMetadataRefreshDml();
+  assert.isDefined(baseline.accepted.recognitionSourceAssociation);
   await expect(
     catalogue.applySourceEnrichment({
       ...sourceEnrichmentAuthority(
@@ -3409,11 +3423,13 @@ it("keeps a terminal Change Impact Preview checkpoint inside Drizzle without dir
     },
     baselines: [],
     current: {
-      sourceAssociation: {
-        sourceIdentity: "dlsite",
-        nativeAddress:
-          "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html",
-      },
+      sourceAssociations: [
+        {
+          sourceIdentity: "dlsite",
+          nativeAddress:
+            "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html",
+        },
+      ],
       metadata: [],
       entities: [],
       entityMentions: [],
@@ -3426,10 +3442,12 @@ it("keeps a terminal Change Impact Preview checkpoint inside Drizzle without dir
       artifactAssociations: [],
     },
     projected: {
-      sourceAssociation: {
-        sourceIdentity: "dlsite",
-        nativeAddress: "https://www.dlsite.com/maniax/work/projected",
-      },
+      sourceAssociations: [
+        {
+          sourceIdentity: "dlsite",
+          nativeAddress: "https://www.dlsite.com/maniax/work/projected",
+        },
+      ],
       metadata: [],
       entities: [],
       entityMentions: [],
@@ -3494,6 +3512,7 @@ it("reuses the accepted DLsite-shaped result on a guarded second scan without se
   expect(first.execution.outcome).toBe("accepted");
   const factsBefore = adoptionFactCounts(root);
   const executionsBefore = executionAndSourceRecordCounts(root);
+  assert.isDefined(executionsBefore);
 
   rejectDirectDatabaseWrites();
   const second = await scanInstrumentedObservedScope(workflow, {
@@ -3541,7 +3560,9 @@ it("reevaluates a changed ordinary DLsite evidence-array observation without rew
   });
   expect(first.execution.outcome).toBe("accepted");
   const initialFacts = adoptionFactCounts(root);
+  assert.isDefined(initialFacts);
   const initialExecutions = executionAndSourceRecordCounts(root);
+  assert.isDefined(initialExecutions);
   const initialIdentity = recognitionIdentityFacts(root);
   const initialCoverFacts = primaryCoverFacts(root);
   expect(initialCoverFacts).toHaveLength(1);
@@ -3637,6 +3658,7 @@ it("reevaluates a changed ordinary DLsite evidence-array observation without rew
 
   const factsAfterReevaluation = adoptionFactCounts(root);
   const executionsAfterReevaluation = executionAndSourceRecordCounts(root);
+  assert.isDefined(executionsAfterReevaluation);
   const third = await scanInstrumentedObservedScope(workflow, {
     ...input,
     executionId: "instrumented-observation-v2-repeat",
@@ -4195,7 +4217,7 @@ it("keeps equal title, managed path, and Blob as independent identity facts", as
 function adoptionFactCounts(root: string) {
   const database = new DatabaseSync(path.join(root, "catalogue.sqlite"));
   try {
-    return database
+    const row = database
       .prepare(
         `SELECT
           (SELECT count(*) FROM recognition_proposals) AS recognitionProposals,
@@ -4222,6 +4244,20 @@ function adoptionFactCounts(root: string) {
           (SELECT count(*) FROM entity_resolution_decisions) AS entityResolutionDecisions`,
       )
       .get();
+    assert.isDefined(row);
+    assert(typeof row.artifacts === "number");
+    assert(typeof row.locations === "number");
+    assert(typeof row.artifactAssociations === "number");
+    assert(typeof row.artifactRevisions === "number");
+    assert(typeof row.blobs === "number");
+    return {
+      ...row,
+      artifacts: row.artifacts,
+      locations: row.locations,
+      artifactAssociations: row.artifactAssociations,
+      artifactRevisions: row.artifactRevisions,
+      blobs: row.blobs,
+    };
   } finally {
     database.close();
   }
@@ -4312,13 +4348,21 @@ function emptyAdoptionFactCounts() {
 function executionAndSourceRecordCounts(root: string) {
   const database = new DatabaseSync(path.join(root, "catalogue.sqlite"));
   try {
-    return database
+    const row = database
       .prepare(
         `SELECT
           (SELECT count(*) FROM workflow_executions) AS executions,
           (SELECT count(*) FROM source_records) AS sourceRecords`,
       )
       .get();
+    assert.isDefined(row);
+    assert(typeof row.executions === "number");
+    assert(typeof row.sourceRecords === "number");
+    return {
+      ...row,
+      executions: row.executions,
+      sourceRecords: row.sourceRecords,
+    };
   } finally {
     database.close();
   }
@@ -4372,13 +4416,23 @@ function primaryCoverFacts(root: string) {
          WHERE association.role = 'asset.primary-cover'
          ORDER BY association.id`,
       )
-      .all() as readonly {
-      readonly associationId: string;
-      readonly artifactId: string;
-      readonly locationId: string;
-      readonly revisionId: string;
-      readonly blobDigest: string;
-    }[];
+      .all()
+      .map(
+        ({ associationId, artifactId, locationId, revisionId, blobDigest }) => {
+          assert(typeof associationId === "string");
+          assert(typeof artifactId === "string");
+          assert(typeof locationId === "string");
+          assert(typeof revisionId === "string");
+          assert(typeof blobDigest === "string");
+          return {
+            associationId,
+            artifactId,
+            locationId,
+            revisionId,
+            blobDigest,
+          };
+        },
+      );
   } finally {
     database.close();
   }
@@ -4646,6 +4700,7 @@ function instrumentedRecognitionWorkflow(
     ],
     managedStore: {
       async stage(content) {
+        assert.isDefined(content.role);
         const stagedReference = `staged:${content.idempotencyKey}`;
         stagedBytes.set(stagedReference, content.bytes);
         return {
@@ -4654,7 +4709,7 @@ function instrumentedRecognitionWorkflow(
           stagedReference,
           digest: sha256(content.bytes),
           mediaType: content.mediaType,
-          ...(content.role === undefined ? {} : { role: content.role }),
+          role: content.role,
           ...(content.acquisitionReference === undefined
             ? {}
             : { acquisitionReference: content.acquisitionReference }),
@@ -4831,7 +4886,7 @@ function compileWithNoMetadataRefreshDml<T>(
   try {
     return compile();
   } catch (error) {
-    const violation = state.violation;
+    const violation = noMetadataRefreshDmlAuthorizerState(database).violation;
     if (violation !== undefined) {
       throw new Error(
         `Metadata Refresh preflight emitted ${String(violation)}: ${source}`,
@@ -4934,7 +4989,7 @@ function compileWithDirectWriteAuthorizer<T>(
   try {
     return compile();
   } catch (error) {
-    const violation = state.violation;
+    const violation = directWriteAuthorizerState(database).violation;
     if (violation !== undefined) {
       const origin =
         violation.compilation.firstNonTestFrame ?? "unknown caller";
@@ -5002,6 +5057,11 @@ function firstNonTestFrameIsDrizzle(frame: string | undefined): boolean {
 function runningExecution(): WorkflowExecution {
   return {
     id: "dlsite-execution",
+    compatibility: {
+      workflowVersion: "asset-refresh/2",
+      policyVersion: "instrumented-dlsite-policy/1",
+      capabilityCoordinates: [],
+    },
     selection: { directory: "/observed/RJ01668691" },
     snapshot: {
       id: "dlsite-snapshot",
@@ -5198,9 +5258,7 @@ function omdbExecution(id: string): WorkflowExecution {
   };
 }
 
-function omdbAcceptedRecognition(
-  source: OmdbSourceResult,
-): AcceptedRecognition {
+function omdbAcceptedRecognition(source: OmdbSourceResult) {
   const proposal = {
     id: "omdb-initial-proposal",
     boundaries: fixtureMaterialBoundaries(["omdb:imdb:tt1234567"]),
@@ -5228,7 +5286,6 @@ function omdbAcceptedRecognition(
       subjectId: "omdb-film",
       sourceIdentity: "omdb",
       nativeAddress: "omdb:imdb:tt1234567",
-      proposalId: proposal.id,
     },
     sourceAssociations: [
       {
@@ -5236,7 +5293,6 @@ function omdbAcceptedRecognition(
         subjectId: "omdb-film",
         sourceIdentity: "omdb",
         nativeAddress: "omdb:imdb:tt1234567",
-        proposalId: proposal.id,
       },
     ],
     recognitionDecision: {
@@ -5255,7 +5311,7 @@ function omdbAcceptedRecognition(
       ...assertion,
       target: { kind: "entity" as const, entityId: "omdb-film" },
     })),
-  };
+  } satisfies AcceptedRecognition;
 }
 
 function omdbAcceptedRecognitionForAsset(input: {
@@ -5265,7 +5321,7 @@ function omdbAcceptedRecognitionForAsset(input: {
   readonly proposalId: string;
   readonly decisionId: string;
   readonly secondary?: { readonly id: string; readonly label: string };
-}): AcceptedRecognition {
+}) {
   const secondary =
     input.secondary === undefined
       ? []
@@ -5324,7 +5380,6 @@ function omdbAcceptedRecognitionForAsset(input: {
       subjectId: input.assetId,
       sourceIdentity: "omdb",
       nativeAddress: "omdb:imdb:tt1234567",
-      proposalId: proposal.id,
     },
     sourceAssociations: [
       {
@@ -5332,7 +5387,6 @@ function omdbAcceptedRecognitionForAsset(input: {
         subjectId: input.assetId,
         sourceIdentity: "omdb",
         nativeAddress: "omdb:imdb:tt1234567",
-        proposalId: proposal.id,
       },
     ],
     recognitionDecision: {
@@ -5355,7 +5409,7 @@ function omdbAcceptedRecognitionForAsset(input: {
       },
     })),
     ...(secondary.length === 0 ? {} : { entities: secondary }),
-  };
+  } satisfies AcceptedRecognition;
 }
 
 async function tmdbAcceptedRecognitionFromShippedAdapter(): Promise<{
@@ -5446,7 +5500,6 @@ async function tmdbAcceptedRecognitionFromShippedAdapter(): Promise<{
         subjectId: "tmdb-film",
         sourceIdentity: interpretation.sourceIdentity,
         nativeAddress: interpretation.sourceAddress,
-        proposalId: proposal.id,
       },
       sourceAssociations: [
         {
@@ -5454,7 +5507,6 @@ async function tmdbAcceptedRecognitionFromShippedAdapter(): Promise<{
           subjectId: "tmdb-film",
           sourceIdentity: interpretation.sourceIdentity,
           nativeAddress: interpretation.sourceAddress,
-          proposalId: proposal.id,
         },
       ],
       recognitionDecision: {
@@ -5564,7 +5616,6 @@ function tmdbAcceptedRecognition(): {
         subjectId: "tmdb-film",
         sourceIdentity: record.sourceIdentity,
         nativeAddress: record.nativeAddress,
-        proposalId: proposal.id,
       },
       sourceAssociations: [
         {
@@ -5572,7 +5623,6 @@ function tmdbAcceptedRecognition(): {
           subjectId: "tmdb-film",
           sourceIdentity: record.sourceIdentity,
           nativeAddress: record.nativeAddress,
-          proposalId: proposal.id,
         },
       ],
       recognitionDecision: {
@@ -5605,11 +5655,11 @@ function omdbEnrichmentExecution(input: {
     readonly subjectId: string;
     readonly sourceIdentity: string;
     readonly nativeAddress: string;
-    readonly proposalId: string;
   };
   readonly stage: "association-interpreted" | "applied";
 }): WorkflowExecution {
   const key = "source-enrichment:tmdb-film:omdb.source-interpreter";
+  assert.isDefined(input.baseline.recognitionSourceAssociation);
   return {
     ...omdbExecution(input.id),
     stage: "source-records-retained",
@@ -5650,7 +5700,7 @@ function omdbEnrichmentExecution(input: {
         evidence: omdbEvidence,
         fulfilledArtifactRoles: [],
         stage: input.stage,
-        sourceAssociation: input.recognitionSourceAssociation,
+        sourceAssociation: input.sourceAssociation,
         interpretation: input.source.interpretation,
         sourceRecordIds: [input.source.record.id],
         sourceArtifacts: input.source.interpretation.sourceArtifacts,
@@ -5665,6 +5715,7 @@ function omdbCandidateEnrichmentCheckpoint(
   SourceEnrichmentCheckpoint,
   { readonly stage: "candidate-interpreted" }
 > {
+  assert.isDefined(baseline.recognitionSourceAssociation);
   return {
     key: "source-enrichment:tmdb-film:omdb.source-interpreter",
     subjectId: baseline.entity.id,
@@ -5699,6 +5750,8 @@ function omdbManagedArtifactExecution(input: {
     subjectId: "omdb-film",
     sourceRecordId: input.sourceRecordId,
   });
+  assert.isDefined(artifact.locations[0]);
+  assert.isDefined(artifact.blobs[0]);
   return {
     ...omdbExecution(input.id),
     stage: "source-artifacts-stored",
@@ -5811,7 +5864,7 @@ async function createOmdbSourceRefreshRun(input: {
   });
 }
 
-function acceptedRecognition(): AcceptedRecognition {
+function acceptedRecognition() {
   const interpretation = {
     id: "dlsite-interpretation",
     producer: {
@@ -5889,7 +5942,6 @@ function acceptedRecognition(): AcceptedRecognition {
       sourceIdentity: "dlsite",
       nativeAddress:
         "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html",
-      proposalId: proposal.id,
     },
     sourceAssociations: [
       {
@@ -5898,7 +5950,6 @@ function acceptedRecognition(): AcceptedRecognition {
         sourceIdentity: "dlsite",
         nativeAddress:
           "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html",
-        proposalId: proposal.id,
       },
     ],
     recognitionDecision: {
@@ -5967,10 +6018,10 @@ function acceptedRecognition(): AcceptedRecognition {
         sourceRecordIds: ["dlsite-record"],
       },
     ],
-  };
+  } satisfies AcceptedRecognition;
 }
 
-function continuityConflictRecognition(): AcceptedRecognition {
+function continuityConflictRecognition() {
   const original = acceptedRecognition();
   const sourceRecordId = "dlsite-continuity-record";
   const proposal = {
@@ -6007,7 +6058,6 @@ function continuityConflictRecognition(): AcceptedRecognition {
       sourceIdentity: "dlsite",
       nativeAddress:
         "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html",
-      proposalId: proposal.id,
     },
     sourceAssociations: [
       {
@@ -6016,7 +6066,6 @@ function continuityConflictRecognition(): AcceptedRecognition {
         sourceIdentity: "dlsite",
         nativeAddress:
           "https://www.dlsite.com/maniax/work/=/product_id/RJ01668691.html",
-        proposalId: proposal.id,
       },
     ],
     recognitionDecision: {
@@ -6066,10 +6115,10 @@ function continuityConflictRecognition(): AcceptedRecognition {
     entityMentions: [],
     entityResolutionDecisions: [],
     relationships: [],
-  };
+  } satisfies AcceptedRecognition;
 }
 
-function independentlyAcceptedRecognition(): AcceptedRecognition {
+function independentlyAcceptedRecognition() {
   const alternate = continuityConflictRecognition();
   const sourceRecordId = "dlsite-independent-record";
   const sourceAddress =
@@ -6102,7 +6151,6 @@ function independentlyAcceptedRecognition(): AcceptedRecognition {
       subjectId: "dlsite-independent-work",
       sourceIdentity: "dlsite",
       nativeAddress: sourceAddress,
-      proposalId: proposal.id,
     },
     sourceAssociations: [
       {
@@ -6110,7 +6158,6 @@ function independentlyAcceptedRecognition(): AcceptedRecognition {
         subjectId: "dlsite-independent-work",
         sourceIdentity: "dlsite",
         nativeAddress: sourceAddress,
-        proposalId: proposal.id,
       },
     ],
     recognitionDecision: {
@@ -6148,7 +6195,7 @@ function independentlyAcceptedRecognition(): AcceptedRecognition {
       ...assertion,
       target: { kind: "entity" as const, entityId: "dlsite-independent-work" },
     })),
-  };
+  } satisfies AcceptedRecognition;
 }
 
 /** 已有内存授权账本对应的只读库配置，不把注册当授权。 */
@@ -6226,6 +6273,16 @@ function instrumentedAssetLibraries(
     persistence: {
       async listAssetLibraries() {
         return [library];
+      },
+      async listAssetLibrariesPage({ afterId, limit }) {
+        const item = library.id > (afterId ?? "") ? library : undefined;
+        return {
+          items:
+            item === undefined || limit < 1 || library.status !== "active"
+              ? []
+              : [item],
+          hasMore: false,
+        };
       },
       async getAssetLibrary(id) {
         return id === library.id ? library : undefined;

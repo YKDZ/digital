@@ -1,5 +1,12 @@
 import type { CapabilityCoordinate } from "@digital/domain";
 
+export class SourceConnectionVersionConflict extends Error {
+  constructor() {
+    super("来源连接已被其他设置修改，请刷新后重试");
+    this.name = "SourceConnectionVersionConflict";
+  }
+}
+
 export type SourceConnectionCredentialStatus =
   | "unconfigured"
   | "configured"
@@ -12,6 +19,7 @@ export type SourceConnectionAvailability = "available" | "unavailable";
 export type SourceConnectionUnavailableReason =
   | "not-configured"
   | "revoked"
+  | "verification-pending"
   | "verification-failed"
   | "authorization-failed"
   | "authorization-uncertain"

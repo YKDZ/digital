@@ -1,9 +1,4 @@
-import { restoreOfflineProductDataBackup } from "@digital/product-data";
-
-import {
-  prepareProductionCatalogue,
-  prepareRestoredProductionCatalogue,
-} from "./index.ts";
+import { prepareProductionCatalogue } from "./index.ts";
 
 try {
   const [command] = process.argv.slice(2);
@@ -16,24 +11,8 @@ try {
   }
   if (command === "prepare-only") {
     await prepareProductionCatalogue({ productDataDirectory });
-  } else if (command === "offline-restore") {
-    const backupDirectory = process.argv
-      .slice(3)
-      .find((argument) => argument !== "--")
-      ?.trim();
-    if (!backupDirectory?.startsWith("/"))
-      throw new Error("offline-restore 需要绝对备份目录");
-    await restoreOfflineProductDataBackup({
-      backupDirectory,
-      productDataDirectory,
-      prepareProductionCatalogue: async (stage) => {
-        await prepareRestoredProductionCatalogue(stage);
-      },
-    });
   } else {
-    throw new Error(
-      "用法：digital-db-migrate prepare-only|offline-restore <绝对备份目录>",
-    );
+    throw new Error("用法：digital-db-migrate prepare-only");
   }
 } catch (error) {
   const message = error instanceof Error ? error.message : "未知准备失败";

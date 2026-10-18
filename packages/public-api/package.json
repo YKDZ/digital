@@ -1,0 +1,49 @@
+{
+  "name": "@digital/public-api",
+  "version": "0.0.0",
+  "private": true,
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "digital-source": "./src/index.ts",
+      "digital-development": "./.turbo/development/dist/index.js",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./source-connection-contract": {
+      "digital-source": "./src/source-connection-contract.ts",
+      "digital-development": "./.turbo/development/dist/source-connection-contract.js",
+      "types": "./dist/source-connection-contract.d.ts",
+      "default": "./dist/source-connection-contract.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json --force --pretty false",
+    "format:check": "oxfmt --list-different --config ../../oxfmt.config.ts .",
+    "format:write": "oxfmt --write --config ../../oxfmt.config.ts .",
+    "lint": "oxlint --quiet --format=unix --config ../../oxlint.config.ts --ignore-pattern node_modules .",
+    "lint:fix": "oxlint --format=unix --config ../../oxlint.config.ts . --fix",
+    "test": "vitest run --reporter=verbose",
+    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
+    "dev:build": "pnpm --workspace-root run development:build @digital/public-api",
+    "dev:compile": "rm -rf .turbo/development && tsc -p tsconfig.build.json --customConditions digital-development --pretty false --incremental --outDir .turbo/development/dist --tsBuildInfoFile .turbo/development/build.tsbuildinfo"
+  },
+  "dependencies": {
+    "valibot": "catalog:"
+  },
+  "devDependencies": {
+    "@digital/typescript-config": "workspace:*",
+    "@types/node": "catalog:",
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:",
+    "oxlint-tsgolint": "catalog:",
+    "typescript-7": "catalog:",
+    "vitest": "catalog:"
+  },
+  "engines": {
+    "node": "24"
+  }
+}

@@ -283,15 +283,23 @@ export function isObservedRootAutomationScope(
 }
 
 /** 规范化注册范围与意图使用的持久化拼写。 */
+export class InvalidObservedRelativeScope extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidObservedRelativeScope";
+  }
+}
+
 export function normalizeObservedRelativeScope(value: string): string {
-  if (path.isAbsolute(value)) throw new Error("文件位置范围必须是相对路径");
+  if (path.isAbsolute(value))
+    throw new InvalidObservedRelativeScope("文件位置范围必须是相对路径");
   const normalized = path.normalize(value || ".");
   if (
     normalized === ".." ||
     normalized.startsWith(`..${path.sep}`) ||
     normalized.includes(`..${path.sep}`)
   ) {
-    throw new Error("文件位置范围不能越过登记根目录");
+    throw new InvalidObservedRelativeScope("文件位置范围不能越过登记根目录");
   }
   return normalized;
 }

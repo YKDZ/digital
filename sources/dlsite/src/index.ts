@@ -86,7 +86,7 @@ const localSourceCandidateCapability = declareCapability({
 });
 const associationInterpreterCapability = declareCapability({
   identity: "dlsite.exact-source-association",
-  implementationVersion: "1",
+  implementationVersion: "2",
   kind: "source-association-interpreter",
   contractVersion: "1",
   interpretationContractVersions: ["1"],
@@ -873,9 +873,16 @@ export class DlsiteSourceAssociationInterpreter implements SourceAssociationInte
     readonly evidence: RecognitionEvidence;
     readonly interpretation: SourceInterpretationBatch;
   }) {
+    if (!this.canInterpret(input)) return undefined;
+    const observedProductId = productIdForAssociation(
+      input.evidence.sourceAddress,
+    );
+    const officialProductId = productIdForAssociation(
+      input.interpretation.sourceAddress,
+    );
     if (
-      !this.canInterpret(input) ||
-      input.evidence.sourceAddress !== input.interpretation.sourceAddress
+      observedProductId === undefined ||
+      observedProductId !== officialProductId
     )
       return undefined;
     const conflicting = input.subject.sourceAssociations.some(
@@ -892,6 +899,17 @@ export class DlsiteSourceAssociationInterpreter implements SourceAssociationInte
           status: "accepted" as const,
           explanation: "本地明确地址与官方 DLsite 记录一致",
         };
+  }
+}
+
+function productIdForAssociation(
+  address: string | undefined,
+): string | undefined {
+  if (address === undefined) return undefined;
+  try {
+    return productIdFromAddress(canonicalDirectedProductAddress(address));
+  } catch {
+    return undefined;
   }
 }
 

@@ -44,8 +44,9 @@ import {
   createOperationId,
   createPrivateRunDirectory,
   defaultWebPort,
+  developmentServiceEntryPath,
+  serviceEntryPath,
   verifyDataOwnership,
-  webEntryPath,
   type EnvironmentLayout,
 } from "./paths.ts";
 import { requestPrivateControl } from "./private-control.ts";
@@ -87,6 +88,7 @@ const admittedExitTimeoutMilliseconds = 40_000;
 const publishTimeoutMilliseconds = 240_000;
 
 type IpcMessage = { readonly [key: string]: unknown };
+export type IpcExit = { readonly terminated: () => boolean };
 
 type StartContext = {
   readonly record: EnvironmentRecord;
@@ -110,7 +112,7 @@ type StartContext = {
 };
 
 /**
- * 在持有同一环境锁的进程内启动真实产品 Web 服务：先确认既有运行分支的归属，
+ * 在持有同一环境锁的进程内启动真实独立产品服务：先确认既有运行分支的归属，
  * 再建立自有私有运行现场并保存启动意图，由外层引导提交精确进程身份，父操作
  * 核验身份、控制认证与真实 ready 签名都成立后才提交就绪事实。
  *
@@ -455,14 +457,8 @@ async function startFreshGeneration(
 
     const entry =
       runtime === "development"
-        ? path.join(
-            layout.workspacePath,
-            "apps",
-            "web",
-            "scripts",
-            "start-development.ts",
-          )
-        : webEntryPath(layout.workspacePath);
+        ? developmentServiceEntryPath(layout.workspacePath)
+        : serviceEntryPath(layout.workspacePath);
     const child = spawn(
       process.execPath,
       [
@@ -478,19 +474,10 @@ async function startFreshGeneration(
         detached: true,
         env: filteredEnvironment(process.env, {
           DIGITAL_PRODUCT_DATA: layout.productDataRoot,
+          DIGITAL_PRODUCT_INITIAL_CONFIGURATION:
+            layout.initialConfigurationDirectory,
+          DIGITAL_PRODUCT_DATA_GENERATION: context.record.dataGeneration,
           PORT: String(port),
-          ...(runtime === "development"
-            ? {
-                DIGITAL_DEVELOPMENT: "1",
-                DIGITAL_DEVELOPMENT_CACHE: path.join(
-                  layout.workspacePath,
-                  ".turbo",
-                  "development",
-                  "vite",
-                  record.environmentId,
-                ),
-              }
-            : {}),
           [launchConfigEnvironmentVariable]: context.launchConfigFile,
           // 世代只按记录里已核验的选择装配来源，父进程的来源变量不会渗入。
           ...requireSourceSelectionEnvironment({
@@ -580,7 +567,7 @@ async function handshakeAndAdmit(
     );
 
   const taken = await cancellation.watch(
-    inbox.take("identity", identityTimeoutMilliseconds, exit),
+    inbox.take("identity", identityTimeoutMilliseconds, exit, cancellation),
   );
   if (taken.cancelled)
     return await terminateAndFail(
@@ -1314,54 +1301,98 @@ async function awaitHandoff(
 }
 
 /** 有界缓存父操作与引导之间的初始化 IPC；监听器先建立，因此不丢早到的消息。 */
-class IpcInbox {
+export class IpcInbox {
+  private readonly child: ChildProcess;
   private readonly queue: IpcMessage[] = [];
-  private readonly waiting: ((message: IpcMessage | undefined) => void)[] = [];
+  private readonly waiting: ((message: IpcMessage) => void)[] = [];
   private readonly exited: (() => void)[] = [];
+  private closed = false;
+
+  private readonly onMessage = (message: unknown): void => {
+    const value = (
+      typeof message === "object" && message !== null ? message : {}
+    ) as IpcMessage;
+    const waiter = this.waiting.shift();
+    if (waiter === undefined) this.queue.push(value);
+    else waiter(value);
+  };
+
+  private readonly wake = (): void => {
+    for (const listener of this.exited.splice(0)) listener();
+  };
 
   constructor(child: ChildProcess) {
-    child.on("message", (message: unknown) => {
-      const value = (
-        typeof message === "object" && message !== null ? message : {}
-      ) as IpcMessage;
-      const waiter = this.waiting.shift();
-      if (waiter === undefined) this.queue.push(value);
-      else waiter(value);
-    });
-    const wake = (): void => {
-      for (const listener of this.exited.splice(0)) listener();
-    };
-    child.once("exit", wake);
+    this.child = child;
+    child.on("message", this.onMessage);
+    child.once("exit", this.wake);
     // 从未启动的句柄只有 close 没有 exit：等待者必须立刻知道不会再有消息。
-    child.once("close", wake);
+    child.once("close", this.wake);
   }
 
   async take(
     type: string,
     timeoutMilliseconds: number,
-    exit: ExitObserver,
+    exit: IpcExit,
+    cancellation: OperationCancellation,
   ): Promise<IpcMessage | undefined> {
     const deadline = Date.now() + timeoutMilliseconds;
-    for (;;) {
-      const index = this.queue.findIndex((item) => item.type === type);
-      if (index >= 0) return this.queue.splice(index, 1)[0];
-      const remaining = deadline - Date.now();
-      if (remaining <= 0 || exit.terminated()) return undefined;
-      const received = await Promise.race([
-        new Promise<IpcMessage | undefined>((resolve) => {
-          this.waiting.push(resolve);
-          setTimeout(() => resolve(undefined), remaining);
-        }),
-        this.onExit().then(() => undefined),
-      ]);
-      if (received === undefined) continue;
-      if (received.type === type) return received;
-      this.queue.push(received);
+    try {
+      for (;;) {
+        const index = this.queue.findIndex((item) => item.type === type);
+        if (index >= 0) return this.queue.splice(index, 1)[0];
+        const remaining = deadline - Date.now();
+        if (remaining <= 0 || exit.terminated() || cancellation.triggered())
+          return undefined;
+        const received = await new Promise<IpcMessage | undefined>(
+          (resolve) => {
+            let settled = false;
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            let stopCancellation = (): void => {};
+            const finish = (message: IpcMessage | undefined): void => {
+              if (settled) return;
+              settled = true;
+              if (timer !== undefined) clearTimeout(timer);
+              const waitingIndex = this.waiting.indexOf(onMessage);
+              if (waitingIndex >= 0) this.waiting.splice(waitingIndex, 1);
+              const exitedIndex = this.exited.indexOf(onExit);
+              if (exitedIndex >= 0) this.exited.splice(exitedIndex, 1);
+              stopCancellation();
+              resolve(message);
+            };
+            const onMessage = (message: IpcMessage): void => finish(message);
+            const onExit = (): void => finish(undefined);
+            this.waiting.push(onMessage);
+            this.exited.push(onExit);
+            timer = setTimeout(() => finish(undefined), remaining);
+            stopCancellation = cancellation.onTrigger(() => finish(undefined));
+            if (cancellation.triggered()) finish(undefined);
+          },
+        );
+        if (received === undefined) {
+          if (
+            cancellation.triggered() ||
+            exit.terminated() ||
+            Date.now() >= deadline
+          )
+            return undefined;
+          continue;
+        }
+        if (received.type === type) return received;
+        this.queue.push(received);
+      }
+    } finally {
+      this.dispose();
     }
   }
 
-  private onExit(): Promise<void> {
-    return new Promise((resolve) => this.exited.push(resolve));
+  private dispose(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.child.removeListener("message", this.onMessage);
+    this.child.removeListener("exit", this.wake);
+    this.child.removeListener("close", this.wake);
+    this.waiting.length = 0;
+    this.exited.length = 0;
   }
 }
 

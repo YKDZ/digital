@@ -1,20 +1,16 @@
 {
   "id": 9509,
-  "title": "怒火救援",
+  "title": "Man on Fire",
   "original_title": "Man on Fire",
   "release_date": "2004-04-23",
-  "overview": "TMDB 受控简介 9509",
+  "overview": "Jaded ex-CIA operative John Creasy reluctantly accepts a job as the bodyguard for a 10-year-old girl in Mexico City. They clash at first, but eventually bond, and when she's kidnapped he's consumed by fury and will stop at nothing to save her life.",
   "runtime": 146,
   "genres": [
-    {
-      "id": 53,
-      "name": "惊悚"
-    }
+    { "id": 28, "name": "Action" },
+    { "id": 18, "name": "Drama" },
+    { "id": 53, "name": "Thriller" }
   ],
-  "poster_path": "/corpus-9509-poster.png",
-  "backdrop_path": "/corpus-9509-backdrop.png",
+  "poster_path": "/cQTZjm3NLAVJHcIRzrHjnZhG19q.jpg",
   "imdb_id": "tt0328107",
-  "alternative_titles": {
-    "titles": []
-  }
+  "alternative_titles": { "titles": [] }
 }

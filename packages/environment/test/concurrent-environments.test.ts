@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { createPublicApiClient } from "@digital/public-api";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
@@ -23,6 +24,10 @@ import {
   type StartOperationResult,
   type StopOperationResult,
 } from "../src/index.ts";
+import {
+  startCompetingProductService,
+  workflowHistoryIds,
+} from "./product-service.ts";
 
 const workspaceRoot = path.resolve(
   fileURLToPath(new URL(".", import.meta.url)),
@@ -31,7 +36,6 @@ const workspaceRoot = path.resolve(
   "..",
 );
 const environmentCli = path.join("packages", "environment", "dist", "cli.js");
-const productCli = path.join("apps", "cli", "dist", "cli.js");
 /** 03-2 需要另一个 realpath 的完整工作区现场，由门禁环境显式提供。 */
 const secondWorkspace =
   process.env.DIGITAL_03_SECOND_WORKSPACE === undefined
@@ -180,20 +184,6 @@ async function cliAt(
 
 async function cli(args: readonly string[]): Promise<CommandResult> {
   return await cliAt(workspaceRoot, args);
-}
-
-/** 正式产品 CLI：只在没有服务持有单写入者锁时对选定数据根发起。 */
-async function productRead(
-  cwd: string,
-  productDataRoot: string,
-  args: readonly string[],
-): Promise<CommandResult> {
-  return await run({
-    command: process.execPath,
-    args: [path.join(cwd, productCli), ...args],
-    cwd,
-    env: { ...cleanEnvironment(), DIGITAL_PRODUCT_DATA: productDataRoot },
-  });
 }
 
 async function temporaryDirectory(prefix: string): Promise<string> {
@@ -478,7 +468,6 @@ async function startRegistered(
 
 function libraryRequest(displayName: string, directory: string) {
   return {
-    action: "save",
     displayName,
     directories: [directory],
     recognitionProfileIds: ["books"],
@@ -492,19 +481,30 @@ type SettingsProjection = {
 };
 
 async function settingsProjection(site: Site): Promise<SettingsProjection> {
-  return (await jsonAt(site.port, "/api/settings")) as SettingsProjection;
+  const libraries = await createPublicApiClient({
+    baseUrl: `http://127.0.0.1:${String(site.port)}`,
+  }).listAssetLibraries({ limit: 100 });
+  return {
+    productDataDirectory: site.productDataRoot,
+    libraries: libraries.items.map(({ displayName, directories }) => ({
+      displayName,
+      directories: directories.map(({ path: directoryPath }) => directoryPath),
+    })),
+  };
 }
 
 async function libraryViews(site: Site): Promise<unknown> {
-  return await jsonAt(site.port, "/api/libraries");
+  return await createPublicApiClient({
+    baseUrl: `http://127.0.0.1:${String(site.port)}`,
+  }).listAssetLibraries({ limit: 100 });
 }
 
 async function historyText(site: Site): Promise<string> {
-  const response = await httpRequest({
-    port: site.port,
-    pathname: "/api/catalogue?surface=workflow-history&limit=50",
-  });
-  return `${String(response.status)}:${response.body}`;
+  return JSON.stringify(
+    await createPublicApiClient({
+      baseUrl: `http://127.0.0.1:${String(site.port)}`,
+    }).listWorkflowHistory({ limit: 50 }),
+  );
 }
 
 beforeAll(async () => {
@@ -645,11 +645,11 @@ describe("同一工作区与跨工作区环境的真实并发隔离", () => {
       );
       expect(await jsonAt(portA, "/api/ready")).toEqual({
         ok: true,
-        service: "digital-web",
+        service: "digital-product-service",
       });
       expect(await jsonAt(portB, "/api/ready")).toEqual({
         ok: true,
-        service: "digital-web",
+        service: "digital-product-service",
       });
 
       // 归属只属于各自进程：从 /proc 读真实进程的自有环境。
@@ -750,14 +750,12 @@ describe("同一工作区与跨工作区环境的真实并发隔离", () => {
       const fingerprintA = materialFingerprint(siteA.inputs[0]!);
       const fingerprintB = materialFingerprint(siteB.inputs[0]!);
 
-      const created = await httpRequest({
-        port: siteA.port,
-        pathname: "/api/settings/libraries",
-        method: "POST",
-        body: libraryRequest(`并发甲库-${suffix}`, siteA.inputs[0]!),
-      });
-      expect(created.status, created.body).toBe(200);
-      const libraryId = (JSON.parse(created.body) as { id: string }).id;
+      const created = await createPublicApiClient({
+        baseUrl: `http://127.0.0.1:${String(siteA.port)}`,
+      }).saveAssetLibrary(
+        libraryRequest(`并发甲库-${suffix}`, siteA.inputs[0]!),
+      );
+      const libraryId = created.id;
       expect(libraryId).toBeTruthy();
 
       // 甲的正式入口立刻看到这条配置，乙的正式入口一项不变。
@@ -770,38 +768,47 @@ describe("同一工作区与跨工作区环境的真实并发隔离", () => {
       expect(await settingsProjection(siteB)).toEqual(baselineB.settings);
       expect(await libraryViews(siteB)).toEqual(baselineB.libraries);
 
-      // 公开停服后，正式产品 CLI 只在甲的数据根上做真实扫描与读取。
+      // 公开停服后再次启动甲的正式服务，由公开 API 发起扫描并读回历史。
       const stopped = await stopEnvironment({
         workspacePath: workspaceRoot,
         environment: nameA,
       });
       expect(stopped.status).toBe("stopped");
-      const scan = await productRead(workspaceRoot, siteA.productDataRoot, [
-        "scan-library",
-        libraryId,
-        "--preview",
-        "--json",
-      ]);
-      expect(scan.code, `${scan.stdout}${scan.stderr}`).toBe(0);
-      const executionId = (
-        JSON.parse(scan.stdout) as {
-          directories: { childExecutionId: string }[];
-        }
-      ).directories[0]!.childExecutionId;
-      const historyA = await productRead(workspaceRoot, siteA.productDataRoot, [
-        "catalogue-surface",
-        "--surface",
-        "workflow-history",
-      ]);
-      expect(historyA.code, historyA.stderr).toBe(0);
-      expect(historyA.stdout).toContain(executionId);
+      const scanning = await startRegistered(siteA, "重启甲并正式扫描资料库");
+      expect(scanning.status).toBe("ready");
+      expect(scanning.run.address).not.toBeNull();
+      if (scanning.run.address === null)
+        throw new Error("扫描现场没有正式服务地址");
+      const scanningClient = createPublicApiClient({
+        baseUrl: scanning.run.address,
+      });
+      const scanStarted = await scanningClient.startAssetLibraryScan(libraryId);
+      const deadline = Date.now() + 60_000;
+      let scan = await scanningClient.inspectAssetLibraryScan(
+        scanStarted.parentExecutionId,
+      );
+      while (scan.status === "running" && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        scan = await scanningClient.inspectAssetLibraryScan(
+          scanStarted.parentExecutionId,
+        );
+      }
+      expect(scan.status).toBe("completed");
+      const executionId = scan.parentExecutionId;
+      const historyA = (
+        await scanningClient.listWorkflowHistory({ limit: 100 })
+      ).items.map(({ execution }) => execution.id);
+      expect(historyA).toContain(executionId);
+      const stoppedAfterScan = await stopEnvironment({
+        workspacePath: siteA.workspacePath,
+        environment: siteA.environment,
+      });
+      expect(stoppedAfterScan.status).toBe("stopped");
 
-      // 乙仍在服务：正式 CLI 写入者锁拒绝跨根并发，业务读取因此走乙自己的 HTTP 入口。
-      const blockedB = await productRead(workspaceRoot, siteB.productDataRoot, [
-        "catalogue-surface",
-        "--surface",
-        "workflow-history",
-      ]);
+      // 乙仍在服务：第二个正式 service 进程因单写入者锁被拒绝。
+      const blockedB = await startCompetingProductService(
+        siteB.productDataRoot,
+      );
       expect(blockedB.code).not.toBe(0);
       expect(`${blockedB.stdout}${blockedB.stderr}`).toContain(
         "拒绝并发启动另一个产品写入者",
@@ -893,13 +900,9 @@ describe("同一工作区与跨工作区环境的真实并发隔离", () => {
       ).toBe(false);
 
       // 两个同名环境各自报告自己的数据根与自己的配置，互不串用。
-      const saveTwo = await httpRequest({
-        port: siteTwo.port,
-        pathname: "/api/settings/libraries",
-        method: "POST",
-        body: libraryRequest(`同名乙库-${suffix}`, inputTwo),
-      });
-      expect(saveTwo.status, saveTwo.body).toBe(200);
+      await createPublicApiClient({
+        baseUrl: `http://127.0.0.1:${String(siteTwo.port)}`,
+      }).saveAssetLibrary(libraryRequest(`同名乙库-${suffix}`, inputTwo));
       const settingsOne = await settingsProjection(siteOne);
       const settingsTwo = await settingsProjection(siteTwo);
       expect(settingsOne.productDataDirectory).not.toBe(
@@ -947,13 +950,12 @@ describe("同一工作区与跨工作区环境的真实并发隔离", () => {
       expect(stoppedOneInspection.serviceReadiness).not.toBe("ready");
       expect(stoppedOneInspection.run.processLiveness).toBe("exited");
 
-      // 甲的真实数据根在停止后仍可被甲自己的正式 CLI 读取，乙的数据完全独立。
-      const historyOne = await productRead(
-        workspaceRoot,
-        siteOne.productDataRoot,
-        ["catalogue-surface", "--surface", "workflow-history"],
-      );
-      expect(historyOne.code, historyOne.stderr).toBe(0);
+      // 甲的真实数据根在停止后仍可经甲的正式 API 读取，乙的数据完全独立。
+      const historyOne = await workflowHistoryIds({
+        workspacePath: siteOne.workspacePath,
+        environment: siteOne.environment,
+      });
+      expect(historyOne).toEqual([]);
       const settingsOneAfter = await settingsProjection(siteTwo);
       expect(settingsOneAfter.productDataDirectory).not.toBe(
         siteOne.productDataRoot,

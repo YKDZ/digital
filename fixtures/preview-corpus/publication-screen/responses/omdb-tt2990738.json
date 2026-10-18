@@ -1,21 +1,32 @@
 {
-  "Response": "True",
-  "Title": "더 테러 라이브",
+  "Title": "The Terror Live",
   "Year": "2013",
+  "Rated": "Not Rated",
   "Released": "31 Jul 2013",
-  "imdbID": "tt2990738",
-  "Plot": "OMDb 受控简介 tt2990738",
-  "Runtime": "98 min",
-  "Awards": "OMDb 独立贡献受控奖项 tt2990738",
-  "BoxOffice": "$123,456",
+  "Runtime": "97 min",
+  "Genre": "Action, Crime, Drama",
+  "Director": "Byung-woo Kim",
+  "Writer": "Byung-woo Kim",
+  "Actors": "Ha Jung-woo, Won-Jin Ahn, Lee Da-wit",
+  "Plot": "Young-hwa Yoon, once a top, national news anchor, gets demoted to radio news. One day, a call comes in during his radio show threatening to blow up Mapo Bridge. While it is brushed off as a prank call, the bridge ends up getting blown to pieces just 10 minutes later. To get his career back on track, Yoon tries to grab an exclusive live broadcast. The terrorist demands a hefty sum in exchange and the exclusive gets aired. The terrorist reveals he is one of the construction workers of Mapo Bridge and demands the President's apology for his coworkers who died on the job. However, the government dismisses the demands, and the terrorist strikes again. While efforts to convince both the government and the terrorist go awry, Yoon realizes there is a bomb rigged on him and falls in sheer terror.",
+  "Language": "Korean",
+  "Country": "South Korea",
+  "Awards": "9 wins & 7 nominations total",
+  "Poster": "https://m.media-amazon.com/images/M/MV5BNWFjY2U2OTgtMzZmMS00NmJhLWEzY2YtZWVkOWVhOGMzNDM3XkEyXkFqcGc@._V1_SX300.jpg",
   "Ratings": [
     {
       "Source": "Internet Movie Database",
       "Value": "7.1/10"
-    },
-    {
-      "Source": "Rotten Tomatoes",
-      "Value": "81%"
     }
-  ]
+  ],
+  "Metascore": "N/A",
+  "imdbRating": "7.1",
+  "imdbVotes": "8,292",
+  "imdbID": "tt2990738",
+  "Type": "movie",
+  "DVD": "N/A",
+  "BoxOffice": "N/A",
+  "Production": "N/A",
+  "Website": "N/A",
+  "Response": "True"
 }

@@ -272,7 +272,13 @@ export async function runContainerOperation(
         if (
           /^(?:Error(?: response from daemon)?: )?No such (?:container|volume|network|object|image): /iu.test(
             diagnostic,
-          )
+          ) ||
+          (object.kind === "network" &&
+            diagnostic ===
+              `Error response from daemon: network ${object.id ?? object.name} not found`) ||
+          (object.kind === "volume" &&
+            diagnostic ===
+              `Error response from daemon: get ${object.name}: no such volume`)
         ) {
           object.state = "absent";
           object.running = false;
@@ -485,7 +491,7 @@ export async function runContainerOperation(
         serviceReady =
           response.status === 200 &&
           body.ok === true &&
-          body.service === "digital-web";
+          body.service === "digital-product-service";
       } catch {
         /* 当前产品未就绪与Docker观察失败分别表达。 */
       }
@@ -552,7 +558,7 @@ export async function runContainerOperation(
           if (
             response.status === 200 &&
             body.ok === true &&
-            body.service === "digital-web"
+            body.service === "digital-product-service"
           )
             return;
         } catch {
@@ -1050,11 +1056,6 @@ export async function runContainerOperation(
           throw new Error("离线数据保存必须先确认所有自有容器停止");
         await collectLogs();
         await mkdir(request.directory, { recursive: true, mode: 0o700 });
-        await writeFile(
-          path.join(request.directory, "deployment.json"),
-          redact(JSON.stringify(record, null, 2)),
-          { mode: 0o600 },
-        );
         if (request.includeData) {
           if (record.compose !== undefined) {
             await verifyDataDirectory();
@@ -1070,13 +1071,48 @@ export async function runContainerOperation(
                 object.usesData &&
                 object.state === "present",
             );
-            if (carrier === undefined || (await verify(carrier)) === undefined)
+            let dataCarrier = carrier;
+            if (dataCarrier === undefined) {
+              const volume = record.objects.find(
+                (object) =>
+                  object.kind === "volume" && object.state === "present",
+              );
+              if (volume === undefined || (await verify(volume)) === undefined)
+                throw new Error("没有可核验的自有数据卷可供完整复制");
+              const image = record.imageId;
+              if (image.length === 0)
+                throw new Error("没有可用镜像创建只读数据载体");
+              dataCarrier = await add("container", "client");
+              dataCarrier.usesData = true;
+              dataCarrier.image = image;
+              dataCarrier.id = output(
+                await docker([
+                  "container",
+                  "create",
+                  "--name",
+                  dataCarrier.name,
+                  ...labelArgs(dataCarrier),
+                  "--network",
+                  "none",
+                  "--read-only",
+                  "--mount",
+                  `type=volume,source=${volume.name},target=/data,readonly`,
+                  "--entrypoint",
+                  "/bin/true",
+                  image,
+                ]),
+              );
+              if ((await verify(dataCarrier)) === undefined)
+                throw new Error("只读数据载体创建后未能确认归属");
+              await persist();
+            } else if ((await verify(dataCarrier)) === undefined) {
               throw new Error("没有保留的数据载体可供完整复制");
+            }
             const data = path.join(request.directory, "product-data");
             await mkdir(data, { mode: 0o700 });
             output(
               await docker(
-                ["container", "cp", `${carrier.id!}:/data/.`, data],
+                ["container", "cp", `${dataCarrier.id!}:/data/.`, data],
                 false,
                 600_000,
               ),
@@ -1084,6 +1120,11 @@ export async function runContainerOperation(
           }
         }
         if (saveErrors.length > 0) throw new Error("诊断尚未完整保存");
+        await writeFile(
+          path.join(request.directory, "deployment.json"),
+          redact(JSON.stringify(record, null, 2)),
+          { mode: 0o600 },
+        );
         record.evidence = {
           directory: request.directory,
           generation: record.generation,

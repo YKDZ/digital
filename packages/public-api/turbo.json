@@ -1,0 +1,40 @@
+{
+  "extends": ["//"],
+  "tags": ["public-api"],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"],
+      "tags": ["quality:light"]
+    },
+    "format:check": { "outputs": [], "tags": ["quality:light"] },
+    "format:write": {
+      "dependsOn": ["lint:fix"],
+      "cache": false,
+      "tags": ["work:repair"]
+    },
+    "lint": { "outputs": [], "tags": ["quality:light"] },
+    "lint:fix": { "cache": false, "tags": ["work:repair"] },
+    "test": {
+      "dependsOn": ["build"],
+      "outputs": [],
+      "tags": ["quality:light"]
+    },
+    "typecheck": {
+      "dependsOn": ["^typecheck"],
+      "outputs": [],
+      "tags": ["quality:light"]
+    },
+    "dev:build": {
+      "dependsOn": ["^dev:build"],
+      "cache": false,
+      "outputs": [".turbo/development/**"],
+      "tags": ["work:development"]
+    },
+    "dev:compile": {
+      "cache": false,
+      "outputs": [".turbo/development/**"],
+      "tags": ["work:development"]
+    }
+  }
+}

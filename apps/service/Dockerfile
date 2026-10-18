@@ -1,0 +1,86 @@
+# syntax=docker/dockerfile:1.7
+
+# @template-mirror NODE_VERSION
+ARG NODE_VERSION="24.21.0"
+# @end-template-mirror
+
+ARG DEPLOYMENT_BUILD_ID="local"
+
+FROM node:${NODE_VERSION}-bookworm-slim AS base
+ENV COREPACK_HOME="/corepack"
+ENV PNPM_HOME="/pnpm"
+ENV PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"
+WORKDIR /repo
+COPY package.json /root-manifest.json
+RUN install -d -m 0755 "$COREPACK_HOME" "$PNPM_HOME" "$PNPM_HOME/bin" \
+  && corepack enable --install-directory "$PNPM_HOME" \
+  && package_manager="$(node -p "require('/root-manifest.json').packageManager")" \
+  && rm /root-manifest.json \
+  && for attempt in 1 2 3; do \
+    if corepack prepare "$package_manager" --activate; then break; fi; \
+    [ "$attempt" -lt 3 ] || exit 1; \
+    sleep 2; \
+  done \
+  && chmod -R a+rX "$COREPACK_HOME" "$PNPM_HOME"
+
+FROM base AS pruner
+COPY pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN pnpm fetch
+# 服务的生产依赖闭包包含工作区包。在为 Turbo prune
+# 提供冻结安装前，先向 pnpm 提供完整的工作区清单图。
+COPY . .
+RUN pnpm install --offline --frozen-lockfile
+RUN pnpm exec turbo prune --scope=@digital/service --scope=@digital/db-migrations --docker
+
+FROM base AS build
+COPY --from=pruner /repo/out/json/pnpm-lock.yaml ./pnpm-lock.yaml
+COPY --from=pruner /repo/out/json/pnpm-workspace.yaml ./pnpm-workspace.yaml
+COPY --from=pruner /repo/tsconfig.json /repo/tsconfig.config.json ./
+RUN pnpm fetch
+COPY --from=pruner /repo/out/json/ ./
+RUN pnpm install --offline --frozen-lockfile
+# FANBOX production transport 与 package 中固定的 Playwright 版本共用同一 Chromium revision。
+ENV PLAYWRIGHT_BROWSERS_PATH="/ms-playwright"
+RUN pnpm --filter @digital/fanbox exec playwright install chromium
+COPY --from=pruner /repo/out/full/ ./
+# 由 Turbo 按正式 workspace 依赖图构建交付所需包，再由 deploy 在隔离的部署目录中定点
+# 注入其发布文件。裁剪只决定包的存在，构建顺序与闭包由 Turbo 计算。
+RUN TURBO_TELEMETRY_DISABLED=1 pnpm exec turbo run build \
+  --filter=@digital/service --filter=@digital/db-migrations
+RUN pnpm --config.inject-workspace-packages=true --filter ./apps/service deploy --prod /runtime-deploy
+RUN pnpm --config.inject-workspace-packages=true --filter ./packages/db-migrations deploy --prod /migration-deploy
+
+FROM node:${NODE_VERSION}-bookworm-slim AS application-runtime
+ARG DEPLOYMENT_BUILD_ID
+LABEL org.opencontainers.image.version="$DEPLOYMENT_BUILD_ID"
+ENV NODE_ENV="production" \
+  DIGITAL_PRODUCT_DATA="/data" \
+  HOST="0.0.0.0" \
+  PLAYWRIGHT_BROWSERS_PATH="/ms-playwright"
+WORKDIR /app
+RUN groupadd --system --gid 1001 nodejs \
+  && useradd --system --uid 1001 --gid nodejs --home-dir /app --shell /usr/sbin/nologin app \
+  && install -d -o app -g nodejs /app /data
+COPY --chmod=755 apps/service/scripts/compose-entrypoint.sh /usr/local/bin/compose-entrypoint
+COPY --from=build --chown=app:nodejs /runtime-deploy/node_modules ./node_modules
+COPY --from=build --chown=app:nodejs /repo/apps/service/dist ./dist
+COPY --from=build /ms-playwright /ms-playwright
+RUN node /app/node_modules/.pnpm/playwright@1.62.0/node_modules/playwright/cli.js install-deps chromium \
+  && rm -rf /var/lib/apt/lists/* \
+  && chmod -R a-w /ms-playwright
+
+# 仅启动部署的服务进程不会自行迁移；明确维护 bin 随服务生产依赖安装，可独立停止服务后
+# 执行离线备份或恢复。未准备的数据卷仍必须拒绝 readiness。
+FROM application-runtime AS runtime
+USER app
+EXPOSE 3000
+CMD ["node", "/app/dist/main.js"]
+
+# 组合部署是唯一携带正式准备能力的镜像。
+FROM application-runtime AS standalone
+COPY --from=build --chown=app:nodejs /migration-deploy /migration
+COPY --chmod=755 apps/service/scripts/container-entrypoint.sh /usr/local/bin/container-entrypoint
+USER app
+EXPOSE 3000
+ENTRYPOINT ["/usr/local/bin/container-entrypoint"]
+CMD ["prepare-and-start"]

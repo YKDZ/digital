@@ -1,0 +1,64 @@
+{
+  "name": "@digital/service-host",
+  "version": "0.0.0",
+  "private": true,
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "digital-source": "./src/index.ts",
+      "digital-development": "./.turbo/development/dist/index.js",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./environment-ready-identity": {
+      "digital-source": "./src/environment-ready-identity.ts",
+      "digital-development": "./.turbo/development/dist/environment-ready-identity.js",
+      "types": "./dist/environment-ready-identity.d.ts",
+      "default": "./dist/environment-ready-identity.js"
+    },
+    "./process-lifecycle": {
+      "digital-source": "./src/process-lifecycle.ts",
+      "digital-development": "./.turbo/development/dist/process-lifecycle.js",
+      "types": "./dist/process-lifecycle.d.ts",
+      "default": "./dist/process-lifecycle.js"
+    },
+    "./process-temporary-root": {
+      "digital-source": "./src/process-temporary-root.ts",
+      "digital-development": "./.turbo/development/dist/process-temporary-root.js",
+      "types": "./dist/process-temporary-root.d.ts",
+      "default": "./dist/process-temporary-root.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json --force --pretty false",
+    "format:check": "oxfmt --list-different --config ../../oxfmt.config.ts .",
+    "format:write": "oxfmt --write --config ../../oxfmt.config.ts .",
+    "lint": "oxlint --quiet --format=unix --config ../../oxlint.config.ts --ignore-pattern node_modules .",
+    "lint:fix": "oxlint --format=unix --config ../../oxlint.config.ts . --fix",
+    "test": "vitest run --reporter=verbose --passWithNoTests",
+    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
+    "dev:build": "pnpm --workspace-root run development:build @digital/service-host",
+    "dev:compile": "rm -rf .turbo/development && tsc -p tsconfig.build.json --customConditions digital-development --pretty false --incremental --outDir .turbo/development/dist --tsBuildInfoFile .turbo/development/build.tsbuildinfo"
+  },
+  "dependencies": {
+    "@digital/composition": "workspace:*",
+    "@digital/public-api": "workspace:*",
+    "hono": "catalog:",
+    "valibot": "catalog:"
+  },
+  "devDependencies": {
+    "@digital/typescript-config": "workspace:*",
+    "@types/node": "catalog:",
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:",
+    "oxlint-tsgolint": "catalog:",
+    "typescript-7": "catalog:",
+    "vitest": "catalog:"
+  },
+  "engines": {
+    "node": "24"
+  }
+}

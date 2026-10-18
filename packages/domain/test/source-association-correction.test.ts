@@ -25,16 +25,19 @@ const predecessorDecision: RecognitionDecision = {
   id: "recognition-decision-old",
   proposalId: "recognition-proposal-old",
   assetId: "asset",
+  boundaries: [],
   acceptedRuleResults: [],
 };
 const successorDecision: RecognitionDecision = {
   id: "recognition-decision-new",
   proposalId: "recognition-proposal-new",
   assetId: "asset",
+  boundaries: [],
   acceptedRuleResults: [],
 };
 const successorProposal: RecognitionProposal = {
   id: successorDecision.proposalId,
+  boundaries: [],
   basis: {
     kind: "manual-boundary",
     proposedBy: "operator",

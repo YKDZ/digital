@@ -1,10 +1,9 @@
 import { createHash } from "node:crypto";
 
-import { expect, it, vi } from "vitest";
+import { assert, expect, it, vi } from "vitest";
 
 import {
   ApplicationArtifactByteAccess,
-  ArtifactByteAccessError,
   ExecutionHost,
   planDirectPlayback,
   type ArtifactByteSource,
@@ -268,7 +267,7 @@ it("拒绝超过单次 probe 预算并关闭 describe 短租约", async () => {
       },
       {},
     ),
-  ).rejects.toMatchObject<ArtifactByteAccessError>({
+  ).rejects.toMatchObject({
     code: "artifact-integrity-failed",
   });
   expect(closes).toBe(1);
@@ -370,7 +369,7 @@ it("第五个不同的 1MiB proof frame 在打开前 fail closed", async () => {
       },
       {},
     ),
-  ).rejects.toMatchObject<ArtifactByteAccessError>({
+  ).rejects.toMatchObject({
     code: "artifact-integrity-failed",
   });
   expect(opens).toBe(5);
@@ -449,7 +448,9 @@ it("缓存失败窗口、关闭其短租约且不把重试放大为第二次 pro
       sourceOpens += 1;
       if (sourceOpens === 2) {
         const changed = bytes.slice();
-        changed[0] ^= 0xff;
+        const firstByte = changed[0];
+        assert.isDefined(firstByte);
+        changed[0] = firstByte ^ 0xff;
         source = byteSource(changed, () => (sourceCloses += 1));
       }
       return { source, suggestedFilename: "track.bin" };
@@ -460,7 +461,7 @@ it("缓存失败窗口、关闭其短租约且不把重试放大为第二次 pro
         for (let attempt = 0; attempt < 2; attempt += 1)
           await expect(
             input.bytes.read({ startInclusive: 0, endInclusive: 3 }),
-          ).rejects.toMatchObject<ArtifactByteAccessError>({
+          ).rejects.toMatchObject({
             code: "artifact-integrity-failed",
           });
         return undefined;
@@ -500,7 +501,7 @@ it("窗口读取仍拒绝检查器并发 read", async () => {
         const first = input.bytes.read({ startInclusive: 0, endInclusive: 3 });
         await expect(
           input.bytes.read({ startInclusive: 4, endInclusive: 7 }),
-        ).rejects.toMatchObject<ArtifactByteAccessError>({
+        ).rejects.toMatchObject({
           code: "byte-read-in-progress",
         });
         await first;
@@ -546,7 +547,9 @@ it("初始观察根读取失败后释放绑定并回退到另一观察根", asyn
       });
       if (registrationId === "root-a" && rootAOpens === 2) {
         const changed = bytes.slice();
-        changed[0] ^= 0xff;
+        const firstByte = changed[0];
+        assert.isDefined(firstByte);
+        changed[0] = firstByte ^ 0xff;
         source = byteSource(changed, () => (closes += 1));
       }
       return {
@@ -603,7 +606,9 @@ it("观察源关闭失败时保留其绑定且不把下一根资源交给计划"
         rootAOpens += 1;
         if (rootAOpens === 2) {
           const changed = bytes.slice();
-          changed[0] ^= 0xff;
+          const firstByte = changed[0];
+          assert.isDefined(firstByte);
+          changed[0] = firstByte ^ 0xff;
           source = {
             ...byteSource(changed, () => undefined),
             async close() {
@@ -640,7 +645,7 @@ it("观察源关闭失败时保留其绑定且不把下一根资源交给计划"
       },
       {},
     ),
-  ).rejects.toMatchObject<ArtifactByteAccessError>({
+  ).rejects.toMatchObject({
     code: "artifact-integrity-failed",
   });
   expect(rootBReturned).toBe(false);
@@ -737,7 +742,7 @@ it.each(["revoke", "shutdown"] as const)(
         },
         {},
       ),
-    ).rejects.toMatchObject<ArtifactByteAccessError>({
+    ).rejects.toMatchObject({
       code:
         event === "revoke"
           ? "artifact-location-revoked"

@@ -87,6 +87,7 @@ import { createPdfRecognitionCapabilities } from "@digital/pdf";
 import { boundedPlaybackFormatInspector } from "@digital/playback-format";
 import {
   CuratedMetadataPolicyConfiguration,
+  productAutomationInformationPlanner,
   type ProductApplication,
   type ProductAutomationOperations,
   type ProductAssetRefresh,
@@ -96,16 +97,17 @@ import {
   type ProductExecutionOperations,
   type ProductWorkflowOperations,
   artifactDownloadOperations,
+  createProductRefreshOperations,
   ProductSourceConnections,
+  InitialAssetLibraries,
   RegisteredWorkflowConfigurationCompatibility,
   curatedInitialRecognitionPolicy,
   validateCapabilityDeclarations,
 } from "@digital/product-application";
 import {
+  ProductAssetLibraryInitialConfiguration,
   ProductDataOperations,
   ProductSourceConnectionPrivateState,
-  createOfflineProductDataBackup,
-  restoreOfflineProductDataBackup,
   type ProductDataWriterLifecycle,
 } from "@digital/product-data";
 import { SqliteCatalogue } from "@digital/sqlite";
@@ -141,7 +143,6 @@ export type {
   ObservedRootCleanupEmergencyJournal,
   ObservedRootCleanupEmergencyJournalSnapshot,
 } from "./observed-root-cleanup-journal.ts";
-export { createOfflineProductDataBackup, restoreOfflineProductDataBackup };
 
 /**
  * 组合层为 Application 持有的清理事件选择具体审计接收端。记录只保留注册坐标，
@@ -210,9 +211,7 @@ export type AssetRefreshRuntimeOptions = {
   readonly configuration?: Readonly<Record<string, string | undefined>>;
   /** 外部来源 I/O 的装配选择；缺席即真实默认装配。 */
   readonly sourceIo?: ProductSourceIo;
-  /**
-   * 每个已接受主体建立后重建的交付层分派。回调只返回 Application 的中立信息需求契约。
-   */
+  /** 每个已接受主体建立后重建的中立信息需求规划规则及其稳定坐标。 */
   readonly automationInformationRequirementForAcceptedSubject?: AutomationInformationRequirementResolver;
 };
 
@@ -224,7 +223,7 @@ export async function assertProductDataOffline(
 }
 
 /**
- * 交付层可以提供按已接受主体工作的中立解析器，而不会让组合依赖视图，也不会把展开后
+ * 上层组合可以提供按已接受主体工作的中立解析器，而不会让组合依赖展示，也不会把展开后
  * 的需求持久化到自动化意图。
  */
 export type AssetRefreshCompositionOptions = {
@@ -974,6 +973,8 @@ async function releaseOwnedResources(
  */
 export function composeProductApplication(input: {
   readonly productDataDirectory?: string;
+  readonly initialAssetLibraryConfigurationDirectory?: string;
+  readonly dataGeneration?: string;
   readonly environment: Readonly<Record<string, string | undefined>>;
   readonly sourceIo?: ProductSourceIo;
 }): { readonly application: ProductApplication; close(): Promise<void> } {
@@ -989,6 +990,10 @@ export function composeProductApplication(input: {
     return {
       application: {
         configured: false,
+        refresh: createProductRefreshOperations(
+          unavailable.workflow,
+          unavailable.execution,
+        ),
         workflow: unavailable.workflow,
         automation: unavailable.automation,
         execution: unavailable.execution,
@@ -1001,12 +1006,6 @@ export function composeProductApplication(input: {
           },
         },
         async startAutomation() {
-          throw new Error("尚未配置产品数据目录");
-        },
-        setAutomationInformationRequirementForAcceptedSubject() {
-          throw new Error("尚未配置产品数据目录");
-        },
-        async createOfflineBackup() {
           throw new Error("尚未配置产品数据目录");
         },
         managedArtifactReference() {
@@ -1039,9 +1038,21 @@ export function composeProductApplication(input: {
   }
 
   let runtime: ComposedAssetRefreshRuntime | undefined;
-  let automationInformationRequirementForAcceptedSubject:
-    | AutomationInformationRequirementResolver
-    | undefined;
+  let initialAssetLibraries: InitialAssetLibraries | undefined;
+  const requireInitialAssetLibraries = ():
+    | InitialAssetLibraries
+    | undefined => {
+    const directory = input.initialAssetLibraryConfigurationDirectory?.trim();
+    if (directory === undefined || directory.length === 0) return undefined;
+    return (initialAssetLibraries ??= new InitialAssetLibraries({
+      assetLibraries: requireRuntime().workflow.assetLibraries,
+      persistence:
+        ProductAssetLibraryInitialConfiguration.forDirectory(directory),
+      ...(input.dataGeneration === undefined
+        ? {}
+        : { dataGeneration: input.dataGeneration }),
+    }));
+  };
   const requireRuntime = (
     options: ProductAutomationHostOptions = {},
   ): ComposedAssetRefreshRuntime =>
@@ -1049,9 +1060,8 @@ export function composeProductApplication(input: {
       configuration: input.environment,
       ...(input.sourceIo === undefined ? {} : { sourceIo: input.sourceIo }),
       ...options,
-      ...(automationInformationRequirementForAcceptedSubject === undefined
-        ? {}
-        : { automationInformationRequirementForAcceptedSubject }),
+      automationInformationRequirementForAcceptedSubject:
+        productAutomationInformationPlanner,
     }));
   const downloadOperations = () => {
     const access = requireRuntime().workflow.artifactByteAccess;
@@ -1065,6 +1075,16 @@ export function composeProductApplication(input: {
     application: {
       configured: true,
       productDataDirectory: path.resolve(productDataDirectory),
+      get initialAssetLibraries() {
+        return requireInitialAssetLibraries();
+      },
+      get refresh() {
+        const current = requireRuntime();
+        return createProductRefreshOperations(
+          current.workflow,
+          current.executionHost,
+        );
+      },
       get workflow() {
         return requireRuntime().workflow;
       },
@@ -1084,16 +1104,6 @@ export function composeProductApplication(input: {
       },
       async startAutomation(options: ProductAutomationHostOptions = {}) {
         await requireRuntime(options).automationHost.start();
-      },
-      setAutomationInformationRequirementForAcceptedSubject(resolver) {
-        if (runtime !== undefined) throw new Error("自动刷新已经由组合根启动");
-        automationInformationRequirementForAcceptedSubject = resolver;
-      },
-      async createOfflineBackup(backupDirectory: string) {
-        await createOfflineProductDataBackup({
-          productDataDirectory,
-          backupDirectory,
-        });
       },
       managedArtifactReference(address: string) {
         return managedArtifacts?.reference(address);

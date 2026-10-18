@@ -1,1 +1,86 @@
-[]
+[
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/32/48/132936_KlKa0.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/32/48/132936_KlKa0.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/32/48/132936_KlKa0.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/32/48/132936_KlKa0.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/32/48/132936_KlKa0.jpg"
+    },
+    "name": "やがて君になる",
+    "name_cn": "终将成为你",
+    "relation": "书籍",
+    "type": 1,
+    "id": 132936
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/52/3c/262278_H6Z61.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/52/3c/262278_H6Z61.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/52/3c/262278_H6Z61.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/52/3c/262278_H6Z61.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/52/3c/262278_H6Z61.jpg"
+    },
+    "name": "君にふれて",
+    "name_cn": "",
+    "relation": "片头曲",
+    "type": 3,
+    "id": 262278
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/e3/00/262279_Mmv2Z.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/e3/00/262279_Mmv2Z.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/e3/00/262279_Mmv2Z.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/e3/00/262279_Mmv2Z.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/e3/00/262279_Mmv2Z.jpg"
+    },
+    "name": "hectopascal",
+    "name_cn": "",
+    "relation": "片尾曲",
+    "type": 3,
+    "id": 262279
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/2d/ed/262864_APu1D.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/2d/ed/262864_APu1D.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/2d/ed/262864_APu1D.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/2d/ed/262864_APu1D.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/2d/ed/262864_APu1D.jpg"
+    },
+    "name": "TVアニメ「やがて君になる」オリジナル・サウンドトラック",
+    "name_cn": "",
+    "relation": "原声集",
+    "type": 3,
+    "id": 262864
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/cb/6d/295545_BD6r6.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/cb/6d/295545_BD6r6.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/cb/6d/295545_BD6r6.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/cb/6d/295545_BD6r6.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/cb/6d/295545_BD6r6.jpg"
+    },
+    "name": "舞台 やがて君になる",
+    "name_cn": "舞台剧 终将成为你",
+    "relation": "不同演绎",
+    "type": 6,
+    "id": 295545
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/5d/a4/514279_ABFBC.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/5d/a4/514279_ABFBC.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/5d/a4/514279_ABFBC.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/5d/a4/514279_ABFBC.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/5d/a4/514279_ABFBC.jpg"
+    },
+    "name": "やがて君になる〜私、このラジオ好きになりそう〜",
+    "name_cn": "",
+    "relation": "衍生",
+    "type": 6,
+    "id": 514279
+  }
+]

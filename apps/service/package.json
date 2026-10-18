@@ -1,0 +1,57 @@
+{
+  "name": "@digital/service",
+  "version": "0.0.0",
+  "private": true,
+  "bin": {
+    "digital-product-service": "./dist/main.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json --pretty false",
+    "format:check": "oxfmt --list-different --config ../../oxfmt.config.ts .",
+    "format:write": "oxfmt --write --config ../../oxfmt.config.ts .",
+    "lint": "oxlint --quiet --format=unix --config ../../oxlint.config.ts --ignore-pattern node_modules . && shellcheck scripts/container-entrypoint.sh scripts/compose-entrypoint.sh",
+    "lint:fix": "oxlint --format=unix --config ../../oxlint.config.ts . --fix && shellcheck scripts/container-entrypoint.sh scripts/compose-entrypoint.sh",
+    "deployment": "node --conditions=digital-source scripts/check-deployment.ts",
+    "deployment:prepare": "node --conditions=digital-source scripts/prepare-deployment.ts",
+    "prepare:verify": "node ./dist/verify-prepared.js",
+    "start": "node ./dist/main.js",
+    "test": "vitest run --reporter=verbose --passWithNoTests --exclude=test/fanbox-extension-browser.test.ts --testNamePattern='^(?!.*安装客户端).*$'",
+    "test:installed-clients": "pnpm exec playwright install chromium && vitest run --reporter=verbose test/public-http.test.ts test/automation-http.test.ts test/execution-recovery-http.test.ts test/asset-inspection-http.test.ts test/source-connections-http.test.ts test/fanbox-extension-browser.test.ts test/development-session.test.ts --testNamePattern=安装客户端",
+    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
+    "dev:serve": "pnpm --workspace-root run development:serve"
+  },
+  "dependencies": {
+    "@digital/composition": "workspace:*",
+    "@digital/http-delivery": "workspace:*",
+    "@digital/product-maintenance": "workspace:*",
+    "@digital/service-host": "workspace:*",
+    "@digital/test-support": "workspace:*",
+    "hono": "catalog:",
+    "srvx": "catalog:"
+  },
+  "devDependencies": {
+    "@digital/db-migrations": "workspace:*",
+    "@digital/environment": "workspace:*",
+    "@digital/fanbox": "workspace:*",
+    "@digital/fanbox-extension": "workspace:*",
+    "@digital/preview-corpus": "workspace:*",
+    "@digital/product-application": "workspace:*",
+    "@digital/public-api": "workspace:*",
+    "@digital/tui": "workspace:*",
+    "@digital/typescript-config": "workspace:*",
+    "@playwright/test": "catalog:",
+    "@types/node": "catalog:",
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:",
+    "oxlint-tsgolint": "catalog:",
+    "typescript-7": "catalog:",
+    "vitest": "catalog:"
+  },
+  "engines": {
+    "node": "24"
+  }
+}

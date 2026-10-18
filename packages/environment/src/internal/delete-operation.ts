@@ -420,8 +420,16 @@ async function purgeOwnedResources(
     record.inputs,
   );
   if (data !== undefined) return { stage: "purge", message: data };
+  const initialConfiguration = await purgeOwnedDirectory(
+    layout.initialConfigurationDirectory,
+    layout.containerDirectory,
+    "初始配置目录",
+    record.inputs,
+  );
+  if (initialConfiguration !== undefined)
+    return { stage: "purge", message: initialConfiguration };
   diagnostics.push(
-    "私有运行现场、日志目录与产品数据根已确认回收，开始移除环境记录",
+    "私有运行现场、日志目录、产品数据根与初始配置目录已确认回收，开始移除环境记录",
   );
   return undefined;
 }

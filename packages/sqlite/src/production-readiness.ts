@@ -17,8 +17,11 @@ import {
   validateSourceAssociationDecisionPriorExecution,
 } from "@digital/application";
 import {
+  metadataDecisionKey,
   type DescriptionTarget,
+  type MetadataDecision,
   artifactRoleDecisionKey,
+  validateMetadataDecision,
 } from "@digital/domain";
 
 import { readDerivedEntityCoverReadiness } from "./derived-entity-cover-history.ts";
@@ -27,7 +30,7 @@ import { workflowExecutionAuditVersion } from "./schema.ts";
 import { canonicalJson } from "./workflow-execution-persistence.ts";
 
 export const productionCatalogueMigrationHead =
-  "20261007030000_library_scan_fulfillment";
+  "20261016000000_metadata_decisions";
 export const productionCatalogueMigrationPlan = [
   {
     id: "20260820000000_v1_catalogue_baseline",
@@ -170,9 +173,14 @@ export const productionCatalogueMigrationPlan = [
       "a87461eb27f3d80ca84855149e8156e1927fafe94b1fed49fc1c80044e14cecc",
   },
   {
-    id: productionCatalogueMigrationHead,
+    id: "20261007030000_library_scan_fulfillment",
     checksum:
       "02051a927ee19bfae68b095bb3bb8a8c4fac0e75a879f644143a55dd9b9d36e0",
+  },
+  {
+    id: productionCatalogueMigrationHead,
+    checksum:
+      "dc3d01d2e4faca0e8230abd893654a21b35f589c1dc474a08714bbcc2efdee0e",
   },
 ] as const;
 
@@ -321,6 +329,13 @@ export async function inspectProductionCatalogueReadiness(options: {
           "Catalogue 人工产物角色决定头损坏或同一坐标存在多个当前头；从离线备份恢复或联系部署维护者",
       };
     }
+    if (!hasValidMetadataDecisionHeads(database)) {
+      return {
+        state: "catalogue-integrity-failed",
+        message:
+          "Catalogue 人工元数据决定头损坏或同一坐标存在多个当前头；从离线备份恢复或联系部署维护者",
+      };
+    }
     return { state: "ready" };
   } catch {
     return {
@@ -380,6 +395,112 @@ function hasValidArtifactRoleDecisionHeads(database: DatabaseSync): boolean {
     return (
       target !== undefined &&
       artifactRoleDecisionKey(target, row.role) === row.target_key
+    );
+  });
+}
+
+function hasValidMetadataDecisionHeads(database: DatabaseSync): boolean {
+  const rows = database
+    .prepare(
+      `SELECT head.target_key AS target_key, head.decision_id AS decision_id,
+              decision.target_kind AS target_kind,
+              decision.target_entity_id AS target_entity_id,
+              decision.target_artifact_id AS target_artifact_id,
+              decision.target_revision_id AS target_revision_id,
+              decision.property AS property,
+              decision.metadata_usage_context AS metadata_usage_context,
+              decision.kind AS kind, decision.value AS value,
+              decision.qualifiers_json AS qualifiers_json,
+              decision.adopted_from_json AS adopted_from_json,
+              decision.predecessor_decision_id AS predecessor_decision_id,
+              decision.initiated_by AS initiated_by,
+              predecessor.id AS existing_predecessor_id,
+              (SELECT COUNT(*) FROM metadata_decision_heads AS other
+                WHERE other.decision_id = head.decision_id) AS head_count
+       FROM metadata_decision_heads AS head
+       LEFT JOIN metadata_decisions AS decision
+         ON decision.id = head.decision_id
+       LEFT JOIN metadata_decisions AS predecessor
+         ON predecessor.id = decision.predecessor_decision_id`,
+    )
+    .all() as Array<{
+    readonly target_key: string;
+    readonly decision_id: string;
+    readonly target_kind: string | null;
+    readonly target_entity_id: string | null;
+    readonly target_artifact_id: string | null;
+    readonly target_revision_id: string | null;
+    readonly property: string | null;
+    readonly metadata_usage_context: string | null;
+    readonly kind: string | null;
+    readonly value: string | null;
+    readonly qualifiers_json: string | null;
+    readonly adopted_from_json: string | null;
+    readonly predecessor_decision_id: string | null;
+    readonly initiated_by: string | null;
+    readonly existing_predecessor_id: string | null;
+    readonly head_count: number;
+  }>;
+  return rows.every((row) => {
+    if (
+      row.head_count !== 1 ||
+      row.target_kind === null ||
+      row.property === null ||
+      row.metadata_usage_context === null ||
+      row.kind === null ||
+      row.initiated_by === null ||
+      (row.predecessor_decision_id !== null &&
+        row.existing_predecessor_id === null)
+    )
+      return false;
+    let target: DescriptionTarget | undefined;
+    if (row.target_kind === "entity" && row.target_entity_id !== null)
+      target = { kind: "entity", entityId: row.target_entity_id };
+    else if (
+      row.target_kind === "artifact-revision" &&
+      row.target_artifact_id !== null &&
+      row.target_revision_id !== null
+    )
+      target = {
+        kind: "artifact-revision",
+        artifactId: row.target_artifact_id,
+        revisionId: row.target_revision_id,
+      };
+    if (target === undefined) return false;
+    const decision: MetadataDecision = {
+      id: row.decision_id,
+      target,
+      property: row.property,
+      metadataUsageContext: row.metadata_usage_context,
+      kind: row.kind === "clear" ? "clear" : "pin",
+      ...(row.value === null ? {} : { value: row.value }),
+      ...(row.qualifiers_json === null
+        ? {}
+        : {
+            qualifiers: JSON.parse(row.qualifiers_json) as NonNullable<
+              MetadataDecision["qualifiers"]
+            >,
+          }),
+      ...(row.adopted_from_json === null
+        ? {}
+        : {
+            adoptedFrom: JSON.parse(row.adopted_from_json) as NonNullable<
+              MetadataDecision["adoptedFrom"]
+            >,
+          }),
+      ...(row.predecessor_decision_id === null
+        ? {}
+        : { predecessorDecisionId: row.predecessor_decision_id }),
+      initiatedBy: row.initiated_by,
+    };
+    try {
+      validateMetadataDecision(decision);
+    } catch {
+      return false;
+    }
+    return (
+      metadataDecisionKey(target, row.property, row.metadata_usage_context) ===
+      row.target_key
     );
   });
 }

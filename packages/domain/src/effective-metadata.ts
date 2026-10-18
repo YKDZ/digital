@@ -2,6 +2,11 @@ import type {
   DescriptionTarget,
   MetadataAssertion,
 } from "./metadata-assertion.ts";
+import {
+  metadataDecisionKey,
+  validateMetadataDecision,
+  type MetadataDecision,
+} from "./metadata-decision.ts";
 
 export type MetadataPolicyRule = {
   /** 精确属性、以 `*` 结尾的命名空间模式，或作为默认值的 `*`。 */
@@ -89,11 +94,14 @@ export type EffectiveMetadataInput = {
     readonly sourceIdentity: string;
   }[];
   readonly metadata: readonly MetadataAssertion[];
+  /** 只传每个精确坐标的当前头；历史决定在检查依据中另行读取。 */
+  readonly metadataDecisions?: readonly MetadataDecision[];
 };
 
 type ResolvedAssertion = {
   readonly assertion: MetadataAssertion;
   readonly sourceIdentity: string;
+  readonly manualDecision?: boolean;
 };
 
 /**
@@ -145,7 +153,51 @@ export function deriveEffectiveMetadata(
     throw new Error("Metadata Policy identifiers are not unique");
   }
 
-  const facts = resolveAssertions(input);
+  const currentDecisionByCoordinate = new Map<string, MetadataDecision>();
+  for (const decision of input.metadataDecisions ?? []) {
+    validateMetadataDecision(decision);
+    const key = metadataDecisionKey(
+      decision.target,
+      decision.property,
+      decision.metadataUsageContext,
+    );
+    if (currentDecisionByCoordinate.has(key))
+      throw new Error("Metadata Decision coordinate has several current heads");
+    currentDecisionByCoordinate.set(key, decision);
+  }
+  const effectiveDecisions = [...currentDecisionByCoordinate.values()].filter(
+    (decision) => decision.metadataUsageContext === input.metadataUsageContext,
+  );
+  const pinnedDecisions = effectiveDecisions.filter(
+    (decision) => decision.kind === "pin",
+  );
+  const facts = [
+    ...resolveAssertions({
+      ...input,
+      metadata: input.metadata.filter(
+        (assertion) =>
+          !pinnedDecisions.some(
+            (decision) =>
+              decision.property === assertion.property &&
+              sameDescriptionTarget(decision.target, assertion.target),
+          ),
+      ),
+    }),
+    ...pinnedDecisions.flatMap((decision): ResolvedAssertion[] => {
+      if (!sameDescriptionTarget(decision.target, input.target)) return [];
+      const assertion: MetadataAssertion = {
+        target: decision.target,
+        property: decision.property,
+        sourceSlot: "manual.metadata-decision",
+        value: decision.value!,
+        sourceRecordIds: [],
+        ...(decision.qualifiers === undefined
+          ? {}
+          : { qualifiers: decision.qualifiers }),
+      };
+      return [{ assertion, sourceIdentity: "user", manualDecision: true }];
+    }),
+  ];
   const byProperty = new Map<string, ResolvedAssertion[]>();
   for (const fact of facts) {
     const current = byProperty.get(fact.assertion.property) ?? [];
@@ -160,7 +212,8 @@ export function deriveEffectiveMetadata(
       compareResolvedAssertions,
     );
     const userAssertions = assertions.filter(
-      ({ assertion }) => assertion.authoredBy !== undefined,
+      ({ assertion, manualDecision }) =>
+        assertion.authoredBy !== undefined || manualDecision === true,
     );
     if (userAssertions.length > 0) {
       const selected = selectOne(

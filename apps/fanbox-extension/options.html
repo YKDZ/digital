@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>连接 FANBOX</title>
+    <style>
+      body {
+        box-sizing: border-box;
+        width: min(100%, 36rem);
+        margin: 0 auto;
+        padding: 24px;
+        color: #222;
+        font:
+          14px/1.5 system-ui,
+          sans-serif;
+      }
+      h1 {
+        margin: 0 0 12px;
+        font-size: 18px;
+      }
+      label {
+        display: block;
+        margin: 10px 0 4px;
+        font-weight: 600;
+      }
+      input {
+        box-sizing: border-box;
+        width: 100%;
+        padding: 7px;
+      }
+      button {
+        width: 100%;
+        margin-top: 12px;
+        padding: 8px;
+      }
+      #scope {
+        margin-top: 12px;
+        padding: 10px;
+        background: #f3f5f7;
+      }
+      #status {
+        min-height: 42px;
+        margin-top: 10px;
+        white-space: pre-wrap;
+      }
+      #draft-status {
+        min-height: 24px;
+        margin-top: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>连接 FANBOX</h1>
+    <label for="service-url">Digital 服务地址</label>
+    <input
+      id="service-url"
+      type="url"
+      autocomplete="url"
+      placeholder="http://127.0.0.1:3000"
+      disabled
+    />
+    <label for="instance-id">目标实例编号</label>
+    <input id="instance-id" autocomplete="off" disabled />
+    <label for="request-id">连接请求编号</label>
+    <input id="request-id" autocomplete="off" disabled />
+    <label for="pairing-code">限时配对码</label>
+    <input id="pairing-code" autocomplete="off" spellcheck="false" disabled />
+    <button id="review" type="button" disabled>检查目标与创作者范围</button>
+    <div id="scope" hidden></div>
+    <button id="connect" type="button" disabled>
+      使用此浏览器登录状态连接
+    </button>
+    <div id="status" role="status" aria-live="polite"></div>
+    <div id="draft-status" role="status" aria-live="polite"></div>
+    <script type="module" src="/src/options.ts"></script>
+  </body>
+</html>

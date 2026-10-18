@@ -477,18 +477,33 @@ export type LibraryScanChildCoordinates = {
 };
 
 /**
- * 一次未识别观察的可核对归属：材料由哪个目录子在同一次物理观察中发现，人工入口据此
- * 校验确切范围，绝不按“第一个活动位置”猜测。
+ * 未识别材料有两种耐久来源：领域工作项还没有形成决定，或文件系统快照中的文件没有被
+ * 任何领域工作项代表。后者保留为观察，不伪造一个工作项。
  */
-export type UnrecognizedLibraryScanObservation = {
+type UnrecognizedLibraryScanObservationCoordinates = {
   readonly parentExecutionId: string;
   readonly directoryKey: string;
   readonly childExecutionId: string;
-  readonly workItemKey: string;
   /** 形成该观察的实际冻结根坐标：covered 目录的材料由代表根观察。 */
   readonly observedRootId: string;
   readonly relativeScope: string;
   readonly relativePaths: readonly string[];
+};
+
+export type UnrecognizedLibraryScanObservation =
+  | (UnrecognizedLibraryScanObservationCoordinates & {
+      readonly kind: "work-item";
+      readonly workItemKey: string;
+    })
+  | (UnrecognizedLibraryScanObservationCoordinates & {
+      readonly kind: "filesystem-observation";
+      readonly observationId: string;
+    });
+
+/** 有界、可继续翻页的未识别观察读取；续传游标由持久化查询签发。 */
+export type UnrecognizedLibraryScanObservationPage = {
+  readonly items: readonly UnrecognizedLibraryScanObservation[];
+  readonly nextCursor?: string;
 };
 
 /** 未形成任何决定或提案的观察材料：既无 accepted 也无 proposal 归属。 */

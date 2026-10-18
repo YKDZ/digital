@@ -2,6 +2,10 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import {
+  AssetLibraryConfigurationConflict,
+  InvalidAssetLibraryConfiguration,
+} from "@digital/application";
 import type {
   AcceptedAssetState,
   AssetLibrary,
@@ -62,6 +66,7 @@ import type {
   LibraryScanFulfillmentSubjectRecord,
   LegacyLibraryScanFulfillmentClosure,
   UnrecognizedLibraryScanObservation,
+  UnrecognizedLibraryScanObservationPage,
   MetadataRefreshPersistence,
   MetadataRefreshSubmission,
   ManagedSourceArtifactPersistence,
@@ -109,6 +114,12 @@ import type {
   RequestedLocalMaterialConfirmationTarget,
 } from "@digital/application";
 import {
+  InvalidPageRequest,
+  EntityMentionNotFound,
+  RelatedEntityNotFound,
+  RelationshipTargetNotFound,
+  InvalidIdentityOperation,
+  CatalogueDecisionConflict,
   createObservedRootAuthorityIndex,
   decodeObservedRootRegistration,
   isAutomationObservedRootAuthorizationCurrent,
@@ -159,6 +170,7 @@ import type {
   EffectiveEntityKind,
   Location,
   MetadataAssertion,
+  MetadataDecision,
   ObservedMaterialAssociationSubmission,
   ObservedMaterialAssociationProjection,
   ObservedMaterialAssociationAudit,
@@ -204,6 +216,8 @@ import {
   relationshipTargetKey,
   artifactRoleDecisionKey,
   validateArtifactRoleDecision,
+  metadataDecisionKey,
+  validateMetadataDecision,
 } from "@digital/domain";
 import {
   and,
@@ -302,6 +316,8 @@ import {
   relationshipManualSupports,
   artifactRoleDecisions,
   artifactRoleDecisionHeads,
+  metadataDecisions,
+  metadataDecisionHeads,
   entityIdentityMerges,
   entityIdentityMergeRetractions,
   recognitionHeads,
@@ -835,6 +851,8 @@ type CurrentCatalogueHydrationRows = {
   readonly relationshipDecisions: readonly RelationshipDecision[];
   /** 当前生效的人工产物角色决定头，按同一坐标唯一。 */
   readonly artifactRoleDecisions: readonly ArtifactRoleDecision[];
+  readonly metadataDecisions: readonly MetadataDecision[];
+  readonly metadataDecisionHistory: readonly MetadataDecision[];
   readonly participantResolutions: ReadonlyMap<string, string>;
   readonly identityRepresentatives: ReadonlyMap<string, string>;
   readonly localNames: readonly (typeof localEntityNames.$inferSelect)[];
@@ -961,6 +979,21 @@ type CurrentCatalogueCursor = {
   readonly version: 1;
   readonly query: "current-catalogue";
   readonly anchor: string;
+};
+
+type UnrecognizedObservationCursor = {
+  readonly version: 1;
+  readonly query: "unrecognized-materials";
+  readonly parentExecutionIds: readonly string[];
+  readonly parentExecutionId: string;
+  readonly directoryPosition: number;
+  readonly itemIndex: number;
+  readonly scope: {
+    readonly parentExecutionId?: string;
+    readonly assetLibraryId?: string;
+    readonly directoryKey?: string;
+    readonly currentOnly?: boolean;
+  };
 };
 
 type WorkflowHistoryCursor = {
@@ -1091,8 +1124,8 @@ function currentCataloguePageLimit(
     limit < 1 ||
     limit > maximumCataloguePageLimit
   ) {
-    throw new Error(
-      `Current Catalogue page limit must be between 1 and ${maximumCataloguePageLimit}`,
+    throw new InvalidPageRequest(
+      `当前资产页大小须为 1 到 ${maximumCataloguePageLimit}`,
     );
   }
   return limit;
@@ -1108,13 +1141,13 @@ function currentCatalogueCursor(
     cursor.length > maximumCatalogueCursorLength ||
     !/^[A-Za-z0-9_-]+$/u.test(cursor)
   ) {
-    throw new Error("Current Catalogue cursor is invalid");
+    throw new InvalidPageRequest("资产页游标无效");
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
   } catch {
-    throw new Error("Current Catalogue cursor is invalid");
+    throw new InvalidPageRequest("资产页游标无效");
   }
   if (
     typeof parsed !== "object" ||
@@ -1124,7 +1157,7 @@ function currentCatalogueCursor(
     typeof (parsed as { readonly anchor?: unknown }).anchor !== "string" ||
     (parsed as { readonly anchor: string }).anchor.length === 0
   ) {
-    throw new Error("Current Catalogue cursor is invalid");
+    throw new InvalidPageRequest("资产页游标无效");
   }
   return (parsed as CurrentCatalogueCursor).anchor;
 }
@@ -1143,6 +1176,52 @@ function encodeCurrentCatalogueCursor(anchor: string): string {
     query: "current-catalogue",
     anchor,
   };
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+function unrecognizedObservationCursor(
+  value: string | undefined,
+  scope: UnrecognizedObservationCursor["scope"],
+): UnrecognizedObservationCursor | undefined {
+  if (value === undefined) return undefined;
+  if (
+    value.length === 0 ||
+    value.length > maximumCatalogueCursorLength ||
+    !/^[A-Za-z0-9_-]+$/u.test(value)
+  )
+    throw new InvalidPageRequest("未识别材料页游标无效");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+  } catch {
+    throw new InvalidPageRequest("未识别材料页游标无效");
+  }
+  if (typeof parsed !== "object" || parsed === null)
+    throw new InvalidPageRequest("未识别材料页游标无效");
+  const cursor = parsed as Partial<UnrecognizedObservationCursor>;
+  if (
+    cursor.version !== 1 ||
+    cursor.query !== "unrecognized-materials" ||
+    !Array.isArray(cursor.parentExecutionIds) ||
+    !cursor.parentExecutionIds.every(
+      (parentExecutionId) =>
+        typeof parentExecutionId === "string" && parentExecutionId.length > 0,
+    ) ||
+    typeof cursor.parentExecutionId !== "string" ||
+    cursor.parentExecutionId.length === 0 ||
+    !Number.isSafeInteger(cursor.directoryPosition) ||
+    !Number.isSafeInteger(cursor.itemIndex) ||
+    cursor.directoryPosition! < 0 ||
+    cursor.itemIndex! < 0 ||
+    JSON.stringify(cursor.scope) !== JSON.stringify(scope)
+  )
+    throw new InvalidPageRequest("未识别材料页游标与查询范围不符");
+  return cursor as UnrecognizedObservationCursor;
+}
+
+function encodeUnrecognizedObservationCursor(
+  cursor: UnrecognizedObservationCursor,
+): string {
   return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
 }
 
@@ -1425,7 +1504,7 @@ export class SqliteCatalogue
                 .where(inArray(entities.id, sqliteTextSet(participantIds)))
                 .all().length !== participantIds.length
             )
-              throw new Error("更正关系引用了不存在的实体");
+              throw new RelatedEntityNotFound("更正关系引用了不存在的实体");
             transaction
               .insert(entityRelationships)
               .values({
@@ -1535,7 +1614,7 @@ export class SqliteCatalogue
             .where(inArray(entities.id, sqliteTextSet(participantIds)))
             .all().length !== participantIds.length
         )
-          throw new Error("更正关系引用了不存在的实体");
+          throw new RelatedEntityNotFound("更正关系引用了不存在的实体");
         manualRelationshipId = manualRelationshipFactId(
           target,
           correction.definitionId,
@@ -1628,7 +1707,7 @@ export class SqliteCatalogue
         ).size !== participants.length ||
         new Set(participants.map(({ entityId }) => entityId)).size < 2
       )
-        throw new Error("身份合并会使当前关系结构无效");
+        throw new CatalogueDecisionConflict("身份合并会使当前关系结构无效");
     }
   }
 
@@ -1680,12 +1759,13 @@ export class SqliteCatalogue
     if (change.kind === "create")
       return manualRelationshipTarget(change.definitionId, change.relationship);
     const target = state.targets.get(change.targetRelationshipId);
-    if (target === undefined) throw new Error("所选关系不是当前可决定的事实");
+    if (target === undefined)
+      throw new RelationshipTargetNotFound("所选关系不是当前可决定的事实");
     if (
       state.ambiguousRelationshipIds.has(change.targetRelationshipId) ||
       supportedRelationshipCount(state, target) > 1
     )
-      throw new Error("所选关系范围不唯一");
+      throw new CatalogueDecisionConflict("所选关系范围不唯一");
     return target;
   }
 
@@ -1921,6 +2001,33 @@ export class SqliteCatalogue
       .map(({ decision }) => artifactRoleDecisionFromRow(decision));
   }
 
+  /** 当前元数据决定头供共同求值；相同坐标历史由资料检查单独展示。 */
+  private metadataDecisionsWithDrizzle(
+    query: DrizzleReadQuery,
+  ): readonly MetadataDecision[] {
+    return query
+      .select({ decision: metadataDecisions })
+      .from(metadataDecisionHeads)
+      .innerJoin(
+        metadataDecisions,
+        eq(metadataDecisionHeads.decisionId, metadataDecisions.id),
+      )
+      .all()
+      .map(({ decision }) => metadataDecisionFromRow(decision));
+  }
+
+  /** 追加顺序就是人工修订历史顺序；表行不做覆盖或物理撤回。 */
+  private metadataDecisionHistoryWithDrizzle(
+    query: DrizzleReadQuery,
+  ): readonly MetadataDecision[] {
+    return query
+      .select()
+      .from(metadataDecisions)
+      .orderBy(asc(sql<number>`${metadataDecisions}.rowid`))
+      .all()
+      .map(metadataDecisionFromRow);
+  }
+
   /** 每个决定目标只有一个当前头；种类与目标共同决定该目标的生效事实。 */
   private relationshipHeadDecisionsWithDrizzle(
     query: DrizzleReadQuery,
@@ -2002,7 +2109,7 @@ export class SqliteCatalogue
         .get();
       if (existing !== undefined) {
         if (existing.label !== input.label)
-          throw new Error("本地身份提交坐标与既有内容冲突");
+          throw new CatalogueDecisionConflict("本地身份提交坐标与既有内容冲突");
         return {
           id: existing.entityId,
           label: existing.label,
@@ -2183,7 +2290,7 @@ export class SqliteCatalogue
           replay.mergedEntityId !== input.preview.mergedEntityId ||
           replay.impactFingerprint !== input.impactFingerprint
         )
-          throw new Error("身份合并提交坐标与既有内容冲突");
+          throw new CatalogueDecisionConflict("身份合并提交坐标与既有内容冲突");
         return "applied" as const;
       }
       const current = this.entityIdentityMergePreviewWithDrizzle(transaction, {
@@ -2191,7 +2298,9 @@ export class SqliteCatalogue
         mergedEntityId: input.preview.mergedEntityId,
       });
       if (current.mergeId !== undefined)
-        throw new Error("身份合并已经采用；请重用原提交标识");
+        throw new CatalogueDecisionConflict(
+          "身份合并已经采用；请重用原提交标识",
+        );
       if (current.baseline !== input.preview.baseline) return "stale" as const;
       transaction
         .insert(entityIdentityMerges)
@@ -2215,7 +2324,8 @@ export class SqliteCatalogue
     readonly preview: EntityIdentityMergePreview;
   }): Promise<"applied" | "stale"> {
     const mergeId = input.preview.mergeId;
-    if (mergeId === undefined) throw new Error("当前没有可撤销的身份合并");
+    if (mergeId === undefined)
+      throw new CatalogueDecisionConflict("当前没有可撤销的身份合并");
     const query = drizzle({ client: await this.ensure() });
     return query.transaction((transaction) => {
       const replay = transaction
@@ -2230,7 +2340,9 @@ export class SqliteCatalogue
         .get();
       if (replay !== undefined) {
         if (replay.mergeId !== mergeId)
-          throw new Error("身份合并撤销提交坐标与既有内容冲突");
+          throw new CatalogueDecisionConflict(
+            "身份合并撤销提交坐标与既有内容冲突",
+          );
         return "applied" as const;
       }
       const current = this.entityIdentityMergePreviewWithDrizzle(transaction, {
@@ -2363,7 +2475,7 @@ export class SqliteCatalogue
     },
   ): EntityIdentityMergePreview {
     if (input.retainedEntityId === input.mergedEntityId)
-      throw new Error("不能将实体合并到自身");
+      throw new InvalidIdentityOperation("不能将实体合并到自身");
     const entityIds = query
       .select({ id: entities.id })
       .from(entities)
@@ -2373,7 +2485,7 @@ export class SqliteCatalogue
       !entityIds.includes(input.retainedEntityId) ||
       !entityIds.includes(input.mergedEntityId)
     )
-      throw new Error("待合并相关实体不存在");
+      throw new RelatedEntityNotFound("待合并相关实体不存在");
     if (
       query
         .select()
@@ -2386,7 +2498,7 @@ export class SqliteCatalogue
         )
         .get() !== undefined
     )
-      throw new Error("数字资产不能进行身份合并");
+      throw new InvalidIdentityOperation("数字资产不能进行身份合并");
     const merges = query.select().from(entityIdentityMerges).all();
     const retractions = query
       .select()
@@ -2421,13 +2533,13 @@ export class SqliteCatalogue
       ) ||
         !this.hasCurrentRelatedEntityInGroupWithDrizzle(query, mergedMembers))
     )
-      throw new Error("待合并相关实体不是当前身份");
+      throw new RelatedEntityNotFound("待合并相关实体不是当前身份");
     if (
       retainedRoot === mergedRoot &&
       exact !== undefined &&
       !this.hasCurrentRelatedEntityInGroupWithDrizzle(query, retainedMembers)
     )
-      throw new Error("待合并相关实体不是当前身份");
+      throw new RelatedEntityNotFound("待合并相关实体不是当前身份");
     const affectedMemberIds = uniqueStrings([
       ...retainedMembers,
       ...mergedMembers,
@@ -2621,10 +2733,10 @@ export class SqliteCatalogue
         ).size !== projectedParticipants.length ||
         new Set(projectedParticipants.map(({ entityId }) => entityId)).size < 2
       )
-        throw new Error("身份合并会使现有关系结构无效");
+        throw new CatalogueDecisionConflict("身份合并会使现有关系结构无效");
     }
     if (retainedRoot === mergedRoot && exact === undefined)
-      throw new Error("身份合并必须连接两个不同当前根");
+      throw new InvalidIdentityOperation("身份合并必须连接两个不同当前根");
     return {
       retainedEntityId: exact?.retainedEntityId ?? retainedRoot,
       mergedEntityId: exact?.mergedEntityId ?? mergedRoot,
@@ -2688,7 +2800,7 @@ export class SqliteCatalogue
           .where(eq(entityMentions.id, input.mentionId))
           .get() === undefined
       )
-        throw new Error("待消歧实体指称不存在");
+        throw new EntityMentionNotFound("待消歧实体指称不存在");
       if (
         transaction
           .select({ id: entities.id })
@@ -2696,7 +2808,7 @@ export class SqliteCatalogue
           .where(eq(entities.id, representativeId))
           .get() === undefined
       )
-        throw new Error("所选相关实体不存在");
+        throw new RelatedEntityNotFound("所选相关实体不存在");
       const current = this.entityMentionResolutionWithDrizzle(
         transaction,
         input.mentionId,
@@ -2742,7 +2854,7 @@ export class SqliteCatalogue
       );
       if (current.baseline !== input.baseline) return "stale" as const;
       if (current.basis !== "manual" || current.entityId === undefined)
-        throw new Error("当前没有可撤回的人工实体消歧");
+        throw new CatalogueDecisionConflict("当前没有可撤回的人工实体消歧");
       transaction
         .insert(entityResolutionDecisions)
         .values({
@@ -2959,7 +3071,8 @@ export class SqliteCatalogue
       .from(entityMentions)
       .where(eq(entityMentions.id, mentionId))
       .get();
-    if (mention === undefined) throw new Error("待消歧实体指称不存在");
+    if (mention === undefined)
+      throw new EntityMentionNotFound("待消歧实体指称不存在");
     const decisions = query
       .select()
       .from(entityResolutionDecisions)
@@ -5690,32 +5803,173 @@ export class SqliteCatalogue
     readonly parentExecutionId?: string;
     readonly assetLibraryId?: string;
     readonly directoryKey?: string;
+    readonly currentOnly?: boolean;
+    readonly cursor?: string;
     readonly limit: number;
-  }): Promise<readonly UnrecognizedLibraryScanObservation[]> {
-    if (!Number.isSafeInteger(input.limit) || input.limit <= 0)
-      throw new Error("未识别观察查询必须有界");
+  }): Promise<UnrecognizedLibraryScanObservationPage> {
+    if (
+      !Number.isSafeInteger(input.limit) ||
+      input.limit <= 0 ||
+      input.limit > 200
+    )
+      throw new InvalidPageRequest("未识别材料分页条件无效");
+    const scope = {
+      ...(input.parentExecutionId === undefined
+        ? {}
+        : { parentExecutionId: input.parentExecutionId }),
+      ...(input.assetLibraryId === undefined
+        ? {}
+        : { assetLibraryId: input.assetLibraryId }),
+      ...(input.directoryKey === undefined
+        ? {}
+        : { directoryKey: input.directoryKey }),
+      ...(input.currentOnly === true ? { currentOnly: true } : {}),
+    };
+    const anchor = unrecognizedObservationCursor(input.cursor, scope);
     const database = await this.ensure();
     const query = drizzle({ client: database });
     return query.transaction((transaction) => {
-      const parents = transaction
+      const matchingParents = transaction
         .select({
           id: workflowExecutions.id,
+          status: workflowExecutions.status,
           workflowInputJson: workflowExecutions.workflowInputJson,
         })
         .from(workflowExecutions)
         .where(eq(workflowExecutions.operationKind, "scan-asset-library"))
+        .orderBy(asc(sql<number>`${workflowExecutions}.rowid`))
         .all()
         .filter((row) => {
-          if (input.parentExecutionId !== undefined)
-            return row.id === input.parentExecutionId;
-          if (input.assetLibraryId === undefined) return true;
+          if (
+            input.parentExecutionId !== undefined &&
+            row.id !== input.parentExecutionId
+          )
+            return false;
           return (
+            input.assetLibraryId === undefined ||
             parseLibraryScanPlanAssetLibraryId(row.workflowInputJson) ===
-            input.assetLibraryId
+              input.assetLibraryId
           );
         });
-      const observations: UnrecognizedLibraryScanObservation[] = [];
-      for (const parent of parents) {
+      const selectedParentIds =
+        anchor?.parentExecutionIds ??
+        (input.parentExecutionId !== undefined
+          ? [input.parentExecutionId]
+          : input.currentOnly === true
+            ? (() => {
+                // 面向浏览的默认视图是每个资料库最近一次完成的扫描。按耐久行账本顺序选出最新
+                // 完成父执行；运行中与失败扫描不覆盖最后一个完整快照。显式 parent 查询可回看历史。
+                const latestCompleted = new Map<
+                  string,
+                  (typeof matchingParents)[number]
+                >();
+                for (const parent of matchingParents) {
+                  if (parent.status !== "completed") continue;
+                  const libraryId = parseLibraryScanPlanAssetLibraryId(
+                    parent.workflowInputJson,
+                  );
+                  if (libraryId !== undefined)
+                    latestCompleted.set(libraryId, parent);
+                }
+                return [...latestCompleted.values()].map(({ id }) => id).sort();
+              })()
+            : matchingParents.map(({ id }) => id).sort());
+      const parents = matchingParents
+        .filter((parent) => selectedParentIds.includes(parent.id))
+        .sort((left, right) =>
+          left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
+        );
+      const parentExecutionIds = parents.map(({ id }) => id);
+      const currentlyOwnedMaterials =
+        input.currentOnly === true &&
+        input.parentExecutionId === undefined &&
+        parentExecutionIds.length > 0
+          ? transaction
+              .select({
+                address: locations.address,
+                materialKind: observedMaterialBoundaries.materialKind,
+              })
+              .from(artifactAssociations)
+              .innerJoin(
+                locations,
+                eq(locations.artifactId, artifactAssociations.artifactId),
+              )
+              .innerJoin(
+                currentObservedMaterialSupports,
+                eq(currentObservedMaterialSupports.locationId, locations.id),
+              )
+              .innerJoin(
+                observedMaterialBoundaries,
+                eq(observedMaterialBoundaries.locationId, locations.id),
+              )
+              .innerJoin(
+                observedRootRegistrations,
+                and(
+                  eq(
+                    observedRootRegistrations.id,
+                    currentObservedMaterialSupports.observedRootId,
+                  ),
+                  eq(
+                    observedRootRegistrations.configVersion,
+                    currentObservedMaterialSupports.observedRootVersion,
+                  ),
+                  eq(observedRootRegistrations.status, "active"),
+                ),
+              )
+              .innerJoin(
+                recognitionHeads,
+                eq(recognitionHeads.subjectId, artifactAssociations.subjectId),
+              )
+              .where(
+                and(
+                  eq(artifactAssociations.role, "asset.material-delivered"),
+                  eq(locations.kind, "observed"),
+                  input.assetLibraryId === undefined
+                    ? undefined
+                    : sql`EXISTS (
+                        SELECT 1
+                        FROM ${libraryDirectoryGrants}
+                        WHERE ${libraryDirectoryGrants.libraryId} = ${input.assetLibraryId}
+                          AND ${libraryDirectoryGrants.observedRootId} = ${currentObservedMaterialSupports.observedRootId}
+                          AND ${libraryDirectoryGrants.status} = 'active'
+                          AND ${libraryDirectoryGrants.awaitingObservation} = 0
+                      )`,
+                  sql`NOT EXISTS (
+                    SELECT 1
+                    FROM json_each(${currentObservedMaterialSupports.authorizedTargetsJson}) AS frozen_target
+                    LEFT JOIN ${observedRootRegistrations} AS current_target
+                      ON current_target.id = json_extract(frozen_target.value, '$.id')
+                     AND current_target.config_version = json_extract(frozen_target.value, '$.configVersion')
+                     AND current_target.status = 'active'
+                    WHERE current_target.id IS NULL
+                  )`,
+                  sql`NOT EXISTS (
+                    SELECT 1 FROM ${artifactAssociationSupersessions}
+                    WHERE ${artifactAssociationSupersessions.predecessorAssociationId} = ${artifactAssociations.id}
+                  )`,
+                  sql`NOT EXISTS (
+                    SELECT 1 FROM ${artifactAssociationRetractions}
+                    WHERE ${artifactAssociationRetractions.associationId} = ${artifactAssociations.id}
+                  )`,
+                ),
+              )
+              .all()
+          : [];
+      const currentMaterialFiles = new Set<string>();
+      const currentMaterialDirectories = new Set<string>();
+      for (const { address, materialKind } of currentlyOwnedMaterials) {
+        const resolvedAddress = path.resolve(address);
+        if (materialKind === "directory")
+          currentMaterialDirectories.add(resolvedAddress);
+        else currentMaterialFiles.add(resolvedAddress);
+      }
+      const observations: {
+        readonly item: UnrecognizedLibraryScanObservation;
+        readonly cursor: UnrecognizedObservationCursor;
+      }[] = [];
+      parentLoop: for (const parent of parents) {
+        if (anchor !== undefined && parent.id < anchor.parentExecutionId)
+          continue;
         const entries = transaction
           .select()
           .from(libraryScanDirectories)
@@ -5733,6 +5987,12 @@ export class SqliteCatalogue
           .all();
         for (const entry of entries) {
           if (entry.childExecutionId === null) continue;
+          if (
+            anchor !== undefined &&
+            parent.id === anchor.parentExecutionId &&
+            entry.position < anchor.directoryPosition
+          )
+            continue;
           const child = transaction
             .select()
             .from(workflowExecutions)
@@ -5750,22 +6010,133 @@ export class SqliteCatalogue
           const observedRootId =
             parseLibraryScanObservedRootId(child.workflowInputJson) ??
             entry.scopeReference;
+          const snapshots =
+            child.filesystemSnapshotsJson === null
+              ? []
+              : (JSON.parse(
+                  child.filesystemSnapshotsJson,
+                ) as readonly FilesystemPackageSnapshot[]);
+          const snapshotRootByPath = new Map<string, string>();
+          for (const snapshot of snapshots)
+            for (const file of snapshot.files)
+              snapshotRootByPath.set(file.relativePath, snapshot.root);
+          const currentPath = (relativePath: string): string | undefined => {
+            const rootPath =
+              snapshotRootByPath.get(relativePath) ?? snapshots[0]?.root;
+            return rootPath === undefined
+              ? undefined
+              : path.resolve(rootPath, relativePath);
+          };
+          const visibleCurrentPaths = (
+            relativePaths: readonly string[],
+          ): readonly string[] => {
+            if (
+              currentMaterialFiles.size === 0 &&
+              currentMaterialDirectories.size === 0
+            )
+              return relativePaths;
+            return relativePaths.filter((relativePath) => {
+              const absolutePath = currentPath(relativePath);
+              if (absolutePath === undefined) return true;
+              if (currentMaterialFiles.has(absolutePath)) return false;
+              let containingDirectory = path.dirname(absolutePath);
+              while (containingDirectory !== absolutePath) {
+                if (currentMaterialDirectories.has(containingDirectory))
+                  return false;
+                const parent = path.dirname(containingDirectory);
+                if (parent === containingDirectory) break;
+                containingDirectory = parent;
+              }
+              return !currentMaterialDirectories.has(absolutePath);
+            });
+          };
+          let itemIndex = 0;
+          const appendObservation = (
+            item: UnrecognizedLibraryScanObservation,
+          ): boolean => {
+            const currentIndex = itemIndex;
+            itemIndex += 1;
+            if (
+              anchor !== undefined &&
+              parent.id === anchor.parentExecutionId &&
+              entry.position === anchor.directoryPosition &&
+              currentIndex <= anchor.itemIndex
+            )
+              return false;
+            const relativePaths = visibleCurrentPaths(item.relativePaths);
+            if (relativePaths.length === 0) return false;
+            observations.push({
+              item:
+                relativePaths.length === item.relativePaths.length
+                  ? item
+                  : { ...item, relativePaths },
+              cursor: {
+                version: 1,
+                query: "unrecognized-materials",
+                parentExecutionIds,
+                parentExecutionId: parent.id,
+                directoryPosition: entry.position,
+                itemIndex: currentIndex,
+                scope,
+              },
+            });
+            return observations.length > input.limit;
+          };
           for (const item of scopedWorkItems) {
             if (!isUnrecognizedObservationWorkItem(item)) continue;
-            observations.push({
-              parentExecutionId: parent.id,
-              directoryKey: entry.directoryKey,
-              childExecutionId: entry.childExecutionId,
-              workItemKey: item.key,
-              observedRootId,
-              relativeScope: entry.relativeScope,
-              relativePaths: [...item.relativePaths],
-            });
-            if (observations.length >= input.limit) return observations;
+            if (
+              appendObservation({
+                kind: "work-item",
+                parentExecutionId: parent.id,
+                directoryKey: entry.directoryKey,
+                childExecutionId: entry.childExecutionId,
+                workItemKey: item.key,
+                observedRootId,
+                relativeScope: entry.relativeScope,
+                relativePaths: [...item.relativePaths],
+              })
+            )
+              break parentLoop;
           }
+          // 领域工作项（包括已接受与已提案项）已经代表的文件不能再次列为普通观察；剩余文件
+          // 仍是正式快照记录的材料，即便没有领域工作项或资产记录，也必须能被用户浏览。
+          const representedPaths = new Set(
+            workItems.flatMap((item) => item.relativePaths),
+          );
+          for (const snapshot of snapshots)
+            for (const file of snapshot.files) {
+              if (
+                representedPaths.has(file.relativePath) ||
+                !libraryScanPathWithinPrefix(
+                  entry.coveredPrefix ?? ".",
+                  file.relativePath,
+                )
+              )
+                continue;
+              if (
+                appendObservation({
+                  kind: "filesystem-observation",
+                  parentExecutionId: parent.id,
+                  directoryKey: entry.directoryKey,
+                  childExecutionId: entry.childExecutionId,
+                  observationId: `${snapshot.id}:${file.relativePath}`,
+                  observedRootId,
+                  relativeScope: entry.relativeScope,
+                  relativePaths: [file.relativePath],
+                })
+              )
+                break parentLoop;
+            }
         }
       }
-      return observations;
+      const items = observations.slice(0, input.limit);
+      const last = items.at(-1);
+      return {
+        items: items.map(({ item }) => item),
+        ...(observations.length <= input.limit || last === undefined
+          ? {}
+          : { nextCursor: encodeUnrecognizedObservationCursor(last.cursor) }),
+      };
     });
   }
 
@@ -6742,6 +7113,16 @@ export class SqliteCatalogue
     };
   }
 
+  async readWorkflowExecution(
+    executionId: string,
+  ): Promise<WorkflowExecution | undefined> {
+    const query = drizzle({ client: await this.ensure() });
+    return this.workflowExecutionPersistence.readExecutionWithDrizzle(
+      query,
+      executionId,
+    );
+  }
+
   async listExecutions(): Promise<readonly WorkflowExecution[]> {
     const database = await this.ensure();
     return drizzle({ client: database })
@@ -7506,6 +7887,30 @@ export class SqliteCatalogue
       )
       .get();
     return row === undefined ? undefined : sourceRecordFromDrizzle(row);
+  }
+
+  async inspectRawSourceRecordById(
+    sourceRecordId: string,
+  ): Promise<SourceRecord | undefined> {
+    const database = await this.ensure();
+    const row = drizzle({ client: database })
+      .select()
+      .from(sourceRecords)
+      .where(eq(sourceRecords.id, sourceRecordId))
+      .get();
+    return row === undefined ? undefined : sourceRecordFromDrizzle(row);
+  }
+
+  async listCommittedSourceRefreshRecordIdsForSubject(
+    assetId: string,
+  ): Promise<readonly string[]> {
+    const query = drizzle({ client: await this.ensure() });
+    const rows = query
+      .select({ sourceRecordId: sourceRefreshChanges.sourceRecordId })
+      .from(sourceRefreshChanges)
+      .where(eq(sourceRefreshChanges.subjectId, assetId))
+      .all();
+    return uniqueStrings(rows.map(({ sourceRecordId }) => sourceRecordId));
   }
 
   async findReusableOrdinaryScan(input: {
@@ -12757,6 +13162,149 @@ export class SqliteCatalogue
     return result;
   }
 
+  /** 元数据决定的预演本身是因果记录，不创建来源撤回或工作流执行。 */
+  async saveMetadataDecisionPreview(
+    preview: ChangeImpactPreview,
+  ): Promise<void> {
+    if (
+      preview.version !== "change-impact-preview/2" ||
+      preview.change?.kind !== "metadata-decision"
+    )
+      throw new Error("人工元数据修订需要一份精确的 V2 预演");
+    const { decision } = preview.change;
+    validateMetadataDecision(decision);
+    if (
+      decision.target.kind !== "entity" ||
+      decision.target.entityId !== preview.assetId ||
+      decision.predecessorDecisionId !==
+        (preview.change.expectedHeadDecisionId ?? undefined)
+    )
+      throw new Error("人工元数据修订的主体或前驱头不一致");
+    if (
+      (decision.adoptedFrom === undefined) !==
+      (preview.change.expectedCandidateBaseline === undefined)
+    )
+      throw new Error("人工元数据候选依据与冻结候选集合不一致");
+    const database = await this.ensure();
+    drizzle({ client: database })
+      .insert(changeImpactPreviews)
+      .values({
+        id: preview.id,
+        executionId: preview.executionId,
+        assetId: preview.assetId,
+        previewJson: JSON.stringify(preview),
+      })
+      .run();
+  }
+
+  /** 冻结的完整投影、候选、政策与当前头都仍成立时，原子追加决定并 CAS 推进坐标头。 */
+  async applyMetadataDecisionPreview(input: {
+    readonly preview: ChangeImpactPreview;
+    readonly confirmedBy: string;
+    readonly currentCandidateBaseline: string | null;
+    readonly policyVersion: string;
+  }): Promise<"applied" | "stale"> {
+    if (input.confirmedBy.trim().length === 0)
+      throw new Error("元数据修订确认者不能为空");
+    const database = await this.ensure();
+    let result: "applied" | "stale" = "stale";
+    drizzle({ client: database }).transaction(
+      (transaction) => {
+        const row = transaction
+          .select({ previewJson: changeImpactPreviews.previewJson })
+          .from(changeImpactPreviews)
+          .where(eq(changeImpactPreviews.id, input.preview.id))
+          .get();
+        if (row === undefined) return;
+        const preview = JSON.parse(row.previewJson) as ChangeImpactPreview;
+        if (preview.status !== "awaiting-confirmation") return;
+        if (
+          preview.version !== "change-impact-preview/2" ||
+          preview.change?.kind !== "metadata-decision" ||
+          preview.blockingConditions.length > 0
+        )
+          throw new Error("Metadata decision preview is not applicable");
+        const { decision } = preview.change;
+        validateMetadataDecision(decision);
+        const targetKey = metadataDecisionKey(
+          decision.target,
+          decision.property,
+          decision.metadataUsageContext,
+        );
+        const baseline = (key: string) =>
+          preview.baselines.find((item) => item.key === key)?.value;
+        const currentHeadDecisionId =
+          transaction
+            .select({ decisionId: metadataDecisionHeads.decisionId })
+            .from(metadataDecisionHeads)
+            .where(eq(metadataDecisionHeads.targetKey, targetKey))
+            .get()?.decisionId ?? null;
+        const expectedCandidates = baseline("metadata-decision-candidates");
+        if (
+          baseline("complete-current-projection") === undefined ||
+          this.currentChangeImpactBaselineWithDrizzle(
+            transaction,
+            preview.assetId,
+          ) !== baseline("complete-current-projection") ||
+          currentHeadDecisionId !== preview.change.expectedHeadDecisionId ||
+          baseline("metadata-decision-head") !==
+            (currentHeadDecisionId ?? "none") ||
+          (expectedCandidates !== undefined &&
+            input.currentCandidateBaseline !== expectedCandidates) ||
+          input.policyVersion !== baseline("metadata-decision-policy-version")
+        ) {
+          transaction
+            .update(changeImpactPreviews)
+            .set({
+              previewJson: JSON.stringify({ ...preview, status: "stale" }),
+            })
+            .where(eq(changeImpactPreviews.id, preview.id))
+            .run();
+          return;
+        }
+        transaction
+          .insert(metadataDecisions)
+          .values(metadataDecisionRow(decision))
+          .run();
+        const moved =
+          preview.change.expectedHeadDecisionId === null
+            ? transaction
+                .insert(metadataDecisionHeads)
+                .values({ targetKey, decisionId: decision.id })
+                .onConflictDoNothing()
+                .run()
+            : transaction
+                .update(metadataDecisionHeads)
+                .set({ decisionId: decision.id })
+                .where(
+                  and(
+                    eq(metadataDecisionHeads.targetKey, targetKey),
+                    eq(
+                      metadataDecisionHeads.decisionId,
+                      preview.change.expectedHeadDecisionId,
+                    ),
+                  ),
+                )
+                .run();
+        if (moved.changes !== 1)
+          throw new Error("Metadata decision head moved concurrently");
+        this.invalidateStaleChangeImpactPreviewsWithDrizzle(transaction, [
+          preview.assetId,
+        ]);
+        transaction
+          .update(changeImpactPreviews)
+          .set({
+            previewJson: JSON.stringify({ ...preview, status: "applied" }),
+          })
+          .where(eq(changeImpactPreviews.id, preview.id))
+          .run();
+        result = "applied";
+      },
+      { behavior: "immediate" },
+    );
+    return result;
+  }
+
   /**
    * 仅用于夹具设置。产品代码必须使用 `createAutomationIntentForObservedRoot`，
    * 使根授权与意图创建共享同一个事务。
@@ -12900,6 +13448,41 @@ export class SqliteCatalogue
       .map(assetLibraryFromDrizzle);
   }
 
+  async listAssetLibrariesPage(input: {
+    readonly afterId?: string;
+    readonly limit: number;
+  }): Promise<{
+    readonly items: readonly AssetLibrary[];
+    readonly hasMore: boolean;
+  }> {
+    if (
+      !Number.isSafeInteger(input.limit) ||
+      input.limit < 1 ||
+      input.limit > 100 ||
+      (input.afterId !== undefined && input.afterId.length === 0)
+    )
+      throw new Error("资产库分页条件无效");
+    const database = await this.ensure();
+    const rows = drizzle({ client: database })
+      .select()
+      .from(assetLibraries)
+      .where(
+        and(
+          eq(assetLibraries.status, "active"),
+          ...(input.afterId === undefined
+            ? []
+            : [gt(assetLibraries.id, input.afterId)]),
+        ),
+      )
+      .orderBy(asc(assetLibraries.id))
+      .limit(input.limit + 1)
+      .all();
+    return {
+      items: rows.slice(0, input.limit).map(assetLibraryFromDrizzle),
+      hasMore: rows.length > input.limit,
+    };
+  }
+
   async getAssetLibrary(id: string): Promise<AssetLibrary | undefined> {
     const database = await this.ensure();
     const row = drizzle({ client: database })
@@ -12969,7 +13552,7 @@ export class SqliteCatalogue
             // 保留的 removed 关系只能由点名它的显式重连接管：重复添加同一路径不能把旧
             // 授权或旧执行悄悄救活。
             if (retained !== undefined)
-              throw new Error(
+              throw new InvalidAssetLibraryConfiguration(
                 "该目录此前已从本资产库移除，请使用重新连接而不是重复添加",
               );
           }
@@ -13071,7 +13654,7 @@ export class SqliteCatalogue
               )
               .run();
             if (bumped.changes !== 1)
-              throw new Error("该目录的授权已变更，请刷新后重试");
+              throw new AssetLibraryConfigurationConflict();
             closureSeeds.add(existing.id);
             invalidate(entry.rootId, existing.authorityVersion + 1);
           }
@@ -13099,7 +13682,7 @@ export class SqliteCatalogue
               )
               .run();
             if (removed.changes !== 1)
-              throw new Error("该目录的授权已变更，请刷新后重试");
+              throw new AssetLibraryConfigurationConflict();
             closureSeeds.add(grant.id);
             invalidate(grant.observedRootId);
           }
@@ -13156,7 +13739,7 @@ export class SqliteCatalogue
                 )
                 .run();
               if (cascaded.changes !== 1)
-                throw new Error("该目录的授权已变更，请刷新后重试");
+                throw new AssetLibraryConfigurationConflict();
               invalidate(grant.observedRootId, grant.authorityVersion + 1);
             }
           }
@@ -14879,6 +15462,24 @@ export class SqliteCatalogue
     assetId: string,
     scopeDecisionIds?: readonly string[],
   ): string {
+    const metadataDecisionHeadsForAsset = query
+      .select({
+        targetKey: metadataDecisionHeads.targetKey,
+        decisionId: metadataDecisionHeads.decisionId,
+      })
+      .from(metadataDecisionHeads)
+      .innerJoin(
+        metadataDecisions,
+        eq(metadataDecisionHeads.decisionId, metadataDecisions.id),
+      )
+      .where(
+        and(
+          eq(metadataDecisions.targetKind, "entity"),
+          eq(metadataDecisions.targetEntityId, assetId),
+        ),
+      )
+      .orderBy(asc(metadataDecisionHeads.targetKey))
+      .all();
     const lineage = query
       .select({
         source_identity: sourceLineageHeads.sourceIdentity,
@@ -15062,6 +15663,9 @@ export class SqliteCatalogue
       return JSON.stringify({
         lineage,
         metadata,
+        ...(metadataDecisionHeadsForAsset.length === 0
+          ? {}
+          : { metadataDecisions: metadataDecisionHeadsForAsset }),
         relationships,
         artifacts: scopedArtifacts,
       });
@@ -15091,7 +15695,15 @@ export class SqliteCatalogue
           ? { sourceAssociationId: row.sourceAssociationId }
           : {}),
       }));
-    return JSON.stringify({ lineage, metadata, relationships, artifacts });
+    return JSON.stringify({
+      lineage,
+      metadata,
+      ...(metadataDecisionHeadsForAsset.length === 0
+        ? {}
+        : { metadataDecisions: metadataDecisionHeadsForAsset }),
+      relationships,
+      artifacts,
+    });
   }
   /**
    * 02B 无法证明支持的存量关联只能原样保留。只有本次叠加投影改变其
@@ -20661,6 +21273,9 @@ export class SqliteCatalogue
       this.relationshipHeadDecisionsWithDrizzle(query);
     const artifactRoleDecisionRows =
       this.artifactRoleDecisionsWithDrizzle(query);
+    const metadataDecisionRows = this.metadataDecisionsWithDrizzle(query);
+    const metadataDecisionHistoryRows =
+      this.metadataDecisionHistoryWithDrizzle(query);
     const selectedTargetKeys = new Set(
       [...initialRelationshipSupports.targetsByRelationshipId.values()].map(
         relationshipTargetKey,
@@ -21496,6 +22111,8 @@ export class SqliteCatalogue
         relationshipSupports,
         relationshipDecisions: relationshipDecisionRows,
         artifactRoleDecisions: artifactRoleDecisionRows,
+        metadataDecisions: metadataDecisionRows,
+        metadataDecisionHistory: metadataDecisionHistoryRows,
         participantResolutions,
         identityRepresentatives,
         localNames,
@@ -21711,7 +22328,7 @@ export class SqliteCatalogue
       ],
       revisions: rows.revisions,
     };
-    // 捆绑来源的相关主体没有独立来源关联；本当前提案和当前主来源头共同证明资格。
+    // 捆绑来源的相关主体没有独立来源关联；活动解释与精确主来源 coverage 的当前头共同证明资格。
     const isCurrentBundledRelatedArtifact = (
       row: typeof artifactAssociations.$inferSelect,
     ): boolean => {
@@ -21779,12 +22396,12 @@ export class SqliteCatalogue
           return (
             anchorCoverage.authority === "official" &&
             anchorCoverage.completeness === "complete" &&
-            rows.currentSourceOwnerRecordHeads.has(
+            rows.currentSourceOwnerCoverageHeads.has(
               sourceOwnerLineageKey(
                 assetId,
                 anchor.sourceIdentity,
                 anchor.nativeAddress,
-                anchor.id,
+                anchorCoverage.id,
               ),
             )
           );
@@ -21942,6 +22559,93 @@ export class SqliteCatalogue
     const retractedMetadataIds = new Set(
       rows.metadataRetractions.map((item) => item.assertionId),
     );
+    const isCurrentInterpretedRelatedMetadata = (
+      row: (typeof rows.metadata)[number],
+      lifecycle: (typeof rows.metadataLifecycles)[number] | undefined,
+      recordIds: readonly string[],
+    ): boolean => {
+      if (
+        lifecycle === undefined ||
+        row.subjectId === assetId ||
+        !factSubjectIds.has(row.subjectId) ||
+        row.targetKind !== "entity" ||
+        row.targetEntityId !== row.subjectId ||
+        interpretation === undefined ||
+        recognitionSourceAssociation === undefined
+      )
+        return false;
+      const declaredEntity = interpretation.entities?.find(
+        (entity) =>
+          entity.id === row.subjectId &&
+          producerJson(entity.producer ?? interpretation.producer) ===
+            row.producerJson,
+      );
+      if (declaredEntity === undefined) return false;
+      return recordIds.some((recordId) => {
+        const record = sourceRecordsById.get(recordId);
+        if (
+          record === undefined ||
+          !interpretation.sourceRecordIds.includes(recordId) ||
+          !rows.sourceOwnerByRecordId.get(recordId)?.has(assetId) ||
+          record.sourceIdentity !== lifecycle.sourceIdentity ||
+          record.nativeAddress !== lifecycle.nativeAddress ||
+          JSON.parse(record.coverageJson).id !== lifecycle.coverageId
+        )
+          return false;
+        const coverage = JSON.parse(
+          record.coverageJson,
+        ) as SourceRecord["coverage"];
+        if (
+          coverage.authority !== "official" ||
+          coverage.completeness !== "complete" ||
+          !declaredEntity.sourceRecordIds.includes(recordId)
+        )
+          return false;
+        const declaredMetadata = interpretation.metadata.some(
+          (candidate) =>
+            candidate.subjectId === row.subjectId &&
+            candidate.property === row.property &&
+            candidate.sourceSlot === lifecycle.sourceSlot &&
+            candidate.value === row.value &&
+            JSON.stringify(candidate.qualifiers ?? []) === row.qualifiersJson &&
+            candidate.sourceRecordIds.includes(recordId) &&
+            producerJson(candidate.producer ?? interpretation.producer) ===
+              row.producerJson,
+        );
+        if (!declaredMetadata || row.sourceSlot !== lifecycle.sourceSlot)
+          return false;
+        const anchored = interpretation.sourceRecordIds.some((anchorId) => {
+          const anchor = sourceRecordsById.get(anchorId);
+          if (
+            anchor === undefined ||
+            anchor.id === record.id ||
+            anchor.executionId !== record.executionId ||
+            anchor.sourceIdentity !==
+              recognitionSourceAssociation.sourceIdentity ||
+            anchor.nativeAddress !==
+              recognitionSourceAssociation.nativeAddress ||
+            anchor.producerJson !== record.producerJson
+          )
+            return false;
+          const anchorCoverage = JSON.parse(
+            anchor.coverageJson,
+          ) as SourceRecord["coverage"];
+          return (
+            anchorCoverage.authority === "official" &&
+            anchorCoverage.completeness === "complete" &&
+            rows.currentSourceOwnerCoverageHeads.has(
+              sourceOwnerLineageKey(
+                assetId,
+                anchor.sourceIdentity,
+                anchor.nativeAddress,
+                anchorCoverage.id,
+              ),
+            )
+          );
+        });
+        return anchored;
+      });
+    };
     const metadata = metadataRows.flatMap((row): MetadataAssertion[] => {
       if (supersededMetadataIds.has(row.id) || retractedMetadataIds.has(row.id))
         return [];
@@ -21995,6 +22699,11 @@ export class SqliteCatalogue
                   ),
               );
             })());
+      const livesOnCurrentInterpretation = isCurrentInterpretedRelatedMetadata(
+        row,
+        lifecycle,
+        recordIds,
+      );
       const observedPart =
         row.observedArtifactPartJson === null
           ? undefined
@@ -22011,7 +22720,12 @@ export class SqliteCatalogue
             !rows.endedRecognitionDecisionIds.has(row.recognitionDecisionId) &&
             supportedObservedRevisionIds.has(observedPart.revisionId)));
       const isUserFact = recordIds.length === 0 && row.authoredByJson !== null;
-      if (!livesOnCurrentLineage && !isLocalObservedFact && !isUserFact)
+      if (
+        !livesOnCurrentLineage &&
+        !livesOnCurrentInterpretation &&
+        !isLocalObservedFact &&
+        !isUserFact
+      )
         return [];
       return [
         {
@@ -22426,6 +23140,15 @@ export class SqliteCatalogue
     const mentionRows = rows.mentions.filter((item) =>
       eligibleMentionIds.has(item.id),
     );
+    const isRelevantMetadataDecision = (decision: MetadataDecision) => {
+      if (decision.target.kind === "entity")
+        return factSubjectIds.has(decision.target.entityId);
+      const { artifactId, revisionId } = decision.target;
+      return revisionRows.some(
+        (revision) =>
+          revision.id === revisionId && revision.artifactId === artifactId,
+      );
+    };
 
     return {
       proposal,
@@ -22524,6 +23247,12 @@ export class SqliteCatalogue
               ],
         ),
       artifactRoleDecisions: rows.artifactRoleDecisions,
+      metadataDecisions: rows.metadataDecisions.filter(
+        isRelevantMetadataDecision,
+      ),
+      metadataDecisionHistory: rows.metadataDecisionHistory.filter(
+        isRelevantMetadataDecision,
+      ),
       metadata,
       entities: currentEntities.map(({ kind: _kind, ...entity }) => entity),
       currentRelatedEntities: currentEntities,
@@ -23075,6 +23804,69 @@ function artifactRoleDecisionRow(
   };
 }
 
+function metadataDecisionFromRow(
+  row: typeof metadataDecisions.$inferSelect,
+): MetadataDecision {
+  const target = descriptionTargetFromColumns(row);
+  const decision: MetadataDecision = {
+    id: row.id,
+    target,
+    property: row.property,
+    metadataUsageContext: row.metadataUsageContext,
+    kind: row.kind === "clear" ? "clear" : "pin",
+    ...(row.value === null ? {} : { value: row.value }),
+    ...(row.qualifiersJson === null
+      ? {}
+      : {
+          qualifiers: JSON.parse(row.qualifiersJson) as NonNullable<
+            MetadataDecision["qualifiers"]
+          >,
+        }),
+    ...(row.adoptedFromJson === null
+      ? {}
+      : {
+          adoptedFrom: JSON.parse(row.adoptedFromJson) as NonNullable<
+            MetadataDecision["adoptedFrom"]
+          >,
+        }),
+    ...(row.predecessorDecisionId === null
+      ? {}
+      : { predecessorDecisionId: row.predecessorDecisionId }),
+    initiatedBy: row.initiatedBy,
+  };
+  validateMetadataDecision(decision);
+  return decision;
+}
+
+function metadataDecisionRow(
+  decision: MetadataDecision,
+): typeof metadataDecisions.$inferInsert {
+  const target = decision.target;
+  return {
+    id: decision.id,
+    targetKind: target.kind,
+    targetEntityId: target.kind === "entity" ? target.entityId : null,
+    targetArtifactId:
+      target.kind === "artifact-revision" ? target.artifactId : null,
+    targetRevisionId:
+      target.kind === "artifact-revision" ? target.revisionId : null,
+    property: decision.property,
+    metadataUsageContext: decision.metadataUsageContext,
+    kind: decision.kind,
+    value: decision.value ?? null,
+    qualifiersJson:
+      decision.qualifiers === undefined
+        ? null
+        : JSON.stringify(decision.qualifiers),
+    adoptedFromJson:
+      decision.adoptedFrom === undefined
+        ? null
+        : JSON.stringify(decision.adoptedFrom),
+    predecessorDecisionId: decision.predecessorDecisionId ?? null,
+    initiatedBy: decision.initiatedBy,
+  };
+}
+
 function producerFromJson(value: string): CapabilityCoordinate {
   return JSON.parse(value) as CapabilityCoordinate;
 }
@@ -23369,4 +24161,12 @@ function parseLibraryScanObservedRootId(
     return undefined;
   const id = (first as Record<string, unknown>).id;
   return typeof id === "string" ? id : undefined;
+}
+
+function libraryScanPathWithinPrefix(prefix: string, relativePath: string) {
+  return (
+    prefix === "." ||
+    relativePath === prefix ||
+    relativePath.startsWith(`${prefix}/`)
+  );
 }

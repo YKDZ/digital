@@ -2,10 +2,315 @@
   "id": 209764,
   "translations": [
     {
-      "iso_639_1": "zh",
-      "iso_3166_1": "CN",
+      "iso_3166_1": "US",
+      "iso_639_1": "en",
+      "name": "English",
+      "english_name": "English",
       "data": {
+        "homepage": "",
+        "overview": "A newsman discovers he's been rigged with a bomb after he has an exclusive interview with a terrorist who blew up a bridge.",
+        "runtime": 97,
+        "tagline": "Stay live to stay alive.",
+        "title": "The Terror Live"
+      }
+    },
+    {
+      "iso_3166_1": "CN",
+      "iso_639_1": "zh",
+      "name": "普通话",
+      "english_name": "Mandarin",
+      "data": {
+        "homepage": "",
+        "overview": "曾经是韩国顶级电视新闻主播的尹英华，如今被调到广播电台主持时事节目。一天早晨的直播中，一名自称朴鲁圭的建筑工人突然打来电话，声称要炸毁汉江上的麻浦大桥。尹英华起初只当这是恶作剧，甚至出言挑衅，没想到几分钟后，窗外的麻浦大桥真的发生爆炸。意识到这场突发事件可能成为自己重返电视新闻台的机会，尹英华没有立即将独家线索交给警方，而是开始与来电者进行直播连线。对方声称多年前维修大桥时有工人因事故死亡，却始终没有得到应有的道歉，并要求总统亲自公开致歉。随着警方、电视台和政府相继介入，这场原本被尹英华视为事业翻身机会的独家直播，也逐渐演变成一场完全超出他掌控的生死危机……",
+        "runtime": 0,
+        "tagline": "",
         "title": "恐怖直播"
+      }
+    },
+    {
+      "iso_3166_1": "PL",
+      "iso_639_1": "pl",
+      "name": "Polski",
+      "english_name": "Polish",
+      "data": {
+        "homepage": "",
+        "overview": "Yeong-hwa Yoon to popularny prezenter, który zostaje zdegradowany i osadzony na stanowisku gospodarza audycji radiowej. Pewnego ranka odbiera telefon od tajemniczego słuchacza, który informuje go, że planuje wysadzić most. Sądząc, że to kolejny żart, połączenie zostaje zerwane. Kilka minut później, kiedy most wybucha, Yeong-hwa w ów wydarzeniu dostrzega szansę powrotu do zawodu.",
+        "runtime": 0,
+        "tagline": "",
+        "title": ""
+      }
+    },
+    {
+      "iso_3166_1": "KR",
+      "iso_639_1": "ko",
+      "name": "한국어/조선말",
+      "english_name": "Korean",
+      "data": {
+        "homepage": "",
+        "overview": "불미스러운 일로 라디오 프로그램으로 밀려난 국민 앵커 윤영화는 생방송 진행 중 신원미상 청취자로부터 협박전화를 받는다. 장난전화로 치부하며 전화를 끊은 순간, 마포대교가 폭발하는 장면을 목격하게 된다. 눈 앞에서 벌어진 끔찍한 재난이 테러사건이라는 단서를 쥐게 된 윤영화.  마감뉴스 복귀 조건으로 보도국장과 물밑 거래를 시도한 그는 테러범과의 전화통화를 독점 생중계하기에 이른다. 21억이라는 거액의 보상금과 대통령의 사과를 요구하는 테러범. 한편 윤영화는 자신의 귀에 꽂힌 인이어에 폭탄이 설치된 사실을 알게 되는데...",
+        "runtime": 97,
+        "tagline": "한강 폭탄테러의 생생한 충격이 독점 생중계된다",
+        "title": "더 테러 라이브"
+      }
+    },
+    {
+      "iso_3166_1": "HU",
+      "iso_639_1": "hu",
+      "name": "Magyar",
+      "english_name": "Hungarian",
+      "data": {
+        "homepage": "",
+        "overview": "Yoon,a lefokozott hiradós úgy érzi ismét sztár lehet ha elcsíp egy exkluziv élö közvetitést az ismeretlen telefonálóval,aki az ő müsorideje alatt felrobbantja a Mapó-hidat..",
+        "runtime": 0,
+        "tagline": "",
+        "title": "Terror élő adásban"
+      }
+    },
+    {
+      "iso_3166_1": "FR",
+      "iso_639_1": "fr",
+      "name": "Français",
+      "english_name": "French",
+      "data": {
+        "homepage": "",
+        "overview": "Suite à un incident, Yoon Young-Hwa, un ancien présentateur TV à succès, travaille désormais à la radio. Un jour, un homme l'appelle en direct lors de son émission et lui affirme qu'il va faire exploser le pont qui se situe juste en face des bureaux de sa radio. Yoon Young-Hwa croit à un canular jusqu'à ce qu'il assister à l'explosion du pont. Yoon décide de se servir du terroriste pour relancer sa carrière...",
+        "runtime": 97,
+        "tagline": "",
+        "title": "The Terror Live"
+      }
+    },
+    {
+      "iso_3166_1": "CZ",
+      "iso_639_1": "cs",
+      "name": "Český",
+      "english_name": "Czech",
+      "data": {
+        "homepage": "",
+        "overview": "Young-hwa Yoon (Jung-woo Ha), skomírající hvězda televizního zpravodajství, prodělávajíc jednu ze svých nejtěžších životních etap, dostává během rutinního rozhlasového vysílání přepojený telefonní hovor, stávajíc se styčným bodem celého snímku. Volajícím není nikdo jiný, než podivně znějící muž, vydávajíc se za ozbrojeného teroristu. Young-hwa se k celé záležitosti staví poměrně skepticky, jak by taky ne, vždyť podobných výhružných telefonátů lze po celé zemi zaznamenat stovky, ne-li tisíce. Tento telefonát nicméně planou výhrůžkou není.",
+        "runtime": 97,
+        "tagline": "",
+        "title": ""
+      }
+    },
+    {
+      "iso_3166_1": "ES",
+      "iso_639_1": "es",
+      "name": "Español",
+      "english_name": "Spanish",
+      "data": {
+        "homepage": "",
+        "overview": "Yoon Young-Hwa  es un ex presentador de televisión muy popular, pero debido a un incidente desagradable trabaja ahora en un programa de radio. Un día un oyente llama al programa y avisa que va a volar el puente Mapodaegyo, lo que en un principio parece una broma de mal gusto se convierte en realidad. Yoo Young-Hwa ve en esta desgracia, la oportunidad de volver a la televisión.",
+        "runtime": 0,
+        "tagline": "",
+        "title": "The Terror Live"
+      }
+    },
+    {
+      "iso_3166_1": "GR",
+      "iso_639_1": "el",
+      "name": "ελληνικά",
+      "english_name": "Greek",
+      "data": {
+        "homepage": "",
+        "overview": "\"Θα ανατινάξω μια γέφυρα….\" Ένα τηλεφώνημα σε μια ραδιοφωνική εκπομπή, έρχεται να σπείρει τον πανικό μόλις αποδεικνύεται ότι δεν πρόκειται για φάρσα… Ένας ξεπεσμένος αλλά κάποτε σπουδαίος παρουσιαστής των δελτίων ειδήσεων που τώρα κάνει μόνο ραδιόφωνο, το βλέπει σαν ευκαιρία ζωής και δεν βιάζεται να το καταγγείλει. Η ένταση αυξάνεται, η αγωνία μεγαλώνει και όλα κρέμονται από μια κλωστή",
+        "runtime": 0,
+        "tagline": "",
+        "title": "The Terror Live"
+      }
+    },
+    {
+      "iso_3166_1": "IT",
+      "iso_639_1": "it",
+      "name": "Italiano",
+      "english_name": "Italian",
+      "data": {
+        "homepage": "",
+        "overview": "Yoon Young-hwa, una volta il re dei presentatori di telegiornale, viene retrocesso al giornale radio. Un giorno, durante una sua conduzione, arriva la telefonata di qualcuno che minaccia di far saltare il ponte Mapo. Seppur tutti immaginano che si tratti di uno scherzo, dieci minuti dopo il ponte esplode. Per ridare una scossa alla sua carriera, Yoon si lancia allora in una diretta esclusiva, ottenendo dietro il pagamento di una somma di denaro un'intervista con il terrorista. Mentre l'attentatore rivela di essere uno dei lavoratori edili di ponte Mapo ed esige le scuse del presidente per i colleghi morti sul lavoro, il governo respinge le sue richieste lasciandolo colpire nuovamente. Tentando di far da mediatore tra le due parti, Yoon intuisce che una bomba è stata piazzata nelle sue vicinanze e cade in uno stato di puro terrore.",
+        "runtime": 97,
+        "tagline": "",
+        "title": "The Terror Live"
+      }
+    },
+    {
+      "iso_3166_1": "IL",
+      "iso_639_1": "he",
+      "name": "עִבְרִית",
+      "english_name": "Hebrew",
+      "data": {
+        "homepage": "",
+        "overview": "יאנג-ווא יון, אחד ממגישי החדשות הטובים, מקבל הורדה בדרגה ונשלח לשדר חדשות ברדיו. יום אחד, נכנסה שיחה לתכניתו ובה הדובר מאיים לפוצץ את \" גשר מאפו\". לאחר שהוא \"נפנף\" אותה כשיחה מתיחה, 10 דקות לאחר מכן הגשר מפוצץ ונהרס. בכדי להחזיר את התהילה והקרירה שלו למסלול , יון מנסה לתפוס שידור ישיר ובלעדי.הטרוריסט דורש סכום נכבד בתמורה .הטרוריסט מגלה שהוא אחד מעובדי הבנייה של הגשר ודורש את התנצלותו של הנשיא, לעמיתיו שמתו במהלך בניית הגשר. עם זאת, הממשלה דוחה את דרישותיו, והטרוריסט מכה שוב. בעוד מאמציו של יון לשכנע הן את הממשלה והן את הטרוריסט משתבשים, יון מבין שיש פצצה מתקתקת ומבוימת היטב ונופלת עליו באימה ופחד צרופים...",
+        "runtime": 0,
+        "tagline": "",
+        "title": "טרור בשידור חי"
+      }
+    },
+    {
+      "iso_3166_1": "NL",
+      "iso_639_1": "nl",
+      "name": "Nederlands",
+      "english_name": "Dutch",
+      "data": {
+        "homepage": "",
+        "overview": "Young-Hwa Yoon is een voormalig top-nieuwslezer, die door een een vuil zaakje aan lager wal is geraakt en nu werkt als radioverslaggever. Op een morgen belt een luisteraar naar zijn show en kondigt aan de Mapodaegyo-brug op te gaan blazen. Eerst denken ze aan een grap, maar als de brug daadwerkelijk de lucht in vliegt weet Young-Hwa dat het wel degelijk om de dader ging en hij denkt via hem weer zijn aspiraties als nieuwslezer op TV nieuw leven in te kunnen blazen.",
+        "runtime": 97,
+        "tagline": "",
+        "title": "Deu Tae-ro Ra-i-beu"
+      }
+    },
+    {
+      "iso_3166_1": "TR",
+      "iso_639_1": "tr",
+      "name": "Türkçe",
+      "english_name": "Turkish",
+      "data": {
+        "homepage": "",
+        "overview": "Eskiden popüler bir TV spikeri olan Yoon Young-Hwa artık bir radyo programı sunucusu olarak çalışıyordur. Bir sabah, bir dinleyici programı arar ve Mapodaegyo Köprüsünü havaya uçuracağını iddia eder. Yoon Young-Hwa bunun şaka olduğunu zannetse de ofisinden görülebilen Mapodaegyo Köprüsü aniden patlar. Yoon Young-Hwa gerçek zamanlı olarak şahit olduğu bu terör olayının tekrardan bir TV spikeri olarak çalışması için bir bilet olduğuna karar verir. O radyo programına katılan kişi ile TV'de canlı bir röportaj yapmaya karar verir, ama daha önce haber bürosu şefi Cha Dae-Eun ile bir anlaşma yapar. Bu arada, arayan kişi yayın istasyonundan 2,1 milyar Won ve Güney Kore Devlet Başkanından bir özür ister. Arayan kişi aynı zamanda Yoon Young-Hwa'a patlayıcı giymiş olduğunu da söyler.",
+        "runtime": 0,
+        "tagline": "",
+        "title": "Naklen Terör"
+      }
+    },
+    {
+      "iso_3166_1": "SE",
+      "iso_639_1": "sv",
+      "name": "svenska",
+      "english_name": "Swedish",
+      "data": {
+        "homepage": "",
+        "overview": "Yoon är en före detta tv-ankare. Nu jobbar han med radio och en dag ringer en lyssnare in och berättar att han ska spränga Mapodaegyo-bron.",
+        "runtime": 100,
+        "tagline": "",
+        "title": "The Terror Live"
+      }
+    },
+    {
+      "iso_3166_1": "DE",
+      "iso_639_1": "de",
+      "name": "Deutsch",
+      "english_name": "German",
+      "data": {
+        "homepage": "",
+        "overview": "\"Ich werde die Mapo Brücke in die Luft jagen.\" - Eines Tages geht ein anonymer Anruf in einer Radiostation ein. Als dieser sich als legitim herausstellt, entscheidet der junge Moderaton Yoon, die Drohungen des Terroristen live zu senden, um seine Karriere voran zu treiben.",
+        "runtime": 0,
+        "tagline": "",
+        "title": "The Terror Live"
+      }
+    },
+    {
+      "iso_3166_1": "MX",
+      "iso_639_1": "es",
+      "name": "Español",
+      "english_name": "Spanish",
+      "data": {
+        "homepage": "",
+        "overview": "\"Voy a explotar el puente Mapo\". Una llamada anónima llega a una estación de radio un día. Cuando resulta ser legítimo, las amenazas de un terrorista terminan siendo transmitidas en vivo en todo el país.",
+        "runtime": 0,
+        "tagline": "",
+        "title": "El terror en vivo"
+      }
+    },
+    {
+      "iso_3166_1": "BG",
+      "iso_639_1": "bg",
+      "name": "български език",
+      "english_name": "Bulgarian",
+      "data": {
+        "homepage": "",
+        "overview": "Бившия популярен телевизионен водещ Юн Йон Хва е понижен в радио водещ.Един ден в радио студиото започва анонимен разговор. Непознатият заплашва да взриви моста \"Мапхо\" и след няколко минути студийните служители са убедени, че това не е шега.Надявайки се отново да стане телевизионен водещ, Юн Йон Хва решава да се възползва от ситуацията и да проведе ексклузивен доклад на живо. Той не подозира,какво ще се случи.",
+        "runtime": 98,
+        "tagline": "",
+        "title": "Терорът на живо"
+      }
+    },
+    {
+      "iso_3166_1": "RU",
+      "iso_639_1": "ru",
+      "name": "Pусский",
+      "english_name": "Russian",
+      "data": {
+        "homepage": "",
+        "overview": "Ведущий программы новостей получает звонок от террориста, который угрожает взорвать мост над рекой Хан. Ведущий думает, что это розыгрыш, и беспечно говорит ему сделать это. Через несколько секунд происходит взрыв.",
+        "runtime": 0,
+        "tagline": "",
+        "title": "Террор в прямом эфире"
+      }
+    },
+    {
+      "iso_3166_1": "TW",
+      "iso_639_1": "zh",
+      "name": "普通话",
+      "english_name": "Mandarin",
+      "data": {
+        "homepage": "",
+        "overview": "一位剛被降職而轉為主持廣播節目的主播尹榮華（河正宇 飾），某天LIVE現場接到不知名聽眾CALL IN，恐嚇要脅若不回答問題或是掛電話，他將炸掉大橋，原以為只是無聊民眾的玩笑，沒想到就在掛掉電話後，他就親眼看見辦公大樓旁的跨海大橋遭到炸毀，該起恐怖攻擊造成無數傷亡！隨即尹榮華意識到這通來歷不明的電話，極可能是最近的連環爆炸事件主謀所為。於是，他緊急和電視台協議，入主直播電視節目，獨家報導這場爆炸案，企圖藉機大幅提高收視率，好讓自己重拾主播工作。但所有的如意算盤，卻在直播的分秒過程中，一切開始失控……。",
+        "runtime": 0,
+        "tagline": "",
+        "title": "恐怖攻擊直播"
+      }
+    },
+    {
+      "iso_3166_1": "HK",
+      "iso_639_1": "zh",
+      "name": "普通话",
+      "english_name": "Mandarin",
+      "data": {
+        "homepage": "",
+        "overview": "廣播電台接到一通揚言要炸掉大橋的陌生來電，而這恐怕也會改變記者尹榮華的人生。",
+        "runtime": 0,
+        "tagline": "",
+        "title": "死亡「動」新聞"
+      }
+    },
+    {
+      "iso_3166_1": "VN",
+      "iso_639_1": "vi",
+      "name": "Tiếng Việt",
+      "english_name": "Vietnamese",
+      "data": {
+        "homepage": "",
+        "overview": "Yoon Young-Hwa vốn một bình luận viên truyền hình nhưng vì nhiều ly do, anh đang phải làm một công việc khác. Một buổi sáng, khi anh đang dẫn chương trình phát thanh quen thuộc thì một người nặc danh gọi vào chương trình và tuyên bố sẽ đánh sập cây cầu Mapo. Ban đầu, ai cũng nghĩ đó chỉ là trò đùa nhưng Yoon Young-Hwa nhanh chóng nhận ra đó là mối nguy thực sự.  Từ nơi anh đang làm việc, có thể nhìn thấy cây cầu và ngay sau đó, thảm họa khủng khiếp đã xảy ra. Ngay khi đó, Yoon Young-Hwa đã nhận ra cơ hội để anh nổi tiếng đã tới và anh quyết định thực hiện bài bình luận nóng lên sóng trực tiếp .",
+        "runtime": 0,
+        "tagline": "",
+        "title": "90 Phút Kinh Hoàng"
+      }
+    },
+    {
+      "iso_3166_1": "BR",
+      "iso_639_1": "pt",
+      "name": "Português",
+      "english_name": "Portuguese",
+      "data": {
+        "homepage": "",
+        "overview": "Yoon Young-Hwa (Ha Jung-Woo) é um ex-apresentador de TV popular, mas devido a um incidente, agora trabalha como apresentador de um programa de rádio.  Um dia, um ouvinte liga para o programa de rádio e afirma que \"vai explodir a ponte Mapodaegyo\".  A princípio, parece uma brincadeira, mas logo eles percebem que tudo é real.  O incidente é então transmitido ao vivo na TV pelos próximos 90 minutos e a situação se agrava rapidamente.",
+        "runtime": 0,
+        "tagline": "",
+        "title": "The Terror Live"
+      }
+    },
+    {
+      "iso_3166_1": "JP",
+      "iso_639_1": "ja",
+      "name": "日本語",
+      "english_name": "Japanese",
+      "data": {
+        "homepage": "",
+        "overview": "元人気キャスターの男はある日、ラジオの生放送中にリスナーからの電話で爆弾テロの犯行予告を受ける。いたずらと思い相手にしなかったが、その直後、実際に爆破事件が起こる。一大スクープと確信した男は、視聴率獲得のため犯人との通話をテレビで独占生中継する。そして、さらなるテロの脅威が迫る中、彼の使っているイヤホンに小型爆弾が仕掛けられていることが判明する。",
+        "runtime": 0,
+        "tagline": "",
+        "title": "テロ、ライブ"
+      }
+    },
+    {
+      "iso_3166_1": "TH",
+      "iso_639_1": "th",
+      "name": "ภาษาไทย",
+      "english_name": "Thai",
+      "data": {
+        "homepage": "",
+        "overview": "นักข่าวคนหนึ่งค้นพบว่าตัวเองถูกวางระเบิดหลังจากสัมภาษณ์พิเศษกับผู้ก่อการร้ายที่ระเบิดสะพาน",
+        "runtime": 0,
+        "tagline": "",
+        "title": ""
       }
     }
   ]

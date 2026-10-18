@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "Digital FANBOX 连接器",
+  "version": "1.0.1",
+  "minimum_chrome_version": "102",
+  "description": "使用当前 Chromium 浏览器中的 FANBOX 登录状态连接受信任的 Digital 服务。",
+  "permissions": ["cookies", "storage"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "action": {
+    "default_title": "连接 FANBOX"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "background": {
+    "service_worker": "assets/background.js",
+    "type": "module"
+  }
+}

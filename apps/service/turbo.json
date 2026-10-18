@@ -1,0 +1,113 @@
+{
+  "extends": ["//"],
+  "tags": ["composition-root"],
+  "tasks": {
+    "build": {
+      "dependsOn": [
+        "@digital/composition#build",
+        "@digital/http-delivery#build",
+        "@digital/product-maintenance#build",
+        "@digital/service-host#build",
+        "@digital/test-support#build"
+      ],
+      "outputs": ["dist/**"],
+      "tags": ["quality:light"]
+    },
+    "deployment": {
+      "cache": false,
+      "passThroughEnv": [
+        "DIGITAL_DEPLOYMENT_*",
+        "DIGITAL_COMPOSE_CHECK_*",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "DIGITAL_CI_EVIDENCE",
+        "DOCKER_HOST",
+        "DOCKER_CONTEXT"
+      ],
+      "tags": ["quality:heavy"],
+      "dependsOn": ["deployment:prepare"]
+    },
+    "deployment:prepare": {
+      "cache": false,
+      "passThroughEnv": [
+        "DIGITAL_DEPLOYMENT_*",
+        "DIGITAL_COMPOSE_CHECK_*",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "DIGITAL_CI_EVIDENCE",
+        "DOCKER_HOST",
+        "DOCKER_CONTEXT"
+      ],
+      "tags": ["work:preparation"]
+    },
+    "dev:serve": {
+      "dependsOn": [
+        "@digital/composition#dev:build",
+        "@digital/http-delivery#dev:build",
+        "@digital/service-host#dev:build",
+        "@digital/test-support#dev:build",
+        "@digital/tui#build"
+      ],
+      "cache": false,
+      "inputs": [
+        "package.json",
+        "src/**",
+        "$TURBO_ROOT$/packages/workspace-automation/scripts/development-task.ts"
+      ],
+      "passThroughEnv": [
+        "DIGITAL_DEVELOPMENT_SESSION",
+        "DIGITAL_DEVELOPMENT_WORKSPACE",
+        "DIGITAL_DEVELOPMENT_ENVIRONMENT"
+      ],
+      "tags": ["work:development"]
+    },
+    "format:check": { "outputs": [], "tags": ["quality:light"] },
+    "prepare:verify": {
+      "dependsOn": ["build"],
+      "cache": false,
+      "passThroughEnv": ["DIGITAL_PRODUCT_*", "DIGITAL_SOURCE_IO_*"],
+      "tags": ["work:on-demand"]
+    },
+    "format:write": {
+      "dependsOn": ["lint:fix"],
+      "cache": false,
+      "tags": ["work:repair"]
+    },
+    "lint": { "outputs": [], "tags": ["quality:light"] },
+    "lint:fix": { "cache": false, "tags": ["work:repair"] },
+    "start": { "cache": false, "tags": ["work:development"] },
+    "test": {
+      "dependsOn": [
+        "build",
+        "@digital/db-migrations#build",
+        "@digital/environment#build",
+        "@digital/product-maintenance#build"
+      ],
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP"],
+      "outputs": [],
+      "tags": ["quality:heavy"],
+      "cache": false
+    },
+    "test:installed-clients": {
+      "dependsOn": [
+        "build",
+        "@digital/fanbox-extension#build",
+        "@digital/db-migrations#build",
+        "@digital/environment#build",
+        "@digital/product-maintenance#build",
+        "@digital/tui#build"
+      ],
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP", "PLAYWRIGHT_BROWSERS_PATH"],
+      "outputs": [],
+      "tags": ["quality:heavy"],
+      "cache": false
+    },
+    "typecheck": {
+      "dependsOn": ["^typecheck"],
+      "outputs": [],
+      "tags": ["quality:light"]
+    }
+  }
+}

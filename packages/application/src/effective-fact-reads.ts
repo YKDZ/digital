@@ -13,6 +13,7 @@ import {
   type EntityRelationship,
   type Location,
   type MetadataAssertion,
+  type MetadataDecision,
   type MetadataPolicy,
   type RelationshipDecision,
   type RelationshipDecisionTarget,
@@ -47,6 +48,7 @@ export type SubjectFactBasis = {
   readonly sourceAssociations: readonly SourceAssociation[];
   readonly recognitionSourceAssociation?: SourceAssociation;
   readonly metadata: readonly MetadataAssertion[];
+  readonly metadataDecisions?: readonly MetadataDecision[];
   readonly metadataSourceRecords?: readonly {
     readonly id: string;
     readonly sourceIdentity: string;
@@ -111,6 +113,12 @@ export type EffectiveArtifactRoleRead = {
   readonly role: string;
   readonly artifactId: string;
   readonly associationIds: readonly string[];
+  readonly observedArtifactParts?: readonly {
+    readonly associationId: string;
+    readonly artifactId: string;
+    readonly revisionId: string;
+    readonly locator: string;
+  }[];
   readonly locationId?: string;
   readonly address?: string;
 };
@@ -203,6 +211,38 @@ export type SubjectConflictEvidence = {
   readonly property: string;
   readonly kind: "policy-conflict" | "metadata-value-conflict";
   readonly candidates: readonly SubjectConflictCandidateEvidence[];
+};
+
+/** 一条被求值的原始元数据候选；`exclusion` 只在共同规则明确未采用该值时出现。 */
+export type SubjectMetadataCandidateEvidence = {
+  /** 对精确候选及其来源支持计算的不透明引用，用于预演时再次核验。 */
+  readonly reference?: string;
+  readonly target: DescriptionTarget;
+  readonly property: string;
+  readonly value: string;
+  readonly sourceIdentity: string;
+  readonly sourceSlot: string;
+  readonly sourceRecordIds: readonly string[];
+  readonly qualifiers?: MetadataAssertion["qualifiers"];
+  readonly exclusion?: import("@digital/domain").EffectiveMetadataAlternative["exclusion"];
+};
+
+/** 当前元数据裁决的有界依据，不改变普通读取的有效值。 */
+export type SubjectMetadataEvidence = {
+  readonly property: string;
+  readonly result:
+    | {
+        readonly status: "resolved";
+        readonly values: readonly SelectedMetadataRead[];
+        readonly notSelected: readonly SubjectMetadataCandidateEvidence[];
+      }
+    | {
+        readonly status: "conflict";
+        readonly kind: "policy-conflict" | "metadata-value-conflict";
+        readonly explanation: string;
+        readonly candidates: readonly SubjectMetadataCandidateEvidence[];
+      }
+    | { readonly status: "missing" };
 };
 
 export function effectiveRelationships(
@@ -314,6 +354,16 @@ function projectedMetadataAssertions(
   return basis.metadata.map((assertion) => ({
     ...assertion,
     target: projectEntityTarget(representatives, basis.id, assertion.target),
+  }));
+}
+
+function projectedMetadataDecisions(
+  representatives: Map<string, string>,
+  basis: SubjectFactBasis,
+): readonly MetadataDecision[] {
+  return (basis.metadataDecisions ?? []).map((decision) => ({
+    ...decision,
+    target: projectEntityTarget(representatives, basis.id, decision.target),
   }));
 }
 
@@ -531,6 +581,10 @@ export function readEffectiveSubject(
       policies,
       sourceRecords: basis.metadataSourceRecords ?? [],
       metadata: metadataAssertions,
+      metadataDecisions: projectedMetadataDecisions(
+        identityRepresentativeMap(basis),
+        basis,
+      ),
     });
     const conflicts: FactReadConflict[] = metadata.conflicts.map(
       (conflict) => ({
@@ -591,6 +645,7 @@ export function readEffectiveSubject(
             role,
             artifactId,
             associationIds: contributing.map((association) => association.id),
+            ...observedArtifactParts(contributing),
             ...(location === undefined
               ? {}
               : { address: location.address, locationId: location.id }),
@@ -690,6 +745,7 @@ export function readEffectiveSubject(
             associationIds: result.contributingAssociations.map(
               (association) => association.id,
             ),
+            ...observedArtifactParts(result.contributingAssociations),
           },
         ];
       }
@@ -700,6 +756,7 @@ export function readEffectiveSubject(
           associationIds: result.contributingAssociations.map(
             (association) => association.id,
           ),
+          ...observedArtifactParts(result.contributingAssociations),
           address: location.address,
           locationId: location.id,
         },
@@ -814,6 +871,17 @@ export function readEffectiveSubject(
   };
 }
 
+function observedArtifactParts(
+  associations: readonly ArtifactAssociation[],
+): Pick<EffectiveArtifactRoleRead, "observedArtifactParts"> {
+  const parts = associations.flatMap(({ id, observedArtifactPart }) =>
+    observedArtifactPart === undefined
+      ? []
+      : [{ associationId: id, ...observedArtifactPart }],
+  );
+  return parts.length === 0 ? {} : { observedArtifactParts: parts };
+}
+
 /**
  * 仅投影所选主体已报告的资料冲突候选。这里复用与共同读取完全相同的代表归一、策略选择
  * 与生效元数据规则，只取真正参与冲突的候选断言值及其来源身份和支持记录；普通读取刻意
@@ -838,6 +906,10 @@ export function subjectConflictEvidence(
       identityRepresentativeMap(basis),
       basis,
     ),
+    metadataDecisions: projectedMetadataDecisions(
+      identityRepresentativeMap(basis),
+      basis,
+    ),
   });
   return conflicts.map((conflict) => ({
     property: conflict.property,
@@ -850,4 +922,139 @@ export function subjectConflictEvidence(
       }),
     ),
   }));
+}
+
+/**
+ * 将所选主体的当前元数据与共同求值器报告的未采用值、冲突候选和缺失项一起投影。
+ * 这个检查路径不会另行选择事实，也不会暴露未参与本次有效求值的断言。
+ */
+export function subjectMetadataEvidence(
+  basis: SubjectFactBasis,
+  configuration: MetadataPolicyConfiguration | undefined,
+  metadataUsageContext = "asset.ordinary",
+  requestedProperties: readonly string[] = [],
+  target: DescriptionTarget = { kind: "entity", entityId: basis.id },
+): readonly SubjectMetadataEvidence[] {
+  const representatives = identityRepresentativeMap(basis);
+  const assertions = projectedMetadataAssertions(representatives, basis);
+  const originalAssertions = new Map(
+    assertions.map((assertion, index) => [assertion, basis.metadata[index]!]),
+  );
+  const projection = deriveEffectiveMetadata({
+    target,
+    metadataUsageContext,
+    policies: metadataPoliciesForSubject(
+      basis.id,
+      basis.sourceAssociations,
+      configuration,
+      metadataUsageContext,
+    ),
+    sourceRecords: basis.metadataSourceRecords ?? [],
+    metadata: assertions,
+    metadataDecisions: projectedMetadataDecisions(representatives, basis),
+  });
+  const assertionEvidence = (
+    assertion: MetadataAssertion,
+    sourceIdentity: string,
+    exclusion?: import("@digital/domain").EffectiveMetadataAlternative["exclusion"],
+  ): SubjectMetadataCandidateEvidence => {
+    const original = originalAssertions.get(assertion) ?? assertion;
+    return {
+      target: original.target,
+      property: original.property,
+      value: original.value,
+      sourceIdentity,
+      sourceSlot: original.sourceSlot,
+      sourceRecordIds: original.sourceRecordIds,
+      ...(original.qualifiers === undefined
+        ? {}
+        : { qualifiers: original.qualifiers }),
+      ...(exclusion === undefined ? {} : { exclusion }),
+    };
+  };
+  const valuesByProperty = new Map<string, SelectedMetadataRead[]>();
+  for (const value of projection.values) {
+    const current = valuesByProperty.get(value.property) ?? [];
+    current.push({
+      property: value.property,
+      value: value.value,
+      sourceIdentity: value.sourceIdentity,
+      sourceSlot: value.sourceSlot,
+      reasoning: value.reasoning,
+      sourceRecordIds: value.sourceRecordIds,
+      assertions: value.contributingAssertions.map((assertion) => {
+        const original = originalAssertions.get(assertion) ?? assertion;
+        return {
+          target: original.target,
+          sourceSlot: original.sourceSlot,
+          sourceRecordIds: original.sourceRecordIds,
+        };
+      }),
+      ...(value.qualifiers === undefined
+        ? {}
+        : { qualifiers: value.qualifiers }),
+    });
+    valuesByProperty.set(value.property, current);
+  }
+  const conflictByProperty = new Map(
+    projection.conflicts.map((conflict) => [conflict.property, conflict]),
+  );
+  const properties = [
+    ...new Set([
+      ...valuesByProperty.keys(),
+      ...conflictByProperty.keys(),
+      ...requestedProperties.filter(
+        (property) => property.length > 0 && !property.includes("*"),
+      ),
+    ]),
+  ].toSorted((left, right) => left.localeCompare(right));
+  return properties.map((property) => {
+    const conflict = conflictByProperty.get(property);
+    if (conflict !== undefined) {
+      return {
+        property,
+        result: {
+          status: "conflict" as const,
+          kind: conflict.kind,
+          explanation: conflict.explanation,
+          candidates: conflict.candidates.map(({ assertion, sourceIdentity }) =>
+            assertionEvidence(assertion, sourceIdentity),
+          ),
+        },
+      };
+    }
+    const values = valuesByProperty.get(property) ?? [];
+    if (values.length === 0)
+      return { property, result: { status: "missing" as const } };
+    const notSelected = projection.values
+      .filter((value) => value.property === property)
+      .flatMap((value) =>
+        value.alternatives.map((alternative) =>
+          assertionEvidence(
+            alternative.assertion,
+            alternative.sourceIdentity,
+            alternative.exclusion,
+          ),
+        ),
+      )
+      .filter(
+        (candidate, index, candidates) =>
+          candidates.findIndex(
+            (other) =>
+              other.sourceIdentity === candidate.sourceIdentity &&
+              other.sourceSlot === candidate.sourceSlot &&
+              other.value === candidate.value &&
+              JSON.stringify(other.sourceRecordIds) ===
+                JSON.stringify(candidate.sourceRecordIds),
+          ) === index,
+      );
+    return {
+      property,
+      result: {
+        status: "resolved" as const,
+        values,
+        notSelected,
+      },
+    };
+  });
 }

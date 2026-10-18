@@ -183,9 +183,7 @@ export class InMemoryObservedFilesystemCapability {
   private readonly scopes = new WeakSet<InMemoryBoundObservedScope>();
   private readonly options: InMemoryObservedFilesystemOptions;
   readonly capability: InMemoryCapabilityCoordinate;
-  readonly objectIdentityContract:
-    | InMemoryFilesystemObjectIdentityContract
-    | undefined;
+  readonly objectIdentityContract?: InMemoryFilesystemObjectIdentityContract;
   readonly boundScopes: InMemoryBoundObservedScope[] = [];
   readonly openedPaths: string[] = [];
   readonly closedScopes: InMemoryBoundObservedScope[] = [];
@@ -197,7 +195,8 @@ export class InMemoryObservedFilesystemCapability {
       capabilityVersion: "1",
       contractVersion: "1",
     };
-    this.objectIdentityContract = options.objectIdentityContract;
+    if (options.objectIdentityContract !== undefined)
+      this.objectIdentityContract = options.objectIdentityContract;
   }
 
   async inspectReadableDirectory(candidate: string): Promise<{

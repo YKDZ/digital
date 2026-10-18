@@ -2,9 +2,9 @@ services:
   migrate:
     build:
       context: .
-      dockerfile: apps/web/Dockerfile
+      dockerfile: apps/service/Dockerfile
       target: standalone
-    image: ${DIGITAL_MIGRATION_IMAGE:-digital-standalone:latest}
+    image: ${DIGITAL_SERVICE_MIGRATION_IMAGE:-digital-service-standalone:latest}
     user: "${DIGITAL_UID:?请设置 DIGITAL_UID}:${DIGITAL_GID:?请设置 DIGITAL_GID}"
     environment:
       DIGITAL_PRODUCT_DATA: /data
@@ -18,18 +18,18 @@ services:
           create_host_path: false
     restart: "no"
 
-  web:
+  service:
     build:
       context: .
-      dockerfile: apps/web/Dockerfile
+      dockerfile: apps/service/Dockerfile
       target: runtime
-    image: ${DIGITAL_RUNTIME_IMAGE:-digital-runtime:latest}
+    image: ${DIGITAL_SERVICE_RUNTIME_IMAGE:-digital-service-runtime:latest}
     user: "${DIGITAL_UID:?请设置 DIGITAL_UID}:${DIGITAL_GID:?请设置 DIGITAL_GID}"
     environment:
       DIGITAL_PRODUCT_DATA: /data
-      DIGITAL_COMPOSE_SERVICE: web
+      DIGITAL_COMPOSE_SERVICE: service
     entrypoint: ["/usr/local/bin/compose-entrypoint"]
-    command: ["node", "/app/dist/server/index.mjs"]
+    command: ["node", "/app/dist/main.js"]
     depends_on:
       migrate:
         condition: service_completed_successfully

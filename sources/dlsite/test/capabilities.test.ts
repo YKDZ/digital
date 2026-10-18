@@ -1,11 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { assert, describe, expect, it } from "vitest";
 
 import {
   DlsiteArtifactAcquirer,
   DlsiteCollector,
   DlsiteExactDirectoryInterpreter,
   DlsiteExactRecognizer,
+  DlsiteLocalSourceCandidateInterpreter,
   DlsiteSourceAddressing,
+  DlsiteSourceAssociationInterpreter,
   DlsiteSourceInterpreter,
 } from "../src/index.ts";
 
@@ -155,6 +157,62 @@ describe("DLsite explicit product addressing", () => {
 });
 
 describe("DLsite collection and interpretation", () => {
+  it("matches an official VJ catalogue page to the exact locally observed product", () => {
+    const associationInterpreter = new DlsiteSourceAssociationInterpreter();
+    const localCandidate = new DlsiteLocalSourceCandidateInterpreter();
+    const sourceInterpreter = new DlsiteSourceInterpreter();
+    const evidence = {
+      kind: "source-association",
+      sourceIdentity: "dlsite",
+      sourceAddress:
+        "https://www.dlsite.com/maniax/work/=/product_id/VJ014635.html",
+      explanation: "exact local VJ directory",
+      producer: localCandidate.capability,
+    } as const;
+    const interpretation = {
+      id: "interpretation",
+      producer: sourceInterpreter.capability,
+      sourceRecordIds: [],
+      sourceIdentity: "dlsite",
+      sourceAddress:
+        "https://www.dlsite.com/soft/work/=/product_id/VJ014635.html",
+      metadata: [],
+      sourceArtifacts: [],
+    } as const;
+    const subject = {
+      subjectId: "subject",
+      recognitionDecisionId: "recognition-decision",
+      sourceAssociations: [],
+      metadata: [],
+      metadataSourceRecords: [],
+      informationRequirement: {
+        metadataUsageContext: "test",
+        metadata: [],
+        artifactRoles: [],
+        relationshipTypes: [],
+      },
+    } as const;
+
+    expect(
+      associationInterpreter.interpret({
+        subject,
+        evidence,
+        interpretation,
+      }),
+    ).toMatchObject({ status: "accepted" });
+    expect(
+      associationInterpreter.interpret({
+        subject,
+        evidence,
+        interpretation: {
+          ...interpretation,
+          sourceAddress:
+            "https://www.dlsite.com/soft/work/=/product_id/VJ014636.html",
+        },
+      }),
+    ).toBeUndefined();
+  });
+
   it("retries a bounded transient official request inside the source capability", async () => {
     const requested: string[] = [];
     let firstJsonRequest = true;
@@ -453,6 +511,7 @@ describe("DLsite collection and interpretation", () => {
       evidence: [evidence],
       sourceRecords: [json, html],
     });
+    assert.isDefined(batch);
     const proposal = new DlsiteExactRecognizer().recognize({
       evidence: [evidence],
       basis: { kind: "source-interpretation", interpretation: batch },
@@ -635,6 +694,7 @@ describe("DLsite collection and interpretation", () => {
       evidence: [evidence],
       sourceRecords: [json, html],
     });
+    assert.isDefined(batch);
 
     expect(batch.metadata).toContainEqual(
       expect.objectContaining({
@@ -722,6 +782,7 @@ describe("DLsite collection and interpretation", () => {
       evidence: [evidence],
       sourceRecords: [json, html],
     });
+    assert.isDefined(batch);
 
     expect(batch.metadata).toEqual(
       expect.arrayContaining([
@@ -821,6 +882,7 @@ describe("DLsite collection and interpretation", () => {
       evidence: [evidence],
       sourceRecords: [json, html],
     });
+    assert.isDefined(batch);
 
     expect(batch.entities).toEqual([]);
     expect(batch.entityMentions).toEqual([]);
@@ -1025,6 +1087,7 @@ describe("DLsite collection and interpretation", () => {
         },
       ],
     });
+    assert.isDefined(batch);
     expect(
       batch.entities?.find(
         (entity) => entity.identityNamespace === "dlsite.circle",
