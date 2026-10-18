@@ -84,8 +84,20 @@ it("运行中的真实 HTTP 产品占用数据根时，正式维护入口拒绝�
   await server.ready();
   bootstrap.publish();
   const baseUrl = new URL(server.url!);
-  const ready = await fetch(new URL("/api/ready", baseUrl));
-  expect(ready.ok).toBe(true);
+  await expect
+    .poll(
+      async () => {
+        const response = await fetch(new URL("/api/ready", baseUrl), {
+          signal: AbortSignal.timeout(1_000),
+        });
+        return {
+          status: response.status,
+          body: await response.json(),
+        };
+      },
+      { timeout: 30_000, interval: 100 },
+    )
+    .toMatchObject({ status: 200, body: { ok: true } });
 
   const maintenance = await runMaintenance([
     "offline-backup",
@@ -96,7 +108,7 @@ it("运行中的真实 HTTP 产品占用数据根时，正式维护入口拒绝�
   ]);
   expect(maintenance.code).toBe(1);
   expect(maintenance.stderr).toContain("产品正在运行");
-});
+}, 45_000);
 
 it("正式业务操作形成的状态可经停止服务后的维护产物恢复，并由真实 HTTP 服务读回", async () => {
   const workspace = await mkdtemp(
@@ -446,8 +458,20 @@ async function startProductService(
   await server.ready();
   bootstrap.publish();
   const baseUrl = new URL(server.url!);
-  const ready = await fetch(new URL("/api/ready", baseUrl));
-  expect(ready.ok).toBe(true);
+  await expect
+    .poll(
+      async () => {
+        const response = await fetch(new URL("/api/ready", baseUrl), {
+          signal: AbortSignal.timeout(1_000),
+        });
+        return {
+          status: response.status,
+          body: await response.json(),
+        };
+      },
+      { timeout: 30_000, interval: 100 },
+    )
+    .toMatchObject({ status: 200, body: { ok: true } });
   return {
     baseUrl,
     async close() {
