@@ -21,6 +21,8 @@ import { Hono } from "hono";
 import { serve } from "srvx";
 import { afterEach, expect, it } from "vitest";
 
+import { interactiveTerminalEnvironment } from "./interactive-terminal.ts";
+
 const products: Array<ReturnType<typeof runProduct>> = [];
 const serviceServers: Array<Awaited<ReturnType<typeof serve>>> = [];
 const proxies: Server[] = [];
@@ -689,7 +691,11 @@ it("已安装 TUI 在查询连接重置后按原 ID 恢复并取消真实执行�
   const terminalCommand = `stty cols 58 rows 18 -icanon -echo; terminalModeBefore=$(stty -g); pnpm --filter @digital/service exec digital-tui --url ${terminalProxy.url.origin}; terminalModeAfter=$(stty -g); if [ "$terminalModeBefore" = "$terminalModeAfter" ]; then echo TERMINAL_RESTORED; else echo TERMINAL_NOT_RESTORED; fi`;
   const terminal = spawn("script", ["-qfec", terminalCommand, "/dev/null"], {
     cwd: servicePackageRoot,
-    env: { ...process.env, TERM: "xterm-256color", COLUMNS: "58", LINES: "18" },
+    env: interactiveTerminalEnvironment({
+      TERM: "xterm-256color",
+      COLUMNS: "58",
+      LINES: "18",
+    }),
     stdio: ["pipe", "pipe", "pipe"],
     detached: process.platform !== "win32",
   });

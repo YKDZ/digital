@@ -99,7 +99,7 @@
         "@digital/product-maintenance#build",
         "@digital/tui#build"
       ],
-      "passThroughEnv": ["TMPDIR", "TMP", "TEMP"],
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP", "PLAYWRIGHT_BROWSERS_PATH"],
       "outputs": [],
       "tags": ["quality:heavy"],
       "cache": false

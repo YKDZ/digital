@@ -20,7 +20,7 @@
     "prepare:verify": "node ./dist/verify-prepared.js",
     "start": "node ./dist/main.js",
     "test": "vitest run --reporter=verbose --passWithNoTests --exclude=test/fanbox-extension-browser.test.ts --testNamePattern='^(?!.*安装客户端).*$'",
-    "test:installed-clients": "vitest run --reporter=verbose test/public-http.test.ts test/automation-http.test.ts test/execution-recovery-http.test.ts test/asset-inspection-http.test.ts test/source-connections-http.test.ts test/fanbox-extension-browser.test.ts test/development-session.test.ts --testNamePattern=安装客户端",
+    "test:installed-clients": "pnpm exec playwright install chromium && vitest run --reporter=verbose test/public-http.test.ts test/automation-http.test.ts test/execution-recovery-http.test.ts test/asset-inspection-http.test.ts test/source-connections-http.test.ts test/fanbox-extension-browser.test.ts test/development-session.test.ts --testNamePattern=安装客户端",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
     "dev:serve": "pnpm --workspace-root run development:serve"
   },

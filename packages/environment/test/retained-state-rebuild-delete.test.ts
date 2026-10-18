@@ -1053,6 +1053,53 @@ describe("04-5 不兼容与不可认领现场保留", () => {
     },
     realRunTimeout,
   );
+
+  it(
+    "无记录的非空容器含初始配置目录与未知文件时拒绝删除并保留原件",
+    async () => {
+      const environment = `unowned-${randomUUID().slice(0, 8)}`;
+      const containerDirectory = path.join(
+        workspaceRoot,
+        ".digital",
+        "environments",
+        environment,
+      );
+      const initialConfigurationDirectory = path.join(
+        containerDirectory,
+        "initial-configuration",
+      );
+      const unknownConfigurationFile = path.join(
+        initialConfigurationDirectory,
+        "operator-note.txt",
+      );
+      const unknownFile = path.join(containerDirectory, "unknown.txt");
+      await mkdir(initialConfigurationDirectory, { recursive: true });
+      await writeFile(unknownConfigurationFile, "初始配置目录内的未归属原件");
+      await writeFile(unknownFile, "容器目录内的未归属原件");
+
+      try {
+        const deleted = await deleteEnvironment({
+          workspacePath: workspaceRoot,
+          environment,
+        });
+        expect(deleted.status).toBe("unmanaged");
+        expect(deleted.failure?.stage).toBe("claim");
+        expect((await readdir(containerDirectory)).sort()).toEqual([
+          "initial-configuration",
+          "unknown.txt",
+        ]);
+        expect(await readFile(unknownConfigurationFile, "utf8")).toBe(
+          "初始配置目录内的未归属原件",
+        );
+        expect(await readFile(unknownFile, "utf8")).toBe(
+          "容器目录内的未归属原件",
+        );
+      } finally {
+        await rm(containerDirectory, { recursive: true, force: true });
+      }
+    },
+    realRunTimeout,
+  );
 });
 
 describe("04-6 公开 API 与独立 CLI 全流程", () => {

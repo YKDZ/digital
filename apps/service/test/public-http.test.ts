@@ -30,6 +30,7 @@ import { serve } from "srvx";
 import { afterEach, expect, it } from "vitest";
 
 import { createProductService } from "../src/service.ts";
+import { interactiveTerminalEnvironment } from "./interactive-terminal.ts";
 
 const openServers: Array<Awaited<ReturnType<typeof serve>>> = [];
 const bootstraps: Array<Awaited<ReturnType<typeof createProductService>>> = [];
@@ -897,7 +898,11 @@ it("在真实就绪服务前运行正式 TUI 命令并通过独占窄终端退�
   const command = `set -o pipefail; ${keyInput} | script -qfec ${shellQuote(terminalCommand)} /dev/null`;
   const child = spawn("bash", ["-lc", command], {
     cwd: servicePackageRoot,
-    env: { ...process.env, TERM: "xterm-256color", COLUMNS: "34", LINES: "10" },
+    env: interactiveTerminalEnvironment({
+      TERM: "xterm-256color",
+      COLUMNS: "34",
+      LINES: "10",
+    }),
     stdio: ["ignore", "pipe", "pipe"],
     detached: process.platform !== "win32",
   });
@@ -989,7 +994,11 @@ it("通过安装的 TUI 修正路径错误、配置多目录库、扫描并查�
   const terminalCommand = `stty cols 48 rows 12 -icanon -echo; terminalModeBefore=$(stty -g); pnpm --filter @digital/service exec digital-tui --url ${shellQuote(baseUrl.origin)}; terminalModeAfter=$(stty -g); if [ "$terminalModeBefore" = "$terminalModeAfter" ]; then echo TERMINAL_RESTORED; else echo TERMINAL_NOT_RESTORED; fi`;
   const child = spawn("script", ["-qfec", terminalCommand, "/dev/null"], {
     cwd: servicePackageRoot,
-    env: { ...process.env, TERM: "xterm-256color", COLUMNS: "48", LINES: "12" },
+    env: interactiveTerminalEnvironment({
+      TERM: "xterm-256color",
+      COLUMNS: "48",
+      LINES: "12",
+    }),
     stdio: ["pipe", "pipe", "pipe"],
   });
   const childClosed = new Promise<number | null>((resolve, reject) => {

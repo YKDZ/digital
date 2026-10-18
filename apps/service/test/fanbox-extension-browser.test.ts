@@ -19,6 +19,7 @@ import { serve } from "srvx";
 import { afterEach, it } from "vitest";
 
 import { createProductService } from "../src/service.ts";
+import { interactiveTerminalEnvironment } from "./interactive-terminal.ts";
 
 const servers: Array<Awaited<ReturnType<typeof serve>>> = [];
 const bootstraps: Array<Awaited<ReturnType<typeof createProductService>>> = [];
@@ -648,12 +649,11 @@ async function startTui(serviceAddress: string) {
   ].join("; ");
   const child = spawn("script", ["-qfec", terminalCommand, "/dev/null"], {
     cwd: process.cwd(),
-    env: {
-      ...process.env,
+    env: interactiveTerminalEnvironment({
       TERM: "xterm-256color",
       COLUMNS: "100",
       LINES: "24",
-    },
+    }),
     stdio: ["pipe", "pipe", "pipe"],
     detached: process.platform !== "win32",
   });

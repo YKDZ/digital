@@ -205,6 +205,7 @@ async function prepareCompose(
   observedPath: string,
   uid = Number(process.env.DIGITAL_COMPOSE_CHECK_UID ?? "1001"),
   gid = Number(process.env.DIGITAL_COMPOSE_CHECK_GID ?? "1001"),
+  hostDataOwner: { readonly uid: number; readonly gid: number } = { uid, gid },
 ): Promise<OwnedEnvironment> {
   const reference = newReference(label, "compose");
   await registerOwner(reference);
@@ -234,7 +235,7 @@ async function prepareCompose(
           { name: "service", role: "service" },
         ],
         dataVariable: "DIGITAL_PRODUCT_DATA_HOST_PATH",
-        dataOwner: { uid, gid },
+        dataOwner: hostDataOwner,
       },
     }),
   );
@@ -842,10 +843,18 @@ async function verifyComposeRejectsPreparationFailures(
     ["uid-zero", 0, 1001],
     ["gid-zero", 1001, 0],
   ] as const) {
-    const reference = await prepareCompose(label, material.root, uid, gid);
+    const hostUid = process.getuid?.();
+    const hostGid = process.getgid?.();
+    if (hostUid === undefined || hostGid === undefined)
+      throw new Error("Compose 权限验收需要 POSIX 宿主身份");
+    const reference = await prepareCompose(label, material.root, uid, gid, {
+      uid: hostUid,
+      gid: hostGid,
+    });
     const result = await operate({ ...reference, action: "compose-up" });
     assert.notEqual(result.status, "ok", JSON.stringify(result));
     assert.equal(result.observation?.serviceReady, false);
+    assert.equal(taskObject(result).exitCode, 64, JSON.stringify(result));
     assert(
       result.observation?.objects.every((object) => object.running !== true) ??
         true,

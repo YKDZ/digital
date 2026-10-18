@@ -19,6 +19,8 @@ import { inspectEnvironment, stopEnvironment } from "@digital/environment";
 import { createPublicApiClient } from "@digital/public-api";
 import { expect, it } from "vitest";
 
+import { interactiveTerminalEnvironment } from "./interactive-terminal.ts";
+
 const execFile = promisify(execFileCallback);
 const workspaceRoot = fileURLToPath(new URL("../../..", import.meta.url));
 const fixtureMaterial = fileURLToPath(
@@ -521,12 +523,11 @@ it(
       const terminalCommand = `{ sleep 0.6; printf q; } | script -qfec ${shellQuote(terminal)} /dev/null`;
       const terminalResult = await execFile("bash", ["-lc", terminalCommand], {
         cwd: copiedWorkspace,
-        env: {
-          ...process.env,
+        env: interactiveTerminalEnvironment({
           TERM: "xterm-256color",
           COLUMNS: "80",
           LINES: "24",
-        },
+        }),
         timeout: 15_000,
         maxBuffer: 4 * 1024 * 1024,
       });

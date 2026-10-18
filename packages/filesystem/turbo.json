@@ -64,7 +64,7 @@
       "tags": ["quality:light"]
     },
     "dev:build": {
-      "dependsOn": ["^dev:build"],
+      "dependsOn": ["@digital/application#dev:build"],
       "cache": false,
       "inputs": [
         "src/**",

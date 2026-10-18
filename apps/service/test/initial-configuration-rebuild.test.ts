@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   cp,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -46,8 +47,15 @@ const environments: string[] = [];
 const temporaryRoots: string[] = [];
 
 afterEach(async () => {
+  const deletedContainerDirectories: string[] = [];
   for (const environment of environments.splice(0).reverse()) {
     const target = { workspacePath: workspaceRoot, environment };
+    const containerDirectory = path.join(
+      workspaceRoot,
+      ".digital",
+      "environments",
+      environment,
+    );
     const stopped = await stopEnvironment(target);
     if (stopped.status !== "stopped" && stopped.status !== "already-stopped")
       throw new Error(
@@ -58,10 +66,22 @@ afterEach(async () => {
       throw new Error(
         `第15票验收环境 ${environment} 未能经公开入口删除：${JSON.stringify(deleted.failure ?? {})}`,
       );
-    expect((await inspectEnvironment(target)).state).toBe("unmanaged");
+    deletedContainerDirectories.push(containerDirectory);
+    expect((await inspectEnvironment(target)).state).toBe("unprepared");
   }
   for (const root of temporaryRoots.splice(0).reverse())
     await rm(root, { recursive: true, force: true });
+
+  const remainingContainerDirectories: string[] = [];
+  for (const directory of deletedContainerDirectories) {
+    try {
+      await lstat(directory);
+      remainingContainerDirectories.push(directory);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  expect(remainingContainerDirectories).toEqual([]);
 });
 
 it("重建时一个目录暂时离线仍可启动服务并使用其他已恢复目录", async () => {

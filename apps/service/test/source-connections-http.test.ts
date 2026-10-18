@@ -12,6 +12,7 @@ import { serve } from "srvx";
 import { afterEach, expect, it } from "vitest";
 
 import { createProductService } from "../src/service.ts";
+import { interactiveTerminalEnvironment } from "./interactive-terminal.ts";
 
 const servers: Array<Awaited<ReturnType<typeof serve>>> = [];
 const bootstraps: Array<Awaited<ReturnType<typeof createProductService>>> = [];
@@ -775,7 +776,11 @@ it("安装的 TUI 通过真实服务隐藏密钥输入并立即验证【安装�
   ].join("; ");
   const child = spawn("script", ["-qfec", terminalCommand, "/dev/null"], {
     cwd: process.cwd(),
-    env: { ...process.env, TERM: "xterm-256color", COLUMNS: "58", LINES: "16" },
+    env: interactiveTerminalEnvironment({
+      TERM: "xterm-256color",
+      COLUMNS: "58",
+      LINES: "16",
+    }),
     stdio: ["pipe", "pipe", "pipe"],
     detached: process.platform !== "win32",
   });
@@ -871,12 +876,11 @@ it("安装的 TUI 显示 Bangumi 授权目标并报告明确取消结果【安�
   ].join("; ");
   const child = spawn("script", ["-qfec", terminalCommand, "/dev/null"], {
     cwd: process.cwd(),
-    env: {
-      ...process.env,
+    env: interactiveTerminalEnvironment({
       TERM: "xterm-256color",
       COLUMNS: "100",
       LINES: "20",
-    },
+    }),
     stdio: ["pipe", "pipe", "pipe"],
     detached: process.platform !== "win32",
   });

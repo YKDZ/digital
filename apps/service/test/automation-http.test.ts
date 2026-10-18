@@ -22,6 +22,7 @@ import { serve } from "srvx";
 import { afterEach, expect, it } from "vitest";
 
 import { createProductService } from "../src/service.ts";
+import { interactiveTerminalEnvironment } from "./interactive-terminal.ts";
 
 const servers: Array<Awaited<ReturnType<typeof serve>>> = [];
 const bootstraps: Array<Awaited<ReturnType<typeof createProductService>>> = [];
@@ -545,7 +546,11 @@ it("已安装终端可配置、查询和触发自动刷新，退出不停止产�
   const terminalCommand = `stty cols 80 rows 24 -icanon -echo; pnpm --filter @digital/tui exec digital-tui --url ${service.baseUrl.origin}; printf '\\nTUI_EXITED\\n'`;
   const terminal = spawn("script", ["-qfec", terminalCommand, "/dev/null"], {
     cwd: servicePackageRoot,
-    env: { ...process.env, TERM: "xterm-256color", COLUMNS: "80", LINES: "24" },
+    env: interactiveTerminalEnvironment({
+      TERM: "xterm-256color",
+      COLUMNS: "80",
+      LINES: "24",
+    }),
     stdio: ["pipe", "pipe", "pipe"],
     detached: process.platform !== "win32",
   });

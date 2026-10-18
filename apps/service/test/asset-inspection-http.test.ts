@@ -16,6 +16,7 @@ import { serve } from "srvx";
 import { afterEach, expect, it } from "vitest";
 
 import { createProductService } from "../src/service.ts";
+import { interactiveTerminalEnvironment } from "./interactive-terminal.ts";
 
 const running: Array<{
   readonly server: Awaited<ReturnType<typeof serve>>;
@@ -2192,7 +2193,11 @@ async function verifyCancelledHistoryTui(
   const command = `set -o pipefail; ${keyInput} | script -qfec ${shellQuote(terminalCommand)} /dev/null`;
   const child = spawn("bash", ["-lc", command], {
     cwd: serviceRoot,
-    env: { ...process.env, TERM: "xterm-256color", COLUMNS: "58", LINES: "16" },
+    env: interactiveTerminalEnvironment({
+      TERM: "xterm-256color",
+      COLUMNS: "58",
+      LINES: "16",
+    }),
     stdio: ["ignore", "pipe", "pipe"],
     detached: process.platform !== "win32",
   });
@@ -2240,7 +2245,11 @@ async function verifyInstalledTui(
   const command = `set -o pipefail; ${keyInput} | script -qfec ${shellQuote(terminalCommand)} /dev/null`;
   const child = spawn("bash", ["-lc", command], {
     cwd: serviceRoot,
-    env: { ...process.env, TERM: "xterm-256color", COLUMNS: "34", LINES: "10" },
+    env: interactiveTerminalEnvironment({
+      TERM: "xterm-256color",
+      COLUMNS: "34",
+      LINES: "10",
+    }),
     stdio: ["ignore", "pipe", "pipe"],
     detached: process.platform !== "win32",
   });
@@ -2323,7 +2332,11 @@ async function runInstalledTuiKeys(
   const command = `set -o pipefail; ${keyInput} | script -qfec ${shellQuote(terminalCommand)} /dev/null`;
   const child = spawn("bash", ["-lc", command], {
     cwd: serviceRoot,
-    env: { ...process.env, TERM: "xterm-256color", COLUMNS: "48", LINES: "16" },
+    env: interactiveTerminalEnvironment({
+      TERM: "xterm-256color",
+      COLUMNS: "48",
+      LINES: "16",
+    }),
     stdio: ["ignore", "pipe", "pipe"],
     detached: process.platform !== "win32",
   });

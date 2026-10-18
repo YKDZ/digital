@@ -93,11 +93,9 @@ async function rootContentDigest(directory: string): Promise<{
   const snapshot = await captureRawFilesystemSnapshot(directory, {
     contentDigests: true,
   });
-  const files = snapshot.entries
-    .filter((entry) => entry.kind === "regular-file")
-    .toSorted((left, right) =>
-      compareCodeUnits(left.relativePath, right.relativePath),
-    );
+  const files = snapshot.entries.filter(
+    (entry) => entry.kind === "regular-file",
+  );
   const directories = snapshot.entries.filter(
     (entry) => entry.kind === "directory",
   );
@@ -117,10 +115,6 @@ async function rootContentDigest(directory: string): Promise<{
     directoryCount: directories.length,
     byteLength,
   };
-}
-
-function compareCodeUnits(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 try {
