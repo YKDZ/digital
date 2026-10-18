@@ -15,14 +15,10 @@ import type {
   SourceEnrichmentInspection,
   WorkflowHistoryPage,
 } from "@digital/public-api";
-import { Box, Text, useInput, useStdout, type Key } from "ink";
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+import { Box, Text, useStdout } from "ink";
+import { useEffect, useState } from "react";
+
+import { useCurrentInput } from "./use-current-input.ts";
 
 const evidenceLabels: Record<AssetEvidenceKind, string> = {
   "local-observations": "本地观察",
@@ -357,7 +353,7 @@ export function AssetInspectionPanel({
     }
   };
 
-  useInput((input, key) => {
+  useCurrentInput((input, key) => {
     if (sourceInteraction !== undefined) {
       if (sourceInteraction.kind === "form") {
         const requirement =
@@ -1194,8 +1190,7 @@ export function WorkItemsPanel({
     }
   };
 
-  const inputHandlerRef = useRef<(input: string, key: Key) => void>(() => {});
-  const handleInput = (input: string, key: Key): void => {
+  useCurrentInput((input, key) => {
     if (key.escape || input === "b") {
       if (
         executionDetail !== undefined ||
@@ -1355,15 +1350,7 @@ export function WorkItemsPanel({
       setSourceDecision(undefined);
       setActionMessage(undefined);
     }
-  };
-  useLayoutEffect(() => {
-    inputHandlerRef.current = handleInput;
-  }, [handleInput]);
-  const dispatchInput = useCallback(
-    (input: string, key: Key) => inputHandlerRef.current(input, key),
-    [],
-  );
-  useInput(dispatchInput);
+  });
 
   const heading = kind === "attention" ? "待处理事项" : "工作流历史";
   const pageStart = windowStart(

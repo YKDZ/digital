@@ -9,8 +9,10 @@ import type {
   PublicExecutionInspection,
   WorkflowHistoryPage,
 } from "@digital/public-api";
-import { Box, Text, useInput } from "ink";
+import { Box, Text } from "ink";
 import { useEffect, useMemo, useState } from "react";
+
+import { useCurrentInput } from "./use-current-input.ts";
 
 type AutomationClient = Pick<
   PublicApiClient,
@@ -247,7 +249,7 @@ export function AutomationPanel({
     }
   };
 
-  useInput((input, key) => {
+  useCurrentInput((input, key) => {
     if (scopeEditing) {
       if (key.escape) {
         setScopeEditing(false);

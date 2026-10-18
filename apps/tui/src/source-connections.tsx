@@ -7,8 +7,10 @@ import type {
   PublicSourceConnection,
   PublicSourceConnectionClientMethods,
 } from "@digital/public-api/source-connection-contract";
-import { Box, Text, useInput } from "ink";
+import { Box, Text } from "ink";
 import { useEffect, useState } from "react";
+
+import { useCurrentInput } from "./use-current-input.ts";
 
 type SourceConnectionsPanelProps = {
   readonly client: PublicSourceConnectionClientMethods;
@@ -317,7 +319,7 @@ export function SourceConnectionsPanel({
     }
   };
 
-  useInput((input, key) => {
+  useCurrentInput((input, key) => {
     if (busy) return;
     if (mode === "fanbox-creator") {
       if (key.escape) {

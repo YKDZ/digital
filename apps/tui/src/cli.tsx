@@ -13,12 +13,14 @@ import type {
   PublicPage,
   PublicUnrecognizedMaterial,
 } from "@digital/public-api";
-import { Box, render, Text, useApp, useInput, useStdout } from "ink";
+import { Box, render, Text, useApp, useStdout } from "ink";
 import { useEffect, useMemo, useState } from "react";
 
 import { AssetInspectionPanel, WorkItemsPanel } from "./asset-inspection.tsx";
 import { AutomationPanel } from "./automation.tsx";
 import { SourceConnectionsPanel } from "./source-connections.tsx";
+import { useCurrentInput } from "./use-current-input.ts";
+
 type RefreshKind = "library-scan" | "rescrape" | "metadata-refresh" | "unknown";
 
 type Mode =
@@ -481,7 +483,7 @@ function App({
     viewportStart + rowViewportHeight,
   );
 
-  useInput((input, key) => {
+  useCurrentInput((input, key) => {
     if (mode === "connections" || mode === "automation") return;
     if (editor !== undefined) {
       if (key.escape) {
