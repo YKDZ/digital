@@ -30,7 +30,10 @@ import { serve } from "srvx";
 import { afterEach, expect, it } from "vitest";
 
 import { createProductService } from "../src/service.ts";
-import { interactiveTerminalEnvironment } from "./interactive-terminal.ts";
+import {
+  interactiveTerminalEnvironment,
+  startInteractiveTerminal,
+} from "./interactive-terminal.ts";
 
 const openServers: Array<Awaited<ReturnType<typeof serve>>> = [];
 const bootstraps: Array<Awaited<ReturnType<typeof createProductService>>> = [];
@@ -893,45 +896,27 @@ it("在真实就绪服务前运行正式 TUI 命令并通过独占窄终端退�
   expect(title).toBeTypeOf("string");
   const visibleTitlePrefix = Array.from(title!).slice(0, 12).join("");
   const terminalCommand = `stty cols 34 rows 10 -icanon -echo; terminalModeBefore=$(stty -g); pnpm --filter @digital/service exec digital-tui --url ${baseUrl.origin}; terminalModeAfter=$(stty -g); if [ "$terminalModeBefore" = "$terminalModeAfter" ]; then echo TERMINAL_RESTORED; else echo TERMINAL_NOT_RESTORED; fi`;
-  const keyInput =
-    "{ sleep 0.6; printf '\\r'; sleep 0.6; printf 3; sleep 0.6; printf '/'; sleep 0.3; printf 'ordinary.txt'; sleep 0.6; printf '\\r'; sleep 0.4; printf q; }";
-  const command = `set -o pipefail; ${keyInput} | script -qfec ${shellQuote(terminalCommand)} /dev/null`;
-  const child = spawn("bash", ["-lc", command], {
+  const terminalSession = startInteractiveTerminal(terminalCommand, {
     cwd: servicePackageRoot,
-    env: interactiveTerminalEnvironment({
-      TERM: "xterm-256color",
-      COLUMNS: "34",
-      LINES: "10",
-    }),
-    stdio: ["ignore", "pipe", "pipe"],
-    detached: process.platform !== "win32",
+    columns: 34,
+    rows: 10,
+    timeoutMs: 10_000,
   });
-  terminalChildren.push(child);
-  const output: Buffer[] = [];
-  const errors: Buffer[] = [];
-  child.stdout.on("data", (chunk: Buffer) => output.push(chunk));
-  child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
-  const exitCode = await new Promise<number | null>((resolve, reject) => {
-    child.once("error", reject);
-    const timer = setTimeout(() => {
-      if (child.pid !== undefined && process.platform !== "win32") {
-        try {
-          process.kill(-child.pid, "SIGTERM");
-        } catch {
-          child.kill("SIGTERM");
-        }
-      } else child.kill("SIGTERM");
-    }, 10_000);
-    child.once("close", (code) => {
-      clearTimeout(timer);
-      resolve(code);
-    });
-  });
-  const terminalOutput = Buffer.concat(output).toString("utf8");
-  expect(
-    exitCode,
-    `${Buffer.concat(errors).toString("utf8")}\n${terminalOutput}`,
-  ).toBe(0);
+  terminalChildren.push(terminalSession.child);
+  await terminalSession.waitForOutput("窄终端资料库");
+  await terminalSession.sendAndWait("\r", visibleTitlePrefix);
+  await terminalSession.sendAndWait("3", "›3 未识别");
+  await terminalSession.sendAndWait("/", "筛选本页：（输入后回车");
+  await terminalSession.sendAndWait(
+    "ordinary.txt",
+    "筛选本页：ordinary.txt（输入后回车",
+  );
+  await terminalSession.sendAndWait("\r", "筛选本页：ordinary.txt（1/");
+  await terminalSession.sendAndWait("q", "TERMINAL_RESTORED");
+  const exitCode = await terminalSession.closeAndWait();
+  const terminalOutput = terminalSession.output;
+  const errorOutput = terminalSession.errors;
+  expect(exitCode, `${errorOutput}\n${terminalOutput}`).toBe(0);
   expect(terminalOutput).toContain("数字资料库");
   expect(terminalOutput).toContain("窄终端资料库");
   expect(terminalOutput).toContain(visibleTitlePrefix);

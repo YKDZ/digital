@@ -7,7 +7,10 @@ import { fileURLToPath } from "node:url";
 
 import type { ProductConfiguration } from "@digital/composition";
 import { prepareProductionCatalogue } from "@digital/db-migrations";
-import { createPublicApiClient } from "@digital/public-api";
+import {
+  createPublicApiClient,
+  type PublicCurrentAsset,
+} from "@digital/public-api";
 import {
   loadControlledSourceIo,
   refusingSessionTransport,
@@ -16,7 +19,10 @@ import { serve } from "srvx";
 import { afterEach, expect, it } from "vitest";
 
 import { createProductService } from "../src/service.ts";
-import { interactiveTerminalEnvironment } from "./interactive-terminal.ts";
+import {
+  startInteractiveTerminal,
+  type InteractiveTerminalSession,
+} from "./interactive-terminal.ts";
 
 const running: Array<{
   readonly server: Awaited<ReturnType<typeof serve>>;
@@ -1832,7 +1838,12 @@ it("已安装 TUI 翻查资料历史并完成标题修订【安装客户端】",
     request: controlled.request,
     sessionTransport: controlled.sessionTransport ?? refusingSessionTransport(),
   };
-  const baseUrl = await startInspectionService(productDataDirectory, sourceIo);
+  const tuiRequests: string[] = [];
+  const baseUrl = await startInspectionService(
+    productDataDirectory,
+    sourceIo,
+    tuiRequests,
+  );
   const client = createPublicApiClient({ baseUrl });
   const library = await client.saveAssetLibrary({
     displayName: "资料检查普通目录",
@@ -1860,6 +1871,9 @@ it("已安装 TUI 翻查资料历史并完成标题修订【安装客户端】",
     kind: "current-values",
     limit: 100,
   });
+  const titleProperties = currentValues.items.map((item) =>
+    item.kind === "current-value" ? item.evidence.property : "",
+  );
   const titleIndex = currentValues.items.findIndex(
     (item) =>
       item.kind === "current-value" && item.evidence.property === "asset.title",
@@ -1869,8 +1883,14 @@ it("已安装 TUI 翻查资料历史并完成标题修订【安装客户端】",
   if (titleBeforeTui?.kind !== "current-value")
     throw new Error("普通目录样例没有标题裁决");
 
-  await verifyInstalledTui(baseUrl, asset!.id);
-  await verifyMetadataDecisionTui(baseUrl, library.displayName, titleIndex);
+  await verifyInstalledTui(baseUrl, asset!, library.displayName, tuiRequests);
+  await verifyMetadataDecisionTui(
+    baseUrl,
+    library.displayName,
+    asset!,
+    titleIndex,
+    titleProperties,
+  );
   const titleAfterTui = (
     await client.listAssetEvidence(asset!.id, {
       kind: "current-values",
@@ -1953,10 +1973,15 @@ it("已安装 TUI 取消冲突采纳且保留当前来源候选【安装客户�
   if (title?.kind !== "current-value")
     throw new Error("受控书目变体没有返回标题资料");
   expect(title.evidence.result.status).toBe("conflict");
+  const titleProperties = values.items.map((item) =>
+    item.kind === "current-value" ? item.evidence.property : "",
+  );
   await verifyConflictCancellationTui(
     baseUrl,
     library.displayName,
+    assets.items[0]!,
     values.items.findIndex((item) => item === title),
+    titleProperties,
   );
   const titleAfterTui = (
     await client.listAssetEvidence(assetId, {
@@ -1975,7 +2000,7 @@ it("已安装 TUI 取消冲突采纳且保留当前来源候选【安装客户�
 
 it("已安装 TUI 查看正式取消的来源刷新历史【安装客户端】", async () => {
   const scenario = await prepareMovieHistoryTuiScenario();
-  const { baseUrl, client, libraryId } = scenario;
+  const { baseUrl, client, libraryId, libraryName } = scenario;
   const initialScan = await client.startAssetLibraryScan(libraryId);
   await expect
     .poll(
@@ -2003,12 +2028,18 @@ it("已安装 TUI 查看正式取消的来源刷新历史【安装客户端】",
   );
   expect(historyIndex).toBeGreaterThanOrEqual(0);
 
-  await verifyCancelledHistoryTui(baseUrl, historyIndex, "资料更新 · 已取消");
+  await verifyCancelledHistoryTui(
+    baseUrl,
+    libraryName,
+    historyIndex,
+    "资料更新 · 已取消",
+    undefined,
+  );
 }, 180_000);
 
 it("已安装 TUI 查看正式取消的资产库扫描历史【安装客户端】", async () => {
   const scenario = await prepareMovieHistoryTuiScenario();
-  const { baseUrl, client, libraryId } = scenario;
+  const { baseUrl, client, libraryId, libraryName } = scenario;
   const cancelledScanId = await cancelAtSourceRequest(
     client,
     scenario.gateNextSourceRequest,
@@ -2024,6 +2055,7 @@ it("已安装 TUI 查看正式取消的资产库扫描历史【安装客户端�
 
   await verifyCancelledHistoryTui(
     baseUrl,
+    libraryName,
     historyIndex,
     "资料库扫描 · 已取消",
     "目录状态：已取消 1",
@@ -2034,6 +2066,7 @@ async function prepareMovieHistoryTuiScenario(): Promise<{
   readonly baseUrl: URL;
   readonly client: ReturnType<typeof createPublicApiClient>;
   readonly libraryId: string;
+  readonly libraryName: string;
   readonly gateNextSourceRequest: () => {
     readonly hasEntered: () => boolean;
     readonly release: () => void;
@@ -2102,6 +2135,7 @@ async function prepareMovieHistoryTuiScenario(): Promise<{
     baseUrl,
     client,
     libraryId: library.id,
+    libraryName: library.displayName,
     gateNextSourceRequest: () => {
       let requestEntered = false;
       let releaseRequest!: () => void;
@@ -2161,6 +2195,7 @@ async function cancelAtSourceRequest(
 async function startInspectionService(
   productDataDirectory: string,
   sourceIo: ProductConfiguration["sourceIo"],
+  requestLog?: string[],
 ): Promise<URL> {
   await prepareProductionCatalogue({ productDataDirectory });
   const bootstrap = await createProductService({
@@ -2169,7 +2204,13 @@ async function startInspectionService(
     sourceIo,
   });
   const server = serve({
-    fetch: bootstrap.app.fetch,
+    fetch:
+      requestLog === undefined
+        ? bootstrap.app.fetch
+        : async (request) => {
+            requestLog.push(new URL(request.url).pathname);
+            return await bootstrap.app.fetch(request);
+          },
     port: 0,
     hostname: "127.0.0.1",
     silent: true,
@@ -2183,44 +2224,27 @@ async function startInspectionService(
 
 async function verifyCancelledHistoryTui(
   baseUrl: URL,
+  libraryName: string,
   historyIndex: number,
   historyLabel: string,
   childSummary?: string,
 ): Promise<void> {
-  const terminalCommand = `stty cols 58 rows 16 -icanon -echo; terminalModeBefore=$(stty -g); pnpm --filter @digital/service exec digital-tui --url ${shellQuote(baseUrl.origin)}; terminalModeAfter=$(stty -g); if [ "$terminalModeBefore" = "$terminalModeAfter" ]; then echo TERMINAL_RESTORED; else echo TERMINAL_NOT_RESTORED; fi`;
-  const historySelection = "printf j; ".repeat(historyIndex);
-  const keyInput = `{ sleep 0.7; printf 6; sleep 0.7; ${historySelection}sleep 0.3; printf v; sleep 0.7; printf q; }`;
-  const command = `set -o pipefail; ${keyInput} | script -qfec ${shellQuote(terminalCommand)} /dev/null`;
-  const child = spawn("bash", ["-lc", command], {
-    cwd: serviceRoot,
-    env: interactiveTerminalEnvironment({
-      TERM: "xterm-256color",
-      COLUMNS: "58",
-      LINES: "16",
-    }),
-    stdio: ["ignore", "pipe", "pipe"],
-    detached: process.platform !== "win32",
-  });
-  children.push(child);
-  const output: Buffer[] = [];
-  const errors: Buffer[] = [];
-  child.stdout.on("data", (chunk: Buffer) => output.push(chunk));
-  child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
-  const exitCode = await new Promise<number | null>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", (code) => resolve(code));
-    setTimeout(() => {
-      if (child.pid === undefined) return;
-      try {
-        process.kill(-child.pid, "SIGTERM");
-      } catch {
-        child.kill("SIGTERM");
-      }
-    }, 15_000).unref();
-  });
-  const terminalOutput = Buffer.concat(output).toString("utf8");
-  const errorOutput = Buffer.concat(errors).toString("utf8");
-  expect(exitCode, `${errorOutput}\n${terminalOutput}`).toBe(0);
+  const terminal = startAssetInspectionTerminal(baseUrl, 58, 16, 15_000);
+  await terminal.waitForOutput(libraryName);
+  if (historyIndex === 0) {
+    await terminal.sendAndWait("6", ["工作流历史", `› ${historyLabel}`]);
+  } else {
+    await terminal.sendAndWait("6", ["工作流历史", "› "]);
+    for (let index = 1; index <= historyIndex; index++)
+      await terminal.sendAndWait(
+        "j",
+        index === historyIndex ? `› ${historyLabel}` : "› ",
+      );
+  }
+  const detailMarkers = ["执行详情", "已取消", historyLabel];
+  if (childSummary !== undefined) detailMarkers.push(childSummary);
+  await terminal.sendAndWait("v", detailMarkers);
+  const terminalOutput = await finishInstalledTui(terminal);
   expect(terminalOutput).toContain("工作流历史");
   expect(terminalOutput).toContain("执行详情");
   expect(terminalOutput).toContain("已取消");
@@ -2237,46 +2261,98 @@ async function verifyCancelledHistoryTui(
 
 async function verifyInstalledTui(
   baseUrl: URL,
-  assetId: string,
+  asset: PublicCurrentAsset,
+  libraryName: string,
+  requestLog: string[],
 ): Promise<void> {
-  const terminalCommand = `stty cols 34 rows 10 -icanon -echo; terminalModeBefore=$(stty -g); pnpm --filter @digital/service exec digital-tui --url ${shellQuote(baseUrl.origin)}; terminalModeAfter=$(stty -g); if [ "$terminalModeBefore" = "$terminalModeAfter" ]; then echo TERMINAL_RESTORED; else echo TERMINAL_NOT_RESTORED; fi`;
-  const keyInput =
-    "{ sleep 0.7; printf '/'; sleep 0.2; printf '%s' '资料检查普通目录'; sleep 0.3; printf '\\r'; sleep 0.3; printf '\\r'; sleep 1; printf i; sleep 0.8; printf j; sleep 0.2; printf j; sleep 0.3; printf '\\r'; sleep 0.7; printf '\\r'; sleep 0.7; printf n; sleep 0.4; printf p; sleep 0.4; printf '\\033'; sleep 0.4; printf '\\033'; sleep 0.4; printf 5; sleep 0.4; printf n; sleep 0.3; printf '\\033'; sleep 0.4; printf 6; sleep 0.5; printf j; sleep 0.3; printf v; sleep 0.6; printf '\\033'; sleep 0.3; printf '\\033'; sleep 0.4; printf q; }";
-  const command = `set -o pipefail; ${keyInput} | script -qfec ${shellQuote(terminalCommand)} /dev/null`;
-  const child = spawn("bash", ["-lc", command], {
-    cwd: serviceRoot,
-    env: interactiveTerminalEnvironment({
-      TERM: "xterm-256color",
-      COLUMNS: "34",
-      LINES: "10",
-    }),
-    stdio: ["ignore", "pipe", "pipe"],
-    detached: process.platform !== "win32",
+  const assetId = asset.id;
+  const client = createPublicApiClient({ baseUrl });
+  const sourcePage = await client.listAssetEvidence(assetId, {
+    kind: "source-records",
+    limit: 24,
   });
-  children.push(child);
-  const output: Buffer[] = [];
-  const errors: Buffer[] = [];
-  child.stdout.on("data", (chunk: Buffer) => output.push(chunk));
-  child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
-  const exitCode = await new Promise<number | null>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", (code) => resolve(code));
-    setTimeout(() => {
-      if (child.pid === undefined) return;
-      try {
-        process.kill(-child.pid, "SIGTERM");
-      } catch {
-        child.kill("SIGTERM");
-      }
-    }, 30_000).unref();
-  });
-  const terminalOutput = Buffer.concat(output).toString("utf8");
-  const errorOutput = Buffer.concat(errors).toString("utf8");
+  const sourceRecords = sourcePage.items.filter(
+    (item) => item.kind === "source-record",
+  );
+  if (sourceRecords.length === 0)
+    throw new Error("安装 TUI 检查样例没有来源记录");
+  const sourceIndex = Math.min(2, sourceRecords.length - 1);
+  const sourceRecord = sourceRecords[sourceIndex];
+  if (sourceRecord === undefined)
+    throw new Error("安装 TUI 检查样例缺少目标来源记录");
+  const sourceAddress = sourceRecord.nativeAddress ?? "来源资料";
+  const sourceAddressMarker = sourceAddress.match(/RJ\d+/u)?.[0] ?? "来源资料";
+  const sourceChunkLimit = 40;
+  const firstChunk = await client.readAssetSourceRecord(
+    assetId,
+    sourceRecord.id,
+    { offset: 0, limit: sourceChunkLimit },
+  );
+  const nextChunk = firstChunk.complete
+    ? undefined
+    : await client.readAssetSourceRecord(assetId, sourceRecord.id, {
+        offset: firstChunk.nextOffset,
+        limit: sourceChunkLimit,
+      });
+
+  const terminal = startAssetInspectionTerminal(baseUrl, 34, 10, 30_000);
+  await enterAssetLibrary(terminal, libraryName, asset);
+  await terminal.sendAndWait("i", ["资产资料检查", "› 本地观察："]);
+  await terminal.sendAndWait("j", "› 格式读取结果：");
+  await terminal.sendAndWait("j", "› 来源记录：");
+  await terminal.sendAndWait("\r", ["来源记录 ·", "› "]);
+  for (let index = 0; index < sourceIndex; index++)
+    await terminal.sendAndWait("j", "› ");
+  const sourceChunkMarker = (chunk: {
+    readonly offset: number;
+    readonly nextOffset: number;
+  }): string => `来源资料 ${chunk.offset + 1}–${chunk.nextOffset} 字符`;
+  await terminal.sendAndWait("\r", [
+    `来源：`,
+    sourceAddressMarker,
+    sourceChunkMarker(firstChunk),
+  ]);
+  if (nextChunk !== undefined) {
+    await terminal.sendAndWait("n", sourceChunkMarker(nextChunk));
+    await terminal.sendAndWait("p", sourceChunkMarker(firstChunk));
+  }
+  await terminal.sendAndWait("\x1b", ["来源记录 ·", "› "]);
+  await terminal.sendAndWait("\x1b", "› 来源记录：");
+  await terminal.sendAndWait("\x1b", "i/Enter检查");
+
+  const attention = await client.listCurrentAttention({ limit: 24 });
+  const attentionMarker = attention.items[0]?.summary ?? "目前没有待处理事项";
+  await terminal.sendAndWait("5", ["待处理事项", attentionMarker]);
+  if (attention.nextCursor !== undefined) {
+    const nextAttention = await client.listCurrentAttention({
+      limit: 24,
+      cursor: attention.nextCursor,
+    });
+    const nextAttentionMarker =
+      nextAttention.items[0]?.summary ?? "目前没有待处理事项";
+    await terminal.sendAndWait("n", ["待处理事项", nextAttentionMarker]);
+  }
+  await terminal.sendAndWait("\x1b", "i/Enter检查");
+
+  const history = await client.listWorkflowHistory({ limit: 24 });
+  const selectedHistoryIndex = Math.min(1, history.items.length - 1);
+  const selectedExecutionId = history.items[selectedHistoryIndex]?.execution.id;
+  if (selectedExecutionId === undefined)
+    throw new Error("安装 TUI 检查样例没有工作流历史");
+  const requestStart = requestLog.length;
+  await terminal.sendAndWait("6", ["工作流历史", "› "]);
+  if (history.items.length > 1) await terminal.sendAndWait("j", "› ");
+  await terminal.sendAndWait("v", "执行详情");
+  expect(requestLog.slice(requestStart)).toContain(
+    `/api/v1/executions/${selectedExecutionId}`,
+  );
+  await terminal.sendAndWait("\x1b", ["工作流历史", "› "]);
+  await terminal.sendAndWait("\x1b", "i/Enter检查");
+  const terminalOutput = await finishInstalledTui(terminal);
   const visibleOutput = terminalOutput
     .replaceAll(String.fromCharCode(27), "")
     .replace(/\[[0-?]*[ -/]*[@-~]/gu, "")
     .replace(/[\r\n]/gu, "");
-  expect(exitCode, `${errorOutput}\n${terminalOutput}`).toBe(0);
   expect(terminalOutput).toContain("资产资料检查");
   expect(terminalOutput).toContain("来源记录");
   expect(terminalOutput).toContain("工作流历史");
@@ -2290,12 +2366,30 @@ async function verifyInstalledTui(
 async function verifyMetadataDecisionTui(
   baseUrl: URL,
   libraryName: string,
+  asset: PublicCurrentAsset,
   titleIndex: number,
+  titleProperties: readonly string[],
 ): Promise<void> {
-  const terminalCommand = `stty cols 48 rows 16 -icanon -echo; terminalModeBefore=$(stty -g); pnpm --filter @digital/service exec digital-tui --url ${shellQuote(baseUrl.origin)}; terminalModeAfter=$(stty -g); if [ "$terminalModeBefore" = "$terminalModeAfter" ]; then echo TERMINAL_RESTORED; else echo TERMINAL_NOT_RESTORED; fi`;
-  const selectTitle = `${repeatKey("j", 4)} sleep 0.3; printf '\\r'; sleep 0.6; ${repeatKey("j", titleIndex)}`;
-  const keyInput = `{ sleep 0.7; printf '/'; sleep 0.2; printf '%s' ${shellQuote(libraryName)}; sleep 0.2; printf '\\r'; sleep 0.4; printf '\\r'; sleep 0.7; printf i; sleep 0.7; ${selectTitle} sleep 0.2; printf m; sleep 0.2; printf '%s' '终端取消标题'; sleep 0.2; printf '\\r'; sleep 0.7; printf n; sleep 0.7; printf '\\r'; sleep 0.4; ${selectTitle} sleep 0.2; printf m; sleep 0.2; printf '%s' '终端修订标题'; sleep 0.2; printf '\\r'; sleep 0.7; printf y; sleep 1; printf '\\r'; sleep 0.5; ${selectTitle} sleep 0.2; printf x; sleep 0.7; printf y; sleep 1; printf '\\r'; sleep 0.5; printf '\\033'; sleep 0.4; printf '\\033'; sleep 0.4; printf q; }`;
-  const output = await runInstalledTuiKeys(terminalCommand, keyInput, 30_000);
+  const terminal = startAssetInspectionTerminal(baseUrl, 48, 16, 30_000);
+  await enterAssetLibrary(terminal, libraryName, asset);
+  await openCurrentValuesTitle(terminal, titleIndex, titleProperties);
+  await terminal.sendAndWait("m", "asset.title 新值：");
+  await terminal.sendAndWait("终端取消标题", "终端取消标题");
+  await terminal.sendAndWait("\r", "y 确认 · n 取消");
+  await terminal.sendAndWait("n", "已取消，没有修改资料");
+  await terminal.sendAndWait("\r", "› asset.title");
+
+  await terminal.sendAndWait("m", "asset.title 新值：");
+  await terminal.sendAndWait("终端修订标题", "终端修订标题");
+  await terminal.sendAndWait("\r", "y 确认 · n 取消");
+  await terminal.sendAndWait("y", "已确认");
+  await terminal.sendAndWait("\r", `› ${titleProperties[0]}`);
+  await moveCurrentValueSelection(terminal, titleIndex, titleProperties);
+
+  await terminal.sendAndWait("x", "撤回修订");
+  await terminal.sendAndWait("y", ["已确认", "撤回修订"]);
+  await terminal.sendAndWait("\r", `› ${titleProperties[0]}`);
+  const output = await finishInstalledTui(terminal);
   expect(output).toContain("资产资料检查");
   expect(output).toContain("终端取消标题");
   expect(output).toContain("已取消，没有修改资料");
@@ -2310,12 +2404,24 @@ async function verifyMetadataDecisionTui(
 async function verifyConflictCancellationTui(
   baseUrl: URL,
   libraryName: string,
+  asset: PublicCurrentAsset,
   titleIndex: number,
+  titleProperties: readonly string[],
 ): Promise<void> {
-  const terminalCommand = `stty cols 48 rows 16 -icanon -echo; terminalModeBefore=$(stty -g); pnpm --filter @digital/service exec digital-tui --url ${shellQuote(baseUrl.origin)}; terminalModeAfter=$(stty -g); if [ "$terminalModeBefore" = "$terminalModeAfter" ]; then echo TERMINAL_RESTORED; else echo TERMINAL_NOT_RESTORED; fi`;
-  const selectTitle = `${repeatKey("j", 4)} sleep 0.3; printf '\\r'; sleep 0.6; ${repeatKey("j", titleIndex)}`;
-  const keyInput = `{ sleep 0.7; printf '/'; sleep 0.2; printf '%s' ${shellQuote(libraryName)}; sleep 0.2; printf '\\r'; sleep 0.4; printf '\\r'; sleep 0.7; printf i; sleep 0.7; ${selectTitle} sleep 0.3; printf a; sleep 0.4; printf '\\r'; sleep 0.7; printf n; sleep 0.7; printf '\\r'; sleep 0.5; printf '\\033'; sleep 0.4; printf '\\033'; sleep 0.4; printf q; }`;
-  const output = await runInstalledTuiKeys(terminalCommand, keyInput, 30_000);
+  const terminal = startAssetInspectionTerminal(baseUrl, 48, 16, 30_000);
+  await enterAssetLibrary(terminal, libraryName, asset);
+  await openCurrentValuesTitle(terminal, titleIndex, titleProperties);
+  await terminal.sendAndWait("a", [
+    "选择要固定的冲突值",
+    "幼女战记 第一册",
+    "幼女战记·第一册",
+  ]);
+  await terminal.sendAndWait("\r", "y 确认 · n 取消");
+  await terminal.sendAndWait("n", "已取消，没有修改资料");
+  await terminal.sendAndWait("\r", `› ${titleProperties[titleIndex]}`);
+  await terminal.sendAndWait("\x1b", "› 当前采用值及依据：");
+  await terminal.sendAndWait("\x1b", "› ");
+  const output = await finishInstalledTui(terminal);
   expect(output).toContain("存在冲突");
   expect(output).toContain("幼女战记 第一册");
   expect(output).toContain("幼女战记·第一册");
@@ -2324,52 +2430,100 @@ async function verifyConflictCancellationTui(
   expect(output).not.toContain("TERMINAL_NOT_RESTORED");
 }
 
-async function runInstalledTuiKeys(
-  terminalCommand: string,
-  keyInput: string,
-  timeoutMilliseconds: number,
-): Promise<string> {
-  const command = `set -o pipefail; ${keyInput} | script -qfec ${shellQuote(terminalCommand)} /dev/null`;
-  const child = spawn("bash", ["-lc", command], {
+function startAssetInspectionTerminal(
+  baseUrl: URL,
+  columns: number,
+  rows: number,
+  timeoutMs: number,
+): InteractiveTerminalSession {
+  const terminalCommand = `stty cols ${columns} rows ${rows} -icanon -echo; terminalModeBefore=$(stty -g); pnpm --filter @digital/service exec digital-tui --url ${shellQuote(baseUrl.origin)}; terminalModeAfter=$(stty -g); if [ "$terminalModeBefore" = "$terminalModeAfter" ]; then echo TERMINAL_RESTORED; else echo TERMINAL_NOT_RESTORED; fi`;
+  const terminal = startInteractiveTerminal(terminalCommand, {
     cwd: serviceRoot,
-    env: interactiveTerminalEnvironment({
-      TERM: "xterm-256color",
-      COLUMNS: "48",
-      LINES: "16",
-    }),
-    stdio: ["ignore", "pipe", "pipe"],
-    detached: process.platform !== "win32",
+    columns,
+    rows,
+    timeoutMs,
   });
-  children.push(child);
-  const output: Buffer[] = [];
-  const errors: Buffer[] = [];
-  child.stdout.on("data", (chunk: Buffer) => output.push(chunk));
-  child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
-  const exitCode = await new Promise<number | null>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", (code) => resolve(code));
-    setTimeout(() => {
-      if (child.pid === undefined) return;
-      try {
-        process.kill(-child.pid, "SIGTERM");
-      } catch {
-        child.kill("SIGTERM");
-      }
-    }, timeoutMilliseconds).unref();
-  });
-  const terminalOutput = Buffer.concat(output).toString("utf8");
-  const errorOutput = Buffer.concat(errors).toString("utf8");
-  expect(exitCode, `${errorOutput}\n${terminalOutput}`).toBe(0);
-  expect(terminalOutput).toContain("TERMINAL_RESTORED");
-  expect(terminalOutput).not.toContain("TERMINAL_NOT_RESTORED");
-  return terminalOutput;
+  children.push(terminal.child);
+  return terminal;
 }
 
-function repeatKey(key: string, count: number): string {
-  return Array.from(
-    { length: count },
-    () => `sleep 0.12; printf '%s' ${shellQuote(key)};`,
-  ).join(" ");
+async function enterAssetLibrary(
+  terminal: InteractiveTerminalSession,
+  libraryName: string,
+  asset: PublicCurrentAsset,
+): Promise<void> {
+  await terminal.waitForOutput(libraryName);
+  await terminal.sendAndWait("/", "筛选本页：");
+  await terminal.sendAndWait(libraryName, [libraryName, "筛选本页："]);
+  await terminal.sendAndWait("\r", "（1/1）");
+  await terminal.sendAndWait("\r", ["›2 资产", selectedAssetRowMarker(asset)]);
+}
+
+function selectedAssetRowMarker(asset: PublicCurrentAsset): string {
+  const title = asset.descriptions
+    .filter(
+      (description) =>
+        description.target.kind === "entity" &&
+        description.target.entityId === asset.id,
+    )
+    .flatMap((description) => description.metadata)
+    .find(
+      (metadata) =>
+        metadata.property === "asset.title" &&
+        metadata.result.status === "resolved",
+    )?.result;
+  const name =
+    (title?.status === "resolved" ? title.values[0]?.value : undefined) ??
+    asset.relatedEntities.find((entity) => entity.id === asset.id)?.label ??
+    "未命名资产";
+  return `› ${Array.from(name).slice(0, 6).join("")}`;
+}
+
+async function openCurrentValuesTitle(
+  terminal: InteractiveTerminalSession,
+  titleIndex: number,
+  titleProperties: readonly string[],
+): Promise<void> {
+  await terminal.sendAndWait("i", ["资产资料检查", "› 本地观察："]);
+  await terminal.sendAndWait("j", "› 格式读取结果：");
+  await terminal.sendAndWait("j", "› 来源记录：");
+  await terminal.sendAndWait("j", "› 解释事实：");
+  await terminal.sendAndWait("j", "› 当前采用值及依据：");
+  const firstProperty = titleProperties[0];
+  if (firstProperty === undefined || firstProperty.length === 0)
+    throw new Error("当前值资料没有可用于选择的属性");
+  await terminal.sendAndWait("\r", [
+    "当前采用值及依据 ·",
+    `› ${firstProperty}`,
+  ]);
+  await moveCurrentValueSelection(terminal, titleIndex, titleProperties);
+}
+
+async function moveCurrentValueSelection(
+  terminal: InteractiveTerminalSession,
+  titleIndex: number,
+  titleProperties: readonly string[],
+): Promise<void> {
+  const targetProperty = titleProperties[titleIndex];
+  if (targetProperty === undefined || targetProperty.length === 0)
+    throw new Error("当前值资料中没有目标属性");
+  for (let index = 1; index <= titleIndex; index++) {
+    const property = titleProperties[index];
+    if (property === undefined || property.length === 0)
+      throw new Error(`当前值资料缺少第 ${index + 1} 个属性`);
+    await terminal.sendAndWait("j", `› ${property}`);
+  }
+}
+
+async function finishInstalledTui(
+  terminal: InteractiveTerminalSession,
+): Promise<string> {
+  await terminal.sendAndWait("q", "TERMINAL_RESTORED");
+  const exitCode = await terminal.closeAndWait();
+  expect(exitCode, `${terminal.errors}\n${terminal.output}`).toBe(0);
+  expect(terminal.output).toContain("TERMINAL_RESTORED");
+  expect(terminal.output).not.toContain("TERMINAL_NOT_RESTORED");
+  return terminal.output;
 }
 
 async function loadMovieSourceIo(input: {

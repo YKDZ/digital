@@ -15,8 +15,14 @@ import type {
   SourceEnrichmentInspection,
   WorkflowHistoryPage,
 } from "@digital/public-api";
-import { Box, Text, useInput, useStdout } from "ink";
-import { useEffect, useState } from "react";
+import { Box, Text, useInput, useStdout, type Key } from "ink";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 const evidenceLabels: Record<AssetEvidenceKind, string> = {
   "local-observations": "本地观察",
@@ -1110,7 +1116,6 @@ export function WorkItemsPanel({
       : kind === "attention"
         ? (page as CurrentAttentionPage).items[selected]?.executionId
         : (page as WorkflowHistoryPage).items[selected]?.execution.id;
-
   const loadSourceDecision = async (executionId: string) => {
     setBusy(true);
     setSourceDecision(undefined);
@@ -1189,7 +1194,8 @@ export function WorkItemsPanel({
     }
   };
 
-  useInput((input, key) => {
+  const inputHandlerRef = useRef<(input: string, key: Key) => void>(() => {});
+  const handleInput = (input: string, key: Key): void => {
     if (key.escape || input === "b") {
       if (
         executionDetail !== undefined ||
@@ -1292,7 +1298,10 @@ export function WorkItemsPanel({
       void client
         .inspectExecution(selectedExecutionId)
         .then((inspection) =>
-          setExecutionDetail({ id: selectedExecutionId, inspection }),
+          setExecutionDetail({
+            id: selectedExecutionId,
+            inspection,
+          }),
         )
         .catch((cause: unknown) =>
           setExecutionDetailError(
@@ -1346,7 +1355,15 @@ export function WorkItemsPanel({
       setSourceDecision(undefined);
       setActionMessage(undefined);
     }
-  });
+  };
+  useLayoutEffect(() => {
+    inputHandlerRef.current = handleInput;
+  }, [handleInput]);
+  const dispatchInput = useCallback(
+    (input: string, key: Key) => inputHandlerRef.current(input, key),
+    [],
+  );
+  useInput(dispatchInput);
 
   const heading = kind === "attention" ? "待处理事项" : "工作流历史";
   const pageStart = windowStart(

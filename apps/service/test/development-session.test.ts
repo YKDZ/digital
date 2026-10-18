@@ -19,7 +19,7 @@ import { inspectEnvironment, stopEnvironment } from "@digital/environment";
 import { createPublicApiClient } from "@digital/public-api";
 import { expect, it } from "vitest";
 
-import { interactiveTerminalEnvironment } from "./interactive-terminal.ts";
+import { startInteractiveTerminal } from "./interactive-terminal.ts";
 
 const execFile = promisify(execFileCallback);
 const workspaceRoot = fileURLToPath(new URL("../../..", import.meta.url));
@@ -59,6 +59,7 @@ it(
     });
 
     const watcherProcesses: ReturnType<typeof spawn>[] = [];
+    const terminalChildren: ReturnType<typeof spawn>[] = [];
     let passed = false;
     let watcherOutput = "";
     let firstEntryMilliseconds = 0;
@@ -520,17 +521,27 @@ it(
         "stty cols 80 rows 24 -icanon -echo; terminalModeBefore=$(stty -g); " +
         `pnpm --filter @digital/service exec digital-tui --url ${shellQuote(baseUrl)}; ` +
         'terminalModeAfter=$(stty -g); if [ "$terminalModeBefore" = "$terminalModeAfter" ]; then echo TERMINAL_RESTORED; fi; echo TUI_EXITED';
-      const terminalCommand = `{ sleep 0.6; printf q; } | script -qfec ${shellQuote(terminal)} /dev/null`;
-      const terminalResult = await execFile("bash", ["-lc", terminalCommand], {
+      const terminalSession = startInteractiveTerminal(terminal, {
         cwd: copiedWorkspace,
-        env: interactiveTerminalEnvironment({
-          TERM: "xterm-256color",
-          COLUMNS: "80",
-          LINES: "24",
-        }),
-        timeout: 15_000,
-        maxBuffer: 4 * 1024 * 1024,
+        columns: 80,
+        rows: 24,
+        timeoutMs: 15_000,
       });
+      terminalChildren.push(terminalSession.child);
+      await terminalSession.waitForOutput("开发更新新标记");
+      await terminalSession.sendAndWait("q", [
+        "TERMINAL_RESTORED",
+        "TUI_EXITED",
+      ]);
+      const terminalExitCode = await terminalSession.closeAndWait();
+      const terminalResult = {
+        stdout: terminalSession.output,
+        stderr: terminalSession.errors,
+      };
+      expect(
+        terminalExitCode,
+        `${terminalResult.stderr}\n${terminalResult.stdout}`,
+      ).toBe(0);
       expect(terminalResult.stdout).toContain("开发更新新标记");
       expect(terminalResult.stdout).toContain("TERMINAL_RESTORED");
       expect(terminalResult.stdout).toContain("TUI_EXITED");
@@ -589,6 +600,8 @@ it(
       );
       passed = true;
     } finally {
+      for (const terminalChild of terminalChildren)
+        await stopProcessGroup(terminalChild).catch(() => undefined);
       for (const watcher of watcherProcesses) {
         if (watcher.exitCode !== null || watcher.signalCode !== null) continue;
         try {
