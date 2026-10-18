@@ -1119,7 +1119,7 @@ function LibraryEditorView({
           ) : (
             editor.directories.map((directory) => (
               <Text key={directory}>
-                · {truncateToWidth(directory, columns - 5)}
+                · {truncatePathToWidth(directory, columns - 5)}
               </Text>
             ))
           )}
@@ -1520,6 +1520,21 @@ function truncateToWidth(value: string, maximumWidth: number): string {
     width += characterWidth;
   }
   return result;
+}
+
+function truncatePathToWidth(value: string, maximumWidth: number): string {
+  const limit = Math.max(1, maximumWidth);
+  if (terminalWidth(value) <= limit) return value;
+
+  let suffix = "";
+  let width = 0;
+  for (const character of Array.from(value).reverse()) {
+    const characterWidth = terminalWidth(character);
+    if (width + characterWidth > limit - 1) break;
+    suffix = character + suffix;
+    width += characterWidth;
+  }
+  return `…${suffix}`;
 }
 
 function terminalWidth(value: string): number {

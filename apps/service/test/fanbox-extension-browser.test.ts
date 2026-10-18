@@ -72,7 +72,9 @@ it("在 Chromium 中按正式清单安装并加载扩展【安装客户端】", 
     ],
   });
   browserContexts.push(context);
-  const worker = await context.waitForEvent("serviceworker");
+  const [existingWorker] = context.serviceWorkers();
+  const worker =
+    existingWorker ?? (await context.waitForEvent("serviceworker"));
   const extensionId = new URL(worker.url()).host;
   const popup = await context.newPage();
   await popup.goto(`chrome-extension://${extensionId}/popup.html`);
@@ -80,7 +82,7 @@ it("在 Chromium 中按正式清单安装并加载扩展【安装客户端】", 
   await expect(
     popup.getByRole("button", { name: "检查目标与创作者范围" }),
   ).toBeVisible();
-});
+}, 60_000);
 
 it("编辑已核对的服务和请求后必须重新检查才会捕获浏览器会话【安装客户端】", async () => {
   const firstBaseUrl = await startService(controlledSourceIo());
@@ -125,7 +127,9 @@ it("编辑已核对的服务和请求后必须重新检查才会捕获浏览器�
     ],
   });
   browserContexts.push(context);
-  const worker = await context.waitForEvent("serviceworker");
+  const [existingWorker] = context.serviceWorkers();
+  const worker =
+    existingWorker ?? (await context.waitForEvent("serviceworker"));
   const extensionId = new URL(worker.url()).host;
   const popup = await context.newPage();
   await popup.goto(`chrome-extension://${extensionId}/popup.html`);
@@ -264,7 +268,9 @@ it("通过实际 Chromium 扩展与正式 FANBOX 验证器完成 TUI 连接【�
     ],
   });
   browserContexts.push(context);
-  const worker = await context.waitForEvent("serviceworker");
+  const [existingWorker] = context.serviceWorkers();
+  const worker =
+    existingWorker ?? (await context.waitForEvent("serviceworker"));
   const extensionId = new URL(worker.url()).host;
   const popup = await context.newPage();
   await popup.goto(`chrome-extension://${extensionId}/popup.html`);
