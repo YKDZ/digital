@@ -11,6 +11,21 @@ import { afterEach, expect, it } from "vitest";
 const servers: ReturnType<typeof createServer>[] = [];
 const children: ReturnType<typeof spawn>[] = [];
 
+function interactivePtyEnvironment(
+  columns: number,
+  rows: number,
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {
+    ...process.env,
+    TERM: "xterm-256color",
+    COLUMNS: String(columns),
+    LINES: String(rows),
+  };
+  delete environment.CI;
+  delete environment.CONTINUOUS_INTEGRATION;
+  return environment;
+}
+
 afterEach(async () => {
   for (const child of children.splice(0).reverse()) {
     if (child.exitCode === null && child.signalCode === null) {
@@ -48,7 +63,7 @@ it("运行安装入口、处理分页键，并在窄终端退出时恢复输入�
   const command = `set -o pipefail; ${keyInput} | script -qfec ${shellQuote(terminalCommand)} /dev/null`;
   const child = spawn("bash", ["-lc", command], {
     cwd: process.cwd(),
-    env: { ...process.env, TERM: "xterm-256color", COLUMNS: "34", LINES: "10" },
+    env: interactivePtyEnvironment(34, 10),
     stdio: ["ignore", "pipe", "pipe"],
     detached: process.platform !== "win32",
   });
@@ -275,7 +290,7 @@ it("安装入口可补充来源、检查失败依据并重试", async () => {
   const command = `set -o pipefail; ${keyInput} | script -qfec ${shellQuote(terminalCommand)} /dev/null`;
   const child = spawn("bash", ["-lc", command], {
     cwd: process.cwd(),
-    env: { ...process.env, TERM: "xterm-256color", COLUMNS: "54", LINES: "16" },
+    env: interactivePtyEnvironment(54, 16),
     stdio: ["ignore", "pipe", "pipe"],
     detached: process.platform !== "win32",
   });
@@ -431,7 +446,7 @@ it("安装入口可检查待处理变更的影响并明确确认", async () => {
   const command = `set -o pipefail; ${keyInput} | script -qfec ${shellQuote(terminalCommand)} /dev/null`;
   const child = spawn("bash", ["-lc", command], {
     cwd: process.cwd(),
-    env: { ...process.env, TERM: "xterm-256color", COLUMNS: "64", LINES: "16" },
+    env: interactivePtyEnvironment(64, 16),
     stdio: ["ignore", "pipe", "pipe"],
     detached: process.platform !== "win32",
   });
@@ -516,7 +531,7 @@ it("显示服务端读取错误并可重新读取", async () => {
   const command = `set -o pipefail; ${keyInput} | script -qfec ${shellQuote(terminalCommand)} /dev/null`;
   const child = spawn("bash", ["-lc", command], {
     cwd: process.cwd(),
-    env: { ...process.env, TERM: "xterm-256color", COLUMNS: "48", LINES: "12" },
+    env: interactivePtyEnvironment(48, 12),
     stdio: ["ignore", "pipe", "pipe"],
     detached: process.platform !== "win32",
   });
@@ -682,7 +697,7 @@ it("安装入口可跟踪三种操作、请求取消并展示同一执行的最�
   const command = `set -o pipefail; ${keyInput} | script -qfec ${shellQuote(terminalCommand)} /dev/null`;
   const child = spawn("bash", ["-lc", command], {
     cwd: process.cwd(),
-    env: { ...process.env, TERM: "xterm-256color", COLUMNS: "58", LINES: "16" },
+    env: interactivePtyEnvironment(58, 16),
     stdio: ["ignore", "pipe", "pipe"],
     detached: process.platform !== "win32",
   });
@@ -779,7 +794,7 @@ it("读取连接中断后保留原执行身份并自动恢复查询，不重提�
   const command = `set -o pipefail; ${keyInput} | script -qfec ${shellQuote(terminalCommand)} /dev/null`;
   const child = spawn("bash", ["-lc", command], {
     cwd: process.cwd(),
-    env: { ...process.env, TERM: "xterm-256color", COLUMNS: "58", LINES: "16" },
+    env: interactivePtyEnvironment(58, 16),
     stdio: ["ignore", "pipe", "pipe"],
     detached: process.platform !== "win32",
   });
