@@ -15,7 +15,10 @@ import { isNodeBrokenPipe } from "@ykdz/cli-contract/node";
 import * as v from "valibot";
 
 import { deleteEnvironment } from "./delete-environment.ts";
-import { inspectEnvironment } from "./inspect-environment.ts";
+import {
+  inspectEnvironment,
+  type InspectEnvironmentResult,
+} from "./inspect-environment.ts";
 import type {
   EnvironmentState,
   ServiceReadiness,
@@ -24,6 +27,10 @@ import type {
   EnvironmentRunFacts,
   LifecycleCleanup,
   ProcessLiveness,
+} from "./internal/operation-contract.ts";
+import {
+  invalidEnvironmentFacts,
+  noRunFacts,
 } from "./internal/operation-contract.ts";
 import { findRepositoryWorkspace } from "./internal/paths.ts";
 import type { JsonValue, RecordedOperationOutcome } from "./internal/record.ts";
@@ -150,6 +157,51 @@ const deleteFailureSchema = v.object({
   message: v.string(),
   exitCode: v.nullable(v.number()),
 });
+
+const enterFailureDataSchema = standardSchema(
+  v.object({
+    status: v.picklist([
+      "failed",
+      "refused",
+      "config-incompatible",
+      "unmanaged",
+      "invalid-request",
+    ]),
+    phase: v.picklist(["inspect", "prepare", "start"]),
+    inspection: v.object({ elapsedMs: v.number() }),
+    environment: factsSchema,
+    run: runFactsSchema,
+    preparation: v.object({
+      status: v.picklist(["prepared", "reused", "failed", "not-run"]),
+      elapsedMs: v.number(),
+    }),
+    service: v.object({
+      status: v.picklist(["ready", "already-ready", "failed", "not-run"]),
+      elapsedMs: v.number(),
+    }),
+    business: v.object({
+      status: v.literal("not-requested"),
+      explanation: v.string(),
+    }),
+    failure: v.object({
+      stage: v.string(),
+      message: v.string(),
+      exitCode: v.nullable(v.number()),
+    }),
+    cleanup: lifecycleCleanupSchema,
+    logs: v.object({
+      prepare: logsSchema,
+      service: logsSchema,
+    }),
+    diagnostics: v.array(v.string()),
+  }),
+);
+
+const enterBusinessNotRequested = {
+  status: "not-requested" as const,
+  explanation:
+    "本次没有发起资料接入或全库刷新；服务就绪不代表初始资料已经建立。",
+};
 
 /** 结果事实按 JSON 投影复制为可变结构，只读列表留在接口层。 */
 const factsPayload = (facts: EnvironmentFacts) => ({
@@ -291,7 +343,10 @@ function createCliContract(version: string) {
         name: "digital-environment",
         description: "Digital 运行环境管理。",
         helpSupplement: text.lines([
-          "prepare 建立或核验一个可被产品使用的环境；start 启动该环境的真实产品 Web 服务；",
+          "enter 在新环境首次准备并启动，之后从保存的环境配置重新进入；首次必须显式选择来源模式。",
+          "进入只负责运行环境与服务就绪，不发起资料接入或刷新；初始资料尚未完成时会明确报告。",
+          "enter 的 --timeout-ms 分别约束准备与启动阶段，不是共用总时限。",
+          "prepare 建立或核验一个可被产品使用的环境；start 启动该环境的独立产品服务；",
           "stop 只停止本记录管理的世代；inspect 只读查看状态、归属与日志位置。",
           "rebuild 把已停止的所选环境按原配置重建为初态；delete 回收该环境自有的记录、",
           "数据、日志与私有运行现场。两者都拒绝在运行中或收尾未确认时改动，也不触碰",
@@ -302,6 +357,489 @@ function createCliContract(version: string) {
           "退出码：0 成功；1 操作失败；2 用法错误；3 配置不兼容；4 归属不可接管；5 请求无效。",
         ]),
       },
+      ...define.command("enter")({
+        kind: "command",
+        parent: "environment",
+        name: "enter",
+        description: "首次准备并启动所选环境，或从保存配置重新进入。",
+        input: standardSchema(
+          v.object({
+            environment: v.pipe(v.string(), v.minLength(1)),
+            workspace: v.optional(v.pipe(v.string(), v.minLength(1))),
+            input: v.optional(v.array(v.pipe(v.string(), v.minLength(1)))),
+            sourceMode: v.optional(
+              v.picklist(["offline", "controlled", "real"]),
+            ),
+            configJson: v.optional(v.string()),
+            timeoutMs: v.optional(v.pipe(v.string(), v.minLength(1))),
+          }),
+        ),
+        fields: {
+          environment: {
+            kind: "valueOption",
+            longOption: "--environment",
+            description: "环境名。",
+          },
+          workspace: {
+            kind: "valueOption",
+            longOption: "--workspace-path",
+            description: "工作区路径；默认为当前目录。",
+          },
+          input: {
+            kind: "repeatableOption",
+            longOption: "--input",
+            description: "首次准备时记录的普通素材目录，可重复指定。",
+          },
+          sourceMode: {
+            kind: "valueOption",
+            longOption: "--source-mode",
+            description:
+              "首次准备必须显式选择 offline、controlled 或 real；重入无需指定并沿用保存值。",
+          },
+          configJson: {
+            kind: "valueOption",
+            longOption: "--config-json",
+            description:
+              "首次准备的非秘密运行配置 JSON；controlled 来源须包含 sourceIo 清单选择。",
+          },
+          timeoutMs: {
+            kind: "valueOption",
+            longOption: "--timeout-ms",
+            description:
+              "准备阶段与启动阶段各自的期限毫秒数；不是两阶段共用的总时限。",
+          },
+        },
+        success: {
+          kind: "data",
+          variants: {
+            entered: {
+              description: "环境准备完成或已保留，并且服务真实就绪",
+              exitCode: 0,
+              schema: standardSchema(
+                v.object({
+                  status: v.literal("entered"),
+                  inspection: v.object({ elapsedMs: v.number() }),
+                  environment: factsSchema,
+                  run: runFactsSchema,
+                  preparation: v.object({
+                    status: v.picklist(["prepared", "reused"]),
+                    elapsedMs: v.number(),
+                  }),
+                  service: v.object({
+                    status: v.picklist(["ready", "already-ready"]),
+                    elapsedMs: v.number(),
+                  }),
+                  business: v.object({
+                    status: v.literal("not-requested"),
+                    explanation: v.string(),
+                  }),
+                  cleanup: lifecycleCleanupSchema,
+                  logs: v.object({
+                    prepare: logsSchema,
+                    service: logsSchema,
+                  }),
+                  diagnostics: v.array(v.string()),
+                }),
+              ),
+              text: ({
+                inspection,
+                environment,
+                run,
+                preparation,
+                service,
+                business,
+                cleanup,
+                logs,
+                diagnostics,
+              }) =>
+                text.lines([
+                  `环境 ${environment.environment} 已进入（来源 ${environment.sourceMode}）。`,
+                  `查看环境：${String(inspection.elapsedMs)} 毫秒。`,
+                  `准备：${preparation.status === "prepared" ? "本次完成" : "沿用已保存配置"}（${String(preparation.elapsedMs)} 毫秒）。`,
+                  `服务：${service.status === "ready" ? "已就绪" : "沿用已就绪世代"}（${String(service.elapsedMs)} 毫秒）。`,
+                  `资料目录：${environment.inputs.length === 0 ? "未配置" : environment.inputs.join("、")}`,
+                  `产品数据：${environment.productDataRoot}`,
+                  `实际地址：${run.address ?? "未知"}`,
+                  `产品日志：${run.productLogFile ?? "未知"}`,
+                  `业务状态：${business.explanation}`,
+                  `自有资源收尾：${cleanup.state}`,
+                  oneLine(describeLogs(logs.prepare)),
+                  oneLine(describeLogs(logs.service)),
+                  ...diagnostics.map((item) => `额外诊断：${oneLine(item)}`),
+                ]),
+            },
+          },
+        },
+        failures: {
+          failed: {
+            description: "进入在当前阶段失败并保留具体结果与日志",
+            exitCode: 1,
+            schema: enterFailureDataSchema,
+            text: ({ phase, failure, cleanup, logs, diagnostics }) =>
+              text.lines([
+                `进入失败（阶段 ${phase}，步骤 ${failure.stage}）：${oneLine(failure.message)}`,
+                `自有资源收尾：${cleanup.state}`,
+                oneLine(describeLogs(logs.prepare)),
+                oneLine(describeLogs(logs.service)),
+                ...diagnostics.map((item) => `额外诊断：${oneLine(item)}`),
+              ]),
+          },
+          refused: {
+            description: "当前环境状态要求显式处理后才能进入",
+            exitCode: 1,
+            schema: enterFailureDataSchema,
+            text: ({ phase, failure, cleanup, logs }) =>
+              text.lines([
+                `拒绝进入（阶段 ${phase}）：${oneLine(failure.message)}`,
+                `自有资源收尾：${cleanup.state}`,
+                oneLine(describeLogs(logs.prepare)),
+                oneLine(describeLogs(logs.service)),
+              ]),
+          },
+          configIncompatible: {
+            description: "保存配置与进入请求不兼容，原状态保留",
+            exitCode: 3,
+            schema: enterFailureDataSchema,
+            text: ({ failure }) =>
+              text.line(`环境配置不兼容：${oneLine(failure.message)}`),
+          },
+          unmanaged: {
+            description: "目标环境归属无法确认，未接管资源",
+            exitCode: 4,
+            schema: enterFailureDataSchema,
+            text: ({ failure }) =>
+              text.line(`拒绝接管环境：${oneLine(failure.message)}`),
+          },
+          invalidRequest: {
+            description: "进入请求缺少明确选择或包含无效参数",
+            exitCode: 5,
+            schema: enterFailureDataSchema,
+            text: ({ failure }) =>
+              text.line(`进入请求无效：${oneLine(failure.message)}`),
+          },
+        },
+        handler: async ({ dependencies, input, outcome }) => {
+          let inspectionElapsedMs = 0;
+          const failurePayload = (
+            payload: Omit<
+              Parameters<typeof entryFailurePayload>[0],
+              "inspectionElapsedMs"
+            >,
+          ) => entryFailurePayload({ ...payload, inspectionElapsedMs });
+          const workspacePath = selectedWorkspace(
+            dependencies.cwd,
+            input.workspace,
+          );
+          const config = parseConfigJson(input.configJson);
+          if ("reason" in config)
+            return outcome.failure.invalidRequest(
+              failurePayload({
+                status: "invalid-request",
+                phase: "inspect",
+                workspacePath,
+                environmentName: input.environment,
+                failure: {
+                  stage: "request",
+                  message: config.reason,
+                  exitCode: null,
+                },
+              }),
+            );
+          const timeout = parseTimeoutMs(input.timeoutMs);
+          if ("reason" in timeout)
+            return outcome.failure.invalidRequest(
+              failurePayload({
+                status: "invalid-request",
+                phase: "inspect",
+                workspacePath,
+                environmentName: input.environment,
+                failure: {
+                  stage: "request",
+                  message: timeout.reason,
+                  exitCode: null,
+                },
+              }),
+            );
+
+          const inspectionStartedAt = performance.now();
+          const inspection = await inspectEnvironment({
+            workspacePath,
+            environment: input.environment,
+          });
+          inspectionElapsedMs = Math.max(
+            0,
+            Math.round(performance.now() - inspectionStartedAt),
+          );
+          if (inspection.status !== "ok")
+            return outcome.failure.invalidRequest(
+              failurePayload({
+                status: "invalid-request",
+                phase: "inspect",
+                workspacePath,
+                environmentName: input.environment,
+                failure: {
+                  stage: "request",
+                  message: inspection.reason ?? "环境路径无效",
+                  exitCode: null,
+                },
+              }),
+            );
+          if (inspection.pendingIntent !== undefined)
+            return outcome.failure.refused(
+              failurePayload({
+                status: "refused",
+                phase: "inspect",
+                inspection,
+                failure: {
+                  stage: "intent",
+                  message: `环境仍有未收敛的 ${inspection.pendingIntent.kind} 操作，请先显式处理该操作。`,
+                  exitCode: null,
+                },
+              }),
+            );
+
+          const hasPreparationOptions =
+            input.input !== undefined ||
+            input.sourceMode !== undefined ||
+            input.configJson !== undefined;
+          if (inspection.state === "prepared" && hasPreparationOptions)
+            return outcome.failure.invalidRequest(
+              failurePayload({
+                status: "invalid-request",
+                phase: "inspect",
+                inspection,
+                failure: {
+                  stage: "request",
+                  message:
+                    "已有环境只从已保存配置重新进入；配置需显式 prepare 或 rebuild 时操作。",
+                  exitCode: null,
+                },
+              }),
+            );
+
+          const preparationOptions =
+            inspection.state === "unprepared" || inspection.state === "failed";
+          if (
+            inspection.state === "unprepared" &&
+            input.sourceMode === undefined
+          )
+            return outcome.failure.invalidRequest(
+              failurePayload({
+                status: "invalid-request",
+                phase: "inspect",
+                inspection,
+                failure: {
+                  stage: "request",
+                  message:
+                    "首次进入必须显式指定 --source-mode；受控来源还需在 --config-json 中选择 sourceIo 清单。",
+                  exitCode: null,
+                },
+              }),
+            );
+
+          if (
+            inspection.state === "config-incompatible" ||
+            inspection.state === "unmanaged"
+          ) {
+            const status =
+              inspection.state === "unmanaged"
+                ? "unmanaged"
+                : "config-incompatible";
+            const payload = failurePayload({
+              status,
+              phase: "inspect",
+              inspection,
+              failure: {
+                stage: inspection.state,
+                message:
+                  inspection.reason ??
+                  (inspection.state === "unmanaged"
+                    ? "环境归属无法确认"
+                    : "保存配置与当前环境不兼容"),
+                exitCode: null,
+              },
+            });
+            return status === "unmanaged"
+              ? outcome.failure.unmanaged(payload)
+              : outcome.failure.configIncompatible(payload);
+          }
+          if (inspection.state === "preparing")
+            return outcome.failure.refused(
+              failurePayload({
+                status: "refused",
+                phase: "inspect",
+                inspection,
+                failure: {
+                  stage: "preparing",
+                  message: "环境准备操作尚未收敛；请先查看操作记录并重试。",
+                  exitCode: null,
+                },
+              }),
+            );
+
+          let preparationStatus: "prepared" | "reused" = "reused";
+          let preparationElapsedMs = 0;
+          let prepareLogs: PrepareLogs = { directory: null, files: [] };
+          let serviceLogs: PrepareLogs = { directory: null, files: [] };
+          let diagnostics: string[] = [];
+          if (preparationOptions) {
+            const sourceMode =
+              input.sourceMode ?? inspection.environment.sourceMode;
+            if (sourceMode === "unknown" || sourceMode.length === 0)
+              return outcome.failure.invalidRequest(
+                failurePayload({
+                  status: "invalid-request",
+                  phase: "inspect",
+                  inspection,
+                  failure: {
+                    stage: "request",
+                    message:
+                      "环境没有可复用的来源模式；请显式指定 --source-mode 后重试。",
+                    exitCode: null,
+                  },
+                }),
+              );
+            const startedAt = performance.now();
+            const prepared = await withCancellation((signal) =>
+              prepareEnvironment({
+                workspacePath,
+                environment: input.environment,
+                inputs: (input.input ?? inspection.environment.inputs).map(
+                  (item) => path.resolve(dependencies.cwd, item),
+                ),
+                sourceMode,
+                config:
+                  input.configJson === undefined
+                    ? inspection.environment.config
+                    : config.value,
+                signal,
+                timeoutMs: timeout.value,
+              }),
+            );
+            preparationElapsedMs = Math.max(
+              0,
+              Math.round(performance.now() - startedAt),
+            );
+            prepareLogs = prepared.logs;
+            diagnostics = [...prepared.diagnostics];
+            if (prepared.status !== "prepared") {
+              const status =
+                prepared.status === "config-incompatible"
+                  ? "config-incompatible"
+                  : prepared.status === "unmanaged"
+                    ? "unmanaged"
+                    : prepared.status === "invalid-request"
+                      ? "invalid-request"
+                      : "failed";
+              const payload = failurePayload({
+                status,
+                phase: "prepare",
+                inspection,
+                environment: prepared.environment,
+                run: inspection.run,
+                preparation: {
+                  status: "failed",
+                  elapsedMs: preparationElapsedMs,
+                },
+                failure: requiredFailure(prepared),
+                cleanup: cleanupPayload(prepared.cleanup),
+                prepareLogs: prepared.logs,
+                diagnostics: prepared.diagnostics,
+              });
+              switch (status) {
+                case "config-incompatible":
+                  return outcome.failure.configIncompatible(payload);
+                case "unmanaged":
+                  return outcome.failure.unmanaged(payload);
+                case "invalid-request":
+                  return outcome.failure.invalidRequest(payload);
+                default:
+                  return outcome.failure.failed(payload);
+              }
+            }
+            preparationStatus = "prepared";
+          }
+
+          const startAt = performance.now();
+          const started = await withCancellation((signal) =>
+            startEnvironment({
+              workspacePath,
+              environment: input.environment,
+              signal,
+              timeoutMs: timeout.value,
+            }),
+          );
+          const serviceElapsedMs = Math.max(
+            0,
+            Math.round(performance.now() - startAt),
+          );
+          serviceLogs = started.logs;
+          diagnostics = [...diagnostics, ...started.diagnostics];
+          if (
+            started.status !== "ready" &&
+            started.status !== "already-ready"
+          ) {
+            const status =
+              started.status === "refused"
+                ? "refused"
+                : started.status === "unmanaged"
+                  ? "unmanaged"
+                  : started.status === "invalid-request"
+                    ? "invalid-request"
+                    : "failed";
+            const payload = failurePayload({
+              status,
+              phase: "start",
+              inspection,
+              environment: started.environment,
+              run: started.run,
+              preparation: {
+                status: preparationStatus,
+                elapsedMs: preparationElapsedMs,
+              },
+              service: { status: "failed", elapsedMs: serviceElapsedMs },
+              failure: requiredFailure(started),
+              cleanup: lifecycleCleanupPayload(started.cleanup),
+              prepareLogs,
+              serviceLogs: started.logs,
+              diagnostics,
+            });
+            switch (status) {
+              case "refused":
+                return outcome.failure.refused(payload);
+              case "unmanaged":
+                return outcome.failure.unmanaged(payload);
+              case "invalid-request":
+                return outcome.failure.invalidRequest(payload);
+              default:
+                return outcome.failure.failed(payload);
+            }
+          }
+          const environment = started.environment;
+          const run = started.run;
+          return outcome.data.entered({
+            status: "entered",
+            inspection: { elapsedMs: inspectionElapsedMs },
+            environment: factsPayload(environment),
+            run: runPayload(run),
+            preparation: {
+              status: preparationStatus,
+              elapsedMs: preparationElapsedMs,
+            },
+            service: {
+              status: started.status,
+              elapsedMs: serviceElapsedMs,
+            },
+            business: enterBusinessNotRequested,
+            cleanup: lifecycleCleanupPayload(started.cleanup),
+            logs: {
+              prepare: logsPayload(prepareLogs),
+              service: logsPayload(serviceLogs),
+            },
+            diagnostics,
+          });
+        },
+      }),
       ...define.command("prepare")({
         kind: "command",
         parent: "environment",
@@ -528,7 +1066,7 @@ function createCliContract(version: string) {
         kind: "command",
         parent: "environment",
         name: "start",
-        description: "启动已准备环境的真实产品 Web 服务，并确认真实就绪。",
+        description: "启动已准备环境的独立产品服务，并确认服务就绪。",
         input: standardSchema(
           v.object({
             environment: v.pipe(v.string(), v.minLength(1)),
@@ -1756,6 +2294,70 @@ function requiredFailure(result: {
 function selectedWorkspace(cwd: string, workspace: string | undefined): string {
   if (workspace !== undefined) return path.resolve(cwd, workspace);
   return findRepositoryWorkspace(cwd) ?? cwd;
+}
+
+function entryFailurePayload(input: {
+  readonly status:
+    | "failed"
+    | "refused"
+    | "config-incompatible"
+    | "unmanaged"
+    | "invalid-request";
+  readonly phase: "inspect" | "prepare" | "start";
+  readonly workspacePath?: string;
+  readonly environmentName?: string;
+  readonly inspection?: InspectEnvironmentResult;
+  readonly inspectionElapsedMs: number;
+  readonly environment?: EnvironmentFacts;
+  readonly run?: EnvironmentRunFacts;
+  readonly preparation?: {
+    readonly status: "prepared" | "reused" | "failed" | "not-run";
+    readonly elapsedMs: number;
+  };
+  readonly service?: {
+    readonly status: "ready" | "already-ready" | "failed" | "not-run";
+    readonly elapsedMs: number;
+  };
+  readonly failure: {
+    readonly stage: string;
+    readonly message: string;
+    readonly exitCode: number | null;
+  };
+  readonly cleanup?: LifecycleCleanup;
+  readonly prepareLogs?: PrepareLogs;
+  readonly serviceLogs?: PrepareLogs;
+  readonly diagnostics?: readonly string[];
+}) {
+  const environment =
+    input.environment ??
+    input.inspection?.environment ??
+    invalidEnvironmentFacts(
+      input.workspacePath ?? "",
+      input.environmentName ?? "",
+    );
+  const run = input.run ?? input.inspection?.run ?? noRunFacts;
+  return {
+    status: input.status,
+    phase: input.phase,
+    inspection: { elapsedMs: input.inspectionElapsedMs },
+    environment: factsPayload(environment),
+    run: runPayload(run),
+    preparation: input.preparation ?? {
+      status: "not-run" as const,
+      elapsedMs: 0,
+    },
+    service: input.service ?? { status: "not-run" as const, elapsedMs: 0 },
+    business: enterBusinessNotRequested,
+    failure: input.failure,
+    cleanup: lifecycleCleanupPayload(
+      input.cleanup ?? { state: "not-started", errors: [] },
+    ),
+    logs: {
+      prepare: logsPayload(input.prepareLogs ?? { directory: null, files: [] }),
+      service: logsPayload(input.serviceLogs ?? { directory: null, files: [] }),
+    },
+    diagnostics: [...(input.diagnostics ?? [])],
+  };
 }
 
 function parseConfigJson(

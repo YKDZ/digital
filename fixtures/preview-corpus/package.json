@@ -1,0 +1,22 @@
+{
+  "name": "@digital/preview-corpus",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./coverage.json": "./coverage.json",
+    "./manifest.json": "./manifest.json",
+    "./audio-posts/manifest.json": "./audio-posts/manifest.json",
+    "./audio-posts/material": "./audio-posts/material",
+    "./audio-posts/responses": "./audio-posts/responses",
+    "./audio-posts/connections/synthetic-customudon.json": "./audio-posts/connections/synthetic-customudon.json",
+    "./live/files-from.txt": "./live/files-from.txt",
+    "./live/reviewed-oracle.json": "./live/reviewed-oracle.json",
+    "./live/references/fixed-corpus-inventory-baseline.json": "./live/references/fixed-corpus-inventory-baseline.json",
+    "./live/references/RJ01668691.reviewed-oracle.json": "./live/references/RJ01668691.reviewed-oracle.json",
+    "./publication-screen/manifest.json": "./publication-screen/manifest.json",
+    "./publication-screen/cases.json": "./publication-screen/cases.json",
+    "./publication-screen/material": "./publication-screen/material",
+    "./publication-screen/responses": "./publication-screen/responses"
+  }
+}

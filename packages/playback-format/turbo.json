@@ -1,1 +1,64 @@
-{ "extends": ["//"], "tags": ["integration"] }
+{
+  "extends": ["//"],
+  "tags": ["integration"],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"],
+      "tags": ["quality:light"]
+    },
+    "format:check": {
+      "outputs": [],
+      "tags": ["quality:light"]
+    },
+    "format:write": {
+      "dependsOn": ["lint:fix"],
+      "cache": false,
+      "tags": ["work:repair"]
+    },
+    "lint": {
+      "outputs": [],
+      "tags": ["quality:light"]
+    },
+    "lint:fix": {
+      "cache": false,
+      "tags": ["work:repair"]
+    },
+    "test": {
+      "dependsOn": ["build"],
+      "passThroughEnv": ["TMPDIR", "TMP", "TEMP"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/fixtures/controlled-source-io/**",
+        "$TURBO_ROOT$/fixtures/controlled-fanbox-session/**",
+        "$TURBO_ROOT$/fixtures/preview-corpus/live/**"
+      ],
+      "outputs": [],
+      "tags": ["quality:light"]
+    },
+    "typecheck": {
+      "dependsOn": ["^typecheck"],
+      "outputs": [],
+      "tags": ["quality:light"]
+    },
+    "dev:build": {
+      "dependsOn": ["^dev:build"],
+      "cache": false,
+      "inputs": [
+        "src/**",
+        "tsconfig*.json",
+        "package.json",
+        "$TURBO_ROOT$/packages/workspace-automation/scripts/build-development.ts"
+      ],
+      "outputs": [".turbo/development/**"],
+      "tags": ["work:development"],
+      "passThroughEnv": ["DIGITAL_DEVELOPMENT_*"]
+    },
+    "dev:compile": {
+      "tags": ["work:development"],
+      "cache": false,
+      "outputs": [".turbo/development/**"],
+      "passThroughEnv": ["DIGITAL_DEVELOPMENT_*"]
+    }
+  }
+}

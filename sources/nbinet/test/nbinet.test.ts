@@ -1,10 +1,13 @@
-import { describe, expect, it } from "vitest";
+import type { SourceEnrichmentInput } from "@digital/application";
+import type { RecognitionEvidence } from "@digital/domain";
+import { assert, describe, expect, it } from "vitest";
 
 import {
   NbinetCollector,
   NbinetSourceAddressing,
   NbinetSourceAssociationInterpreter,
   NbinetExactIsbnRecognizer,
+  NbinetLocalIsbnCandidateInterpreter,
   NbinetSourceInterpreter,
 } from "../src/index.ts";
 
@@ -14,10 +17,10 @@ const evidence = [
     explanation: "本地格式检查发现有效 ISBN-13",
     producer: {
       capabilityId: "epub.publication-inspection",
-      capabilityVersion: "2",
+      capabilityVersion: "3",
       contractVersion: "2",
       identity: "epub.publication-inspection",
-      implementationVersion: "2",
+      implementationVersion: "3",
       kind: "artifact-format-inspector",
       interpretationContractVersions: ["2"],
     },
@@ -52,9 +55,51 @@ const evidence = [
       ],
     },
   },
-];
+] satisfies [RecognitionEvidence];
+const enrichmentInput = {
+  subjectId: "asset",
+  recognitionDecisionId: "decision",
+  sourceAssociations: [],
+  metadata: [],
+  metadataSourceRecords: [],
+  informationRequirement: {
+    metadataUsageContext: "asset.ordinary",
+    metadata: [],
+    artifactRoles: [],
+    relationshipTypes: [],
+  },
+} satisfies SourceEnrichmentInput;
 
 describe("NBINet exact ISBN source", () => {
+  it("derives ISBN lookup candidates from current EPUB inspections and ignores stale coordinates", () => {
+    const candidate = new NbinetLocalIsbnCandidateInterpreter();
+
+    expect(
+      candidate.interpret({ ...enrichmentInput, observedEvidence: evidence }),
+    ).toMatchObject({
+      kind: "source-association",
+      sourceIdentity: "nbinet",
+      sourceAddress: expect.stringContaining("isbn%2Cexact%2C9789864738281"),
+    });
+
+    assert.isDefined(evidence[0]);
+    expect(
+      candidate.interpret({
+        ...enrichmentInput,
+        observedEvidence: [
+          {
+            ...evidence[0],
+            producer: {
+              ...evidence[0].producer,
+              capabilityVersion: "2",
+              implementationVersion: "2",
+            },
+          },
+        ],
+      }),
+    ).toBeUndefined();
+  });
+
   it("declares and normalizes explicit ISBN input without EPUB evidence", () => {
     const addressing = new NbinetSourceAddressing();
 
@@ -101,7 +146,8 @@ describe("NBINet exact ISBN source", () => {
       requested.push(address);
       return response({ docs: [] });
     });
-    const conflict = {
+    assert.isDefined(evidence[0]);
+    const conflict: RecognitionEvidence = {
       ...evidence[0],
       inspection: {
         ...evidence[0].inspection,
@@ -120,6 +166,7 @@ describe("NBINet exact ISBN source", () => {
       },
     };
 
+    assert.isDefined(evidence[0]);
     expect(collector.canCollect(evidence[0])).toBe(true);
     expect(collector.canCollect(conflict)).toBe(false);
     await expect(collector.collect(conflict)).resolves.toMatchObject({
@@ -127,6 +174,7 @@ describe("NBINet exact ISBN source", () => {
       failures: [{ reason: expect.stringContaining("唯一有效 ISBN") }],
     });
     expect(requested).toEqual([]);
+    assert.isDefined(evidence[0]);
     await collector.collect(evidence[0]);
     expect(requested).toEqual([
       expect.stringMatching(
@@ -150,7 +198,7 @@ describe("NBINet exact ISBN source", () => {
       metadata: [],
       sourceArtifacts: [],
     };
-    const subject = {
+    const subject: SourceEnrichmentInput = {
       subjectId: "asset",
       recognitionDecisionId: "decision",
       sourceAssociations: [],
@@ -189,6 +237,7 @@ describe("NBINet exact ISBN source", () => {
         interpretation,
       }),
     ).toMatchObject({ status: "accepted" });
+    assert.isDefined(subject.metadata[0]);
     // 现行契约：只有明确指向实体的身份证据参与冲突判断，修订版本地的同值事实不冒充实体冲突。
     expect(
       association.interpret({
@@ -213,6 +262,7 @@ describe("NBINet exact ISBN source", () => {
 
   it("keeps a matching identifier boundary separate from another local inspection", () => {
     const recognizer = new NbinetExactIsbnRecognizer();
+    assert.isDefined(evidence[0]);
     const proposal = recognizer.recognize({
       evidence: [
         evidence[0],
@@ -245,6 +295,7 @@ describe("NBINet exact ISBN source", () => {
         },
       },
     });
+    assert.isDefined(proposal.ruleResults[0]);
     expect(proposal.ruleResults[0].evidence).toEqual([evidence[0]]);
   });
 
@@ -268,12 +319,14 @@ describe("NBINet exact ISBN source", () => {
         info: { total: 1 },
       }),
     );
+    assert.isDefined(evidence[0]);
     const official = await collector.collect(evidence[0]);
     const interpreter = new NbinetSourceInterpreter();
     const [batch] = interpreter.interpret({
       evidence,
       sourceRecords: official.records,
     });
+    assert.isDefined(batch);
     const proposal = new NbinetExactIsbnRecognizer().recognize({
       evidence,
       basis: { kind: "source-interpretation", interpretation: batch },
@@ -327,9 +380,11 @@ describe("NBINet exact ISBN source", () => {
     expect(proposal.ruleResults[0]).toMatchObject({ outcome: "satisfied" });
     expect(Object.keys(proposal).toSorted()).toEqual(["id", "ruleResults"]);
     expect(batch.sourceArtifacts).toEqual([]);
+    const officialRecord = official.records[0];
+    assert.isDefined(officialRecord);
     expect(
       batch.metadata.every(
-        (item) => item.sourceRecordIds[0] === official.records[0].id,
+        (item) => item.sourceRecordIds[0] === officialRecord.id,
       ),
     ).toBe(true);
   });
@@ -351,6 +406,8 @@ describe("NBINet exact ISBN source", () => {
         info: { total: 1 },
       }),
     );
+    assert.isDefined(evidence[0]);
+    assert.isDefined(evidence[0].inspection.identifiers[0]);
     const isbnEvidence = {
       ...evidence[0],
       inspection: {
@@ -364,10 +421,12 @@ describe("NBINet exact ISBN source", () => {
       },
     };
     const [record] = (await collector.collect(isbnEvidence)).records;
+    assert.isDefined(record);
     const [batch] = new NbinetSourceInterpreter().interpret({
       evidence: [isbnEvidence],
       sourceRecords: [record],
     });
+    assert.isDefined(batch);
 
     expect(
       batch.metadata
@@ -425,10 +484,12 @@ describe("NBINet exact ISBN source", () => {
 
   it("rejects incomplete or forged producer coordinates at every NBINet trust boundary", () => {
     const collector = new NbinetCollector(async () => response({ docs: [] }));
+    assert.isDefined(evidence[0]);
     const {
       implementationVersion: _missingImplementation,
       ...missingImplementation
     } = evidence[0].producer;
+    assert.isDefined(evidence[0]);
     expect(
       collector.canCollect({
         ...evidence[0],
@@ -447,6 +508,7 @@ describe("NBINet exact ISBN source", () => {
       ...record,
       producer: { ...record.producer, contractVersion: "forged" },
     };
+    assert.isDefined(evidence[0]);
     const {
       interpretationContractVersions: _missingInterpretationContract,
       ...missingInterpretationContract
@@ -472,6 +534,7 @@ describe("NBINet exact ISBN source", () => {
       evidence,
       sourceRecords: [record],
     });
+    assert.isDefined(batch);
     const recognizer = new NbinetExactIsbnRecognizer();
     const forgedInterpretation = {
       ...batch,

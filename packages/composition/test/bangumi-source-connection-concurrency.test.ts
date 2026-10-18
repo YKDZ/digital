@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { ProductBangumiSourceConnection } from "@digital/bangumi";
 import { ProductSourceConnectionPrivateState } from "@digital/product-data";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { assert, afterEach, describe, expect, it, vi } from "vitest";
 
 const temporaryRoots: string[] = [];
 const environment = {
@@ -36,7 +36,8 @@ describe("Bangumi OAuth refresh across product processes", () => {
     let monotonicNow = 1_000;
     let authorizationRequests = 0;
     const request = vi.fn(async (_input: string, init?: RequestInit) => {
-      expect(new URLSearchParams(init?.body).get("grant_type")).toBe(
+      assert(typeof init?.body === "string");
+      expect(new URLSearchParams(init.body).get("grant_type")).toBe(
         "authorization_code",
       );
       authorizationRequests += 1;
@@ -151,7 +152,8 @@ describe("Bangumi OAuth refresh across product processes", () => {
       },
     );
     const request = vi.fn(async (_input: string, init?: RequestInit) => {
-      const parameters = new URLSearchParams(init?.body);
+      assert(typeof init?.body === "string");
+      const parameters = new URLSearchParams(init.body);
       if (parameters.get("grant_type") === "authorization_code") {
         return jsonResponse({
           access_token: "initial-access",
@@ -243,7 +245,8 @@ describe("Bangumi OAuth refresh across product processes", () => {
       finishFailedRequest = resolve;
     });
     const request = vi.fn(async (_input: string, init?: RequestInit) => {
-      const parameters = new URLSearchParams(init?.body);
+      assert(typeof init?.body === "string");
+      const parameters = new URLSearchParams(init.body);
       if (parameters.get("grant_type") === "authorization_code") {
         return jsonResponse({
           access_token: "initial-access",
@@ -311,7 +314,8 @@ describe("Bangumi OAuth refresh across product processes", () => {
     let currentTime = new Date("2026-08-12T00:00:00.000Z");
     let refreshRequests = 0;
     const request = vi.fn(async (_input: string, init?: RequestInit) => {
-      const parameters = new URLSearchParams(init?.body);
+      assert(typeof init?.body === "string");
+      const parameters = new URLSearchParams(init.body);
       if (parameters.get("grant_type") === "authorization_code") {
         return jsonResponse({
           access_token: "initial-access",
@@ -363,7 +367,8 @@ describe("Bangumi OAuth refresh across product processes", () => {
     let authorizationRequests = 0;
     let refreshRequests = 0;
     const request = vi.fn(async (_input: string, init?: RequestInit) => {
-      const parameters = new URLSearchParams(init?.body);
+      assert(typeof init?.body === "string");
+      const parameters = new URLSearchParams(init.body);
       if (parameters.get("grant_type") === "refresh_token") {
         refreshRequests += 1;
         return await oldRefresh;
@@ -443,7 +448,8 @@ describe("Bangumi OAuth refresh across product processes", () => {
     let authorizationRequests = 0;
     let refreshRequests = 0;
     const request = vi.fn(async (_input: string, init?: RequestInit) => {
-      const parameters = new URLSearchParams(init?.body);
+      assert(typeof init?.body === "string");
+      const parameters = new URLSearchParams(init.body);
       if (parameters.get("grant_type") === "refresh_token") {
         refreshRequests += 1;
         return await oldRefresh;

@@ -14,11 +14,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { createPublicApiClient } from "@digital/public-api";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   inspectEnvironment,
   prepareEnvironment,
+  startEnvironment,
+  stopEnvironment,
   type JsonValue,
   type PrepareOperationResult,
 } from "../src/index.ts";
@@ -29,7 +32,6 @@ const workspaceRoot = path.resolve(
   "..",
   "..",
 );
-const productCli = path.join("apps", "cli", "dist", "cli.js");
 const environmentCli = path.join("packages", "environment", "dist", "cli.js");
 const environmentCliSource = path.join(
   "packages",
@@ -122,69 +124,81 @@ async function prepareOwned(
   });
 }
 
-function productEnvironment(productDataRoot: string): Record<string, string> {
-  return {
-    PATH: process.env.PATH ?? "",
-    HOME: process.env.HOME ?? "",
-    TMPDIR: process.env.TMPDIR ?? tmpdir(),
-    DIGITAL_PRODUCT_DATA: productDataRoot,
-  };
-}
-
-/** 经正式产品 CLI 写入一条可跨进程读取的业务记录。 */
+/** 经正式服务 API 写入一条可跨世代读取的业务记录。 */
 async function recordLibraryScan(
-  productDataRoot: string,
+  environment: string,
   label: string,
 ): Promise<string> {
+  const started = await startEnvironment({
+    workspacePath: workspaceRoot,
+    environment,
+  });
+  expect(["ready", "already-ready"]).toContain(started.status);
+  if (
+    (started.status !== "ready" && started.status !== "already-ready") ||
+    started.run.address === null
+  )
+    throw new Error(started.failure?.message ?? "环境服务未就绪");
   const material = await temporaryDirectory("digital-01-material-");
-  const created = await run({
-    command: process.execPath,
-    args: [
-      path.join(workspaceRoot, productCli),
-      "library-create",
-      label,
-      "--directory",
-      material,
-      "--json",
-    ],
-    env: productEnvironment(productDataRoot),
-  });
-  expect(created.code, created.stderr).toBe(0);
-  const library = (JSON.parse(created.stdout) as { id: string }).id;
-  const scan = await run({
-    command: process.execPath,
-    args: [
-      path.join(workspaceRoot, productCli),
-      "scan-library",
-      library,
-      "--preview",
-      "--json",
-    ],
-    env: productEnvironment(productDataRoot),
-  });
-  expect(scan.code, scan.stderr).toBe(0);
-  const recorded = JSON.parse(scan.stdout) as {
-    directories: { childExecutionId: string }[];
-  };
-  return recorded.directories[0]!.childExecutionId;
+  try {
+    const client = createPublicApiClient({ baseUrl: started.run.address });
+    const options = await client.listAssetLibraryOptions();
+    const library = await client.saveAssetLibrary({
+      displayName: label,
+      directories: [material],
+      recognitionProfileIds: options.recognitionProfiles.map(({ id }) => id),
+      sourceIdentities: [],
+    });
+    const scan = await client.startAssetLibraryScan(library.id);
+    let inspection = await client.inspectAssetLibraryScan(
+      scan.parentExecutionId,
+    );
+    for (
+      let attempt = 0;
+      attempt < 100 && inspection.status === "running";
+      attempt += 1
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      inspection = await client.inspectAssetLibraryScan(scan.parentExecutionId);
+    }
+    expect(inspection.status).toBe("completed");
+    return scan.parentExecutionId;
+  } finally {
+    if (started.status === "ready") {
+      const stopped = await stopEnvironment({
+        workspacePath: workspaceRoot,
+        environment,
+      });
+      expect(stopped.status).toBe("stopped");
+    }
+  }
 }
 
-async function workflowHistoryIds(productDataRoot: string): Promise<string[]> {
-  const read = await run({
-    command: process.execPath,
-    args: [
-      path.join(workspaceRoot, productCli),
-      "catalogue-surface",
-      "--surface",
-      "workflow-history",
-    ],
-    env: productEnvironment(productDataRoot),
+async function workflowHistoryIds(environment: string): Promise<string[]> {
+  const started = await startEnvironment({
+    workspacePath: workspaceRoot,
+    environment,
   });
-  expect(read.code, read.stderr).toBe(0);
-  const page = JSON.parse(read.stdout) as {
-    items: { execution: { id: string } }[];
-  };
-  return page.items.map((item) => item.execution.id);
+  expect(["ready", "already-ready"]).toContain(started.status);
+  if (
+    (started.status !== "ready" && started.status !== "already-ready") ||
+    started.run.address === null
+  )
+    throw new Error(started.failure?.message ?? "环境服务未就绪");
+  try {
+    const history = await createPublicApiClient({
+      baseUrl: started.run.address,
+    }).listWorkflowHistory({ limit: 100 });
+    return history.items.map(({ execution }) => execution.id);
+  } finally {
+    if (started.status === "ready") {
+      const stopped = await stopEnvironment({
+        workspacePath: workspaceRoot,
+        environment,
+      });
+      expect(stopped.status).toBe("stopped");
+    }
+  }
 }
 
 async function readLogs(result: PrepareOperationResult): Promise<string> {
@@ -290,18 +304,13 @@ describe("所选环境决定数据根与配置", () => {
       process.env.PORT = "19999";
       process.env.DIGITAL_TMDB_ACCESS_TOKEN = parentCredential;
       try {
-        const { result } = await prepareFresh();
+        const { name, result } = await prepareFresh();
         expect(result.status).toBe("prepared");
         // 真实外部条件：产品迁移会在目标根建目录，这里连目录都不存在。
         expect(existsSync(parentDataRoot)).toBe(false);
 
-        const executionId = await recordLibraryScan(
-          result.environment.productDataRoot,
-          "父配置隔离",
-        );
-        expect(
-          await workflowHistoryIds(result.environment.productDataRoot),
-        ).toContain(executionId);
+        const executionId = await recordLibraryScan(name, "父配置隔离");
+        expect(await workflowHistoryIds(name)).toContain(executionId);
 
         const diagnostics = `${JSON.stringify(result)}${await readLogs(result)}`;
         expect(diagnostics).not.toContain(parentCredential);
@@ -347,7 +356,7 @@ describe("所选环境决定数据根与配置", () => {
       const { name, result } = await prepareFresh();
       expect(result.status).toBe("prepared");
       const productDataRoot = result.environment.productDataRoot;
-      await recordLibraryScan(productDataRoot, "越界重定向");
+      await recordLibraryScan(name, "越界重定向");
 
       await rm(productDataRoot, { recursive: true, force: true });
       await symlink(external, productDataRoot);
@@ -384,8 +393,9 @@ describe("重复准备保留状态，配置变化不隐式清空", () => {
       const config = { profile: "base" };
       const { name, result } = await prepareFresh({ config });
       expect(result.status).toBe("prepared");
-      const productDataRoot = result.environment.productDataRoot;
-      const executionId = await recordLibraryScan(productDataRoot, "重复准备");
+      const executionId = await recordLibraryScan(name, "重复准备");
+      const historyBeforeRepeat = await workflowHistoryIds(name);
+      expect(historyBeforeRepeat).toContain(executionId);
 
       const repeated = await prepareEnvironment({
         workspacePath: workspaceRoot,
@@ -399,7 +409,7 @@ describe("重复准备保留状态，配置变化不隐式清空", () => {
       expect(repeated.environment.dataGeneration).toBe(
         result.environment.dataGeneration,
       );
-      expect(await workflowHistoryIds(productDataRoot)).toContain(executionId);
+      expect(await workflowHistoryIds(name)).toEqual(historyBeforeRepeat);
 
       const changedConfig = await prepareEnvironment({
         workspacePath: workspaceRoot,
@@ -425,7 +435,7 @@ describe("重复准备保留状态，配置变化不隐式清空", () => {
       });
       expect(inspection.state).toBe("prepared");
       expect(inspection.environment.config).toEqual({ profile: "base" });
-      expect(await workflowHistoryIds(productDataRoot)).toContain(executionId);
+      expect(await workflowHistoryIds(name)).toEqual(historyBeforeRepeat);
     },
     realRunTimeout,
   );
@@ -647,7 +657,7 @@ describe("薄 CLI 只补参数、结果与退出码", () => {
 
       const controlledWithoutManifest = await cli(
         [
-          "prepare",
+          "enter",
           "--environment",
           "t01-cli-never-created",
           "--source-mode",
@@ -725,6 +735,27 @@ describe("薄 CLI 只补参数、结果与退出码", () => {
       });
       expect(viaApi.state).toBe("prepared");
       expect(viaApi.environment.config).toEqual({ profile: "cli" });
+    },
+    realRunTimeout,
+  );
+
+  it(
+    "首次进入缺少来源模式时在任何准备前给出可修正错误",
+    async () => {
+      const name = `t01-enter-source-${randomUUID().slice(0, 8)}`;
+      createdContainers.push(
+        path.join(workspaceRoot, ".digital", "environments", name),
+      );
+
+      const result = await cli(["enter", "--environment", name], "source");
+
+      expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(5);
+      expect(result.stderr).toContain("首次进入必须显式指定 --source-mode");
+      const inspection = await inspectEnvironment({
+        workspacePath: workspaceRoot,
+        environment: name,
+      });
+      expect(inspection.state).toBe("unprepared");
     },
     realRunTimeout,
   );

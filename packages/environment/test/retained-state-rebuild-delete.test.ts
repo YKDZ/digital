@@ -2,7 +2,6 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import {
-  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -18,6 +17,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { createPublicApiClient } from "@digital/public-api";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
@@ -33,6 +33,11 @@ import {
   type StopOperationResult,
 } from "../src/index.ts";
 import { recordFileName } from "../src/internal/paths.ts";
+import {
+  createLibraryAndScan,
+  currentAssetCount,
+  workflowHistoryIds,
+} from "./product-service.ts";
 
 /**
  * 04 保留修改与显式重建/删除：正式写入的产品状态必须跨停止与启动保留；只有使用者
@@ -47,9 +52,8 @@ const workspaceRoot = path.resolve(
   "..",
 );
 const environmentCli = path.join("packages", "environment", "dist", "cli.js");
-const productCli = path.join("apps", "cli", "dist", "cli.js");
 /** 正式 Web 交付入口：用作「管理器之外的真实写入者」，不由本管理器启动也不受其锁约束。 */
-const webEntry = path.join("apps", "web", "dist", "server", "index.mjs");
+const serviceEntry = path.join("apps", "service", "dist", "main.js");
 /** 受控端口区间由门禁环境给出；本合同只用 33001 起的第一批空闲端口。 */
 const portFloor =
   process.env.DIGITAL_04_PORT_BASE === undefined
@@ -438,51 +442,24 @@ async function bringUpServing(
   throw new Error(`${label} 未能建立服务世代`);
 }
 
-/** 经真实 HTTP 读写产品设置；返回值都来自服务端本身。 */
-async function api(
-  port: number,
-  method: "GET" | "POST",
-  pathname: string,
-  body?: unknown,
-): Promise<{
-  readonly status: number;
-  readonly body: Record<string, unknown>;
-}> {
-  const response = await fetch(`http://127.0.0.1:${String(port)}${pathname}`, {
-    method,
-    ...(body === undefined
-      ? {}
-      : {
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(body),
-        }),
-  });
-  const raw = await response.text();
-  return {
-    status: response.status,
-    body: raw.length === 0 ? {} : (JSON.parse(raw) as Record<string, unknown>),
-  };
-}
-
 async function librarySummaries(port: number): Promise<LibraryView[]> {
-  const settings = await api(port, "GET", "/api/settings");
-  expect(settings.status).toBe(200);
-  const listed = (settings.body["libraries"] ?? []) as Record<
-    string,
-    unknown
-  >[];
-  return listed.map((item) => ({
-    id: item["id"] as string,
-    displayName: item["displayName"] as string,
-    configVersion: item["configVersion"] as number,
+  const listed = await createPublicApiClient({
+    baseUrl: `http://127.0.0.1:${String(port)}`,
+  }).listAssetLibraries({ limit: 100 });
+  return listed.items.map(({ id, displayName, configVersion }) => ({
+    id,
+    displayName,
+    configVersion,
   }));
 }
 
-/** 服务端自报的产品数据位置：证明这一发服务确实使用所选环境的自有数据根。 */
-async function serviceDataDirectory(port: number): Promise<string> {
-  const settings = await api(port, "GET", "/api/settings");
-  expect(settings.status).toBe(200);
-  return settings.body["productDataDirectory"] as string;
+/** 环境平台公开记录里的数据根；产品公共 API 不泄漏本地文件系统路径。 */
+async function serviceDataDirectory(environment: string): Promise<string> {
+  const inspection = await inspectEnvironment({
+    workspacePath: workspaceRoot,
+    environment,
+  });
+  return inspection.environment.productDataRoot;
 }
 
 /** 正式 HTTP 写入一项可读设置：新建资产库并绑定普通素材目录。 */
@@ -491,18 +468,18 @@ async function createLibrary(
   displayName: string,
   directory: string,
 ): Promise<LibraryView> {
-  const created = await api(port, "POST", "/api/settings/libraries", {
-    action: "save",
+  const created = await createPublicApiClient({
+    baseUrl: `http://127.0.0.1:${String(port)}`,
+  }).saveAssetLibrary({
     displayName,
     directories: [directory],
     recognitionProfileIds: ["books"],
     sourceIdentities: [],
   });
-  expect(created.status, JSON.stringify(created.body)).toBe(200);
   return {
-    id: created.body["id"] as string,
-    displayName: created.body["displayName"] as string,
-    configVersion: created.body["configVersion"] as number,
+    id: created.id,
+    displayName: created.displayName,
+    configVersion: created.configVersion,
   };
 }
 
@@ -513,8 +490,9 @@ async function renameLibrary(
   displayName: string,
   directory: string,
 ): Promise<LibraryView> {
-  const renamed = await api(port, "POST", "/api/settings/libraries", {
-    action: "save",
+  const renamed = await createPublicApiClient({
+    baseUrl: `http://127.0.0.1:${String(port)}`,
+  }).saveAssetLibrary({
     id: library.id,
     expectedVersion: library.configVersion,
     displayName,
@@ -522,86 +500,11 @@ async function renameLibrary(
     recognitionProfileIds: ["books"],
     sourceIdentities: [],
   });
-  expect(renamed.status, JSON.stringify(renamed.body)).toBe(200);
   return {
-    id: renamed.body["id"] as string,
-    displayName: renamed.body["displayName"] as string,
-    configVersion: renamed.body["configVersion"] as number,
+    id: renamed.id,
+    displayName: renamed.displayName,
+    configVersion: renamed.configVersion,
   };
-}
-
-/** 停机期间由调用方经正式产品 CLI 写入一条可跨进程读取的业务记录。 */
-async function recordLibraryScan(
-  productDataRoot: string,
-  label: string,
-  material: string,
-): Promise<string> {
-  const created = await run({
-    command: process.execPath,
-    args: [
-      path.join(workspaceRoot, productCli),
-      "library-create",
-      label,
-      "--directory",
-      material,
-      "--json",
-    ],
-    env: { ...cleanEnvironment(), DIGITAL_PRODUCT_DATA: productDataRoot },
-  });
-  expect(created.code, created.stderr).toBe(0);
-  const library = (JSON.parse(created.stdout) as { id: string }).id;
-  const scan = await run({
-    command: process.execPath,
-    args: [
-      path.join(workspaceRoot, productCli),
-      "scan-library",
-      library,
-      "--preview",
-      "--json",
-    ],
-    env: { ...cleanEnvironment(), DIGITAL_PRODUCT_DATA: productDataRoot },
-  });
-  expect(scan.code, scan.stderr).toBe(0);
-  const recorded = JSON.parse(scan.stdout) as {
-    directories: { childExecutionId: string }[];
-  };
-  return recorded.directories[0]!.childExecutionId;
-}
-
-/** 正式产品读取：工作流历史里的执行标识。 */
-async function workflowHistoryIds(productDataRoot: string): Promise<string[]> {
-  const read = await run({
-    command: process.execPath,
-    args: [
-      path.join(workspaceRoot, productCli),
-      "catalogue-surface",
-      "--surface",
-      "workflow-history",
-    ],
-    env: { ...cleanEnvironment(), DIGITAL_PRODUCT_DATA: productDataRoot },
-  });
-  expect(read.code, read.stderr).toBe(0);
-  const page = JSON.parse(read.stdout) as {
-    items: { execution?: { id?: string } }[];
-  };
-  return page.items.map((item) => item.execution?.id ?? "无执行标识");
-}
-
-/** 正式产品读取：当前目录分页的成员数量。 */
-async function currentCatalogueCount(productDataRoot: string): Promise<number> {
-  const read = await run({
-    command: process.execPath,
-    args: [
-      path.join(workspaceRoot, productCli),
-      "catalogue-surface",
-      "--surface",
-      "current-catalogue",
-    ],
-    env: { ...cleanEnvironment(), DIGITAL_PRODUCT_DATA: productDataRoot },
-  });
-  expect(read.code, read.stderr).toBe(0);
-  const page = JSON.parse(read.stdout) as { items: unknown[] };
-  return page.items.length;
 }
 
 function expectStoppedObservation(
@@ -680,7 +583,7 @@ describe("04-1 产品状态跨停止与启动保留", () => {
       const { env, started: first } = await bringUpServing("04-1 首次启动", [
         material,
       ]);
-      expect(await realpath(await serviceDataDirectory(env.port))).toBe(
+      expect(await realpath(await serviceDataDirectory(env.name))).toBe(
         await realpath(env.productDataRoot),
       );
       const created = await createLibrary(env.port, "04保留库", material);
@@ -702,16 +605,20 @@ describe("04-1 产品状态跨停止与启动保留", () => {
       // 停止只回收进程：产品数据与操作日志留在该环境自有容器内。
       expect(await logDirectories(env)).not.toEqual([]);
 
-      // 停机期间由调用方经正式产品 CLI 写入业务记录；产品只允许一个写入者，
-      // 因此正式 CLI 读取同样安排在服务停止之后。
-      const executionId = await recordLibraryScan(
-        env.productDataRoot,
-        "04停机业务写入",
-        stoppedMaterial,
-      );
-      expect(await workflowHistoryIds(env.productDataRoot)).toContain(
-        executionId,
-      );
+      // 停服后由调用方显式启动正式服务，经公开 API 写入并读回业务记录。
+      const recorded = await createLibraryAndScan({
+        workspacePath: workspaceRoot,
+        environment: env.name,
+        displayName: "04停机业务写入",
+        directory: stoppedMaterial,
+      });
+      const executionId = recorded.executionId;
+      expect(
+        await workflowHistoryIds({
+          workspacePath: workspaceRoot,
+          environment: env.name,
+        }),
+      ).toContain(executionId);
 
       const reprepared = await prepareEnvironment(
         prepareInput(env, [material]),
@@ -744,9 +651,12 @@ describe("04-1 产品状态跨停止与启动保留", () => {
         await inspectEnvironment(targetRequest(env)),
         restarted.run.runId,
       );
-      expect(await workflowHistoryIds(env.productDataRoot)).toContain(
-        executionId,
-      );
+      expect(
+        await workflowHistoryIds({
+          workspacePath: workspaceRoot,
+          environment: env.name,
+        }),
+      ).toContain(executionId);
     },
     realRunTimeout,
   );
@@ -765,15 +675,20 @@ describe("04-2 显式重建回到初态", () => {
       const stopped = await stopEnv(env);
       expectLifecycleStatus(stopped, "stopped");
 
-      // 停机期间由调用方写入一条业务执行记录，作为重建前存在的产品数据。
-      const executionId = await recordLibraryScan(
-        env.productDataRoot,
-        "04重建前扫描",
-        scanMaterial,
-      );
-      expect(await workflowHistoryIds(env.productDataRoot)).toContain(
-        executionId,
-      );
+      // 停服后由调用方显式启动正式服务扫描，作为重建前存在的产品数据。
+      const recorded = await createLibraryAndScan({
+        workspacePath: workspaceRoot,
+        environment: env.name,
+        displayName: "04重建前扫描",
+        directory: scanMaterial,
+      });
+      const executionId = recorded.executionId;
+      expect(
+        await workflowHistoryIds({
+          workspacePath: workspaceRoot,
+          environment: env.name,
+        }),
+      ).toContain(executionId);
 
       const before = await inspectEnvironment(targetRequest(env));
       const logsBefore = await logDirectories(env);
@@ -809,8 +724,18 @@ describe("04-2 显式重建回到初态", () => {
       const closed = await stopEnv(env);
       expectLifecycleStatus(closed, "stopped");
       // 正式产品读取确认回到空初态：旧设置与旧执行记录都不再存在。
-      expect(await workflowHistoryIds(env.productDataRoot)).toEqual([]);
-      expect(await currentCatalogueCount(env.productDataRoot)).toBe(0);
+      expect(
+        await workflowHistoryIds({
+          workspacePath: workspaceRoot,
+          environment: env.name,
+        }),
+      ).toEqual([]);
+      expect(
+        await currentAssetCount({
+          workspacePath: workspaceRoot,
+          environment: env.name,
+        }),
+      ).toBe(0);
     },
     realRunTimeout,
   );
@@ -840,7 +765,7 @@ describe("04-2 显式重建回到初态", () => {
       expect(listed.find((item) => item.id === library.id)?.displayName).toBe(
         "04运行中库",
       );
-      expect(await realpath(await serviceDataDirectory(env.port))).toBe(
+      expect(await realpath(await serviceDataDirectory(env.name))).toBe(
         await realpath(env.productDataRoot),
       );
       const observed = await inspectEnvironment(targetRequest(env));
@@ -1016,7 +941,7 @@ describe("04-4 跨归属隔离与原始素材不动", () => {
           (item) => item.id === libraryB.id,
         )?.displayName,
       ).toBe("04跨归属B库");
-      expect(await realpath(await serviceDataDirectory(envB.port))).toBe(
+      expect(await realpath(await serviceDataDirectory(envB.name))).toBe(
         await realpath(envB.productDataRoot),
       );
       // 两侧的原始素材清单逐项不变。
@@ -1375,7 +1300,7 @@ describe("04-R 修复反例：日志根重定向与部分回收后的重入", ()
       const port = await freePort();
       const writer = spawn(
         process.execPath,
-        [path.join(workspaceRoot, webEntry)],
+        [path.join(workspaceRoot, serviceEntry)],
         {
           cwd: workspaceRoot,
           env: {
@@ -1445,187 +1370,6 @@ describe("04-R 修复反例：日志根重定向与部分回收后的重入", ()
       );
       expect(existsSync(env.containerDirectory)).toBe(false);
       expect(await materialManifest(material)).toBe(manifestBefore);
-    },
-    realRunTimeout,
-  );
-
-  const refusalLine = "error: 备份源缺少产品 Catalogue；拒绝创建不完整副本";
-
-  /**
-   * 按固定反例的形状搭一个工作区：公开工作区路径本身含产品的拒绝文字，记录是从正式准备
-   * 搬来的合法形状（含本管理器已写下的破坏意图），产品数据根是缺 catalogue 的自有残余。
-   * `entry` 决定正式 CLI 产物是缺失、一个真实存在但缺少被 import chunk 的普通 ESM 文件，
-   * 还是同样缺 chunk 的普通 ESM 文件但 dist 父目录是指向自有含换行目录的符号链接。
-   */
-  async function markerWorkspaceFixture(
-    kind: "delete" | "rebuild",
-    markerPath: string,
-    entry: "missing" | "broken-esm" | "symlinked-broken-esm",
-  ): Promise<{
-    readonly workspacePath: string;
-    readonly environment: string;
-    readonly residueFile: string;
-    readonly recordPath: string;
-  }> {
-    const material = await temporaryDirectory("04-r1-c01-material-");
-    await writeFile(path.join(material, "搬运素材.txt"), "搬运素材内容");
-    const prepared = await bringUp([material]);
-    const record = await readRecordFile(prepared);
-    const workspacePath = await temporaryDirectory(
-      `04-r1-c01-${kind}-${entry === "symlinked-broken-esm" ? "" : markerPath}-`,
-    );
-    const environment = `t04-${randomUUID().slice(0, 8)}`;
-    const containerDirectory = path.join(
-      workspacePath,
-      ".digital",
-      "environments",
-      environment,
-    );
-    const productDataRoot = path.join(containerDirectory, "product-data");
-    await mkdir(productDataRoot, { recursive: true, mode: 0o700 });
-    const residueFile = path.join(
-      productDataRoot,
-      "回收未完成子项",
-      "剩余.txt",
-    );
-    await mkdir(path.dirname(residueFile), { recursive: true, mode: 0o700 });
-    await writeFile(residueFile, "上次回收未完成的残余");
-    const identity = await lstat(containerDirectory);
-    const transplanted: Record<string, unknown> = {
-      ...record,
-      environment,
-      workspacePath,
-      containerIdentity: { device: identity.dev, inode: identity.ino },
-      destructive: {
-        kind,
-        operationId: `repair-2-${kind}`,
-        startedAt: new Date().toISOString(),
-        targetDataGeneration: record["dataGeneration"],
-        targetRunId: null,
-      },
-    };
-    // 搬来的记录带着上一个世代的运行事实，与本工作区无关，必须留在原环境。
-    delete transplanted["run"];
-    const recordPath = path.join(containerDirectory, recordFileName);
-    await writeFile(recordPath, `${JSON.stringify(transplanted, null, 2)}\n`);
-    if (entry === "broken-esm" || entry === "symlinked-broken-esm") {
-      const cliRoot = path.join(workspacePath, "apps", "cli");
-      const artifactDirectory =
-        entry === "symlinked-broken-esm"
-          ? // 入口不在工作区规范路径之下：dist 父目录指向自有的含换行目录名。
-            await temporaryDirectory(`04-r1-c01-${kind}-${markerPath}-`)
-          : path.join(cliRoot, "dist");
-      await mkdir(
-        entry === "symlinked-broken-esm" ? cliRoot : artifactDirectory,
-        {
-          recursive: true,
-        },
-      );
-      if (entry === "symlinked-broken-esm")
-        await symlink(artifactDirectory, path.join(cliRoot, "dist"));
-      await writeFile(
-        path.join(artifactDirectory, "cli.js"),
-        'import "./digital-missing-chunk.mjs";\n',
-      );
-    }
-    return { workspacePath, environment, residueFile, recordPath };
-  }
-
-  /** 拒绝结果交出的日志目录里全部管理器文字：触发条件是否成立要直接看它。 */
-  async function managerLogText(directory: string | null): Promise<string> {
-    if (directory === null) throw new Error("拒绝结果没有交出操作日志目录");
-    const chunks: string[] = [];
-    for (const name of (await readdir(directory)).toSorted())
-      chunks.push(await readFile(path.join(directory, name), "utf8"));
-    return chunks.join("");
-  }
-
-  async function expectRefusedAndRetained(
-    kind: "delete" | "rebuild",
-    markerPath: string,
-    entry: "missing" | "broken-esm" | "symlinked-broken-esm",
-  ): Promise<{ readonly workspacePath: string; readonly stageLog: string }> {
-    const target = await markerWorkspaceFixture(kind, markerPath, entry);
-    const outcome =
-      kind === "delete"
-        ? await deleteEnvironment({
-            workspacePath: target.workspacePath,
-            environment: target.environment,
-          })
-        : await rebuildEnvironment({
-            workspacePath: target.workspacePath,
-            environment: target.environment,
-          });
-    expect(outcome.status, JSON.stringify(outcome.failure ?? {})).toBe(
-      "refused",
-    );
-    expect(outcome.failure?.stage).toBe("offline");
-    // 拒绝不得留下任何回收：残余与记录都还在自己的位置。
-    expect(existsSync(target.residueFile)).toBe(true);
-    expect(existsSync(target.recordPath)).toBe(true);
-    return {
-      workspacePath: target.workspacePath,
-      stageLog: await managerLogText(outcome.logs.directory),
-    };
-  }
-
-  it(
-    "公开工作区路径含产品拒绝文字且正式 CLI 产物缺失时，删除与重建都拒绝并保留残余与记录",
-    async () => {
-      const { stageLog: removalLog } = await expectRefusedAndRetained(
-        "delete",
-        "备份源缺少产品 Catalogue",
-        "missing",
-      );
-      // 反例的触发条件确实成立：拒绝文字就在管理器自己写下的运行元数据里。
-      expect(removalLog).toContain("备份源缺少产品 Catalogue");
-      const { stageLog: renewalLog } = await expectRefusedAndRetained(
-        "rebuild",
-        "备份源缺少产品 Catalogue",
-        "missing",
-      );
-      expect(renewalLog).toContain("备份源缺少产品 Catalogue");
-    },
-    realRunTimeout,
-  );
-
-  it(
-    "规范路径把拒绝文字组成独立整行且入口是缺 chunk 的真实 ESM 文件时，删除与重建仍拒绝并保留现场",
-    async () => {
-      const newlineMarker = `前缀\n${refusalLine}\n后缀`;
-      for (const kind of ["delete", "rebuild"] as const) {
-        const { stageLog } = await expectRefusedAndRetained(
-          kind,
-          newlineMarker,
-          "broken-esm",
-        );
-        // 载入诊断确实把完整拒绝文字复现成了独立一行；它不是产品交出的结论。
-        expect(stageLog.split("\n")).toContain(refusalLine);
-        expect(stageLog).toContain("Cannot find module");
-      }
-    },
-    realRunTimeout,
-  );
-
-  it(
-    "正式 CLI 的 dist 父目录指向自有含换行目录且入口是缺 chunk 的真实 ESM 文件时，删除与重建仍拒绝并保留现场",
-    async () => {
-      const newlineMarker = `产物前缀\n${refusalLine}\n产物后缀`;
-      for (const kind of ["delete", "rebuild"] as const) {
-        const { workspacePath, stageLog } = await expectRefusedAndRetained(
-          kind,
-          newlineMarker,
-          "symlinked-broken-esm",
-        );
-        const entry = path.join(workspacePath, productCli);
-        // 反例的触发条件全部成立：工作区路径规范、入口是被符号链接指向的真实普通 ESM 文件、
-        // 入口文字里没有拒绝内容，而载入诊断里确实把它复现成了独立一行。
-        expect((await lstat(entry)).isFile()).toBe(true);
-        expect(await readFile(entry, "utf8")).not.toContain(refusalLine);
-        expect(await realpath(path.dirname(entry))).toContain(refusalLine);
-        expect(stageLog.split("\n")).toContain(refusalLine);
-        expect(stageLog).toContain("Cannot find module");
-      }
     },
     realRunTimeout,
   );

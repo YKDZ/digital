@@ -1,4 +1,4 @@
 {
   "extends": "./tsconfig.config.json",
-  "include": ["oxfmt.config.ts", "oxlint.config.ts", "scripts/**/*.ts"]
+  "include": ["*.config.ts", "scripts/**/*.ts"]
 }

@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { afterAll, expect, it, vi } from "vitest";
+import { assert, afterAll, expect, it, vi } from "vitest";
 
 import { runProduct } from "../src/index.ts";
 import {
@@ -255,16 +255,20 @@ it("离线按声明明确选择角色标注关系，逐项拒绝未知、缺角�
       }),
     ).toBe("applied");
     // 从任一参与者反查同一人工事实，依据为人工而非来源。
-    const fromSeries = (
-      await workflow.inspectCurrentCatalogueEntity(series.id)
-    ).relationships.find(({ type }) => type === membership.type)!;
+    const seriesEntity = await workflow.inspectCurrentCatalogueEntity(
+      series.id,
+    );
+    assert.isDefined(seriesEntity);
+    const fromSeries = seriesEntity.relationships.find(
+      ({ type }) => type === membership.type,
+    )!;
     expect(fromSeries.sources).toEqual([]);
     expect(fromSeries.participants.map((p) => p.entityId).sort()).toEqual(
       [bookId, series.id].sort(),
     );
-    expect(
-      (await workflow.inspectCurrentCatalogueEntity(bookId)).relationships,
-    ).toContainEqual(fromSeries);
+    const bookEntity = await workflow.inspectCurrentCatalogueEntity(bookId);
+    assert.isDefined(bookEntity);
+    expect(bookEntity.relationships).toContainEqual(fromSeries);
 
     // 未知定义：调用方自报的类型不能改变提供方含义。
     await expect(
@@ -385,10 +389,12 @@ it("离线按声明明确选择角色标注关系，逐项拒绝未知、缺角�
     // 重开后已采用的人工事实仍在，未知输入从未写入。
     await product.close();
     product = open(data);
-    expect(
-      (await product.result.inspectCurrentCatalogueEntity(bookId))
-        .relationships,
-    ).toContainEqual(expect.objectContaining({ type: membership.type }));
+    const reopenedBookEntity =
+      await product.result.inspectCurrentCatalogueEntity(bookId);
+    assert.isDefined(reopenedBookEntity);
+    expect(reopenedBookEntity.relationships).toContainEqual(
+      expect.objectContaining({ type: membership.type }),
+    );
     expect(network).not.toHaveBeenCalled();
   } finally {
     await product.close();

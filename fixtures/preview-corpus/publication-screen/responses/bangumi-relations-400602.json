@@ -1,9 +1,296 @@
 [
   {
-    "id": 515759,
-    "type": 2,
-    "relation": "续集",
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/22/90/459398_7N2k1.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/22/90/459398_7N2k1.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/22/90/459398_7N2k1.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/22/90/459398_7N2k1.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/22/90/459398_7N2k1.jpg"
+    },
+    "name": "TVアニメ『葬送のフリーレン』公式スターティングガイド",
+    "name_cn": "",
+    "relation": "其他",
+    "type": 1,
+    "id": 459398
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/9f/b4/660333_21tpZ.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/9f/b4/660333_21tpZ.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/9f/b4/660333_21tpZ.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/9f/b4/660333_21tpZ.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/9f/b4/660333_21tpZ.jpg"
+    },
+    "name": "葬送のフリーレン／ミュージック・コレクション",
+    "name_cn": "",
+    "relation": "书籍",
+    "type": 1,
+    "id": 660333
+  },
+  {
+    "images": {
+      "small": "",
+      "grid": "",
+      "large": "",
+      "medium": "",
+      "common": ""
+    },
+    "name": "「葬送のフリーレン」BD&DVD Vol.1 初回特典「冒険者たちのお仕事選び」",
+    "name_cn": "",
+    "relation": "广播剧",
+    "type": 3,
+    "id": 622768
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/38/27/535646_5GhlD.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/38/27/535646_5GhlD.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/38/27/535646_5GhlD.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/38/27/535646_5GhlD.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/38/27/535646_5GhlD.jpg"
+    },
+    "name": "小説 アニメ 葬送のフリーレン",
+    "name_cn": "",
+    "relation": "书籍",
+    "type": 1,
+    "id": 535646
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/0b/24/515759_qA1Zc.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/0b/24/515759_qA1Zc.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/0b/24/515759_qA1Zc.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/0b/24/515759_qA1Zc.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/0b/24/515759_qA1Zc.jpg"
+    },
     "name": "葬送のフリーレン 第2期",
-    "name_cn": "葬送的芙莉莲 第二季"
+    "name_cn": "葬送的芙莉莲 第二季",
+    "relation": "续集",
+    "type": 2,
+    "id": 515759
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/9d/49/501356_Pe8HJ.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/9d/49/501356_Pe8HJ.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/9d/49/501356_Pe8HJ.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/9d/49/501356_Pe8HJ.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/9d/49/501356_Pe8HJ.jpg"
+    },
+    "name": "TVアニメ『葬送のフリーレン』公式ガイドブック ~王都からオイサーストまでの旅路~",
+    "name_cn": "",
+    "relation": "其他",
+    "type": 1,
+    "id": 501356
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/bc/60/477900_i2Z51.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/bc/60/477900_i2Z51.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/bc/60/477900_i2Z51.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/bc/60/477900_i2Z51.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/bc/60/477900_i2Z51.jpg"
+    },
+    "name": "TVアニメ『葬送のフリーレン』Original Soundtrack",
+    "name_cn": "",
+    "relation": "原声集",
+    "type": 3,
+    "id": 477900
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/08/5f/471330_Y12VT.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/08/5f/471330_Y12VT.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/08/5f/471330_Y12VT.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/08/5f/471330_Y12VT.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/08/5f/471330_Y12VT.jpg"
+    },
+    "name": "TVアニメ『葬送のフリーレン』Original Soundtrack～Pre-release～",
+    "name_cn": "",
+    "relation": "原声集",
+    "type": 3,
+    "id": 471330
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/f4/a4/1817_g3ODP.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/f4/a4/1817_g3ODP.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/f4/a4/1817_g3ODP.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/f4/a4/1817_g3ODP.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/f4/a4/1817_g3ODP.jpg"
+    },
+    "name": "마비노기",
+    "name_cn": "洛奇",
+    "relation": "联动",
+    "type": 4,
+    "id": 1817
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/f5/6d/459283_EEgdW.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/f5/6d/459283_EEgdW.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/f5/6d/459283_EEgdW.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/f5/6d/459283_EEgdW.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/f5/6d/459283_EEgdW.jpg"
+    },
+    "name": "葬送のフリーレン ～●●の魔法～",
+    "name_cn": "葬送的芙莉莲 ～●●的魔法～",
+    "relation": "衍生",
+    "type": 2,
+    "id": 459283
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/15/96/456693_B9qi3.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/15/96/456693_B9qi3.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/15/96/456693_B9qi3.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/15/96/456693_B9qi3.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/15/96/456693_B9qi3.jpg"
+    },
+    "name": "YOASOBI「勇者」 Official Music Video",
+    "name_cn": "",
+    "relation": "衍生",
+    "type": 2,
+    "id": 456693
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/ef/ce/456444_Ts4l7.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/ef/ce/456444_Ts4l7.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/ef/ce/456444_Ts4l7.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/ef/ce/456444_Ts4l7.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/ef/ce/456444_Ts4l7.jpg"
+    },
+    "name": "Anytime Anywhere",
+    "name_cn": "",
+    "relation": "片尾曲",
+    "type": 3,
+    "id": 456444
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/8e/62/408344_fd7cf.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/8e/62/408344_fd7cf.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/8e/62/408344_fd7cf.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/8e/62/408344_fd7cf.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/8e/62/408344_fd7cf.jpg"
+    },
+    "name": "나 혼자만 레벨업: ARISE",
+    "name_cn": "我独自升级: 起立",
+    "relation": "联动",
+    "type": 4,
+    "id": 408344
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/10/d7/369189_Ny1mt.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/10/d7/369189_Ny1mt.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/10/d7/369189_Ny1mt.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/10/d7/369189_Ny1mt.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/10/d7/369189_Ny1mt.jpg"
+    },
+    "name": "葬送のフリーレン ～トークの魔法～",
+    "name_cn": "葬送的芙莉莲 ～谈话的魔法～",
+    "relation": "衍生",
+    "type": 6,
+    "id": 369189
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/a1/bd/305429_axzF3.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/a1/bd/305429_axzF3.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/a1/bd/305429_axzF3.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/a1/bd/305429_axzF3.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/a1/bd/305429_axzF3.jpg"
+    },
+    "name": "葬送のフリーレン",
+    "name_cn": "葬送的芙莉莲",
+    "relation": "书籍",
+    "type": 1,
+    "id": 305429
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/d7/46/228217_eU0GM.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/d7/46/228217_eU0GM.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/d7/46/228217_eU0GM.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/d7/46/228217_eU0GM.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/d7/46/228217_eU0GM.jpg"
+    },
+    "name": "第五人格",
+    "name_cn": "",
+    "relation": "联动",
+    "type": 4,
+    "id": 228217
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/75/2d/4521_SHIrh.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/75/2d/4521_SHIrh.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/75/2d/4521_SHIrh.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/75/2d/4521_SHIrh.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/75/2d/4521_SHIrh.jpg"
+    },
+    "name": "메이플스토리",
+    "name_cn": "冒险岛",
+    "relation": "联动",
+    "type": 4,
+    "id": 4521
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/fe/92/457254_4F402.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/fe/92/457254_4F402.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/fe/92/457254_4F402.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/fe/92/457254_4F402.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/fe/92/457254_4F402.jpg"
+    },
+    "name": "勇者",
+    "name_cn": "",
+    "relation": "片头曲",
+    "type": 3,
+    "id": 457254
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/97/76/608389_n05wY.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/97/76/608389_n05wY.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/97/76/608389_n05wY.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/97/76/608389_n05wY.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/97/76/608389_n05wY.jpg"
+    },
+    "name": "TVアニメ『葬送のフリーレン』副読本 (1) フリーレン&ヒンメルがわかる魔法",
+    "name_cn": "",
+    "relation": "其他",
+    "type": 1,
+    "id": 608389
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/d7/42/471752_xofyU.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/d7/42/471752_xofyU.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/d7/42/471752_xofyU.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/d7/42/471752_xofyU.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/d7/42/471752_xofyU.jpg"
+    },
+    "name": "晴る",
+    "name_cn": "",
+    "relation": "片头曲",
+    "type": 3,
+    "id": 471752
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/eb/96/608390_2241u.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/eb/96/608390_2241u.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/eb/96/608390_2241u.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/eb/96/608390_2241u.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/eb/96/608390_2241u.jpg"
+    },
+    "name": "TVアニメ『葬送のフリーレン』副読本 (2) フェルン&シュタルクがわかる魔法",
+    "name_cn": "",
+    "relation": "其他",
+    "type": 1,
+    "id": 608390
   }
 ]

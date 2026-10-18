@@ -322,6 +322,13 @@ export class ObservedRootConfigurationConflict extends Error {
   }
 }
 
+export class InvalidObservedRootDirectory extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidObservedRootDirectory";
+  }
+}
+
 export class ObservedRootUnavailable extends Error {
   constructor(message: string) {
     super(message);
@@ -833,7 +840,7 @@ export class ObservedRootRegistrations {
       return scope;
     } catch {
       throw new ObservedRootUnavailable(
-        "刷新记录的冻结文件位置当前不可用或版本已变更",
+        "刷新记录的冻结文件位置当前不可用，无法安全继续",
       );
     }
   }
@@ -1047,7 +1054,7 @@ export class ObservedRootRegistrations {
     readonly canonicalPath: string;
   }> {
     if (!path.isAbsolute(candidate))
-      throw new Error("文件位置必须使用容器内绝对路径");
+      throw new InvalidObservedRootDirectory("文件位置必须使用容器内绝对路径");
     let inspected: Awaited<
       ReturnType<ObservedFilesystemCapability["inspectReadableDirectory"]>
     >;
@@ -1055,7 +1062,7 @@ export class ObservedRootRegistrations {
       inspected =
         await this.ports.filesystem.inspectReadableDirectory(candidate);
     } catch {
-      throw new Error("文件位置必须是当前可读的目录");
+      throw new InvalidObservedRootDirectory("文件位置必须是当前可读的目录");
     }
     const productData = await this.ports.filesystem.canonicalize(
       this.ports.productDataDirectory,
@@ -1075,7 +1082,9 @@ export class ObservedRootRegistrations {
       pathsOverlap(inspected.canonicalPath, productData) ||
       pathsOverlap(inspected.canonicalPath, managedArtifacts)
     ) {
-      throw new Error("文件位置不能与产品数据或托管产物目录重叠");
+      throw new InvalidObservedRootDirectory(
+        "文件位置不能与产品数据或托管产物目录重叠",
+      );
     }
     void excludedId;
     return inspected;

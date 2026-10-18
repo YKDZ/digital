@@ -1,1 +1,128 @@
-[]
+[
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/a1/bd/305429_axzF3.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/a1/bd/305429_axzF3.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/a1/bd/305429_axzF3.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/a1/bd/305429_axzF3.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/a1/bd/305429_axzF3.jpg"
+    },
+    "name": "葬送のフリーレン",
+    "name_cn": "葬送的芙莉莲",
+    "relation": "书籍",
+    "type": 1,
+    "id": 305429
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/13/c5/400602_ZI8Y9.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/13/c5/400602_ZI8Y9.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/13/c5/400602_ZI8Y9.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/13/c5/400602_ZI8Y9.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/13/c5/400602_ZI8Y9.jpg"
+    },
+    "name": "葬送のフリーレン",
+    "name_cn": "葬送的芙莉莲",
+    "relation": "前传",
+    "type": 2,
+    "id": 400602
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/a9/55/549563_wko8L.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/a9/55/549563_wko8L.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/a9/55/549563_wko8L.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/a9/55/549563_wko8L.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/a9/55/549563_wko8L.jpg"
+    },
+    "name": "葬送のフリーレン ～●●の魔法～2期",
+    "name_cn": "葬送的芙莉莲 ～●●的魔法～2期",
+    "relation": "衍生",
+    "type": 2,
+    "id": 549563
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/c8/f1/615503_LpZTt.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/c8/f1/615503_LpZTt.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/c8/f1/615503_LpZTt.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/c8/f1/615503_LpZTt.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/c8/f1/615503_LpZTt.jpg"
+    },
+    "name": "The Story of Us",
+    "name_cn": "",
+    "relation": "片尾曲",
+    "type": 3,
+    "id": 615503
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/f9/94/621059_Ge0nc.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/f9/94/621059_Ge0nc.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/f9/94/621059_Ge0nc.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/f9/94/621059_Ge0nc.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/f9/94/621059_Ge0nc.jpg"
+    },
+    "name": "lulu.",
+    "name_cn": "",
+    "relation": "片头曲",
+    "type": 3,
+    "id": 621059
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/35/76/621637_45qQQ.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/35/76/621637_45qQQ.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/35/76/621637_45qQQ.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/35/76/621637_45qQQ.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/35/76/621637_45qQQ.jpg"
+    },
+    "name": "TVアニメ『葬送のフリーレン』Season2 Original Soundtrack",
+    "name_cn": "",
+    "relation": "原声集",
+    "type": 3,
+    "id": 621637
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/bc/31/638133_zIb02.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/bc/31/638133_zIb02.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/bc/31/638133_zIb02.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/bc/31/638133_zIb02.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/bc/31/638133_zIb02.jpg"
+    },
+    "name": "葬送のフリーレン 第3期【黄金郷編】",
+    "name_cn": "葬送的芙莉莲 第三季 黄金乡篇",
+    "relation": "续集",
+    "type": 2,
+    "id": 638133
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/8c/a9/657875_3oVla.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/8c/a9/657875_3oVla.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/8c/a9/657875_3oVla.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/8c/a9/657875_3oVla.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/8c/a9/657875_3oVla.jpg"
+    },
+    "name": "葬送のフリーレン フィルムコンサート2026",
+    "name_cn": "",
+    "relation": "三次元",
+    "type": 6,
+    "id": 657875
+  },
+  {
+    "images": {
+      "small": "https://lain.bgm.tv/r/200/pic/cover/l/9f/b4/660333_21tpZ.jpg",
+      "grid": "https://lain.bgm.tv/r/100/pic/cover/l/9f/b4/660333_21tpZ.jpg",
+      "large": "https://lain.bgm.tv/pic/cover/l/9f/b4/660333_21tpZ.jpg",
+      "medium": "https://lain.bgm.tv/r/800/pic/cover/l/9f/b4/660333_21tpZ.jpg",
+      "common": "https://lain.bgm.tv/r/400/pic/cover/l/9f/b4/660333_21tpZ.jpg"
+    },
+    "name": "葬送のフリーレン／ミュージック・コレクション",
+    "name_cn": "",
+    "relation": "书籍",
+    "type": 1,
+    "id": 660333
+  }
+]

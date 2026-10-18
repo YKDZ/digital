@@ -1,10 +1,13 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants, lstatSync } from "node:fs";
 import {
   access,
+  cp,
   mkdtemp,
   readFile,
+  readdir,
+  realpath,
   rename,
   rm,
   writeFile,
@@ -18,6 +21,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { createPublicApiClient } from "@digital/public-api";
+import { loadControlledSourceIo } from "@digital/test-support/source-io";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
@@ -30,6 +35,15 @@ import {
   type StopOperationResult,
 } from "../src/index.ts";
 import { recordFileName } from "../src/internal/paths.ts";
+import {
+  observeProcessIdentity,
+  observeProcessLifecycle,
+} from "../src/internal/process-identity.ts";
+import {
+  createLibraryAndScan,
+  startCompetingProductService,
+  workflowHistoryIds as readWorkflowHistoryIds,
+} from "./product-service.ts";
 
 const workspaceRoot = path.resolve(
   fileURLToPath(new URL(".", import.meta.url)),
@@ -38,7 +52,14 @@ const workspaceRoot = path.resolve(
   "..",
 );
 const environmentCli = path.join("packages", "environment", "dist", "cli.js");
-const productCli = path.join("apps", "cli", "dist", "cli.js");
+const fixtureMaterialDirectory = await realpath(
+  fileURLToPath(
+    import.meta.resolve("@digital/preview-corpus/audio-posts/material"),
+  ),
+);
+const fixtureManifestPath = fileURLToPath(
+  import.meta.resolve("@digital/preview-corpus/audio-posts/manifest.json"),
+);
 /** 合成残留值：只用于证明父终端配置不会进入本世代。 */
 const parentCredential = "parent-credential-6a19";
 const parentProxy = "http://proxy.invalid:8080";
@@ -204,7 +225,7 @@ async function startImpostor(port: number): Promise<ClosableServer> {
     requests += 1;
     const body = JSON.stringify({
       ok: true,
-      service: "digital-web",
+      service: "digital-product-service",
       runId: "冒用世代-not-ours",
       attestation: "0".repeat(64),
     });
@@ -280,6 +301,25 @@ async function exists(filePath: string): Promise<boolean> {
   }
 }
 
+async function directoryDigest(directory: string): Promise<string> {
+  const files: string[] = [];
+  const visit = async (current: string): Promise<void> => {
+    for (const entry of await readdir(current, { withFileTypes: true })) {
+      const entryPath = path.join(current, entry.name);
+      if (entry.isDirectory()) await visit(entryPath);
+      else if (entry.isFile()) files.push(entryPath);
+    }
+  };
+  await visit(directory);
+  const digest = createHash("sha256");
+  for (const file of files.toSorted()) {
+    digest.update(path.relative(directory, file).split(path.sep).join("/"));
+    digest.update("\0");
+    digest.update(await readFile(file));
+  }
+  return digest.digest("hex");
+}
+
 async function readOperationLog(result: StartOperationResult): Promise<string> {
   return (
     await Promise.all(
@@ -289,58 +329,27 @@ async function readOperationLog(result: StartOperationResult): Promise<string> {
 }
 
 async function recordLibraryScan(
-  productDataRoot: string,
+  environment: string,
   label: string,
-): Promise<string> {
+): Promise<{
+  readonly libraryId: string;
+  readonly executionId: string;
+  readonly outcome: string | undefined;
+}> {
   const material = await temporaryDirectory("digital-02-material-");
-  const created = await run({
-    command: process.execPath,
-    args: [
-      path.join(workspaceRoot, productCli),
-      "library-create",
-      label,
-      "--directory",
-      material,
-      "--json",
-    ],
-    env: { ...cleanEnvironment(), DIGITAL_PRODUCT_DATA: productDataRoot },
+  return await createLibraryAndScan({
+    workspacePath: workspaceRoot,
+    environment,
+    displayName: label,
+    directory: material,
   });
-  expect(created.code, created.stderr).toBe(0);
-  const library = (JSON.parse(created.stdout) as { id: string }).id;
-  const scan = await run({
-    command: process.execPath,
-    args: [
-      path.join(workspaceRoot, productCli),
-      "scan-library",
-      library,
-      "--preview",
-      "--json",
-    ],
-    env: { ...cleanEnvironment(), DIGITAL_PRODUCT_DATA: productDataRoot },
-  });
-  expect(scan.code, scan.stderr).toBe(0);
-  const recorded = JSON.parse(scan.stdout) as {
-    directories: { childExecutionId: string }[];
-  };
-  return recorded.directories[0]!.childExecutionId;
 }
 
-async function workflowHistoryIds(productDataRoot: string): Promise<string[]> {
-  const read = await run({
-    command: process.execPath,
-    args: [
-      path.join(workspaceRoot, productCli),
-      "catalogue-surface",
-      "--surface",
-      "workflow-history",
-    ],
-    env: { ...cleanEnvironment(), DIGITAL_PRODUCT_DATA: productDataRoot },
+async function workflowHistoryIds(environment: string): Promise<string[]> {
+  return await readWorkflowHistoryIds({
+    workspacePath: workspaceRoot,
+    environment,
   });
-  expect(read.code, read.stderr).toBe(0);
-  const page = JSON.parse(read.stdout) as {
-    items: { execution: { id: string } }[];
-  };
-  return page.items.map((item) => item.execution.id);
 }
 
 function inspectData(stdout: string): {
@@ -394,10 +403,8 @@ beforeAll(async () => {
     containerDirectory,
     recordPath: path.join(containerDirectory, recordFileName),
   };
-  businessExecutionId = await recordLibraryScan(
-    env.productDataRoot,
-    "真实服务",
-  );
+  businessExecutionId = (await recordLibraryScan(env.name, "真实服务"))
+    .executionId;
 }, realRunTimeout);
 
 afterAll(async () => {
@@ -469,7 +476,7 @@ afterAll(async () => {
     await rm(directory, { recursive: true, force: true });
 }, realRunTimeout);
 
-describe("真实产品 Web 服务的独立启动、查看与停止", () => {
+describe("正式产品服务的独立启动、查看与停止", () => {
   it(
     "公开接口只在本世代认证成立后报告就绪，独立 CLI 进程随后仍能管理同一世代",
     async () => {
@@ -520,7 +527,7 @@ describe("真实产品 Web 服务的独立启动、查看与停止", () => {
       expect(plain.status).toBe(200);
       expect(JSON.parse(plain.body)).toEqual({
         ok: true,
-        service: "digital-web",
+        service: "digital-product-service",
       });
 
       // 带上 nonce 才交出本世代签名；换一个 nonce 就必须换一个签名。
@@ -614,6 +621,92 @@ describe("真实产品 Web 服务的独立启动、查看与停止", () => {
   );
 
   it(
+    "运行记录属于其他 PID 命名空间时只报告未知",
+    async () => {
+      const initial = await inspectEnvironment({
+        workspacePath: workspaceRoot,
+        environment: env.name,
+      });
+      let startedHere = false;
+      if (initial.serviceReadiness !== "ready") {
+        const started = await startRegistered(
+          "其他 PID 命名空间观察 start",
+          env.name,
+        );
+        expect(started.status).toBe("ready");
+        startedHere = true;
+      }
+
+      const original = await readFile(env.recordPath, "utf8");
+      const record = JSON.parse(original) as {
+        run: { processIdentity: { pidNamespace: string } };
+      };
+      const currentNamespace = record.run.processIdentity.pidNamespace;
+      // 这是受控的分类输入；它不启动或模拟另一个 PID 命名空间中的真实进程。
+      record.run.processIdentity.pidNamespace =
+        currentNamespace === "pid:[1]" ? "pid:[2]" : "pid:[1]";
+      try {
+        await writeFile(env.recordPath, `${JSON.stringify(record, null, 2)}\n`);
+        const observed = await inspectEnvironment({
+          workspacePath: workspaceRoot,
+          environment: env.name,
+        });
+        expect(observed.run.processLiveness).toBe("unknown");
+        expect(observed.serviceReadiness).toBe("unknown");
+        expect(await portOpen(env.port)).toBe(true);
+      } finally {
+        await writeFile(env.recordPath, original);
+      }
+
+      const restored = await inspectEnvironment({
+        workspacePath: workspaceRoot,
+        environment: env.name,
+      });
+      expect(restored.run.processLiveness).toBe("alive");
+      expect(restored.serviceReadiness).toBe("ready");
+      if (startedHere) {
+        const stopped = await stopEnvironment({
+          workspacePath: workspaceRoot,
+          environment: env.name,
+        });
+        expect(stopped.status).toBe("stopped");
+      }
+    },
+    realRunTimeout,
+  );
+
+  it("原生进程身份能区分真实子进程存活与退出", async () => {
+    const child = spawn(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)"],
+      {
+        stdio: "ignore",
+      },
+    );
+    let childClosed = false;
+    const closed = new Promise<void>((resolve) => {
+      child.once("close", () => {
+        childClosed = true;
+        resolve();
+      });
+    });
+    try {
+      if (child.pid === undefined) throw new Error("测试子进程没有 PID");
+      const observed = observeProcessIdentity(child.pid);
+      if (!("identity" in observed)) throw new Error(observed.reason);
+      expect(observeProcessLifecycle(observed.identity)).toBe("alive");
+      child.kill("SIGTERM");
+      await closed;
+      expect(observeProcessLifecycle(observed.identity)).toBe("exited");
+    } finally {
+      if (!childClosed) {
+        child.kill("SIGTERM");
+        await closed;
+      }
+    }
+  });
+
+  it(
     "进程存活、首页可访问与其他服务的相同响应都不被当成就绪",
     async () => {
       const before = await inspectEnvironment({
@@ -666,6 +759,17 @@ describe("真实产品 Web 服务的独立启动、查看与停止", () => {
   it(
     "停止只收回自有外层资源，保留数据与日志；重复停止一致，确认退出后可换新世代",
     async () => {
+      const initial = await inspectEnvironment({
+        workspacePath: workspaceRoot,
+        environment: env.name,
+      });
+      if (initial.serviceReadiness !== "ready") {
+        const preparedRun = await startRegistered(
+          "停止语义用例准备服务世代",
+          env.name,
+        );
+        expect(preparedRun.status).toBe("ready");
+      }
       const started = await inspectEnvironment({
         workspacePath: workspaceRoot,
         environment: env.name,
@@ -704,9 +808,7 @@ describe("真实产品 Web 服务的独立启动、查看与停止", () => {
       expect(productLog).toContain("已取得进入正式入口的许可");
       expect(productLog).toContain("运行日志收尾");
       // 产品数据一项不动：停止前后同一业务记录都可读取。
-      expect(await workflowHistoryIds(env.productDataRoot)).toContain(
-        businessExecutionId,
-      );
+      expect(await workflowHistoryIds(env.name)).toContain(businessExecutionId);
 
       const again = await stopEnvironment({
         workspacePath: workspaceRoot,
@@ -722,19 +824,7 @@ describe("真实产品 Web 服务的独立启动、查看与停止", () => {
       expect(restarted.run.serviceReady).toBe(true);
 
       // 新世代照样受产品自己的单写入者锁约束：外层启停没有绕过、代替或竞争它。
-      const whileLive = await run({
-        command: process.execPath,
-        args: [
-          path.join(workspaceRoot, productCli),
-          "catalogue-surface",
-          "--surface",
-          "workflow-history",
-        ],
-        env: {
-          ...cleanEnvironment(),
-          DIGITAL_PRODUCT_DATA: env.productDataRoot,
-        },
-      });
+      const whileLive = await startCompetingProductService(env.productDataRoot);
       expect(whileLive.code).not.toBe(0);
       expect(`${whileLive.stdout}${whileLive.stderr}`).toContain(
         "拒绝并发启动另一个产品写入者",
@@ -746,9 +836,7 @@ describe("真实产品 Web 服务的独立启动、查看与停止", () => {
       });
       expect(stoppedAgain.status).toBe("stopped");
       // 两个世代完整启停之后，同一业务记录仍可读取，产品数据一项不动。
-      expect(await workflowHistoryIds(env.productDataRoot)).toContain(
-        businessExecutionId,
-      );
+      expect(await workflowHistoryIds(env.name)).toContain(businessExecutionId);
     },
     realRunTimeout,
   );
@@ -781,9 +869,7 @@ describe("真实产品 Web 服务的独立启动、查看与停止", () => {
       expect(inspection.run.runId).toBe(before.run.runId);
       expect(inspection.run.processLiveness).toBe("exited");
       expect(inspection.serviceReadiness).toBe("not-ready");
-      expect(await workflowHistoryIds(env.productDataRoot)).toContain(
-        businessExecutionId,
-      );
+      expect(await workflowHistoryIds(env.name)).toContain(businessExecutionId);
     },
     realRunTimeout,
   );
@@ -859,6 +945,482 @@ describe("真实产品 Web 服务的独立启动、查看与停止", () => {
         environment: env.name,
       });
       expect(stopped.status).toBe("already-stopped");
+    },
+    realRunTimeout,
+  );
+
+  it("正式 enter 首次准备后重入沿用保存配置且不追加刷新", async () => {
+    const name = `t05-${randomUUID().slice(0, 8)}`;
+    const containerDirectory = path.join(
+      workspaceRoot,
+      ".digital",
+      "environments",
+      name,
+    );
+    createdContainers.push(containerDirectory);
+    const port = await freePort();
+    const controlledSource = await loadControlledSourceIo({
+      manifestPath: fixtureManifestPath,
+    });
+    const config = {
+      profile: "t05-entry",
+      webPort: port,
+      sourceIo: {
+        manifestPath: fixtureManifestPath,
+        contentIdentity: controlledSource.contentIdentity,
+      },
+    };
+    const originalMaterialDigest = await directoryDigest(
+      fixtureMaterialDirectory,
+    );
+    const enter = async (
+      label: string,
+      args: readonly string[],
+    ): Promise<{
+      readonly result: CommandResult;
+      readonly elapsedMs: number;
+      readonly data: {
+        readonly environment: {
+          readonly productDataRoot: string;
+          readonly sourceMode: string;
+          readonly inputs: readonly string[];
+          readonly config: Readonly<Record<string, unknown>>;
+        };
+        readonly run: {
+          readonly runId: string | null;
+          readonly address: string | null;
+        };
+        readonly inspection: { readonly elapsedMs: number };
+        readonly preparation: {
+          readonly status: string;
+          readonly elapsedMs: number;
+        };
+        readonly service: {
+          readonly status: string;
+          readonly elapsedMs: number;
+        };
+        readonly business: {
+          readonly status: string;
+          readonly explanation: string;
+        };
+      };
+    }> => {
+      const attempt = beginStart(label, name);
+      try {
+        const startedAt = performance.now();
+        const result = await cli(["enter", "--environment", name, ...args]);
+        const elapsedMs = Math.max(
+          0,
+          Math.round(performance.now() - startedAt),
+        );
+        attempt.status = `CLI 退出 ${String(result.code)}`;
+        const rawOutput = result.stdout.trim() || result.stderr.trim();
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(rawOutput) as unknown;
+        } catch (error) {
+          throw new Error(
+            `enter 未返回 JSON（退出 ${String(result.code)}）：${result.stderr || result.stdout}`,
+            { cause: error },
+          );
+        }
+        if (result.code !== 0) {
+          const failure = parsed as {
+            readonly data?: {
+              readonly logs?: {
+                readonly prepare?: { readonly files?: readonly string[] };
+              };
+            };
+          };
+          const readLogs = await Promise.all(
+            (failure.data?.logs?.prepare?.files ?? [])
+              .filter((file) => file.endsWith("/read.log"))
+              .map(async (file) => ({
+                file,
+                content: await readFile(file, "utf8").catch((error: unknown) =>
+                  String(error),
+                ),
+              })),
+          );
+          throw new Error(
+            `enter 失败，退出 ${String(result.code)}：${JSON.stringify(parsed)}\n正式读取日志：${JSON.stringify(readLogs)}`,
+          );
+        }
+        const envelope = parsed as {
+          readonly data: {
+            readonly environment: {
+              readonly productDataRoot: string;
+              readonly sourceMode: string;
+              readonly inputs: readonly string[];
+              readonly config: Readonly<Record<string, unknown>>;
+            };
+            readonly run: {
+              readonly runId: string | null;
+              readonly address: string | null;
+            };
+            readonly inspection: { readonly elapsedMs: number };
+            readonly preparation: {
+              readonly status: string;
+              readonly elapsedMs: number;
+            };
+            readonly service: {
+              readonly status: string;
+              readonly elapsedMs: number;
+            };
+            readonly business: {
+              readonly status: string;
+              readonly explanation: string;
+            };
+          };
+        };
+        attempt.runId = envelope.data.run.runId;
+        return { result, elapsedMs, data: envelope.data };
+      } catch (error) {
+        attempt.status = `调用失败：${describeFailure(error)}`;
+        throw error;
+      }
+    };
+
+    const first = await enter("正式 enter 首次准备", [
+      "--source-mode",
+      "controlled",
+      "--input",
+      fixtureMaterialDirectory,
+      "--workspace-path",
+      workspaceRoot,
+      "--config-json",
+      JSON.stringify(config),
+      "--timeout-ms",
+      String(realRunTimeout),
+    ]);
+    expect(first.result.code, first.result.stderr).toBe(0);
+    expect(first.data.preparation.status).toBe("prepared");
+    expect(first.data.preparation.elapsedMs).toBeGreaterThan(0);
+    expect(first.data.service.status).toBe("ready");
+    expect(first.data.service.elapsedMs).toBeGreaterThan(0);
+    expect(first.data.run.address).toBe(`http://127.0.0.1:${String(port)}`);
+    expect(first.data.business.status).toBe("not-requested");
+    expect(first.data.business.explanation).toContain(
+      "没有发起资料接入或全库刷新",
+    );
+    expect(first.data.environment.sourceMode).toBe("controlled");
+    expect(first.data.environment.inputs).toEqual([fixtureMaterialDirectory]);
+    expect(first.data.environment.config).toEqual(config);
+    const baseUrl = first.data.run.address;
+    if (baseUrl === null) throw new Error("enter 未返回服务地址");
+    const client = createPublicApiClient({ baseUrl });
+    const firstInspection = await inspectEnvironment({
+      workspacePath: workspaceRoot,
+      environment: name,
+    });
+    expect(firstInspection.state).toBe("prepared");
+    expect(firstInspection.environment.sourceMode).toBe("controlled");
+    expect(firstInspection.environment.inputs).toEqual([
+      fixtureMaterialDirectory,
+    ]);
+    expect(firstInspection.environment.productDataRoot).toBe(
+      first.data.environment.productDataRoot,
+    );
+    expect(firstInspection.environment.config).toEqual(config);
+    expect(firstInspection.serviceReadiness).toBe("ready");
+
+    const alreadyReady = await enter("正式 enter 重入已就绪世代", [
+      "--workspace-path",
+      workspaceRoot,
+      "--timeout-ms",
+      String(realRunTimeout),
+    ]);
+    expect(alreadyReady.result.code, alreadyReady.result.stderr).toBe(0);
+    expect(alreadyReady.data.preparation.status).toBe("reused");
+    expect(alreadyReady.data.service.status).toBe("already-ready");
+    expect(alreadyReady.data.run.runId).toBe(first.data.run.runId);
+
+    const firstDirectory = await temporaryDirectory(
+      "digital-05-material-first-",
+    );
+    await cp(fixtureMaterialDirectory, firstDirectory, { recursive: true });
+    await writeFile(path.join(firstDirectory, "ordinary.txt"), "普通材料\n");
+    const additionalDirectory = await temporaryDirectory(
+      "digital-05-material-additional-",
+    );
+    await writeFile(
+      path.join(additionalDirectory, "additional.txt"),
+      "另一份普通材料\n",
+    );
+    const secondLibraryDirectory = await temporaryDirectory(
+      "digital-05-material-second-library-",
+    );
+    await writeFile(
+      path.join(secondLibraryDirectory, "second-library.txt"),
+      "第二资料库材料\n",
+    );
+    const saveLibrary = async (input: {
+      readonly displayName: string;
+      readonly directories: readonly string[];
+    }): Promise<{ readonly id: string; readonly configVersion: number }> => {
+      const saved = await client.saveAssetLibrary({
+        displayName: input.displayName,
+        directories: [...input.directories],
+        recognitionProfileIds: ["dlsite-voice"],
+        sourceIdentities: ["dlsite"],
+      });
+      return { id: saved.id, configVersion: saved.configVersion };
+    };
+    const primaryLibrary = await saveLibrary({
+      displayName: "正式进入保留甲",
+      directories: [firstDirectory, additionalDirectory],
+    });
+    const secondLibrary = await saveLibrary({
+      displayName: "正式进入保留乙",
+      directories: [secondLibraryDirectory],
+    });
+    expect(primaryLibrary.id).not.toBe(secondLibrary.id);
+
+    const explicitRefresh = async (
+      assetLibraryId: string,
+    ): Promise<{ readonly id: string; readonly elapsedMs: number }> => {
+      const startedAt = performance.now();
+      const { parentExecutionId } =
+        await client.startAssetLibraryScan(assetLibraryId);
+      await expect
+        .poll(
+          async () => {
+            const execution =
+              await client.inspectAssetLibraryScan(parentExecutionId);
+            return execution.status;
+          },
+          { timeout: 180_000 },
+        )
+        .toBe("completed");
+      return {
+        id: parentExecutionId,
+        elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)),
+      };
+    };
+    const firstRefresh = await explicitRefresh(primaryLibrary.id);
+    const secondRefresh = await explicitRefresh(secondLibrary.id);
+
+    const manualName = "已人工改名的资料库";
+    const renamedLibrary = await client.saveAssetLibrary({
+      id: primaryLibrary.id,
+      expectedVersion: primaryLibrary.configVersion,
+      displayName: manualName,
+      directories: [firstDirectory, additionalDirectory],
+      recognitionProfileIds: ["dlsite-voice"],
+      sourceIdentities: ["dlsite"],
+    });
+    expect(renamedLibrary.configVersion).toBeGreaterThan(
+      primaryLibrary.configVersion,
+    );
+
+    const syntheticClientSecret = "t05-synthetic-bangumi-client-secret";
+    const configuredSource = await client.configureBangumiOAuthClient({
+      clientId: "t05-synthetic-bangumi-client",
+      clientSecret: syntheticClientSecret,
+      redirectUri:
+        "https://digital.example.test/api/source-connections/bangumi/callback",
+    });
+    expect(configuredSource.configured).toBe(true);
+    expect(JSON.stringify(configuredSource)).not.toContain(
+      syntheticClientSecret,
+    );
+    const publicSourceConnectionFacts = async () => {
+      const connections = await client.listSourceConnections();
+      return connections.items.map(
+        ({ id, version, credentialStatus, availability, reason }) => ({
+          id,
+          version,
+          credentialStatus,
+          availability,
+          ...(reason === undefined ? {} : { reason }),
+        }),
+      );
+    };
+    const sourcesBeforeReentry = await publicSourceConnectionFacts();
+    expect(
+      sourcesBeforeReentry.find(({ id }) => id === "bangumi"),
+    ).toMatchObject({
+      credentialStatus: "revoked",
+      availability: "unavailable",
+      reason: "revoked",
+    });
+
+    const librariesBeforeReentry = await client.listAssetLibraries({
+      limit: 100,
+    });
+    expect(librariesBeforeReentry.items).toHaveLength(2);
+    const primaryLibraryBeforeReentry = librariesBeforeReentry.items.find(
+      ({ id }) => id === primaryLibrary.id,
+    );
+    expect(primaryLibraryBeforeReentry).toMatchObject({
+      displayName: manualName,
+    });
+    expect(primaryLibraryBeforeReentry?.directories).toHaveLength(2);
+    const assetsBeforeReentry = await client.listAssets({
+      assetLibraryId: primaryLibrary.id,
+      limit: 100,
+    });
+    expect(assetsBeforeReentry.items.length).toBeGreaterThan(0);
+    const unrecognizedBeforeReentry = await client.listUnrecognizedMaterials({
+      assetLibraryId: primaryLibrary.id,
+      limit: 100,
+    });
+    expect(
+      unrecognizedBeforeReentry.items.flatMap(
+        ({ relativePaths }) => relativePaths,
+      ),
+    ).toContain("ordinary.txt");
+
+    const stopped = await stopEnvironment({
+      workspacePath: workspaceRoot,
+      environment: name,
+    });
+    expect(stopped.status).toBe("stopped");
+    const workflowsBeforeReentry = await workflowHistoryIds(name);
+    expect(workflowsBeforeReentry.length).toBeGreaterThan(0);
+
+    const reentered = await enter("正式 enter 保存配置重入", [
+      "--workspace-path",
+      workspaceRoot,
+      "--timeout-ms",
+      String(realRunTimeout),
+    ]);
+    expect(reentered.result.code, reentered.result.stderr).toBe(0);
+    expect(reentered.data.preparation.status).toBe("reused");
+    expect(reentered.data.preparation.elapsedMs).toBe(0);
+    expect(reentered.data.service.status).toBe("ready");
+    expect(reentered.data.run.runId).not.toBe(first.data.run.runId);
+    expect(reentered.data.environment.productDataRoot).toBe(
+      firstInspection.environment.productDataRoot,
+    );
+    expect(reentered.data.environment.sourceMode).toBe("controlled");
+    expect(reentered.data.environment.inputs).toEqual([
+      fixtureMaterialDirectory,
+    ]);
+    expect(reentered.data.environment.config).toEqual(config);
+    const retainedLibraries = await client.listAssetLibraries({ limit: 100 });
+    expect(retainedLibraries.items).toEqual(librariesBeforeReentry.items);
+    const retainedAssets = await client.listAssets({
+      assetLibraryId: primaryLibrary.id,
+      limit: 100,
+    });
+    expect(retainedAssets.items).toEqual(assetsBeforeReentry.items);
+    const retainedUnrecognized = await client.listUnrecognizedMaterials({
+      assetLibraryId: primaryLibrary.id,
+      limit: 100,
+    });
+    expect(retainedUnrecognized.items).toEqual(unrecognizedBeforeReentry.items);
+    const retainedSources = await publicSourceConnectionFacts();
+    expect(retainedSources).toEqual(sourcesBeforeReentry);
+    const authorization = await client.beginBangumiAuthorization();
+    const authorizationUrl = new URL(authorization.authorizationUrl);
+    expect(authorizationUrl.searchParams.get("client_id")).toBe(
+      "t05-synthetic-bangumi-client",
+    );
+    expect(authorizationUrl.searchParams.get("redirect_uri")).toBe(
+      "https://digital.example.test/api/source-connections/bangumi/callback",
+    );
+    expect(authorizationUrl.toString()).not.toContain(syntheticClientSecret);
+    expect(await directoryDigest(fixtureMaterialDirectory)).toBe(
+      originalMaterialDigest,
+    );
+
+    const stoppedAgain = await stopEnvironment({
+      workspacePath: workspaceRoot,
+      environment: name,
+    });
+    expect(stoppedAgain.status).toBe("stopped");
+    await expect(workflowHistoryIds(name)).resolves.toEqual(
+      workflowsBeforeReentry,
+    );
+    console.info(
+      `EWC-05_ACCEPTANCE_TIMING ${JSON.stringify({
+        conditions: {
+          node: process.version,
+          sourceMode: "controlled",
+          productService: "apps/service via environment enter",
+          filesystem: "temporary ordinary-directory copies",
+        },
+        firstEnter: {
+          wallMs: first.elapsedMs,
+          inspectMs: first.data.inspection.elapsedMs,
+          prepareMs: first.data.preparation.elapsedMs,
+          serviceReadyMs: first.data.service.elapsedMs,
+        },
+        alreadyReadyReentry: {
+          wallMs: alreadyReady.elapsedMs,
+          preparationMs: alreadyReady.data.preparation.elapsedMs,
+          serviceMs: alreadyReady.data.service.elapsedMs,
+        },
+        stoppedReentry: {
+          wallMs: reentered.elapsedMs,
+          inspectMs: reentered.data.inspection.elapsedMs,
+          preparationMs: reentered.data.preparation.elapsedMs,
+          serviceReadyMs: reentered.data.service.elapsedMs,
+        },
+        explicitRefreshes: [firstRefresh, secondRefresh],
+        sourceMaterialDigest: originalMaterialDigest,
+      })}`,
+    );
+  }, 1_200_000);
+
+  it(
+    "正式 enter 启动失败时报告具体阶段且不接管占用端口",
+    async () => {
+      const occupier = await startImpostor(env.port);
+      const before = await inspectEnvironment({
+        workspacePath: workspaceRoot,
+        environment: env.name,
+      });
+      const attempt = beginStart("正式 enter 端口冲突", env.name);
+      try {
+        const result = await cli([
+          "enter",
+          "--environment",
+          env.name,
+          "--workspace-path",
+          workspaceRoot,
+          "--timeout-ms",
+          String(realRunTimeout),
+        ]);
+        attempt.status = `CLI 退出 ${String(result.code)}`;
+        const envelope = JSON.parse(
+          result.stdout.trim() || result.stderr.trim(),
+        ) as {
+          readonly data: {
+            readonly status: string;
+            readonly phase: string;
+            readonly service: { readonly status: string };
+            readonly failure: {
+              readonly stage: string;
+              readonly message: string;
+            };
+            readonly cleanup: { readonly state: string };
+            readonly logs: {
+              readonly service: { readonly directory: string | null };
+            };
+          };
+        };
+        expect(result.code).toBe(1);
+        expect(envelope.data.status).toBe("failed");
+        expect(envelope.data.phase).toBe("start");
+        expect(envelope.data.service.status).toBe("failed");
+        expect(envelope.data.failure.stage).toBe("port");
+        expect(envelope.data.failure.message).toContain("不接管");
+        expect(envelope.data.cleanup.state).toBe("not-started");
+        expect(envelope.data.logs.service.directory).toBeNull();
+        expect(occupier.requests()).toBe(0);
+      } finally {
+        await occupier.close();
+      }
+
+      const after = await inspectEnvironment({
+        workspacePath: workspaceRoot,
+        environment: env.name,
+      });
+      expect(after.run.runId).toBe(before.run.runId);
+      expect(after.run.processLiveness).toBe(before.run.processLiveness);
+      expect(after.serviceReadiness).toBe(before.serviceReadiness);
     },
     realRunTimeout,
   );

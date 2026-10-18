@@ -19,11 +19,11 @@
     },
     {
       "id": "RJ01029383-cover",
-      "url": "https://img.dlsite.jp/modpub/images2/work/doujin/RJ01029383_img_main.png",
+      "url": "https://img.dlsite.jp/modpub/images2/work/doujin/RJ01030000/RJ01029383_img_main.jpg",
       "method": "GET",
       "status": 200,
-      "mediaType": "image/png",
-      "responseFile": "responses/cover.png"
+      "mediaType": "image/jpeg",
+      "responseFile": "responses/RJ01029383-cover.jpg"
     },
     {
       "id": "RJ01049458-json",
@@ -43,11 +43,11 @@
     },
     {
       "id": "RJ01049458-cover",
-      "url": "https://img.dlsite.jp/modpub/images2/work/doujin/RJ01049458_img_main.png",
+      "url": "https://img.dlsite.jp/modpub/images2/work/doujin/RJ01050000/RJ01049458_img_main.jpg",
       "method": "GET",
       "status": 200,
-      "mediaType": "image/png",
-      "responseFile": "responses/cover.png"
+      "mediaType": "image/jpeg",
+      "responseFile": "responses/RJ01049458-cover.jpg"
     },
     {
       "id": "RJ01115164-json",
@@ -67,11 +67,11 @@
     },
     {
       "id": "RJ01115164-cover",
-      "url": "https://img.dlsite.jp/modpub/images2/work/doujin/RJ01115164_img_main.png",
+      "url": "https://img.dlsite.jp/modpub/images2/work/doujin/RJ01116000/RJ01115164_img_main.jpg",
       "method": "GET",
       "status": 200,
-      "mediaType": "image/png",
-      "responseFile": "responses/cover.png"
+      "mediaType": "image/jpeg",
+      "responseFile": "responses/RJ01115164-cover.jpg"
     },
     {
       "id": "RJ01131487-json",
@@ -91,11 +91,11 @@
     },
     {
       "id": "RJ01131487-cover",
-      "url": "https://img.dlsite.jp/modpub/images2/work/doujin/RJ01131487_img_main.png",
+      "url": "https://img.dlsite.jp/modpub/images2/work/doujin/RJ01132000/RJ01131487_img_main.jpg",
       "method": "GET",
       "status": 200,
-      "mediaType": "image/png",
-      "responseFile": "responses/cover.png"
+      "mediaType": "image/jpeg",
+      "responseFile": "responses/RJ01131487-cover.jpg"
     },
     {
       "id": "RJ01196709-json",
@@ -115,11 +115,11 @@
     },
     {
       "id": "RJ01196709-cover",
-      "url": "https://img.dlsite.jp/modpub/images2/work/doujin/RJ01196709_img_main.png",
+      "url": "https://img.dlsite.jp/modpub/images2/work/doujin/RJ01197000/RJ01196709_img_main.jpg",
       "method": "GET",
       "status": 200,
-      "mediaType": "image/png",
-      "responseFile": "responses/cover.png"
+      "mediaType": "image/jpeg",
+      "responseFile": "responses/RJ01196709-cover.jpg"
     },
     {
       "id": "RJ01497788-json",
@@ -139,11 +139,11 @@
     },
     {
       "id": "RJ01497788-cover",
-      "url": "https://img.dlsite.jp/modpub/images2/work/doujin/RJ01497788_img_main.png",
+      "url": "https://img.dlsite.jp/modpub/images2/work/doujin/RJ01498000/RJ01497788_img_main.jpg",
       "method": "GET",
       "status": 200,
-      "mediaType": "image/png",
-      "responseFile": "responses/cover.png"
+      "mediaType": "image/jpeg",
+      "responseFile": "responses/RJ01497788-cover.jpg"
     },
     {
       "id": "RJ01668691-json",
@@ -163,11 +163,11 @@
     },
     {
       "id": "RJ01668691-cover",
-      "url": "https://img.dlsite.jp/modpub/images2/work/doujin/RJ01668691_img_main.png",
+      "url": "https://img.dlsite.jp/modpub/images2/work/doujin/RJ01669000/RJ01668691_img_main.jpg",
       "method": "GET",
       "status": 200,
-      "mediaType": "image/png",
-      "responseFile": "responses/cover.png"
+      "mediaType": "image/jpeg",
+      "responseFile": "responses/RJ01668691-cover.jpg"
     },
     {
       "id": "VJ014635-json",
@@ -179,7 +179,7 @@
     },
     {
       "id": "VJ014635-html",
-      "url": "https://www.dlsite.com/maniax/work/=/product_id/VJ014635.html",
+      "url": "https://www.dlsite.com/soft/work/=/product_id/VJ014635.html",
       "method": "GET",
       "status": 200,
       "mediaType": "text/html",
@@ -187,43 +187,43 @@
     },
     {
       "id": "VJ014635-cover",
-      "url": "https://img.dlsite.jp/modpub/images2/work/doujin/VJ014635_img_main.png",
+      "url": "https://img.dlsite.jp/modpub/images2/work/professional/VJ015000/VJ014635_img_main.jpg",
       "method": "GET",
       "status": 200,
-      "mediaType": "image/png",
-      "responseFile": "responses/cover.png"
+      "mediaType": "image/jpeg",
+      "responseFile": "responses/VJ014635-cover.jpg"
     },
     {
       "id": "fanbox-cover-7576910",
-      "url": "https://downloads.fanbox.cc/images/post/7576910/controlled-cover.png",
+      "url": "https://pixiv.pximg.net/c/1200x630_90_a2_g5/fanbox/public/images/post/7576910/cover/9G7chyD1YW3cOPqQWwWfH9Kz.jpeg",
       "method": "GET",
       "status": 200,
-      "mediaType": "image/png",
-      "responseFile": "responses/cover.png"
+      "mediaType": "image/jpeg",
+      "responseFile": "responses/fanbox-7576910-cover.jpg"
     },
     {
       "id": "fanbox-cover-7225781",
-      "url": "https://downloads.fanbox.cc/images/post/7225781/controlled-cover.png",
+      "url": "https://pixiv.pximg.net/c/1200x630_90_a2_g5/fanbox/public/images/post/7225781/cover/O8nW1CjoRyOT2QMnr7bVj5DQ.jpeg",
       "method": "GET",
       "status": 200,
-      "mediaType": "image/png",
-      "responseFile": "responses/cover.png"
+      "mediaType": "image/jpeg",
+      "responseFile": "responses/fanbox-7225781-cover.jpg"
     },
     {
       "id": "fanbox-cover-231859",
-      "url": "https://downloads.fanbox.cc/images/post/231859/controlled-cover.png",
+      "url": "https://pixiv.pximg.net/c/1200x630_90_a2_g5/fanbox/public/images/post/231859/cover/wEFBXOYy6wKc1EASDjgXcs3Q.jpeg",
       "method": "GET",
       "status": 200,
-      "mediaType": "image/png",
-      "responseFile": "responses/cover.png"
+      "mediaType": "image/jpeg",
+      "responseFile": "responses/fanbox-231859-cover.jpg"
     },
     {
       "id": "fanbox-cover-1739441",
-      "url": "https://downloads.fanbox.cc/images/post/1739441/controlled-cover.png",
+      "url": "https://pixiv.pximg.net/c/1200x630_90_a2_g5/fanbox/public/images/post/1739441/cover/MsdzPFmWkvk8RrvEXCUqyBTt.jpeg",
       "method": "GET",
       "status": 200,
-      "mediaType": "image/png",
-      "responseFile": "responses/cover.png"
+      "mediaType": "image/jpeg",
+      "responseFile": "responses/fanbox-1739441-cover.jpg"
     }
   ],
   "session": [

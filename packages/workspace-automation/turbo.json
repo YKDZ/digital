@@ -1,0 +1,33 @@
+{
+  "extends": ["//"],
+  "tags": ["composition-root"],
+  "tasks": {
+    "format:check": {
+      "tags": ["quality:light"],
+      "outputs": []
+    },
+    "format:write": {
+      "tags": ["work:repair"],
+      "cache": false,
+      "dependsOn": ["lint:fix"]
+    },
+    "lint": {
+      "tags": ["quality:light"],
+      "outputs": []
+    },
+    "lint:fix": {
+      "tags": ["work:repair"],
+      "cache": false
+    },
+    "typecheck": {
+      "tags": ["quality:light"],
+      "outputs": []
+    },
+    "development:controlled": {
+      "dependsOn": ["@digital/tui#build"],
+      "tags": ["work:preparation"],
+      "cache": false,
+      "passThroughEnv": ["DIGITAL_AUTOMATION_WORKSPACE"]
+    }
+  }
+}

@@ -3,6 +3,8 @@ import { lstatSync, readFileSync, readlinkSync, readdirSync } from "node:fs";
 import path from "node:path";
 
 import type {
+  AssetLibraryInitialConfiguration,
+  AssetLibraryInitialConfigurationPersistence,
   SourceConnectionPrivateLease,
   SourceConnectionPrivateLeaseOwnership,
   SourceConnectionPrivateLeaseRecord,
@@ -40,6 +42,124 @@ export {
 export type { ProductDataRestoreStage } from "./offline-product-data.ts";
 
 const sourceConnectionPrivateDirectory = "private-source-connections";
+const initialConfigurationFileName = "asset-library-initial-configuration.json";
+
+/** 产品数据基础设施保存可跨环境数据世代保留的非秘密资产库基线。 */
+export class ProductAssetLibraryInitialConfiguration implements AssetLibraryInitialConfigurationPersistence {
+  readonly #directory: string;
+  readonly #file: string;
+
+  private constructor(directory: string) {
+    this.#directory = path.resolve(directory);
+    this.#file = path.join(this.#directory, initialConfigurationFileName);
+  }
+
+  static forDirectory(
+    directory: string,
+  ): ProductAssetLibraryInitialConfiguration {
+    return new ProductAssetLibraryInitialConfiguration(directory);
+  }
+
+  async read(): Promise<AssetLibraryInitialConfiguration | undefined> {
+    const directoryState = inspectPrivatePath(this.#directory, "directory");
+    if (directoryState === "missing") return undefined;
+    if (directoryState !== "usable")
+      throw new Error("初始资产库配置目录不可用");
+    const fileState = inspectPrivatePath(this.#file, "file");
+    if (fileState === "missing") return undefined;
+    if (fileState !== "usable") throw new Error("初始资产库配置文件不可用");
+    let value: unknown;
+    try {
+      value = JSON.parse(readFileSync(this.#file, "utf8"));
+    } catch (error) {
+      throw new Error("初始资产库配置无法读取", { cause: error });
+    }
+    if (!isInitialConfiguration(value))
+      throw new Error("初始资产库配置格式无效");
+    return value;
+  }
+
+  async write(configuration: AssetLibraryInitialConfiguration): Promise<void> {
+    if (!isInitialConfiguration(configuration))
+      throw new Error("初始资产库配置格式无效");
+    writePrivateJsonDurably({
+      directory: this.#directory,
+      target: this.#file,
+      value: configuration,
+      failureMessage: "初始资产库配置无法持久保存",
+    });
+  }
+}
+
+function isInitialConfiguration(
+  value: unknown,
+): value is AssetLibraryInitialConfiguration {
+  if (
+    !isObject(value) ||
+    !hasExactKeys(value, ["version", "appliedDataGeneration", "libraries"]) ||
+    value.version !== 1 ||
+    (value.appliedDataGeneration !== null &&
+      typeof value.appliedDataGeneration !== "string") ||
+    !Array.isArray(value.libraries)
+  )
+    return false;
+  return value.libraries.every(isInitialLibrary);
+}
+
+function isInitialLibrary(value: unknown): boolean {
+  if (
+    !isObject(value) ||
+    !hasExactKeys(value, [
+      "displayName",
+      "directories",
+      "recognitionProfileIds",
+      "sourceIdentities",
+    ]) ||
+    !isNonEmptyString(value.displayName) ||
+    !Array.isArray(value.directories) ||
+    value.directories.length === 0 ||
+    !isStringList(value.recognitionProfileIds) ||
+    !isStringList(value.sourceIdentities)
+  )
+    return false;
+  return value.directories.every(isInitialDirectory);
+}
+
+function isInitialDirectory(value: unknown): boolean {
+  return (
+    isObject(value) &&
+    hasExactKeys(value, ["path", "symlinkMode", "targetDirectories"]) &&
+    isNonEmptyString(value.path) &&
+    (value.symlinkMode === "do-not-follow" ||
+      value.symlinkMode === "follow-file-links" ||
+      value.symlinkMode === "follow-file-and-directory-links") &&
+    isStringList(value.targetDirectories)
+  );
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): boolean {
+  return (
+    Object.keys(value).length === expected.length &&
+    expected.every((key) => key in value)
+  );
+}
+
+function isStringList(value: unknown): value is readonly string[] {
+  return (
+    Array.isArray(value) && value.every((entry) => isNonEmptyString(entry))
+  );
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
 
 /** 产品数据对来源连接私密状态端口的唯一文件系统 Adapter。 */
 export class ProductSourceConnectionPrivateState implements SourceConnectionPrivateStatePort {

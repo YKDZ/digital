@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { deflateRawSync } from "node:zlib";
 
 import type { CapabilityCoordinate } from "@digital/domain";
-import { describe, expect, it } from "vitest";
+import { assert, describe, expect, it } from "vitest";
 
 import {
   EpubEmbeddedCoverAcquirer,
@@ -14,6 +14,14 @@ import {
 function byteSource(bytes: Uint8Array, logicalLocation: string) {
   return {
     logicalLocation,
+    byteLength: bytes.byteLength,
+    modifiedAt: "2026-07-29T00:00:00.000Z",
+    async readChunk(offset: number, maximumBytes: number) {
+      return {
+        bytes: bytes.slice(offset, offset + maximumBytes),
+        done: offset + maximumBytes >= bytes.byteLength,
+      };
+    },
     async read() {
       return bytes;
     },
@@ -43,6 +51,80 @@ describe("EPUB publication inspection", () => {
     });
     expect(JSON.stringify(evidence)).not.toContain("synthetic.epub");
     expect(JSON.stringify(evidence)).not.toContain("bytes");
+  });
+
+  it("reports the source publication description as introduction metadata", async () => {
+    const [evidence] = await new EpubPublicationInspector().inspect({
+      observedArtifactReference: "described-publication",
+      byteSource: byteSource(
+        fixture("<dc:description>独立核对的书目简介</dc:description>"),
+        "publication.epub",
+      ),
+    });
+
+    expect(evidence?.producer).toMatchObject({
+      capabilityId: "epub.publication-inspection",
+      capabilityVersion: "3",
+      contractVersion: "2",
+      implementationVersion: "3",
+    });
+    expect(evidence?.inspection?.metadata).toContainEqual(
+      fact(
+        "asset.introduction",
+        "opf.description.1",
+        "独立核对的书目简介",
+        "epub:OPS/book.opf#/metadata/dc:description[1]",
+      ),
+    );
+  });
+
+  it("parses valid namespace-prefixed OCF and OPF element names", async () => {
+    const bytes = storedZip([
+      [
+        "META-INF/container.xml",
+        `<ocf:container xmlns:ocf="urn:oasis:names:tc:opendocument:xmlns:container"><ocf:rootfiles><ocf:rootfile full-path="OPS/book.opf" /></ocf:rootfiles></ocf:container>`,
+      ],
+      [
+        "OPS/book.opf",
+        `<opf:package xmlns:opf="http://www.idpf.org/2007/opf" xmlns:dc="http://purl.org/dc/elements/1.1/"><opf:metadata><dc:title>参考出版物</dc:title><dc:description>参考简介</dc:description><opf:meta id="series" property="belongs-to-collection">真实系列</opf:meta><opf:meta refines="#series" property="group-position">2</opf:meta></opf:metadata><opf:manifest><opf:item id="cover" href="Images/cover.jpg" media-type="image/jpeg" properties="cover-image" /></opf:manifest></opf:package>`,
+      ],
+      ["OPS/Images/cover.jpg", new Uint8Array([0xff, 0xd8, 0xff, 0xd9])],
+    ]);
+    const [evidence] = await new EpubPublicationInspector().inspect({
+      observedArtifactReference: "参考出版物.epub",
+      byteSource: byteSource(bytes, "参考出版物.epub"),
+    });
+
+    expect(evidence?.inspection).toMatchObject({
+      metadata: expect.arrayContaining([
+        fact(
+          "asset.introduction",
+          "opf.description.1",
+          "参考简介",
+          "epub:OPS/book.opf#/metadata/dc:description[1]",
+        ),
+        fact(
+          "book.collection-mention",
+          "opf.collection.series",
+          "真实系列",
+          "epub:OPS/book.opf#/metadata/meta[@id='series'][@property='belongs-to-collection']",
+        ),
+        fact(
+          "book.collection-group-position",
+          "opf.collection.series.group-position",
+          "2",
+          "epub:OPS/book.opf#/metadata/meta[@refines='#series'][@property='group-position']",
+        ),
+      ]),
+      parts: [
+        {
+          role: "asset.material-image",
+          locator:
+            "epub:OPS/book.opf#/manifest/item[@id='cover'][@properties~='cover-image']->entry:OPS/Images/cover.jpg",
+          mediaType: "image/jpeg",
+        },
+      ],
+    });
   });
 
   it("explains invalid and conflicting ISBN declarations without choosing one", async () => {
@@ -124,6 +206,7 @@ describe("EPUB publication inspection", () => {
     const prefixed = await inspect(
       `<dc:identifier>ISBN-13: 978-0-306-40615-7</dc:identifier>`,
     );
+    assert.isDefined(prefixed);
     const garbage = await inspect(
       `<dc:identifier>garbage9780306406157suffix</dc:identifier>`,
     );
@@ -150,7 +233,9 @@ describe("EPUB publication inspection", () => {
       conflictIsbnFirst,
       conflictIsbnLast,
     ]) {
+      assert.isDefined(rejected);
       expect(rejected.inspection?.identifiers).toEqual([]);
+      assert.isDefined(rejected);
       expect(
         new EpubLocalPublicationRecognizer().canRecognize(
           observedContext(rejected),
@@ -292,10 +377,12 @@ describe("EPUB publication inspection", () => {
       observedArtifactReference: "revision-epub2",
       byteSource: byteSource(epub2, "publication.epub"),
     });
+    assert.isDefined(epub2Evidence);
     const [epub3Evidence] = await inspector.inspect({
       observedArtifactReference: "revision-epub3",
       byteSource: byteSource(epub3, "publication.epub"),
     });
+    assert.isDefined(epub3Evidence);
 
     expect(epub2Evidence?.inspection?.metadata).toEqual(
       expect.arrayContaining([
@@ -407,7 +494,9 @@ describe("EPUB publication inspection", () => {
     });
 
     const epub2Part = epub2Evidence.inspection!.parts[0];
+    assert.isDefined(epub2Part);
     const epub3Part = epub3Evidence.inspection!.parts[0];
+    assert.isDefined(epub3Part);
     expect(epub2Part.locator).toBe(
       "epub:OPS/book.opf#/metadata/meta[@name='cover'][@content='cover2']->manifest/item[@id='cover2']->entry:OPS/images/cover.jpg",
     );
@@ -530,6 +619,7 @@ describe("EPUB publication inspection", () => {
         byteSource: byteSource(fixture(""), "local.epub"),
       })
     )[0];
+    assert.isDefined(noIsbn);
     const withIsbn = (
       await inspector.inspect({
         observedArtifactReference: "revision-official",
@@ -541,6 +631,7 @@ describe("EPUB publication inspection", () => {
         ),
       })
     )[0];
+    assert.isDefined(withIsbn);
     const conflicting = (
       await inspector.inspect({
         observedArtifactReference: "revision-conflict",
@@ -552,6 +643,7 @@ describe("EPUB publication inspection", () => {
         ),
       })
     )[0];
+    assert.isDefined(conflicting);
     const recognizer = new EpubLocalPublicationRecognizer();
     const localContext = observedContext(noIsbn);
 
@@ -586,6 +678,7 @@ describe("EPUB publication inspection", () => {
           proposal.ruleResults.some((rule) => "identities" in rule),
       ).toBe(false);
     }
+    assert.isDefined(localContext.basis.artifactRevisions[0]);
     for (const forged of forgedCoordinates(noIsbn.producer)) {
       expect(
         recognizer.canRecognize({

@@ -10,19 +10,14 @@ import {
   type HeldCommands,
 } from "./processes.ts";
 
-const cliEntry = path.join("apps", "cli", "dist", "cli.js");
 const catalogueFileName = "catalogue.sqlite";
 /**
  * 正式备份在取得维护准入之后才检查副本源，因此这一条完整拒绝同时交出两件事：本次正式入口
- * 确实运行到了副本复制阶段，且维护准入已经通过。判定只接受它作为产品自己的错误输出语法交出：
- * 它是子进程 stderr 的第一行，紧跟本次被调用命令自己的用法块。规范化的公开路径允许换行，
- * 命令、cwd、路径片段与模块载入诊断都可能原样复现同一行，但它们各自有自己的开头形状，不会把
- * 这一行放在 stderr 开头再跟上产品自己的用法块；那些复现不是产品交出的结论。
+ * 确实运行到了副本复制阶段，且维护准入已经通过。只接受维护实现以固定错误前缀交出的完整拒绝；
+ * pnpm 的命令、cwd 与模块载入诊断都不会以该行开头，因此不能伪造产品给出的准入结论。
  */
 const incompleteCopyRefusal =
-  "error: 备份源缺少产品 Catalogue；拒绝创建不完整副本";
-/** 正式入口交出自己的错误时，紧跟消息的是本次被调用命令的用法标题。 */
-const cliUsageTitle = "Usage: cli offline-backup";
+  "离线产品数据维护失败：备份源缺少产品 Catalogue；拒绝创建不完整副本";
 
 export type OfflineAdmission =
   | { readonly offline: true }
@@ -30,16 +25,16 @@ export type OfflineAdmission =
   | { readonly reason: string };
 
 /**
- * 破坏性操作前的离线核验：通过正式产品 CLI 的离线维护命令走产品自己的维护租约准入。
+ * 破坏性操作前的离线核验：通过正式产品维护入口走产品自己的维护租约准入。
  * 命令成功即确认没有管理器之外的活跃写入者（陈旧租约由产品自行回收）；其它非成功退出
  * 都如实报告为无法确认离线，绝不删除或改写租约来绕过占用，也绝不据此猜测占用者身份。
  *
  * 该核验只做租约准入与只读复制，不打开业务数据库，临时目录用完即删。唯一的例外分支是
  * `ownResidue`：本管理器自己的回收已经把自有数据根删到只剩残余，重入时正式备份只能判定
  * 副本源不完整，同一条显式命令必须能继续收敛，而不是被「备份前提」永久挡住。该分支只承认
- * 本次正式产品入口自己交出的结论——可运行的正式 CLI 产物、按产品自己的错误输出语法出现在
- * stderr 开头的完整目标拒绝，再加归属、持久意图与 catalogue 缺失三项文件系统事实。缺少 CLI
- * 产物、产物是真实普通文件但产品没能跑到交出结论、路径或载入诊断复现同一文字、真实活跃写入者、
+ * 本次正式产品入口自己交出的结论——workspace 正式维护命令执行到产品实现、按产品自己的错误输出语法出现在
+ * stderr 开头的完整目标拒绝，再加归属、持久意图与 catalogue 缺失三项文件系统事实。缺少维护
+ * 命令缺失、维护包产物无法执行、pnpm 路径或载入诊断复现同一文字、真实活跃写入者、
  * 其它产品拒绝、未知归属与日志不完整一律回到拒绝。
  */
 export async function assertProductRootOffline(input: {
@@ -64,23 +59,24 @@ export async function assertProductRootOffline(input: {
     return {
       reason: `无法核验产品数据根是否存在，不能确认离线：${input.layout.productDataRoot}`,
     };
-  const entry = path.join(input.layout.workspacePath, cliEntry);
-  // 离线结论只能由正式产品入口交出：产物缺失时子进程只是加载失败，产品没有给出任何判定。
-  if (!(await isFormalDeliveryEntry(entry)))
-    return {
-      reason: `离线核验缺少可运行的正式产品入口：${entry}`,
-    };
   const scratch = await mkdtemp(
     path.join(tmpdir(), "digital-environment-offline-check-"),
   );
   try {
     const run = await runLoggedCommand({
-      command: process.execPath,
-      args: [entry, "offline-backup", scratch],
+      command: "pnpm",
+      args: [
+        "--silent",
+        "run",
+        "product:maintenance",
+        "offline-backup",
+        "--product-data",
+        input.layout.productDataRoot,
+        "--backup-directory",
+        scratch,
+      ],
       cwd: input.layout.workspacePath,
-      env: filteredEnvironment(process.env, {
-        DIGITAL_PRODUCT_DATA: input.layout.productDataRoot,
-      }),
+      env: filteredEnvironment(process.env),
       logFile: input.logFile,
       captureStderr: input.continuationEligible,
       secretValues: [],
@@ -88,7 +84,7 @@ export async function assertProductRootOffline(input: {
     });
     if (run.spawnError !== undefined)
       return {
-        reason: `产品数据根离线核验命令无法启动（正式产品 CLI 产物可能缺失）：${run.spawnError}`,
+        reason: `正式产品维护命令无法启动：${run.spawnError}`,
       };
     if (run.exitCode === 0 && run.signal === null) {
       if (run.logFailure !== undefined)
@@ -135,25 +131,13 @@ async function isFormallyAdmittedOwnResidue(
   return catalogue === undefined;
 }
 
-/** 正式交付入口本身必须是普通文件：缺失、或入口被换成指向他处的链接都不算正式产物。 */
-async function isFormalDeliveryEntry(entry: string): Promise<boolean> {
-  const status = await lstat(entry).catch(() => undefined);
-  return status !== undefined && status.isFile();
-}
-
 /**
  * 产品交出的拒绝必须落在产品自己的错误输出语法里：子进程 stderr 的第一行就是完整目标拒绝，
- * 空一行后紧跟本次被调用命令自己的用法标题。这一语法由正式入口的错误分支交出，因此它同时
- * 证明产品代码确实跑到了副本检查。产物缺失或模块载入失败时，产品没有交出任何结论，此时
- * stderr 由 Node 的载入诊断开头；规范化的公开路径允许换行，诊断里被原样复现的目标行不在
- * 这个语法的位置上，不能授权。
+ * 固定前缀由维护实现只在产品复制阶段交出；workspace 命令缺失、维护产物缺失或模块载入失败时，
+ * stderr 由 pnpm/Node 的命令诊断开头。归属和 Catalogue 是否缺失另行核验，单独的路径错误不能授权。
  */
 function handedOverIncompleteCopyRefusal(stderr: string | undefined): boolean {
   if (stderr === undefined) return false;
   const lines = stderr.split("\n").map((line) => line.replace(/\r$/u, ""));
-  return (
-    lines[0] === incompleteCopyRefusal &&
-    lines[1] === "" &&
-    lines[2]?.startsWith(cliUsageTitle) === true
-  );
+  return lines[0] === incompleteCopyRefusal;
 }

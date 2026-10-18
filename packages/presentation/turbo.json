@@ -1,9 +1,0 @@
-{
-  "extends": ["//"],
-  "tags": ["presentation"],
-  "tasks": {
-    "build": {
-      "outputs": []
-    }
-  }
-}

@@ -26,10 +26,10 @@ import type {
 const maximumResponseBytes = 2 * 1024 * 1024;
 const epubInspectorCapability = {
   capabilityId: "epub.publication-inspection",
-  capabilityVersion: "2",
+  capabilityVersion: "3",
   contractVersion: "2",
   identity: "epub.publication-inspection",
-  implementationVersion: "2",
+  implementationVersion: "3",
   kind: "artifact-format-inspector",
   interpretationContractVersions: ["2"],
 } as const satisfies CapabilityCoordinate;
@@ -58,7 +58,7 @@ const interpreterCapability = declareCapability({
 });
 const recognizerCapability = declareCapability({
   identity: "nbinet.exact-isbn-recognizer",
-  implementationVersion: "3",
+  implementationVersion: "4",
   kind: "recognizer",
   contractVersion: "2",
   interpretationContractVersions: ["2"],
@@ -79,7 +79,7 @@ const associationInterpreterCapability = declareCapability({
 });
 const localCandidateCapability = declareCapability({
   identity: "nbinet.local-publication-isbn-candidate",
-  implementationVersion: "1",
+  implementationVersion: "2",
   kind: "source-association-candidate-interpreter",
   contractVersion: "1",
   interpretationContractVersions: ["1"],
@@ -89,7 +89,7 @@ export const trustedNbinetExactPublicationIsbnRule = {
   capabilityId: recognizerCapability.capabilityId,
   capabilityVersion: recognizerCapability.capabilityVersion,
   ruleId: "embedded-isbn-in-exact-official-record",
-  ruleVersion: "3",
+  ruleVersion: "4",
 } as const;
 export const trustedNbinetDirectedIsbnRule = {
   capabilityId: recognizerCapability.capabilityId,

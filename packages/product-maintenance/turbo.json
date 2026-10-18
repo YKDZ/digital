@@ -1,0 +1,47 @@
+{
+  "extends": ["//"],
+  "tags": ["tooling"],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"],
+      "tags": ["quality:light"]
+    },
+    "cli": {
+      "cache": false,
+      "tags": ["work:on-demand"]
+    },
+    "postbuild": {
+      "cache": false,
+      "tags": ["work:lifecycle"]
+    },
+    "format:check": {
+      "outputs": [],
+      "tags": ["quality:light"]
+    },
+    "format:write": {
+      "dependsOn": ["lint:fix"],
+      "cache": false,
+      "tags": ["work:repair"]
+    },
+    "lint": {
+      "outputs": [],
+      "tags": ["quality:light"]
+    },
+    "lint:fix": {
+      "cache": false,
+      "tags": ["work:repair"]
+    },
+    "test": {
+      "dependsOn": ["build"],
+      "outputs": [],
+      "tags": ["quality:light"],
+      "cache": false
+    },
+    "typecheck": {
+      "dependsOn": ["^typecheck"],
+      "outputs": [],
+      "tags": ["quality:light"]
+    }
+  }
+}

@@ -178,6 +178,13 @@ export type AssetLibraryDirectoryReconnect = {
 
 export type AssetLibraryPersistence = {
   listAssetLibraries(): Promise<readonly AssetLibrary[]>;
+  listAssetLibrariesPage(input: {
+    readonly afterId?: string;
+    readonly limit: number;
+  }): Promise<{
+    readonly items: readonly AssetLibrary[];
+    readonly hasMore: boolean;
+  }>;
   getAssetLibrary(id: string): Promise<AssetLibrary | undefined>;
   /**
    * 同一事务比较配置版本、复用或登记目录引用、维护本库目录授权并保存完整配置。配置版本
@@ -195,6 +202,90 @@ export type AssetLibraryPersistence = {
     input: AssetLibraryDirectoryReconnect,
   ): Promise<AssetLibrarySaveReceipt | undefined>;
 };
+
+export type AssetLibraryPage = {
+  readonly items: readonly AssetLibrary[];
+  readonly nextCursor?: string;
+};
+
+export type AssetLibraryPageRequest = {
+  readonly cursor?: string;
+  readonly limit?: number;
+};
+
+export class InvalidAssetLibraryPageRequest extends Error {
+  constructor() {
+    super("资产库分页条件无效");
+    this.name = "InvalidAssetLibraryPageRequest";
+  }
+}
+
+export class InvalidAssetLibraryConfiguration extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidAssetLibraryConfiguration";
+  }
+}
+
+export class AssetLibraryNotFound extends Error {
+  constructor() {
+    super("资产库不存在或已移除");
+    this.name = "AssetLibraryNotFound";
+  }
+}
+
+export class AssetLibraryConfigurationConflict extends Error {
+  constructor() {
+    super("资产库配置已变更，请刷新后重试");
+    this.name = "AssetLibraryConfigurationConflict";
+  }
+}
+
+const assetLibraryPageLimit = 24;
+const maximumAssetLibraryPageLimit = 100;
+const maximumAssetLibraryCursorLength = 4096;
+
+type AssetLibraryPageCursor = {
+  readonly version: 1;
+  readonly query: "asset-libraries";
+  readonly afterId: string;
+};
+
+function decodeAssetLibraryPageCursor(value: string): string {
+  if (
+    value.length === 0 ||
+    value.length > maximumAssetLibraryCursorLength ||
+    !/^[A-Za-z0-9_-]+$/u.test(value)
+  )
+    throw new InvalidAssetLibraryPageRequest();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+  } catch {
+    throw new InvalidAssetLibraryPageRequest();
+  }
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    (parsed as Partial<AssetLibraryPageCursor>).version !== 1 ||
+    (parsed as Partial<AssetLibraryPageCursor>).query !== "asset-libraries" ||
+    typeof (parsed as Partial<AssetLibraryPageCursor>).afterId !== "string" ||
+    (parsed as Partial<AssetLibraryPageCursor>).afterId!.length === 0
+  )
+    throw new InvalidAssetLibraryPageRequest();
+  return (parsed as AssetLibraryPageCursor).afterId;
+}
+
+function encodeAssetLibraryPageCursor(afterId: string): string {
+  return Buffer.from(
+    JSON.stringify({
+      version: 1,
+      query: "asset-libraries",
+      afterId,
+    } satisfies AssetLibraryPageCursor),
+    "utf8",
+  ).toString("base64url");
+}
 
 export type AssetLibraryConfiguration = {
   readonly displayName: string;
@@ -432,6 +523,34 @@ export class AssetLibraries {
     );
   }
 
+  async listPage(
+    input: AssetLibraryPageRequest = {},
+  ): Promise<AssetLibraryPage> {
+    const limit = input.limit ?? assetLibraryPageLimit;
+    if (
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > maximumAssetLibraryPageLimit
+    )
+      throw new InvalidAssetLibraryPageRequest();
+    const afterId =
+      input.cursor === undefined
+        ? undefined
+        : decodeAssetLibraryPageCursor(input.cursor);
+    const page = await this.persistence.listAssetLibrariesPage({
+      ...(afterId === undefined ? {} : { afterId }),
+      limit,
+    });
+    const items = page.items.filter((library) => library.status === "active");
+    const last = items.at(-1);
+    return {
+      items,
+      ...(page.hasMore && last !== undefined
+        ? { nextCursor: encodeAssetLibraryPageCursor(last.id) }
+        : {}),
+    };
+  }
+
   async get(id: string): Promise<AssetLibrary | undefined> {
     const library = await this.persistence.getAssetLibrary(id);
     return library?.status === "active" ? library : undefined;
@@ -445,19 +564,23 @@ export class AssetLibraries {
   ): Promise<AssetLibrary> {
     const displayName = input.displayName.trim();
     if (displayName.length === 0 || displayName.length > 120)
-      throw new Error("资产库名称必须为 1 至 120 个字符");
+      throw new InvalidAssetLibraryConfiguration(
+        "资产库名称必须为 1 至 120 个字符",
+      );
     const recognitionProfileIds = checkedSelection(
       input.recognitionProfileIds,
       this.recognitionProfiles.map((profile) => profile.id),
       "资产识别方式",
+      (message) => new InvalidAssetLibraryConfiguration(message),
     );
     const sourceIdentities = checkedSelection(
       input.sourceIdentities,
       this.sources.map((source) => source.id),
       "资料来源",
+      (message) => new InvalidAssetLibraryConfiguration(message),
     );
     if (recognitionProfileIds.length === 0)
-      throw new Error("请选择至少一种资产识别方式");
+      throw new InvalidAssetLibraryConfiguration("请选择至少一种资产识别方式");
     const directories = [
       ...new Set(input.directories.map((value) => value.trim())),
     ];
@@ -465,14 +588,16 @@ export class AssetLibraries {
       directories.length === 0 ||
       directories.some((value) => value.length === 0)
     )
-      throw new Error("请选择至少一个实际资产目录");
+      throw new InvalidAssetLibraryConfiguration("请选择至少一个实际资产目录");
     const current =
       input.id === undefined ? undefined : await this.get(input.id);
+    if (input.id !== undefined && current === undefined)
+      throw new AssetLibraryNotFound();
     if (
       input.id !== undefined &&
-      (current === undefined || current.configVersion !== input.expectedVersion)
+      current?.configVersion !== input.expectedVersion
     )
-      throw new Error("资产库配置已变更，请刷新后重试");
+      throw new AssetLibraryConfigurationConflict();
     const candidateByRequestPath = new Map<
       string,
       ObservedRootDirectoryCandidate
@@ -509,8 +634,7 @@ export class AssetLibraries {
       sourceIdentities,
       directories: saveDirectories,
     });
-    if (receipt === undefined)
-      throw new Error("资产库或目录配置已变更，请刷新后重试");
+    if (receipt === undefined) throw new AssetLibraryConfigurationConflict();
     this.notifyDirectoryInvalidations(receipt.invalidations);
     await this.releaseUnusedRoots(current?.rootIds ?? []);
     return receipt.library;
@@ -559,7 +683,9 @@ export class AssetLibraries {
       if (link !== undefined)
         for (const target of link.targetDirectories)
           if (candidateByRequestPath.get(target.trim()) === undefined)
-            throw new Error("允许的链接目标必须是本资产库所选的目录");
+            throw new InvalidAssetLibraryConfiguration(
+              "允许的链接目标必须是本资产库所选的目录",
+            );
       const retained = retainedByCanonicalPath.get(candidate.canonicalPath);
       const symlinkMode =
         link?.symlinkMode ?? retained?.symlinkMode ?? "do-not-follow";
@@ -620,11 +746,9 @@ export class AssetLibraries {
     readonly expectedVersion: number;
   }): Promise<void> {
     const current = await this.get(input.id);
-    if (
-      current === undefined ||
-      current.configVersion !== input.expectedVersion
-    )
-      throw new Error("资产库配置已变更，请刷新后重试");
+    if (current === undefined) throw new AssetLibraryNotFound();
+    if (current.configVersion !== input.expectedVersion)
+      throw new AssetLibraryConfigurationConflict();
     const receipt = await this.persistence.saveAssetLibrary({
       id: current.id,
       displayName: current.displayName,
@@ -634,8 +758,7 @@ export class AssetLibraries {
       recognitionProfileIds: current.recognitionProfileIds,
       sourceIdentities: current.sourceIdentities,
     });
-    if (receipt === undefined)
-      throw new Error("资产库配置已变更，请刷新后重试");
+    if (receipt === undefined) throw new AssetLibraryConfigurationConflict();
     this.notifyDirectoryInvalidations(receipt.invalidations);
     await this.releaseUnusedRoots(current.rootIds);
   }
@@ -992,9 +1115,10 @@ function checkedSelection(
   values: readonly string[],
   allowed: readonly string[],
   label: string,
+  invalid: (message: string) => Error = (message) => new Error(message),
 ): readonly string[] {
   if (values.some((value) => !allowed.includes(value)))
-    throw new Error(`${label}包含当前不可用的选项`);
+    throw invalid(`${label}包含当前不可用的选项`);
   return [...new Set(values)].toSorted();
 }
 

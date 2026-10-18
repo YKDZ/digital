@@ -24,7 +24,7 @@ const directoryCapability = declareCapability({
 });
 const recognizerCapability = declareCapability({
   identity: "book.local-directory-recognizer",
-  implementationVersion: "1",
+  implementationVersion: "2",
   kind: "recognizer",
   contractVersion: "1",
   interpretationContractVersions: ["1"],
@@ -41,7 +41,7 @@ export const trustedBookLocalDirectoryRule = {
   capabilityId: recognizerCapability.capabilityId,
   capabilityVersion: recognizerCapability.capabilityVersion,
   ruleId: "book.same-name-directory-with-valid-publication",
-  ruleVersion: "1",
+  ruleVersion: "2",
 } as const;
 
 /** 路径只提出范围；可解析正文由本地识别规则另行确认。 */
@@ -265,17 +265,15 @@ export class BookLocalPublicationRecognizer implements Recognizer {
 
 function validPublicationInspection(evidence: RecognitionEvidence): boolean {
   const inspection = evidence.inspection;
-  if (
-    inspection === undefined ||
-    evidence.producer.capabilityVersion !== "2" ||
-    evidence.producer.contractVersion !== "2"
-  )
+  if (inspection === undefined || evidence.producer.contractVersion !== "2")
     return false;
   return (
     (evidence.producer.capabilityId === "epub.publication-inspection" &&
+      evidence.producer.capabilityVersion === "3" &&
       /\.epub$/iu.test(inspection.observedArtifactReference) &&
       inspection.revision.mediaType === "application/epub+zip") ||
     (evidence.producer.capabilityId === "pdf.publication-inspection" &&
+      evidence.producer.capabilityVersion === "2" &&
       /\.pdf$/iu.test(inspection.observedArtifactReference) &&
       inspection.revision.mediaType === "application/pdf")
   );

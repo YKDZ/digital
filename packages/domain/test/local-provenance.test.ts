@@ -1,10 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { assert, describe, expect, it } from "vitest";
 
 import {
   validateAcceptedRecognition,
   validateRecognitionProposal,
   validateReevaluatedRecognition,
   type AcceptedRecognition,
+  type ArtifactAssociation,
+  type MetadataAssertion,
   type RecognitionProposal,
 } from "../src/index.ts";
 
@@ -14,7 +16,7 @@ const materialScope = {
   materialReferences: ["book.epub"],
 };
 
-function accepted(): AcceptedRecognition {
+function accepted() {
   const proposal = {
     id: "proposal",
     boundaries: [materialScope],
@@ -55,7 +57,6 @@ function accepted(): AcceptedRecognition {
         subjectId: "asset",
         sourceIdentity: "official",
         nativeAddress: "https://example.test/book",
-        proposalId: "proposal",
       },
     ],
     recognitionSourceAssociation: {
@@ -63,7 +64,6 @@ function accepted(): AcceptedRecognition {
       subjectId: "asset",
       sourceIdentity: "official",
       nativeAddress: "https://example.test/book",
-      proposalId: "proposal",
     },
     recognitionDecision: {
       id: "decision",
@@ -102,7 +102,7 @@ function accepted(): AcceptedRecognition {
           locator: "epub:cover",
         },
       },
-    ],
+    ] satisfies [ArtifactAssociation],
     metadata: [
       {
         target: {
@@ -120,8 +120,8 @@ function accepted(): AcceptedRecognition {
           locator: "epub:opf/dc:title[1]",
         },
       },
-    ],
-  };
+    ] satisfies [MetadataAssertion],
+  } satisfies AcceptedRecognition;
 }
 
 describe("local format provenance", () => {
@@ -219,11 +219,11 @@ describe("local format provenance", () => {
         ...value,
         recognitionSourceAssociation: {
           ...value.recognitionSourceAssociation!,
-          proposalId: "refresh-proposal",
+          nativeAddress: "https://example.test/refreshed-book",
         },
         sourceAssociations: value.sourceAssociations.map((association) => ({
           ...association,
-          proposalId: "refresh-proposal",
+          nativeAddress: "https://example.test/refreshed-book",
         })),
       }),
       "immutable Source Association",
@@ -263,8 +263,8 @@ describe("local format provenance", () => {
 
   it("rejects a local metadata assertion without either source or observed-part provenance", () => {
     const current = accepted();
-    const metadata = { ...current.metadata[0] };
-    delete metadata.observedArtifactPart;
+    const { observedArtifactPart: _observedArtifactPart, ...metadata } =
+      current.metadata[0];
     const invalid: AcceptedRecognition = {
       ...current,
       metadata: [metadata],
@@ -472,9 +472,12 @@ describe("识别依据", () => {
     expect(validateRecognitionProposal(proposal)).toBe(proposal);
     if (proposal.basis.kind !== "observed-evidence")
       throw new Error("测试提案缺少观察证据依据");
-    expect(proposal.basis.evidence[0].inspection!.identifiers[0].locators).toBe(
-      locators,
-    );
+    const firstEvidence = proposal.basis.evidence[0];
+    assert.isDefined(firstEvidence);
+    assert.isDefined(firstEvidence.inspection);
+    const firstIdentifier = firstEvidence.inspection.identifiers[0];
+    assert.isDefined(firstIdentifier);
+    expect(firstIdentifier.locators).toBe(locators);
   });
 
   it.each([

@@ -50,8 +50,16 @@ it("后台轮询不接管本次启动后仍在等待来源的人工检查", asyn
   const media = await mkdtemp(path.join(tmpdir(), "digital-live-scan-"));
   await mkdir(path.join(media, "RJ01668691"));
   await writeFile(path.join(media, "RJ01668691", "notes.txt"), "音声附带材料");
-  const release = Promise.withResolvers<void>();
-  const entered = Promise.withResolvers<void>();
+  let releaseResolve!: () => void;
+  const releasePromise = new Promise<void>((resolve) => {
+    releaseResolve = resolve;
+  });
+  const release = { promise: releasePromise, resolve: releaseResolve };
+  let enteredResolve!: () => void;
+  const enteredPromise = new Promise<void>((resolve) => {
+    enteredResolve = resolve;
+  });
+  const entered = { promise: enteredPromise, resolve: enteredResolve };
   vi.stubGlobal("fetch", async (address: string) => {
     entered.resolve();
     await release.promise;
@@ -111,7 +119,9 @@ it("后台轮询不接管本次启动后仍在等待来源的人工检查", asyn
     });
     release.resolve();
     expect((await scanning).execution.outcome).toBe("accepted");
-    expect(await application.workflow.listCurrentCatalogue()).toHaveLength(1);
+    expect(
+      (await application.workflow.listCurrentCataloguePage()).items,
+    ).toHaveLength(1);
   } finally {
     release.resolve();
     await scan;
@@ -392,6 +402,69 @@ it("人工名称与分类作为有归属的事实保存，不要求来源或格�
       ]),
     );
     expect(content?.sourceAssociations).toEqual([]);
+
+    const pin = await workflow.prepareMetadataDecision({
+      entityId: saved.content.entity.id,
+      property: "asset.title",
+      initiatedBy: "local-content-test",
+      kind: "pin",
+      value: "后续人工修订标题",
+    });
+    await workflow.applyChangeImpactPreview({
+      previewId: pin.id,
+      confirmedBy: "local-content-test",
+    });
+    const clear = await workflow.prepareMetadataDecision({
+      entityId: saved.content.entity.id,
+      property: "asset.title",
+      initiatedBy: "local-content-test",
+      kind: "clear",
+    });
+    expect(clear.facts?.projected.descriptions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          target: { kind: "entity", entityId: saved.content.entity.id },
+          metadata: expect.arrayContaining([
+            expect.objectContaining({
+              property: "asset.title",
+              result: {
+                status: "resolved",
+                values: [
+                  expect.objectContaining({
+                    value: "林间手记",
+                    sourceIdentity: "user",
+                  }),
+                ],
+              },
+            }),
+          ]),
+        }),
+      ]),
+    );
+    await workflow.applyChangeImpactPreview({
+      previewId: clear.id,
+      confirmedBy: "local-content-test",
+    });
+    const restored = await workflow.inspectCurrentCatalogueSubject(
+      saved.content.entity.id,
+    );
+    const restoredDescription = restored?.descriptions.find(
+      ({ target }) =>
+        target.kind === "entity" && target.entityId === saved.content.entity.id,
+    );
+    expect(
+      restoredDescription?.metadata.flatMap(({ result }) =>
+        result.status === "resolved" ? result.values : [],
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          property: "asset.title",
+          value: "林间手记",
+          sourceIdentity: "user",
+        }),
+      ]),
+    );
   } finally {
     await workflow.close();
     await rm(data, { recursive: true, force: true });

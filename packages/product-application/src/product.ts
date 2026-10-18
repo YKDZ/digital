@@ -4,7 +4,6 @@ import type {
   AssetLibraries,
   AutomationClock,
   AutomationHost,
-  AutomationInformationRequirementResolver,
   ArtifactByteAccess,
   ArtifactByteDescriptor,
   ArtifactRevisionSelection,
@@ -18,6 +17,7 @@ import type {
   PlaybackPlanResult,
   PlaybackPlanning,
   PlaybackPreferences,
+  InitialAssetLibraryConfigurationRestoreStatus,
 } from "@digital/application";
 import type { AssetInteractionState } from "@digital/domain";
 
@@ -30,7 +30,14 @@ export {
   type PlaybackPreferences,
 } from "@digital/application";
 
+import type { ProductRefreshOperations } from "./refresh-operations.ts";
 import type { ProductSourceConnections } from "./source-connections.ts";
+
+export type InitialAssetLibraryOperations = {
+  save(): Promise<{ readonly libraryCount: number }>;
+  inspectRestoreStatus(): Promise<InitialAssetLibraryConfigurationRestoreStatus>;
+  restoreForDataGeneration(): Promise<InitialAssetLibraryConfigurationRestoreStatus>;
+};
 
 /** 交付层可以使用的产品工作流；其中不包含任何持久化或来源 Adapter。 */
 export type ProductAssetRefresh = AssetRefreshWorkflow &
@@ -53,17 +60,7 @@ export type ProductAssetRefreshRuntime = {
   close(): Promise<void>;
 };
 
-export type ProductAssetRefreshOptions = {
-  readonly automationInformationRequirementForAcceptedSubject?: AutomationInformationRequirementResolver;
-};
-
-export type ProductAssetRefreshRuntimeOptions = ProductAssetRefreshOptions & {
-  readonly clock?: AutomationClock;
-  readonly pollIntervalMilliseconds?: number;
-  readonly onError?: (error: unknown) => void;
-};
-
-export type ProductAutomationHostOptions = ProductAssetRefreshOptions & {
+export type ProductAutomationHostOptions = {
   readonly clock?: AutomationClock;
   readonly pollIntervalMilliseconds?: number;
   readonly onError?: (error: unknown) => void;
@@ -82,6 +79,10 @@ export type ProductWorkflowOperations = Pick<
   | "inspectCurrentCatalogueSubject"
   | "inspectCurrentCatalogueEntity"
   | "inspectSubjectConflictEvidence"
+  | "inspectAssetEvidence"
+  | "prepareMetadataDecision"
+  | "listAssetEvidence"
+  | "inspectAssetSourceRecord"
   | "inspectRetryableSourceEnrichments"
   | "assetLibraryIdsOwningSubject"
   | "listCurrentAttentionPage"
@@ -98,6 +99,7 @@ export type ProductWorkflowOperations = Pick<
   | "inspectAssetLibraryScan"
   | "cancelAssetLibraryScan"
   | "unrecognizedLibraryScanObservations"
+  | "listUnrecognizedLibraryScanObservationPage"
   | "scanObservedScope"
   | "rescrapeObservedScope"
   | "rescrapeCurrentObservedScope"
@@ -116,6 +118,7 @@ export type ProductWorkflowOperations = Pick<
   | "retractEntityMentionResolution"
   | "inspectCorrectionSubject"
   | "sourceInputRequirements"
+  | "acceptsSourceInput"
   | "prepareConflictedEstablishment"
   | "prepareReplacement"
   | "prepareRetraction"
@@ -161,6 +164,8 @@ export type ArtifactDownloadDescriptor = ArtifactByteDescriptor;
 export type ProductApplication = {
   readonly configured: boolean;
   readonly productDataDirectory?: string;
+  readonly initialAssetLibraries?: InitialAssetLibraryOperations | undefined;
+  readonly refresh: ProductRefreshOperations;
   readonly workflow: ProductWorkflowOperations;
   readonly automation: ProductAutomationOperations;
   readonly execution: ProductExecutionOperations;
@@ -171,10 +176,6 @@ export type ProductApplication = {
     save(input: AssetInteractionState): Promise<void>;
   };
   startAutomation(options?: ProductAutomationHostOptions): Promise<void>;
-  setAutomationInformationRequirementForAcceptedSubject(
-    resolver: AutomationInformationRequirementResolver,
-  ): void;
-  createOfflineBackup(backupDirectory: string): Promise<void>;
   managedArtifactReference(
     address: string,
   ): ProductManagedArtifactReference | undefined;

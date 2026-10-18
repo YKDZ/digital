@@ -1,0 +1,15 @@
+{
+  "extends": "@digital/typescript-config/base.json",
+  "compilerOptions": {
+    "customConditions": ["digital-source"],
+    "erasableSyntaxOnly": true,
+    "exactOptionalPropertyTypes": false,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "rewriteRelativeImportExtensions": true,
+    "skipLibCheck": true,
+    "target": "es2023",
+    "types": ["node"]
+  },
+  "include": ["scripts/**/*.ts", "src/**/*.ts", "test/**/*.ts"]
+}

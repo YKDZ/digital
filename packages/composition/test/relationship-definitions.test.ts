@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { afterAll, expect, it, vi } from "vitest";
+import { assert, afterAll, expect, it, vi } from "vitest";
 
 import { runProduct } from "../src/index.ts";
 import {
@@ -275,6 +275,7 @@ it("预演拒绝不存在的参与对象，采用仍校验限定项而不信任�
     const preview = await product.result.previewRelationshipChange({
       changes: [change],
     });
+    assert.isDefined(change.relationship.participants[0]);
     await expect(
       product.result.previewRelationshipChange({
         changes: [

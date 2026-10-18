@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { setImmediate } from "node:timers/promises";
 
 import {
   type AcceptedRecognition,
@@ -16,6 +17,7 @@ import {
   type EvidenceComparison,
   type Location,
   type MetadataAssertion,
+  type MetadataDecision,
   type MetadataPolicy,
   type ObservedMaterialAssociationSubmission,
   type ObservedMaterialAssociationAudit,
@@ -25,6 +27,8 @@ import {
   type RecognitionMaterialBoundary,
   sameRecognitionMaterialBoundaries,
   projectArtifactRoleDecisionHead,
+  metadataDecisionKey,
+  projectMetadataDecisionHead,
   type RecognitionBasis,
   type ObservedArtifactAssociationCandidate,
   type RecognitionProposal,
@@ -54,6 +58,7 @@ import {
   recognitionSourceInterpretation,
   validateAcceptedRecognition,
   validateArtifactRoleDecision,
+  validateMetadataDecision,
   validateMetadataPolicy,
   validateObservedEntityGraphCandidates,
   validateRecognitionProposal,
@@ -83,8 +88,10 @@ import {
 import {
   artifactRoleCandidates,
   descriptionTargetKey,
+  effectiveRelationships,
   readEffectiveSubject,
   subjectConflictEvidence,
+  subjectMetadataEvidence,
   type ArtifactRoleCandidate,
   type CurrentLocationRead,
   type EffectiveArtifactRoleRead,
@@ -95,6 +102,8 @@ import {
   type SelectedMetadataRead,
   type SubjectConflictEvidence,
   type SubjectFactBasis,
+  type SubjectMetadataCandidateEvidence,
+  type SubjectMetadataEvidence,
 } from "./effective-fact-reads.ts";
 import type {
   ExecutionHost,
@@ -140,6 +149,7 @@ import {
   type LibraryScanInspectionDetail,
   type LibraryScanRun,
   type UnrecognizedLibraryScanObservation,
+  type UnrecognizedLibraryScanObservationPage,
 } from "./library-scan-plan.ts";
 import {
   decodeObservedMaterialConfirmationCheckpoint,
@@ -165,6 +175,7 @@ import {
   type ObservedRootSnapshot,
   ObservedRootUnavailable,
 } from "./observed-root-registrations.ts";
+import { InvalidPageRequest } from "./page-request.ts";
 import {
   bindRecognitionMaterialBoundaries,
   groupMaterialScopeDeclarations,
@@ -185,6 +196,11 @@ import {
   validateRelationshipDefinition,
 } from "./relationship-definition.ts";
 import {
+  CatalogueDecisionConflict,
+  InvalidRelationshipOperation,
+  InvalidIdentityOperation,
+} from "./relationship-errors.ts";
+import {
   representativeBodyMaterialReferences,
   representativeObservedMaterialReferences,
 } from "./representative-material.ts";
@@ -200,11 +216,13 @@ import {
   WorkflowLifecycleInterruption as WorkflowCheckpointInterruption,
 } from "./workflow-invocation-lifecycle.ts";
 
+export * from "./page-request.ts";
 export * from "./information-fulfillment.ts";
 export * from "./execution-host.ts";
 export * from "./workflow-invocation-lifecycle.ts";
 export * from "./observed-root-registrations.ts";
 export * from "./asset-libraries.ts";
+export * from "./asset-library-initial-configuration.ts";
 export * from "./observed-root-authority.ts";
 export * from "./observed-root-execution.ts";
 export * from "./source-connection-private-state.ts";
@@ -220,6 +238,7 @@ export * from "./artifact-byte-access.ts";
 export * from "./playback-plan.ts";
 export * from "./current-user-interaction.ts";
 export * from "./relationship-definition.ts";
+export * from "./relationship-errors.ts";
 export * from "./application-artifact-byte-access.ts";
 export {
   deriveEffectiveMetadata,
@@ -491,6 +510,9 @@ export type AcceptedAssetState = AcceptedRecognition & {
   readonly currentLocationRevisions?: readonly CurrentLocationRevisionSelection[];
   /** 当前生效的人工产物角色决定头，与观察支持一样只来自这份耐久读取。 */
   readonly artifactRoleDecisions?: readonly ArtifactRoleDecision[];
+  /** 当前精确元数据坐标头；历史只由资料检查明确读取。 */
+  readonly metadataDecisions?: readonly MetadataDecision[];
+  readonly metadataDecisionHistory?: readonly MetadataDecision[];
 };
 
 /**
@@ -522,6 +544,7 @@ export type AssetStateProjection = {
     | "currentRelatedEntities"
     | "currentLocationRevisions"
     | "artifactRoleDecisions"
+    | "metadataDecisions"
   >;
   readonly recognitionState?: "recognized" | "unresolved";
   readonly recognitionDecisionId?: string;
@@ -660,6 +683,13 @@ export type ChangeImpactPreview = {
         readonly decision: ArtifactRoleDecision;
         /** 冻结时的当前头决定标识；无头时刻意为 null，事务内按同一坐标重查。 */
         readonly expectedHeadDecisionId: string | null;
+      }
+    | {
+        readonly kind: "metadata-decision";
+        readonly decision: MetadataDecision;
+        readonly expectedHeadDecisionId: string | null;
+        /** 真冲突候选集合的指纹；直接设置或撤回不携带候选。 */
+        readonly expectedCandidateBaseline?: string;
       };
   readonly evidenceComparison: import("@digital/domain").EvidenceComparison;
   /** 应用确认时仍必须成立的每个值。 */
@@ -828,6 +858,13 @@ export type ChangeImpactPreviewInspection = {
   readonly artifactCount: number;
   readonly primaryCoverArtifactId?: string;
   readonly blockingConditions: readonly string[];
+  readonly metadataDecision?: {
+    readonly property: string;
+    readonly metadataUsageContext: string;
+    readonly kind: "pin" | "clear";
+    readonly value?: string;
+    readonly adoptedFromSourceIdentity?: string;
+  };
 };
 
 /** 耐久的重复执行配置；执行状态属于工作流执行。 */
@@ -2222,6 +2259,34 @@ export type LocalContentReview = {
   readonly relativePaths: readonly string[];
   readonly content: NonNullable<AssetRefreshInspection["accepted"]>;
 };
+
+/** 本地内容整理流程明确可归类的输入、缺失与版本前置条件。 */
+export class LocalContentReviewError extends Error {
+  readonly kind: "invalid-request" | "not-found" | "conflict";
+
+  constructor(
+    kind: "invalid-request" | "not-found" | "conflict",
+    message: string,
+  ) {
+    super(message);
+    this.kind = kind;
+    this.name = "LocalContentReviewError";
+  }
+}
+
+/** 准备识别修复预演时的已知请求与过期状态错误。 */
+export class RecognitionRepairPreparationError extends Error {
+  readonly kind: "invalid-request" | "not-found" | "conflict";
+
+  constructor(
+    kind: "invalid-request" | "not-found" | "conflict",
+    message: string,
+  ) {
+    super(message);
+    this.kind = kind;
+    this.name = "RecognitionRepairPreparationError";
+  }
+}
 
 export type ObservedMaterialAssociationCheckpoint = {
   readonly version: "observed-material-association-checkpoint/1";
@@ -5455,6 +5520,10 @@ type CataloguePersistenceOperations = {
   inspectExecution(
     executionId: string,
   ): Promise<ExecutionInspection | undefined>;
+  /** 读取工作流耐久状态，不投影其接受资产的完整材料关系图。 */
+  readWorkflowExecution(
+    executionId: string,
+  ): Promise<WorkflowExecution | undefined>;
   /** 交付层可以浏览耐久结果，而无需取得 Catalogue 实现。 */
   /** 按耐久创建时间从新到旧排列的完整历史。 */
   listExecutions(): Promise<readonly WorkflowExecution[]>;
@@ -5475,6 +5544,9 @@ type CataloguePersistenceOperations = {
   ): Promise<void>;
   inspectRawSourceRecord(
     executionId: string,
+    sourceRecordId: string,
+  ): Promise<SourceRecord | undefined>;
+  inspectRawSourceRecordById?(
     sourceRecordId: string,
   ): Promise<SourceRecord | undefined>;
   /** 解析已接受范围，而不解析其目录或来源键。 */
@@ -5630,6 +5702,13 @@ type CataloguePersistenceOperations = {
     readonly currentCandidateBaseline: string | null;
     readonly policyVersion: string;
   }): Promise<"applied" | "stale">;
+  saveMetadataDecisionPreview(preview: ChangeImpactPreview): Promise<void>;
+  applyMetadataDecisionPreview(input: {
+    readonly preview: ChangeImpactPreview;
+    readonly confirmedBy: string;
+    readonly currentCandidateBaseline: string | null;
+    readonly policyVersion: string;
+  }): Promise<"applied" | "stale">;
   /** 保存一次明确范围决定的预演，并把那次观察的提议随执行一起落库。 */
   finishExecutionWithRecognitionScopeAmendmentPreview(input: {
     readonly expectedExecution: WorkflowExecution;
@@ -5717,8 +5796,10 @@ type CataloguePersistenceOperations = {
     readonly parentExecutionId?: string;
     readonly assetLibraryId?: string;
     readonly directoryKey?: string;
+    readonly currentOnly?: boolean;
+    readonly cursor?: string;
     readonly limit: number;
-  }): Promise<readonly UnrecognizedLibraryScanObservation[]>;
+  }): Promise<UnrecognizedLibraryScanObservationPage>;
   /**
    * 父终态与其全部耐久处置在同一条 immediate/CAS 事务内落下：CAS 失败或 claim 过期就不写
    * 批次、主体、计划，也不写终态。这是现代父唯一能写下规划结果的位置。
@@ -5799,9 +5880,11 @@ export type CommitSourceRefreshCollectionFailureInput = {
 export type WorkflowExecutionQueries = Pick<
   CataloguePersistenceOperations,
   | "inspectExecution"
+  | "readWorkflowExecution"
   | "listExecutions"
   | "listRunningExecutions"
   | "inspectRawSourceRecord"
+  | "inspectRawSourceRecordById"
   | "inspectLibraryScan"
   | "listUnrecognizedLibraryScanObservations"
 >;
@@ -6237,6 +6320,140 @@ export type WorkflowHistoryEntry = {
 
 export type WorkflowHistoryPage = {
   readonly items: readonly WorkflowHistoryEntry[];
+  readonly nextCursor?: string;
+};
+
+export const assetEvidenceKinds = [
+  "local-observations",
+  "format-results",
+  "source-records",
+  "interpreted-facts",
+  "current-values",
+  "metadata-decisions",
+] as const;
+
+export type AssetEvidenceKind = (typeof assetEvidenceKinds)[number];
+
+export type AssetEvidencePageRequest = {
+  readonly kind: AssetEvidenceKind;
+  readonly limit?: number;
+  readonly cursor?: string;
+};
+
+export type AssetEvidenceItem =
+  | {
+      readonly kind: "local-observation";
+      readonly snapshotId: string;
+      readonly observedAt: string;
+      readonly relativePath: string;
+      readonly entry:
+        | {
+            readonly kind: "file";
+            readonly size: number;
+            readonly modifiedAt: string;
+          }
+        | { readonly kind: "directory"; readonly modifiedAt: string }
+        | {
+            readonly kind: "excluded";
+            readonly reason: "symbolic-link" | "special" | "unavailable";
+          };
+    }
+  | {
+      readonly kind: "format-result";
+      readonly format: string;
+      readonly explanation: string;
+      readonly observedArtifactReference: string;
+      readonly detail:
+        | {
+            readonly kind: "result";
+            readonly digest: string;
+            readonly byteLength: number;
+            readonly mediaType: string;
+          }
+        | {
+            readonly kind: "identifier";
+            readonly scheme: string;
+            readonly value: string;
+            readonly locators: readonly string[];
+          }
+        | {
+            readonly kind: "metadata";
+            readonly property: string;
+            readonly sourceSlot: string;
+            readonly value: string;
+            readonly locator: string;
+          }
+        | {
+            readonly kind: "part";
+            readonly role: string;
+            readonly locator: string;
+            readonly mediaType: string;
+          }
+        | {
+            readonly kind: "entity-graph";
+            readonly entityCount: number;
+            readonly mentionCount: number;
+            readonly relationshipCount: number;
+          };
+    }
+  | {
+      readonly kind: "source-record";
+      readonly id: string;
+      readonly status: "available" | "missing";
+      readonly sourceIdentity?: string;
+      readonly nativeAddress?: string;
+      readonly mediaType?: string;
+      readonly acquiredAt?: string;
+      readonly coverage?: SourceRecord["coverage"];
+      readonly digest?: string;
+    }
+  | {
+      readonly kind: "interpreted-fact";
+      readonly target: DescriptionTarget;
+      readonly property: string;
+      readonly value: string;
+      readonly sourceIdentity?: string;
+      readonly sourceSlot: string;
+      readonly sourceRecordIds: readonly string[];
+      readonly qualifiers?: MetadataAssertion["qualifiers"];
+      readonly observedArtifactPart?: MetadataAssertion["observedArtifactPart"];
+    }
+  | {
+      readonly kind: "current-value";
+      readonly target: DescriptionTarget;
+      readonly evidence: SubjectMetadataEvidence;
+    }
+  | {
+      readonly kind: "metadata-decision";
+      readonly target: DescriptionTarget;
+      readonly property: string;
+      readonly metadataUsageContext: string;
+      readonly decision: "pin" | "clear";
+      readonly decisionId: string;
+      readonly initiatedBy: string;
+      readonly predecessorDecisionId?: string;
+      readonly value?: string;
+      readonly current: boolean;
+      readonly adoptedFrom?: MetadataDecision["adoptedFrom"];
+    };
+
+export type AssetEvidenceSection = {
+  readonly kind: AssetEvidenceKind;
+  readonly count: number;
+  readonly status: "available" | "missing";
+};
+
+export type AssetInspectionOverview = {
+  readonly assetId: string;
+  readonly entity: AcceptedRecognition["entity"];
+  readonly sections: readonly AssetEvidenceSection[];
+};
+
+export type AssetEvidencePage = {
+  readonly assetId: string;
+  readonly kind: AssetEvidenceKind;
+  readonly status: "available" | "missing";
+  readonly items: readonly AssetEvidenceItem[];
   readonly nextCursor?: string;
 };
 
@@ -6814,6 +7031,8 @@ export type ChangeImpactCommands = Pick<
   | "applyRecognitionScopeAmendmentPreview"
   | "saveArtifactRoleDecisionPreview"
   | "applyArtifactRoleDecisionPreview"
+  | "saveMetadataDecisionPreview"
+  | "applyMetadataDecisionPreview"
   | "rejectChangeImpactPreview"
 >;
 
@@ -6938,6 +7157,19 @@ export type AssetRefreshWorkflowPorts = {
   };
   readonly resumeClock?: AutomationClock;
 };
+
+export class MetadataDecisionError extends Error {
+  readonly kind: "invalid-request" | "conflict" | "not-found";
+
+  constructor(
+    kind: "invalid-request" | "conflict" | "not-found",
+    message: string,
+  ) {
+    super(message);
+    this.name = "MetadataDecisionError";
+    this.kind = kind;
+  }
+}
 
 export type AutomationClock = {
   now(): Date;
@@ -8103,6 +8335,7 @@ function boundedPageRequest(
     | CurrentCataloguePageRequest
     | WorkflowHistoryPageRequest
     | CurrentAttentionPageRequest
+    | AssetEvidencePageRequest
     | undefined,
   name: string,
 ): { readonly limit: number; readonly cursor?: string } {
@@ -8124,6 +8357,267 @@ function boundedPageRequest(
     throw new Error(`${name} cursor is invalid`);
   }
   return { limit, ...(cursor === undefined ? {} : { cursor }) };
+}
+
+type AssetEvidenceCursor = {
+  readonly version: 1;
+  readonly assetId: string;
+  readonly kind: AssetEvidenceKind;
+  readonly offset: number;
+};
+
+function assetEvidencePageOffset(
+  cursor: string | undefined,
+  assetId: string,
+  kind: AssetEvidenceKind,
+): number {
+  if (cursor === undefined) return 0;
+  if (
+    cursor.length === 0 ||
+    cursor.length > 4096 ||
+    !/^[A-Za-z0-9_-]+$/u.test(cursor)
+  )
+    throw new InvalidPageRequest("资料检查分页条件无效");
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+  } catch {
+    throw new InvalidPageRequest("资料检查分页条件无效");
+  }
+  if (
+    !isStringRecord(decoded) ||
+    decoded.version !== 1 ||
+    decoded.assetId !== assetId ||
+    decoded.kind !== kind ||
+    !Number.isSafeInteger(decoded.offset) ||
+    (decoded.offset as number) < 0
+  )
+    throw new InvalidPageRequest("资料检查分页条件无效");
+  return decoded.offset as number;
+}
+
+function encodeAssetEvidenceCursor(
+  assetId: string,
+  kind: AssetEvidenceKind,
+  offset: number,
+): string {
+  const cursor: AssetEvidenceCursor = {
+    version: 1,
+    assetId,
+    kind,
+    offset,
+  };
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+function assetEvidenceTargetMatches(
+  target: DescriptionTarget,
+  accepted: AcceptedAssetState,
+): boolean {
+  if (target.kind === "entity") {
+    const representative = new Map(
+      (accepted.relationshipReadBasis?.identityRepresentatives ?? []).map(
+        ({ entityId, representativeId }) => [entityId, representativeId],
+      ),
+    ).get(target.entityId);
+    return (representative ?? target.entityId) === accepted.entity.id;
+  }
+  return accepted.artifactRevisions.some(
+    (revision) =>
+      revision.artifactId === target.artifactId &&
+      revision.id === target.revisionId,
+  );
+}
+
+function sourceIdentityForAssertion(
+  assertion: MetadataAssertion,
+  sourceRecords: readonly {
+    readonly id: string;
+    readonly sourceIdentity: string;
+  }[],
+): string | undefined {
+  if (assertion.authoredBy !== undefined) return "user";
+  const identities = new Set(
+    assertion.sourceRecordIds.flatMap((id) => {
+      const record = sourceRecords.find((candidate) => candidate.id === id);
+      return record === undefined ? [] : [record.sourceIdentity];
+    }),
+  );
+  if (identities.size > 1)
+    throw new Error(
+      "Metadata Assertion spans several Metadata Source identities",
+    );
+  if (identities.size === 1) return [...identities][0];
+  return assertion.observedArtifactPart === undefined
+    ? undefined
+    : "local-observed";
+}
+
+function assetLocalObservationItems(evidence: {
+  readonly inspection?: ExecutionInspection;
+  readonly workItem?: AssetRefreshWorkItem;
+}): readonly AssetEvidenceItem[] {
+  const execution = evidence.inspection?.execution;
+  if (execution === undefined) return [];
+  const snapshots = new Map<string, FilesystemPackageSnapshot>();
+  for (const snapshot of [
+    ...(execution.snapshot === undefined ? [] : [execution.snapshot]),
+    ...(execution.filesystemSnapshots ?? []),
+  ])
+    snapshots.set(snapshot.id, snapshot);
+  const relativePaths = evidence.workItem?.relativePaths ?? [];
+  const matches = (candidate: string, includeDescendants: boolean) =>
+    relativePaths.length === 0 ||
+    relativePaths.some(
+      (path) =>
+        path === candidate ||
+        (includeDescendants &&
+          (candidate === "." || path.startsWith(`${candidate}/`))),
+    );
+  return [...snapshots.values()]
+    .flatMap((snapshot) => [
+      ...snapshot.files
+        .filter((file) => matches(file.relativePath, false))
+        .map(
+          (
+            file,
+          ): Extract<
+            AssetEvidenceItem,
+            { readonly kind: "local-observation" }
+          > => ({
+            kind: "local-observation",
+            snapshotId: snapshot.id,
+            observedAt: snapshot.observedAt,
+            relativePath: file.relativePath,
+            entry: {
+              kind: "file",
+              size: file.size,
+              modifiedAt: file.modifiedAt,
+            },
+          }),
+        ),
+      ...(snapshot.directories ?? [])
+        .filter((directory) => matches(directory.relativePath, true))
+        .map(
+          (
+            directory,
+          ): Extract<
+            AssetEvidenceItem,
+            { readonly kind: "local-observation" }
+          > => ({
+            kind: "local-observation",
+            snapshotId: snapshot.id,
+            observedAt: snapshot.observedAt,
+            relativePath: directory.relativePath,
+            entry: { kind: "directory", modifiedAt: directory.modifiedAt },
+          }),
+        ),
+      ...snapshot.excluded
+        .filter((excluded) => matches(excluded.relativePath, false))
+        .map(
+          (
+            excluded,
+          ): Extract<
+            AssetEvidenceItem,
+            { readonly kind: "local-observation" }
+          > => ({
+            kind: "local-observation",
+            snapshotId: snapshot.id,
+            observedAt: snapshot.observedAt,
+            relativePath: excluded.relativePath,
+            entry: { kind: "excluded", reason: excluded.kind },
+          }),
+        ),
+    ])
+    .toSorted((left, right) =>
+      `${left.snapshotId}\u0000${left.relativePath}\u0000${left.entry.kind}`.localeCompare(
+        `${right.snapshotId}\u0000${right.relativePath}\u0000${right.entry.kind}`,
+      ),
+    );
+}
+
+function assetFormatEvidenceItems(
+  proposal: RecognitionProposal,
+): readonly AssetEvidenceItem[] {
+  const evidence = [
+    ...(proposal.basis.kind === "source-interpretation"
+      ? []
+      : proposal.basis.evidence),
+    ...proposal.ruleResults.flatMap((result) => result.evidence),
+  ].filter((item) => item.inspection !== undefined);
+  const unique = new Map<string, RecognitionEvidence>();
+  for (const item of evidence) unique.set(JSON.stringify(item), item);
+  return [...unique.values()].flatMap((item): AssetEvidenceItem[] => {
+    const inspection = item.inspection;
+    if (inspection === undefined) return [];
+    const base = {
+      kind: "format-result" as const,
+      format: item.kind,
+      explanation: item.explanation,
+      observedArtifactReference: inspection.observedArtifactReference,
+    };
+    return [
+      {
+        ...base,
+        detail: {
+          kind: "result",
+          digest: inspection.revision.digest,
+          byteLength: inspection.revision.byteLength,
+          mediaType: inspection.revision.mediaType,
+        },
+      },
+      ...inspection.identifiers.map(
+        (identifier): AssetEvidenceItem => ({
+          ...base,
+          detail: {
+            kind: "identifier",
+            scheme: identifier.scheme,
+            value: identifier.value,
+            locators: identifier.locators,
+          },
+        }),
+      ),
+      ...inspection.metadata.map(
+        (metadata): AssetEvidenceItem => ({
+          ...base,
+          detail: { kind: "metadata", ...metadata },
+        }),
+      ),
+      ...inspection.parts.map(
+        (part): AssetEvidenceItem => ({
+          ...base,
+          detail: { kind: "part", ...part },
+        }),
+      ),
+      ...(inspection.entityGraph === undefined
+        ? []
+        : [
+            {
+              ...base,
+              detail: {
+                kind: "entity-graph" as const,
+                entityCount: inspection.entityGraph.entities.length,
+                mentionCount: inspection.entityGraph.mentions.length,
+                relationshipCount: inspection.entityGraph.relationships.length,
+              },
+            },
+          ]),
+    ];
+  });
+}
+
+function compareInterpretedEvidence(
+  left: Extract<AssetEvidenceItem, { readonly kind: "interpreted-fact" }>,
+  right: Extract<AssetEvidenceItem, { readonly kind: "interpreted-fact" }>,
+): number {
+  return (
+    left.property.localeCompare(right.property) ||
+    descriptionTargetKey(left.target).localeCompare(
+      descriptionTargetKey(right.target),
+    ) ||
+    left.sourceSlot.localeCompare(right.sourceSlot) ||
+    left.value.localeCompare(right.value)
+  );
 }
 
 function publicInspection(
@@ -8387,6 +8881,7 @@ function freezeChangeImpactFactReads(
   const project = (
     projection: AssetStateProjection,
     roleDecisions?: readonly import("@digital/domain").ArtifactRoleDecision[],
+    metadataDecisions?: readonly MetadataDecision[],
   ): EffectiveSubjectRead => {
     const retained = projection.readBasis ?? preview.current.readBasis;
     if (retained === undefined)
@@ -8494,6 +8989,8 @@ function freezeChangeImpactFactReads(
         currentLocationRevisions: retained.currentLocationRevisions ?? [],
         artifactRoleDecisions:
           roleDecisions ?? retained.artifactRoleDecisions ?? [],
+        metadataDecisions:
+          metadataDecisions ?? retained.metadataDecisions ?? [],
         relationshipReadBasis: {
           ...retained.relationshipReadBasis,
           targets: [...targets].map(([relationshipId, target]) => ({
@@ -8524,7 +9021,16 @@ function freezeChangeImpactFactReads(
                 preview.change.decision,
               ),
             )
-          : project(preview.projected),
+          : preview.change.kind === "metadata-decision"
+            ? project(
+                preview.projected,
+                undefined,
+                projectMetadataDecisionHead(
+                  preview.current.readBasis?.metadataDecisions ?? [],
+                  preview.change.decision,
+                ),
+              )
+            : project(preview.projected),
     },
   };
 }
@@ -8545,6 +9051,47 @@ function artifactRoleCandidateReference(
       ]),
     ),
   )}`;
+}
+
+function metadataDecisionCandidateReference(
+  candidate: SubjectMetadataCandidateEvidence,
+): string {
+  return `metadata-candidate_${sha256(
+    new TextEncoder().encode(
+      JSON.stringify([
+        candidate.target,
+        candidate.property,
+        candidate.value,
+        candidate.sourceIdentity,
+        candidate.sourceSlot,
+        [...candidate.sourceRecordIds].toSorted(),
+        [...(candidate.qualifiers ?? [])]
+          .map(({ key, value }) => [key, value])
+          .toSorted(
+            ([leftKey, leftValue], [rightKey, rightValue]) =>
+              String(leftKey).localeCompare(String(rightKey)) ||
+              String(leftValue).localeCompare(String(rightValue)),
+          ),
+      ]),
+    ),
+  )}`;
+}
+
+function metadataDecisionCurrentCandidates(
+  basis: SubjectFactBasis,
+  configuration: MetadataPolicyConfiguration | undefined,
+  target: DescriptionTarget,
+  property: string,
+  metadataUsageContext: string,
+): readonly SubjectMetadataCandidateEvidence[] {
+  const current = subjectMetadataEvidence(
+    basis,
+    configuration,
+    metadataUsageContext,
+    [property],
+    target,
+  ).find((item) => item.property === property);
+  return current?.result.status === "conflict" ? current.result.candidates : [];
 }
 
 function publicFactReadConflict(
@@ -8727,6 +9274,24 @@ function publicChangeImpactPreview(
             "此预演缺少冻结的生效读取结果，请重新形成预演",
           ]
         : preview.blockingConditions,
+    ...(preview.change.kind !== "metadata-decision"
+      ? {}
+      : {
+          metadataDecision: {
+            property: preview.change.decision.property,
+            metadataUsageContext: preview.change.decision.metadataUsageContext,
+            kind: preview.change.decision.kind,
+            ...(preview.change.decision.value === undefined
+              ? {}
+              : { value: preview.change.decision.value }),
+            ...(preview.change.decision.adoptedFrom === undefined
+              ? {}
+              : {
+                  adoptedFromSourceIdentity:
+                    preview.change.decision.adoptedFrom.sourceIdentity,
+                }),
+          },
+        }),
   };
 }
 
@@ -8744,6 +9309,7 @@ function assetStateProjection(
       currentLocationRevisions: accepted.currentLocationRevisions ?? [],
       // 预演的当前事实必须与 ordinary 读取同义，人工封面决定同样属于已接受状态。
       artifactRoleDecisions: accepted.artifactRoleDecisions ?? [],
+      metadataDecisions: accepted.metadataDecisions ?? [],
     },
     recognitionState:
       accepted.recognitionHeadDecisionId === null ? "unresolved" : "recognized",
@@ -10908,8 +11474,12 @@ export class AssetRefreshWorkflow {
       observed === undefined ||
       observed.execution.status === "running" ||
       observed.execution.snapshot === undefined
-    )
-      throw new Error("请先完成文件检查");
+    ) {
+      throw new LocalContentReviewError(
+        observed === undefined ? "not-found" : "conflict",
+        "请先完成文件检查",
+      );
+    }
     const snapshot = observed.execution.snapshot;
     const paths = new Set(input.relativePaths);
     if (
@@ -10920,14 +11490,20 @@ export class AssetRefreshWorkflow {
           !snapshot.files.some((file) => file.relativePath === reference),
       )
     )
-      throw new Error("请选择本次检查中可用的完整文件");
+      throw new LocalContentReviewError(
+        "invalid-request",
+        "请选择本次检查中可用的完整文件",
+      );
     const selected = {
       ...snapshot,
       files: snapshot.files.filter((file) => paths.has(file.relativePath)),
     };
     const scope = observed.execution.resolvedSelection?.filesystemScopes[0];
     if (scope?.observedRoot === undefined || scope.relativeScope === undefined)
-      throw new Error("文件位置已失效，请重新检查");
+      throw new LocalContentReviewError(
+        "conflict",
+        "文件位置已失效，请重新检查",
+      );
     const evidence = await this.observedRootExecution.invoke(
       {
         registrationId: scope.observedRoot.id,
@@ -10938,7 +11514,10 @@ export class AssetRefreshWorkflow {
           bound.resolvedSelection.filesystemScopes[0]?.observedRoot
             ?.configVersion !== scope.observedRoot.configVersion
         )
-          throw new Error("文件位置已变化，请重新检查");
+          throw new LocalContentReviewError(
+            "conflict",
+            "文件位置已变化，请重新检查",
+          );
         return await this.checkLocalContentFiles(bound.scope, selected);
       },
     );
@@ -11017,7 +11596,10 @@ export class AssetRefreshWorkflow {
       prepared?.proposal?.basis.kind !== "manual-boundary" ||
       prepared.execution.plannedAssetId === undefined
     )
-      throw new Error("未找到待确认的内容，请重新整理");
+      throw new LocalContentReviewError(
+        "not-found",
+        "未找到待确认的内容，请重新整理",
+      );
     const [existing] = await this.ports.reuseQueries.findAcceptedForSubjects([
       prepared.execution.plannedAssetId,
     ]);
@@ -11036,7 +11618,10 @@ export class AssetRefreshWorkflow {
     );
     const scope = prepared.execution.resolvedSelection?.filesystemScopes[0];
     if (scope?.observedRoot === undefined || scope.relativeScope === undefined)
-      throw new Error("文件位置已失效，请重新检查");
+      throw new LocalContentReviewError(
+        "conflict",
+        "文件位置已失效，请重新检查",
+      );
     return await this.observedRootExecution.invoke(
       {
         registrationId: scope.observedRoot.id,
@@ -11047,7 +11632,10 @@ export class AssetRefreshWorkflow {
           bound.resolvedSelection.filesystemScopes[0]?.observedRoot
             ?.configVersion !== scope.observedRoot.configVersion
         )
-          throw new Error("文件位置已变化，请重新检查");
+          throw new LocalContentReviewError(
+            "conflict",
+            "文件位置已变化，请重新检查",
+          );
         const currentEvidence = await this.checkLocalContentFiles(
           bound.scope,
           selected,
@@ -11056,7 +11644,10 @@ export class AssetRefreshWorkflow {
           inspectedRevisionCoordinates(currentEvidence, selected.root) !==
           inspectedRevisionCoordinates(basis.evidence, selected.root)
         )
-          throw new Error("所选文件已变化，请重新检查后确认");
+          throw new LocalContentReviewError(
+            "conflict",
+            "所选文件已变化，请重新检查后确认",
+          );
         const proposal = attachObservedFormatFacts(
           {
             ...preparedProposal,
@@ -11203,7 +11794,10 @@ export class AssetRefreshWorkflow {
           JSON.stringify(now.objectIdentity) !==
             JSON.stringify(file.objectIdentity))
       )
-        throw new Error("所选文件已变化，请重新检查后确认");
+        throw new LocalContentReviewError(
+          "conflict",
+          "所选文件已变化，请重新检查后确认",
+        );
       const source = await this.openObservedByteSource(
         scope,
         file.relativePath,
@@ -12292,8 +12886,11 @@ export class AssetRefreshWorkflow {
         const cached = itemsByChild.get(entry.childExecutionId);
         if (cached === undefined) {
           items =
-            (await this.inspect(entry.childExecutionId))?.execution.workItems ??
-            [];
+            (
+              await this.ports.executionQueries.readWorkflowExecution(
+                entry.childExecutionId,
+              )
+            )?.workItems ?? [];
           itemsByChild.set(entry.childExecutionId, items);
         } else items = cached;
       }
@@ -12365,11 +12962,24 @@ export class AssetRefreshWorkflow {
     readonly parentExecutionId?: string | undefined;
     readonly assetLibraryId?: string | undefined;
     readonly directoryKey?: string | undefined;
+    readonly currentOnly?: boolean | undefined;
     readonly limit?: number | undefined;
   }): Promise<readonly UnrecognizedLibraryScanObservation[]> {
+    return (await this.listUnrecognizedLibraryScanObservationPage(input)).items;
+  }
+
+  /** 按库、扫描或目录范围取得可继续翻页的未识别材料观察。 */
+  async listUnrecognizedLibraryScanObservationPage(input: {
+    readonly parentExecutionId?: string | undefined;
+    readonly assetLibraryId?: string | undefined;
+    readonly directoryKey?: string | undefined;
+    readonly currentOnly?: boolean | undefined;
+    readonly cursor?: string | undefined;
+    readonly limit?: number | undefined;
+  }): Promise<UnrecognizedLibraryScanObservationPage> {
     const limit = input.limit ?? 50;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200)
-      throw new Error("未识别观察查询必须有界");
+      throw new InvalidPageRequest("未识别观察分页条件无效");
     return await this.ports.executionQueries.listUnrecognizedLibraryScanObservations(
       {
         ...(input.parentExecutionId === undefined
@@ -12381,6 +12991,10 @@ export class AssetRefreshWorkflow {
         ...(input.directoryKey === undefined
           ? {}
           : { directoryKey: input.directoryKey }),
+        ...(input.currentOnly === undefined
+          ? {}
+          : { currentOnly: input.currentOnly }),
+        ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
         limit,
       },
     );
@@ -12856,6 +13470,319 @@ export class AssetRefreshWorkflow {
     };
   }
 
+  /** 取得一份精确资产的资料检查概览；不会把来源正文或无界图装入概览。 */
+  async inspectAssetEvidence(
+    assetId: string,
+  ): Promise<AssetInspectionOverview | undefined> {
+    const evidence = await this.loadAssetEvidenceContext(assetId);
+    if (evidence === undefined) return undefined;
+    const sections = await Promise.all(
+      assetEvidenceKinds.map(async (kind) => {
+        const { count } = await this.assetEvidenceItems(evidence, kind, 0, 0);
+        return {
+          kind,
+          count,
+          status: count === 0 ? ("missing" as const) : ("available" as const),
+        };
+      }),
+    );
+    return {
+      assetId,
+      entity: evidence.accepted.entity,
+      sections,
+    };
+  }
+
+  /** 仅对所选资产的指定证据层进行有界分页。 */
+  async listAssetEvidence(
+    assetId: string,
+    input: AssetEvidencePageRequest,
+  ): Promise<AssetEvidencePage | undefined> {
+    if (assetId.length === 0 || !assetEvidenceKinds.includes(input.kind))
+      throw new InvalidPageRequest("资料检查对象或类别无效");
+    const { limit, cursor } = boundedPageRequest(input, "Asset evidence");
+    const offset = assetEvidencePageOffset(cursor, assetId, input.kind);
+    const evidence = await this.loadAssetEvidenceContext(assetId);
+    if (evidence === undefined) return undefined;
+    const { items, count } = await this.assetEvidenceItems(
+      evidence,
+      input.kind,
+      offset,
+      limit,
+    );
+    return {
+      assetId,
+      kind: input.kind,
+      status: count === 0 ? "missing" : "available",
+      items,
+      ...(offset + items.length >= count
+        ? {}
+        : {
+            nextCursor: encodeAssetEvidenceCursor(
+              assetId,
+              input.kind,
+              offset + items.length,
+            ),
+          }),
+    };
+  }
+
+  /** 原始来源正文只在资产明确引用该记录后，才允许按需读取。 */
+  async inspectAssetSourceRecord(
+    assetId: string,
+    sourceRecordId: string,
+  ): Promise<SourceRecord | undefined> {
+    if (assetId.length === 0 || sourceRecordId.length === 0)
+      throw new InvalidPageRequest("来源记录选择无效");
+    const evidence = await this.loadAssetEvidenceContext(assetId);
+    if (
+      evidence === undefined ||
+      !evidence.sourceRecordIds.includes(sourceRecordId)
+    )
+      return undefined;
+    if (this.ports.executionQueries.inspectRawSourceRecordById === undefined)
+      throw new Error("Asset evidence source record query is not configured");
+    return await this.ports.executionQueries.inspectRawSourceRecordById!(
+      sourceRecordId,
+    );
+  }
+
+  private async loadAssetEvidenceContext(assetId: string): Promise<
+    | {
+        readonly accepted: AcceptedAssetState;
+        readonly inspection?: ExecutionInspection;
+        readonly workItem?: AssetRefreshWorkItem;
+        readonly proposal: RecognitionProposal;
+        readonly sourceRecordIds: readonly string[];
+      }
+    | undefined
+  > {
+    if (assetId.length === 0) throw new InvalidPageRequest("资料检查对象无效");
+    const [current] = await this.ports.reuseQueries.findAcceptedForSubjects([
+      assetId,
+    ]);
+    if (current === undefined || current.accepted.entity.id !== assetId)
+      return undefined;
+    const inspection = await this.ports.executionQueries.inspectExecution(
+      current.execution.id,
+    );
+    const workItemInspection = inspection?.workItemInspections?.find(
+      (item) => item.accepted?.entity.id === assetId,
+    );
+    const workItem =
+      workItemInspection?.workItem ??
+      inspection?.execution.workItems?.find(
+        (item) =>
+          item.acceptedAssetId === assetId || item.retainedAssetId === assetId,
+      );
+    const proposal =
+      workItemInspection?.proposal ??
+      inspection?.proposal ??
+      current.accepted.proposal;
+    const sourceRecordIds = new Set<string>(workItem?.sourceRecordIds ?? []);
+    if (inspection?.execution.acceptedAssetId === assetId)
+      inspection.execution.sourceRecordIds.forEach((id) =>
+        sourceRecordIds.add(id),
+      );
+    for (const assertion of current.accepted.metadata) {
+      if (!assetEvidenceTargetMatches(assertion.target, current.accepted))
+        continue;
+      assertion.sourceRecordIds.forEach((id) => sourceRecordIds.add(id));
+    }
+    for (const decision of current.accepted.metadataDecisionHistory ?? [])
+      decision.adoptedFrom?.sourceRecordIds.forEach((id) =>
+        sourceRecordIds.add(id),
+      );
+    for (const relationship of effectiveRelationships(
+      current.accepted.relationships ?? [],
+      current.accepted.relationshipReadBasis,
+    ))
+      relationship.sourceRecordIds.forEach((id) => sourceRecordIds.add(id));
+    if (proposal.basis.kind === "source-interpretation")
+      proposal.basis.interpretation.sourceRecordIds.forEach((id) =>
+        sourceRecordIds.add(id),
+      );
+    for (const result of proposal.ruleResults)
+      for (const reference of result.evidenceReferences ?? [])
+        sourceRecordIds.add(reference.sourceRecordId);
+    return {
+      accepted: current.accepted,
+      ...(inspection === undefined ? {} : { inspection }),
+      ...(workItem === undefined ? {} : { workItem }),
+      proposal,
+      sourceRecordIds: [...sourceRecordIds].toSorted((left, right) =>
+        left.localeCompare(right),
+      ),
+    };
+  }
+
+  private async assetEvidenceItems(
+    evidence: {
+      readonly accepted: AcceptedAssetState;
+      readonly inspection?: ExecutionInspection;
+      readonly workItem?: AssetRefreshWorkItem;
+      readonly proposal: RecognitionProposal;
+      readonly sourceRecordIds: readonly string[];
+    },
+    kind: AssetEvidenceKind,
+    offset: number,
+    limit: number,
+  ): Promise<{
+    readonly items: readonly AssetEvidenceItem[];
+    readonly count: number;
+  }> {
+    if (kind === "source-records") {
+      const ids = evidence.sourceRecordIds;
+      const selectedIds = ids.slice(offset, offset + limit);
+      if (
+        selectedIds.length > 0 &&
+        this.ports.executionQueries.inspectRawSourceRecordById === undefined
+      )
+        throw new Error("Asset evidence source record query is not configured");
+      const records = await Promise.all(
+        selectedIds.map(async (id): Promise<AssetEvidenceItem> => {
+          const record =
+            await this.ports.executionQueries.inspectRawSourceRecordById!(id);
+          return record === undefined
+            ? { kind: "source-record", id, status: "missing" }
+            : {
+                kind: "source-record",
+                id,
+                status: "available",
+                sourceIdentity: record.sourceIdentity,
+                nativeAddress: record.nativeAddress,
+                mediaType: record.mediaType,
+                acquiredAt: record.acquiredAt,
+                coverage: record.coverage,
+                digest: record.digest,
+              };
+        }),
+      );
+      return { items: records, count: ids.length };
+    }
+
+    let allItems: readonly AssetEvidenceItem[];
+    switch (kind) {
+      case "local-observations":
+        allItems = assetLocalObservationItems(evidence);
+        break;
+      case "format-results":
+        allItems = assetFormatEvidenceItems(evidence.proposal);
+        break;
+      case "interpreted-facts":
+        allItems = evidence.accepted.metadata
+          .filter((assertion) =>
+            assetEvidenceTargetMatches(assertion.target, evidence.accepted),
+          )
+          .map((assertion) => {
+            const sourceIdentity = sourceIdentityForAssertion(
+              assertion,
+              evidence.accepted.metadataSourceRecords ?? [],
+            );
+            return {
+              kind: "interpreted-fact" as const,
+              target: assertion.target,
+              property: assertion.property,
+              value: assertion.value,
+              ...(sourceIdentity === undefined ? {} : { sourceIdentity }),
+              sourceSlot: assertion.sourceSlot,
+              sourceRecordIds: assertion.sourceRecordIds,
+              ...(assertion.qualifiers === undefined
+                ? {}
+                : { qualifiers: assertion.qualifiers }),
+              ...(assertion.observedArtifactPart === undefined
+                ? {}
+                : { observedArtifactPart: assertion.observedArtifactPart }),
+            };
+          })
+          .toSorted(compareInterpretedEvidence);
+        break;
+      case "current-values":
+        allItems = this.assetCurrentValueItems(evidence);
+        break;
+      case "metadata-decisions": {
+        const currentIds = new Set(
+          (evidence.accepted.metadataDecisions ?? []).map(({ id }) => id),
+        );
+        allItems = (evidence.accepted.metadataDecisionHistory ?? []).map(
+          (decision): AssetEvidenceItem => ({
+            kind: "metadata-decision",
+            target: decision.target,
+            property: decision.property,
+            metadataUsageContext: decision.metadataUsageContext,
+            decision: decision.kind,
+            decisionId: decision.id,
+            initiatedBy: decision.initiatedBy,
+            ...(decision.predecessorDecisionId === undefined
+              ? {}
+              : { predecessorDecisionId: decision.predecessorDecisionId }),
+            ...(decision.value === undefined ? {} : { value: decision.value }),
+            current: currentIds.has(decision.id),
+            ...(decision.adoptedFrom === undefined
+              ? {}
+              : { adoptedFrom: decision.adoptedFrom }),
+          }),
+        );
+        break;
+      }
+    }
+    return {
+      items: allItems.slice(offset, offset + limit),
+      count: allItems.length,
+    };
+  }
+
+  private assetCurrentValueItems(evidence: {
+    readonly accepted: AcceptedAssetState;
+    readonly inspection?: ExecutionInspection;
+  }): readonly AssetEvidenceItem[] {
+    const requirement =
+      evidence.inspection?.execution.selection.informationRequirement;
+    const metadataUsageContext =
+      requirement?.metadataUsageContext ?? "asset.ordinary";
+    const facts = readEffectiveSubject(
+      { ...evidence.accepted, id: evidence.accepted.entity.id },
+      this.ports.metadataPolicyConfiguration,
+      metadataUsageContext,
+      requirement,
+    );
+    const descriptions = facts.descriptions.filter(({ target }) =>
+      target.kind === "entity"
+        ? target.entityId === evidence.accepted.entity.id
+        : true,
+    );
+    return descriptions.flatMap((description) =>
+      subjectMetadataEvidence(
+        { ...evidence.accepted, id: evidence.accepted.entity.id },
+        this.ports.metadataPolicyConfiguration,
+        description.metadataUsageContext,
+        description.target.kind === "entity" &&
+          description.target.entityId === evidence.accepted.entity.id
+          ? (requirement?.metadata.map(({ property }) => property) ?? [])
+          : [],
+        description.target,
+      ).map(
+        (item): AssetEvidenceItem => ({
+          kind: "current-value",
+          target: description.target,
+          evidence:
+            item.result.status !== "conflict"
+              ? item
+              : {
+                  ...item,
+                  result: {
+                    ...item.result,
+                    candidates: item.result.candidates.map((candidate) => ({
+                      ...candidate,
+                      reference: metadataDecisionCandidateReference(candidate),
+                    })),
+                  },
+                },
+        }),
+      ),
+    );
+  }
+
   /**
    * 公开从任一实体读取同一关系所连接的已收录内容；返回的是普通产品安全投影，
    * 不把持久化表或来源记录暴露给交付层。
@@ -12921,9 +13848,9 @@ export class AssetRefreshWorkflow {
     readonly actorId: string;
   }): Promise<RelatedEntityIdentity> {
     if (input.label.trim().length === 0)
-      throw new Error("相关实体名称不能为空");
+      throw new InvalidIdentityOperation("相关实体名称不能为空");
     if (input.commitmentId.trim().length === 0)
-      throw new Error("本地身份提交坐标不能为空");
+      throw new InvalidIdentityOperation("本地身份提交坐标不能为空");
     const identity = this.requireRelatedEntityIdentity();
     return await identity.createLocalRelatedEntity({
       id: `related-entity_${createHash("sha256")
@@ -12998,7 +13925,7 @@ export class AssetRefreshWorkflow {
         replay.mergedEntityId !== input.preview.mergedEntityId ||
         replay.impactFingerprint !== impactFingerprint
       )
-        throw new Error("身份合并提交坐标与既有内容冲突");
+        throw new CatalogueDecisionConflict("身份合并提交坐标与既有内容冲突");
       return "applied";
     }
     const current = await this.previewEntityIdentityMerge({
@@ -13055,16 +13982,19 @@ export class AssetRefreshWorkflow {
   private validateRelationshipChanges(
     changes: readonly RelationshipChange[],
   ): void {
-    if (changes.length === 0) throw new Error("关系更正不能为空");
+    if (changes.length === 0)
+      throw new InvalidRelationshipOperation("关系更正不能为空");
     for (const change of changes) {
       if (change.kind !== "create" && change.kind !== "replace") {
         if (change.targetRelationshipId.trim().length === 0)
-          throw new Error("关系决定必须点名当前关系事实");
+          throw new InvalidRelationshipOperation(
+            "关系决定必须点名当前关系事实",
+          );
         continue;
       }
       const relationship = change.relationship;
       if (relationship.type.trim().length === 0)
-        throw new Error("更正关系必须包含类型和参与者");
+        throw new InvalidRelationshipOperation("更正关系必须包含类型和参与者");
       if (
         relationship.participants.length < 2 ||
         relationship.participants.some(
@@ -13081,12 +14011,19 @@ export class AssetRefreshWorkflow {
             key.trim().length === 0 || value.trim().length === 0,
         )
       )
-        throw new Error("更正关系结构无效");
+        throw new InvalidRelationshipOperation("更正关系结构无效");
       const definition = this.relationshipTypeDefinitions().find(
         (item) => item.id === change.definitionId,
       );
-      if (definition === undefined) throw new Error("关系类型尚未声明");
-      validateRelationshipDefinition(definition, relationship);
+      if (definition === undefined)
+        throw new InvalidRelationshipOperation("关系类型尚未声明");
+      try {
+        validateRelationshipDefinition(definition, relationship);
+      } catch (error) {
+        throw new InvalidRelationshipOperation(
+          error instanceof Error ? error.message : "关系操作无效",
+        );
+      }
     }
   }
 
@@ -13143,6 +14080,24 @@ export class AssetRefreshWorkflow {
   sourceInputRequirements(): readonly SourceInputRequirement[] {
     return (this.ports.sourceAddressingCapabilities ?? []).map(
       ({ inputRequirement }) => inputRequirement,
+    );
+  }
+
+  /** 在创建工作流或产生外部效果前，由来源能力校验显式输入。 */
+  acceptsSourceInput(
+    sourceIdentity: string,
+    sourceInput: Readonly<Record<string, string>>,
+  ): boolean {
+    const capabilities = (this.ports.sourceAddressingCapabilities ?? []).filter(
+      (candidate) =>
+        candidate.inputRequirement.sourceIdentity === sourceIdentity,
+    );
+    if (capabilities.length !== 1) return false;
+    const normalized = capabilities[0]!.normalize(sourceInput);
+    return (
+      normalized.status === "accepted" &&
+      normalized.evidence.sourceIdentity === sourceIdentity &&
+      normalized.evidence.sourceAddress !== undefined
     );
   }
 
@@ -13234,12 +14189,26 @@ export class AssetRefreshWorkflow {
       input.proposedBy.trim().length === 0 ||
       input.reason.trim().length === 0
     )
-      throw new Error("身份撤回必须包含提议者和原因");
+      throw new RecognitionRepairPreparationError(
+        "invalid-request",
+        "身份撤回必须包含提议者和原因",
+      );
     const target = await this.namedRecognitionTarget({
       assetId: input.assetId,
       decisionId: input.predecessorDecisionId,
     });
-    if (target === undefined) throw new Error("所选内容不存在或尚未确认");
+    if (target === undefined) {
+      const history =
+        await this.ports.reuseQueries.inspectSourceAssociationHistory(
+          input.assetId,
+        );
+      throw new RecognitionRepairPreparationError(
+        history === undefined ? "not-found" : "conflict",
+        history === undefined
+          ? "所选内容不存在或尚未确认"
+          : "点名的识别决定不再生效",
+      );
+    }
     // 可点名任一仍生效的决定：主头与追加范围都能被明确撤回，绝不只允许当前身份。
     // 主头为空时点名的决定只是事实依据，撤回它不会结束主来源，也不会让身份出现。
     const headDecisionId =
@@ -13256,7 +14225,10 @@ export class AssetRefreshWorkflow {
         },
       );
     if (!withdrawsHead && effectiveBoundaries === undefined)
-      throw new Error("该内容没有可点名撤回的追加范围记录");
+      throw new RecognitionRepairPreparationError(
+        "conflict",
+        "该内容没有可点名撤回的追加范围记录",
+      );
     const declarations = groupMaterialScopeDeclarations(
       effectiveBoundaries ?? [],
       { headDecisionIds },
@@ -13265,7 +14237,10 @@ export class AssetRefreshWorkflow {
       (declaration) => declaration.decisionId === input.predecessorDecisionId,
     );
     if (!withdrawsHead && namedDeclaration === undefined)
-      throw new Error("点名的识别决定不是该内容当前生效的范围");
+      throw new RecognitionRepairPreparationError(
+        "conflict",
+        "点名的识别决定不是该内容当前生效的范围",
+      );
     // 范围局部基线只覆盖与点名决定相交的完整声明：不相交决定的新增或撤回不该让这份
     // 预演过期，相交一侧的支持变化则必须让它过期且不落任何写。
     const intersectingDeclarations =
@@ -13347,7 +14322,10 @@ export class AssetRefreshWorkflow {
         initial,
         terminal(initial, "failed", "形成撤回预演期间当前事实或支持已经变化"),
       );
-      throw new Error("形成撤回预演期间当前事实或支持已经变化");
+      throw new RecognitionRepairPreparationError(
+        "conflict",
+        "形成撤回预演期间当前事实或支持已经变化",
+      );
     }
     const {
       recognitionDecisionId: _recognitionDecisionId,
@@ -13547,6 +14525,226 @@ export class AssetRefreshWorkflow {
   }
 
   /**
+   * 为一个精确属性坐标准备固定值或撤回。只有明确的当前冲突候选可作为采纳依据；
+   * 预演和确认沿用普通事实读取与封面决定相同的完整投影基线和头 CAS。
+   */
+  async prepareMetadataDecision(input: {
+    readonly entityId: string;
+    readonly property: string;
+    readonly metadataUsageContext?: string;
+    readonly initiatedBy: string;
+    readonly kind: "pin" | "clear";
+    readonly value?: string;
+    readonly candidateReference?: string;
+  }): Promise<ChangeImpactPreviewInspection> {
+    if (
+      input.entityId.trim().length === 0 ||
+      input.property.trim().length === 0 ||
+      input.initiatedBy.trim().length === 0
+    )
+      throw new MetadataDecisionError(
+        "invalid-request",
+        "元数据修订缺少目标、属性或发起者",
+      );
+    const metadataUsageContext = input.metadataUsageContext ?? "asset.ordinary";
+    if (metadataUsageContext.trim().length === 0)
+      throw new MetadataDecisionError("invalid-request", "元数据使用语境无效");
+    if (
+      input.kind === "clear" &&
+      (input.value !== undefined || input.candidateReference !== undefined)
+    )
+      throw new MetadataDecisionError(
+        "invalid-request",
+        "撤回元数据修订不能携带新值",
+      );
+    if (
+      input.kind === "pin" &&
+      ((input.candidateReference === undefined && input.value === undefined) ||
+        (input.candidateReference !== undefined && input.value !== undefined))
+    )
+      throw new MetadataDecisionError(
+        "invalid-request",
+        "固定属性值必须直接输入或明确选择一个冲突候选",
+      );
+    if (input.kind === "pin" && input.value?.trim().length === 0)
+      throw new MetadataDecisionError("invalid-request", "固定属性值不能为空");
+
+    const [accepted] = await this.ports.reuseQueries.findAcceptedForSubjects([
+      input.entityId,
+    ]);
+    if (accepted === undefined)
+      throw new MetadataDecisionError("not-found", "未找到该实体的已接受事实");
+    const basis: SubjectFactBasis = {
+      ...accepted.accepted,
+      id: input.entityId,
+    };
+    const target: DescriptionTarget = {
+      kind: "entity",
+      entityId: input.entityId,
+    };
+    const currentDecisions = basis.metadataDecisions ?? [];
+    const expectedHeadDecisionId =
+      currentDecisions.find(
+        (decision) =>
+          metadataDecisionKey(
+            decision.target,
+            decision.property,
+            decision.metadataUsageContext,
+          ) ===
+          metadataDecisionKey(target, input.property, metadataUsageContext),
+      )?.id ?? null;
+    const currentDecision = currentDecisions.find(
+      (decision) => decision.id === expectedHeadDecisionId,
+    );
+    if (input.kind === "clear" && currentDecision?.kind !== "pin")
+      throw new MetadataDecisionError(
+        "conflict",
+        "该属性当前没有可撤回的人工修订",
+      );
+
+    let adoptedFrom: MetadataDecision["adoptedFrom"];
+    let value = input.value;
+    let qualifiers: MetadataAssertion["qualifiers"];
+    let candidateBaseline: string | undefined;
+    if (input.candidateReference !== undefined) {
+      const candidates = metadataDecisionCurrentCandidates(
+        basis,
+        this.ports.metadataPolicyConfiguration,
+        target,
+        input.property,
+        metadataUsageContext,
+      );
+      candidateBaseline = JSON.stringify(
+        candidates.map(metadataDecisionCandidateReference).toSorted(),
+      );
+      const selected = candidates.find(
+        (candidate) =>
+          metadataDecisionCandidateReference(candidate) ===
+          input.candidateReference,
+      );
+      if (selected === undefined)
+        throw new MetadataDecisionError(
+          "conflict",
+          "所选属性候选已变化，请重新检查资料",
+        );
+      if (selected.sourceRecordIds.length === 0)
+        throw new MetadataDecisionError(
+          "conflict",
+          "所选属性候选缺少可保留的来源依据，请重新检查资料",
+        );
+      value = selected.value;
+      qualifiers = selected.qualifiers;
+      adoptedFrom = {
+        sourceIdentity: selected.sourceIdentity,
+        sourceSlot: selected.sourceSlot,
+        sourceRecordIds: selected.sourceRecordIds,
+      };
+    }
+    const decision: MetadataDecision = {
+      id: id("metadata-decision"),
+      target,
+      property: input.property,
+      metadataUsageContext,
+      kind: input.kind,
+      ...(input.kind === "pin" ? { value: value! } : {}),
+      ...(qualifiers === undefined ? {} : { qualifiers }),
+      ...(adoptedFrom === undefined ? {} : { adoptedFrom }),
+      ...(expectedHeadDecisionId === null
+        ? {}
+        : { predecessorDecisionId: expectedHeadDecisionId }),
+      initiatedBy: input.initiatedBy,
+    };
+    validateMetadataDecision(decision);
+    const acceptedCurrent = assetStateProjection(accepted.accepted);
+    const baseline =
+      await this.ports.changeImpactCommands.freezeChangeImpactBaseline({
+        assetId: input.entityId,
+        recognitionDecisionId: accepted.accepted.recognitionDecision.id,
+        ...(accepted.accepted.recognitionSourceAssociation === undefined
+          ? {}
+          : {
+              recognitionSourceAssociationId:
+                accepted.accepted.recognitionSourceAssociation.id,
+            }),
+      });
+    const [afterBaseline] =
+      await this.ports.reuseQueries.findAcceptedForSubjects([input.entityId]);
+    if (
+      afterBaseline === undefined ||
+      acceptedConcurrencyFingerprint(afterBaseline.accepted) !==
+        acceptedConcurrencyFingerprint(accepted.accepted)
+    )
+      throw new Error("形成属性修订预演期间当前事实或支持已经变化");
+    const projected = {
+      ...acceptedCurrent,
+      readBasis: {
+        ...acceptedCurrent.readBasis!,
+        metadataDecisions: projectMetadataDecisionHead(
+          acceptedCurrent.readBasis?.metadataDecisions ?? [],
+          decision,
+        ),
+      },
+    };
+    let preview: ChangeImpactPreview = {
+      version: "change-impact-preview/2",
+      id: id("change-impact-preview"),
+      executionId: `metadata-decision:${decision.id}`,
+      assetId: input.entityId,
+      change: {
+        kind: "metadata-decision",
+        decision,
+        expectedHeadDecisionId,
+        ...(candidateBaseline === undefined
+          ? {}
+          : { expectedCandidateBaseline: candidateBaseline }),
+      },
+      evidenceComparison: {
+        observed: [],
+        manual: [],
+        sourceCandidates: [],
+        conflicts: [
+          decision.kind === "clear"
+            ? "撤回后按当前来源与原始人工依据重新求值"
+            : decision.adoptedFrom === undefined
+              ? "确认后固定输入值，后续来源刷新不会改写这项人工修订"
+              : "确认后固定所选冲突值，并保留它当时的来源依据",
+        ],
+      },
+      baselines: [
+        {
+          key: "recognition-decision",
+          value: accepted.accepted.recognitionDecision.id,
+        },
+        { key: "complete-current-projection", value: baseline },
+        {
+          key: "metadata-decision-head",
+          value: expectedHeadDecisionId ?? "none",
+        },
+        {
+          key: "metadata-decision-policy-version",
+          value: this.compatibility().policyVersion,
+        },
+        ...(candidateBaseline === undefined
+          ? []
+          : [
+              { key: "metadata-decision-candidates", value: candidateBaseline },
+            ]),
+      ],
+      current: acceptedCurrent,
+      projected,
+      blockingConditions: [],
+      status: "awaiting-confirmation",
+    };
+    preview = freezeChangeImpactFactReads(
+      preview,
+      this.ports.metadataPolicyConfiguration,
+      [],
+    );
+    await this.ports.changeImpactCommands.saveMetadataDecisionPreview(preview);
+    return publicChangeImpactPreview(preview);
+  }
+
+  /**
    * 形成选择或撤回的预演：只追加一条决定，冻结期望头、候选集、适用政策版本与资产
    * 完整事实基线；不访问网络、不扫描媒体、不生成派生图。
    */
@@ -13695,12 +14893,18 @@ export class AssetRefreshWorkflow {
       input.proposedBy.trim().length === 0 ||
       input.reason.trim().length === 0
     )
-      throw new Error("范围决定必须包含提议者和原因");
+      throw new RecognitionRepairPreparationError(
+        "invalid-request",
+        "范围决定必须包含提议者和原因",
+      );
     const source = await this.ports.executionQueries.inspectExecution(
       input.sourceExecutionId,
     );
     if (source === undefined)
-      throw new Error("找不到形成该范围决定的那次观察记录");
+      throw new RecognitionRepairPreparationError(
+        "not-found",
+        "找不到形成该范围决定的那次观察记录",
+      );
     const frozen = source.execution.workItems?.find(
       (item) => item.key === input.workItemKey,
     );
@@ -13716,14 +14920,24 @@ export class AssetRefreshWorkflow {
       namedDecisionId === undefined ||
       snapshot === undefined
     )
-      throw new Error(
+      throw new RecognitionRepairPreparationError(
+        "conflict",
         "这个工作项没有可应用的完整范围与点名决定，需要重新扫描后再明确决定",
       );
     const target = await this.namedRecognitionTarget({
       assetId,
       decisionId: namedDecisionId,
     });
-    if (target === undefined) throw new Error("所选内容不存在或尚未确认");
+    if (target === undefined) {
+      const history =
+        await this.ports.reuseQueries.inspectSourceAssociationHistory(assetId);
+      throw new RecognitionRepairPreparationError(
+        history === undefined ? "not-found" : "conflict",
+        history === undefined
+          ? "所选内容不存在或尚未确认"
+          : "点名的识别决定不再生效",
+      );
+    }
     const headDecisionId =
       target.accepted.recognitionHeadDecisionId === null
         ? undefined
@@ -13735,7 +14949,10 @@ export class AssetRefreshWorkflow {
         },
       );
     if (effectiveBoundaries === undefined)
-      throw new Error("该内容没有可点名修订的范围决定记录");
+      throw new RecognitionRepairPreparationError(
+        "conflict",
+        "该内容没有可点名修订的范围决定记录",
+      );
     const declarations = groupMaterialScopeDeclarations(effectiveBoundaries, {
       headDecisionIds: headDecisionId === undefined ? [] : [headDecisionId],
     });
@@ -13743,7 +14960,10 @@ export class AssetRefreshWorkflow {
       (declaration) => declaration.decisionId === namedDecisionId,
     );
     if (namedDeclaration === undefined)
-      throw new Error("点名的识别决定不是该内容当前生效的范围");
+      throw new RecognitionRepairPreparationError(
+        "conflict",
+        "点名的识别决定不是该内容当前生效的范围",
+      );
     const scopeDeclarations =
       await this.ports.reuseQueries.listMaterialScopeDeclarations?.({
         scopeAddress: snapshot.root,
@@ -13754,7 +14974,8 @@ export class AssetRefreshWorkflow {
         (declaration) => declaration.decisionId === namedDecisionId,
       )
     )
-      throw new Error(
+      throw new RecognitionRepairPreparationError(
+        "conflict",
         "该范围缺少可核对的相交声明记录，需要重新扫描后再明确决定",
       );
     const materialReferences = frozen.relativePaths;
@@ -13764,7 +14985,8 @@ export class AssetRefreshWorkflow {
         materialReferences.includes(item.inspection.observedArtifactReference),
     );
     if (evidence.length === 0)
-      throw new Error(
+      throw new RecognitionRepairPreparationError(
+        "conflict",
         "该范围没有可归属的文件检查证据，需要重新扫描后再明确决定",
       );
     // 从同一次冻结的通用完整字节观察逐材料重建精确修订：不在预演时重读当前文件，也不从
@@ -13779,7 +15001,8 @@ export class AssetRefreshWorkflow {
       if (inspection === undefined) continue;
       const reference = inspection.observedArtifactReference;
       if (revisions.has(reference))
-        throw new Error(
+        throw new RecognitionRepairPreparationError(
+          "conflict",
           "该范围材料存在重复的文件修订，需要重新扫描后再明确决定",
         );
       revisions.set(reference, {
@@ -13789,7 +15012,10 @@ export class AssetRefreshWorkflow {
       });
     }
     if (materialReferences.some((reference) => !revisions.has(reference)))
-      throw new Error("该范围材料缺少完整的文件修订，需要重新扫描后再明确决定");
+      throw new RecognitionRepairPreparationError(
+        "conflict",
+        "该范围材料缺少完整的文件修订，需要重新扫描后再明确决定",
+      );
     const observedArtifactRevisions = [...revisions.values()];
     const proposal = validateRecognitionProposal({
       id: id("recognition-proposal"),
@@ -13819,7 +15045,8 @@ export class AssetRefreshWorkflow {
         (root) => root.id === boundary.scopeReference,
       );
       if (owner === undefined)
-        throw new Error(
+        throw new RecognitionRepairPreparationError(
+          "conflict",
           "冻结范围引用的观察根已经不存在，需要重新扫描后再明确决定",
         );
       return [
@@ -13996,7 +15223,10 @@ export class AssetRefreshWorkflow {
           "形成范围决定预演期间当前事实或支持已经变化",
         ),
       );
-      throw new Error("形成范围决定预演期间当前事实或支持已经变化");
+      throw new RecognitionRepairPreparationError(
+        "conflict",
+        "形成范围决定预演期间当前事实或支持已经变化",
+      );
     }
     const unionBy = <T>(
       left: readonly T[],
@@ -18384,18 +19614,18 @@ export class AssetRefreshWorkflow {
       key: string,
       capability: CapabilityCoordinate,
     ): Promise<void> => {
-      const current = await this.ports.executionQueries.inspectExecution(
+      const durable = await this.ports.executionQueries.readWorkflowExecution(
         execution.id,
       );
-      const durable = current?.execution ?? execution;
-      const workItems = durable.workItems;
+      const currentExecution = durable ?? execution;
+      const workItems = currentExecution.workItems;
       const item = workItems?.find((candidate) => candidate.key === key);
       if (item === undefined)
         throw new Error(`Unknown recognition work item ${key}`);
       if (workItems === undefined)
         throw new Error(`Recognition work items are missing for ${key}`);
       const next: WorkflowExecution = {
-        ...this.retainCapabilityParticipation(durable, [capability]),
+        ...this.retainCapabilityParticipation(currentExecution, [capability]),
         workItems: workItems.map((candidate) =>
           candidate.key === key
             ? this.retainWorkItemCapabilityParticipation(candidate, [
@@ -18404,11 +19634,11 @@ export class AssetRefreshWorkflow {
             : candidate,
         ),
       };
-      if (JSON.stringify(next) === JSON.stringify(durable)) {
-        execution = durable;
+      if (JSON.stringify(next) === JSON.stringify(currentExecution)) {
+        execution = currentExecution;
         return;
       }
-      await this.transition(durable, next, resumeClaim);
+      await this.transition(currentExecution, next, resumeClaim);
       execution = next;
     };
     for (const inspection of persisted?.workItemInspections ?? []) {
@@ -18466,7 +19696,9 @@ export class AssetRefreshWorkflow {
         }
       }
     }
-    for (const plan of plans) {
+    for (const [index, plan] of plans.entries()) {
+      // 前一工作项已在事务外耐久提交；让出事件循环，使长扫描期间的 HTTP I/O 可继续处理。
+      if (index > 0) await setImmediate();
       if (
         execution.workItems?.find((item) => item.key === plan.key)?.outcome !==
         undefined
@@ -20047,8 +21279,10 @@ export class AssetRefreshWorkflow {
     next: WorkflowExecution,
     resumeClaim?: { readonly token: string; readonly now: string },
   ): Promise<void> {
-    const current = await this.ports.executionQueries.inspectExecution(next.id);
-    await this.transition(current?.execution ?? next, next, resumeClaim);
+    const current = await this.ports.executionQueries.readWorkflowExecution(
+      next.id,
+    );
+    await this.transition(current ?? next, next, resumeClaim);
   }
 
   /** 只标识为具体请求候选选定的获取器。 */
@@ -21472,12 +22706,27 @@ export class AssetRefreshWorkflow {
       return preview;
     }
     if (preview.facts === undefined)
-      throw new Error("此预演缺少冻结的生效读取结果，请重新形成预演");
+      throw preview.change.kind === "metadata-decision"
+        ? new MetadataDecisionError(
+            "conflict",
+            "属性修订预演缺少冻结的当前结果，请重新检查资料",
+          )
+        : new Error("此预演缺少冻结的生效读取结果，请重新形成预演");
     if (preview.blockingConditions.length > 0) {
-      throw new Error("存在阻塞条件，不能应用变更影响预演");
+      throw preview.change.kind === "metadata-decision"
+        ? new MetadataDecisionError(
+            "conflict",
+            "属性修订预演存在阻塞条件，不能确认",
+          )
+        : new Error("存在阻塞条件，不能应用变更影响预演");
     }
     if (preview.version !== "change-impact-preview/2")
-      throw new Error("旧版变更影响预演只能审计，不能应用");
+      throw preview.change.kind === "metadata-decision"
+        ? new MetadataDecisionError(
+            "conflict",
+            "属性修订预演版本已过期，请重新检查资料",
+          )
+        : new Error("旧版变更影响预演只能审计，不能应用");
     if (preview.change.kind === "source-association") {
       const decisionExecution =
         await this.ports.executionQueries.inspectExecution(preview.executionId);
@@ -21534,6 +22783,33 @@ export class AssetRefreshWorkflow {
       await this.ports.changeImpactCommands.applyRecognitionScopeAmendmentPreview(
         { preview, plan },
       );
+      return await this.requireDurableChangeImpactPreview(preview.id);
+    }
+    if (preview.change.kind === "metadata-decision") {
+      const [accepted] = await this.ports.reuseQueries.findAcceptedForSubjects([
+        preview.assetId,
+      ]);
+      const decision = preview.change.decision;
+      const currentCandidateBaseline =
+        accepted === undefined || decision.target.kind !== "entity"
+          ? null
+          : JSON.stringify(
+              metadataDecisionCurrentCandidates(
+                { ...accepted.accepted, id: accepted.accepted.entity.id },
+                this.ports.metadataPolicyConfiguration,
+                decision.target,
+                decision.property,
+                decision.metadataUsageContext,
+              )
+                .map(metadataDecisionCandidateReference)
+                .toSorted(),
+            );
+      await this.ports.changeImpactCommands.applyMetadataDecisionPreview({
+        preview,
+        confirmedBy: input.confirmedBy,
+        currentCandidateBaseline,
+        policyVersion: this.compatibility().policyVersion,
+      });
       return await this.requireDurableChangeImpactPreview(preview.id);
     }
     if (preview.change.kind === "artifact-role-decision") {

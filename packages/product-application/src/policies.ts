@@ -1,6 +1,8 @@
 import type {
+  AutomatedInformationPlanner,
   CapabilityDeclaration,
   DeclaredCapability,
+  InformationRequirement,
   MetadataPolicyConfiguration,
   RecognitionPolicy,
   WorkflowConfigurationCompatibility,
@@ -28,21 +30,21 @@ const trustedRecognitionRules = [
   },
   {
     capabilityId: "nbinet.exact-isbn-recognizer",
-    capabilityVersion: "3",
+    capabilityVersion: "4",
     ruleId: "embedded-isbn-in-exact-official-record",
-    ruleVersion: "3",
+    ruleVersion: "4",
   },
   {
     capabilityId: "nbinet.exact-isbn-recognizer",
-    capabilityVersion: "3",
+    capabilityVersion: "4",
     ruleId: "directed-isbn-in-exact-official-record",
     ruleVersion: "1",
   },
   {
     capabilityId: "epub.local-publication-recognizer",
-    capabilityVersion: "3",
+    capabilityVersion: "4",
     ruleId: "epub.valid-single-publication-revision",
-    ruleVersion: "3",
+    ruleVersion: "4",
   },
   {
     capabilityId: "pdf.local-publication-recognizer",
@@ -70,11 +72,148 @@ const trustedRecognitionRules = [
   },
   {
     capabilityId: "book.local-directory-recognizer",
-    capabilityVersion: "1",
+    capabilityVersion: "2",
     ruleId: "book.same-name-directory-with-valid-publication",
-    ruleVersion: "1",
+    ruleVersion: "2",
   },
 ] as const;
+
+/** 首轮扫描前没有已接受主体，采用有限的通用资料需求。 */
+export const productGeneralAutomationInformationRequirement: InformationRequirement =
+  {
+    metadataUsageContext: "asset.ordinary",
+    metadata: [
+      { property: "asset.title", necessity: "optional" },
+      { property: "asset.introduction", necessity: "optional" },
+      { property: "asset.summary", necessity: "optional" },
+      { property: "asset.body", necessity: "optional" },
+      { property: "asset.release-date", necessity: "optional" },
+      { property: "asset.publication-datetime", necessity: "optional" },
+      { property: "asset.declared-language", necessity: "optional" },
+      { property: "asset.content-classification", necessity: "optional" },
+    ],
+    artifactRoles: [
+      { role: "asset.primary-cover", necessity: "optional" },
+      { role: "asset.material-image", necessity: "optional" },
+    ],
+    relationshipTypes: [
+      { type: "asset.*", necessity: "optional" },
+      { type: "bangumi.subject.related", necessity: "optional" },
+    ],
+  };
+
+/** 为已接受主体选择类别专用规则时，只读取识别其类别所需的当前事实。 */
+export const productRefreshPlanningInformationRequirement: InformationRequirement =
+  {
+    metadataUsageContext: "asset.ordinary",
+    metadata: [
+      { property: "book.isbn-13", necessity: "optional" },
+      { property: "book.contributor", necessity: "optional" },
+      { property: "book.publisher", necessity: "optional" },
+      { property: "asset.content-classification", necessity: "optional" },
+    ],
+    artifactRoles: [],
+    relationshipTypes: [],
+  };
+
+const bookAutomationInformationRequirement: InformationRequirement = {
+  metadataUsageContext: "asset.ordinary",
+  metadata: [
+    { property: "asset.title", necessity: "required" },
+    { property: "book.isbn-13", necessity: "optional" },
+    { property: "book.publisher", necessity: "optional" },
+    { property: "book.publication-date", necessity: "optional" },
+    { property: "asset.declared-language", necessity: "optional" },
+    { property: "asset.summary", necessity: "optional" },
+  ],
+  artifactRoles: [
+    { role: "asset.primary-cover", necessity: "optional" },
+    { role: "asset.material-image", necessity: "optional" },
+  ],
+  relationshipTypes: [{ type: "asset.contribution", necessity: "optional" }],
+};
+
+const filmAutomationInformationRequirement: InformationRequirement = {
+  metadataUsageContext: "asset.ordinary",
+  metadata: [
+    { property: "asset.title", necessity: "required" },
+    { property: "asset.introduction", necessity: "optional" },
+    { property: "asset.release-date", necessity: "optional" },
+    { property: "asset.runtime-minutes", necessity: "optional" },
+    { property: "asset.genre", necessity: "optional" },
+    { property: "asset.awards", necessity: "optional" },
+    { property: "asset.box-office", necessity: "optional" },
+    { property: "rating.*", necessity: "optional" },
+  ],
+  artifactRoles: [{ role: "asset.primary-cover", necessity: "optional" }],
+  relationshipTypes: [{ type: "asset.contribution", necessity: "optional" }],
+};
+
+const dlsiteAutomationInformationRequirement: InformationRequirement = {
+  metadataUsageContext: "asset.ordinary",
+  metadata: [
+    { property: "asset.title", necessity: "required" },
+    { property: "asset.release-date", necessity: "optional" },
+    { property: "asset.introduction", necessity: "optional" },
+    { property: "asset.declared-language", necessity: "optional" },
+    { property: "asset.content-classification", necessity: "optional" },
+    { property: "dlsite.product.price-jpy", necessity: "optional" },
+    { property: "dlsite.product.genre", necessity: "optional" },
+  ],
+  artifactRoles: [
+    {
+      role: "asset.primary-cover",
+      necessity: "optional",
+      maximum: 1,
+    },
+  ],
+  relationshipTypes: [
+    { type: "asset.contribution", necessity: "optional" },
+    { type: "asset.membership", necessity: "optional" },
+  ],
+};
+
+/** 自动刷新采用的产品信息需求；仅依赖已接受主体的中立事实和产品规则。 */
+export const productAutomationInformationPlanner: AutomatedInformationPlanner =
+  {
+    // 继续沿用部署中冻结的坐标；规则本体与现有资产视图选择范围等价。
+    coordinate: "information-planner:asset-view/1",
+    requirementForAcceptedSubject(accepted) {
+      const sourceIdentities = new Set([
+        ...accepted.sourceAssociations.map(
+          ({ sourceIdentity }) => sourceIdentity,
+        ),
+        accepted.recognitionSourceAssociation?.sourceIdentity,
+      ]);
+      if (sourceIdentities.has("fanbox"))
+        return productGeneralAutomationInformationRequirement;
+      if (sourceIdentities.has("dlsite"))
+        return dlsiteAutomationInformationRequirement;
+      if (sourceIdentities.has("tmdb"))
+        return filmAutomationInformationRequirement;
+      if (sourceIdentities.has("bangumi"))
+        return productGeneralAutomationInformationRequirement;
+      const subjectDescription = accepted.descriptions.find(
+        (description) =>
+          description.target.kind === "entity" &&
+          description.target.entityId === accepted.id,
+      );
+      if (
+        subjectDescription?.metadata.some(
+          (metadata) =>
+            metadata.result.status === "resolved" &&
+            metadata.result.values.length > 0 &&
+            (metadata.property === "book.isbn-13" ||
+              metadata.property === "book.contributor" ||
+              metadata.property === "book.publisher" ||
+              (metadata.property === "asset.content-classification" &&
+                metadata.result.values.some(({ value }) => value === "book"))),
+        )
+      )
+        return bookAutomationInformationRequirement;
+      return productGeneralAutomationInformationRequirement;
+    },
+  };
 
 /** 当前产品允许自动接受的初始识别规则；集成不能自行授予信任。 */
 export function curatedInitialRecognitionPolicy(): RecognitionPolicy & {
@@ -82,7 +221,7 @@ export function curatedInitialRecognitionPolicy(): RecognitionPolicy & {
   readonly trustedRuleCoordinates: readonly string[];
 } {
   return {
-    version: "curated-initial-sources/8",
+    version: "curated-initial-sources/9",
     trustedRuleCoordinates: trustedRecognitionRules.map(
       (rule) =>
         `${rule.capabilityId}@${rule.capabilityVersion}/${rule.ruleId}@${rule.ruleVersion}`,

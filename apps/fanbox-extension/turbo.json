@@ -1,0 +1,24 @@
+{
+  "extends": ["//"],
+  "tags": ["client"],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"],
+      "tags": ["quality:light"]
+    },
+    "format:check": { "outputs": [], "tags": ["quality:light"] },
+    "format:write": {
+      "dependsOn": ["lint:fix"],
+      "cache": false,
+      "tags": ["work:repair"]
+    },
+    "lint": { "outputs": [], "tags": ["quality:light"] },
+    "lint:fix": { "cache": false, "tags": ["work:repair"] },
+    "typecheck": {
+      "dependsOn": ["^typecheck"],
+      "outputs": [],
+      "tags": ["quality:light"]
+    }
+  }
+}

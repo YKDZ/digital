@@ -14,10 +14,11 @@ import path from "node:path";
 import {
   assetRefreshSelectionVersion,
   type EffectiveSubjectRead,
+  type InformationRequirement,
 } from "@digital/application";
 import { ProductBangumiSourceConnection } from "@digital/bangumi";
 import { ProductSourceConnectionPrivateState } from "@digital/product-data";
-import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { assert, afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
 import { composeAssetRefresh } from "../src/runtime.ts";
 import {
@@ -162,6 +163,7 @@ describe("static source registration", () => {
         state: "awaiting-selection",
         candidates: [{}, {}],
       });
+      assert.isDefined(reopened!.candidates[1]);
       const selected = await workflow.selectSourceAssociationCandidate({
         executionId: decision.executionId,
         candidateReference: reopened!.candidates[1].reference,
@@ -180,6 +182,7 @@ describe("static source registration", () => {
         ]),
       );
       const persisted = await workflow.inspect(decision.executionId);
+      assert.isDefined(persisted);
       const secondDetailRecord = persisted.sourceRecords.find(
         (record) =>
           record.nativeAddress ===
@@ -380,6 +383,45 @@ describe("product-managed Bangumi OAuth source connection", () => {
         (await stat(path.join(privateDirectory, "bangumi-oauth.json"))).mode &
           0o777,
       ).toBe(0o600);
+    } finally {
+      await workflow.close();
+    }
+  });
+
+  it("associates cancellation results with one exact Bangumi authorization attempt", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "digital-bangumi-oauth-"));
+    temporaryRoots.push(root);
+    const productDataDirectory = path.join(root, "product-data");
+    await prepareCatalogueAt(productDataDirectory);
+    const workflow = composeAssetRefresh(productDataDirectory, {
+      DIGITAL_BANGUMI_CLIENT_ID: "digital-test-client",
+      DIGITAL_BANGUMI_CLIENT_SECRET: "digital-test-secret",
+      DIGITAL_BANGUMI_REDIRECT_URI:
+        "https://digital.example.test/api/source-connections/bangumi/callback",
+    });
+    try {
+      const first = workflow.sourceConnections.bangumi.beginAuthorization();
+      expect(
+        workflow.sourceConnections.bangumi.cancelAuthorization(first.attemptId),
+      ).toMatchObject({
+        attemptId: first.attemptId,
+        status: "cancelled",
+      });
+
+      const second = workflow.sourceConnections.bangumi.beginAuthorization();
+      expect(
+        workflow.sourceConnections.bangumi.getAuthorizationAttempt(
+          first.attemptId,
+        ),
+      ).toMatchObject({ attemptId: first.attemptId, status: "superseded" });
+      expect(
+        workflow.sourceConnections.bangumi.cancelAuthorization(first.attemptId),
+      ).toMatchObject({ attemptId: first.attemptId, status: "superseded" });
+      expect(
+        workflow.sourceConnections.bangumi.getAuthorizationAttempt(
+          second.attemptId,
+        ),
+      ).toMatchObject({ attemptId: second.attemptId, status: "waiting" });
     } finally {
       await workflow.close();
     }
@@ -622,6 +664,12 @@ describe("product-managed Bangumi OAuth source connection", () => {
       connection.completeAuthorizationCallback(callback.toString()),
     ).rejects.toThrow("Bangumi OAuth 回调状态无效或已过期");
     expect(request).not.toHaveBeenCalled();
+    expect(connection.getAuthorizationAttempt(started.attemptId)).toMatchObject(
+      {
+        attemptId: started.attemptId,
+        status: "expired",
+      },
+    );
     expect(
       existsSync(
         path.join(
@@ -1004,15 +1052,33 @@ describe("product-managed Bangumi OAuth source connection", () => {
         credentialStatus: "unconfigured",
         availability: "unavailable",
       });
-      expect(
-        existsSync(
-          path.join(
-            productDataDirectory,
-            "private-source-connections",
-            "bangumi-oauth.json",
-          ),
+      const authorizationAttempt =
+        workflow.sourceConnections.bangumi.getAuthorizationAttempt(
+          started.attemptId,
+        );
+      expect(authorizationAttempt).toMatchObject({
+        attemptId: started.attemptId,
+        status: "failed",
+      });
+      const privateRecord = await readFile(
+        path.join(
+          productDataDirectory,
+          "private-source-connections",
+          "bangumi-oauth.json",
         ),
-      ).toBe(false);
+        "utf8",
+      );
+      expect(JSON.parse(privateRecord)).toMatchObject({
+        configurationVersion: 0,
+        credentialStatus: "unconfigured",
+        authorizationAttempt: {
+          attemptId: started.attemptId,
+          status: "failed",
+        },
+      });
+      expect(privateRecord).not.toContain(privateClientSecret);
+      expect(privateRecord).not.toContain(reflectedProviderText);
+      expect(privateRecord).not.toContain("private-one-time-code");
     } finally {
       await workflow.close();
     }
@@ -1650,7 +1716,7 @@ describe("product-managed film source connections", () => {
     }
   });
 
-  it("validates each configured connection independently and never exposes its supplied credential", async () => {
+  it("配置和替换后的来源连接须验证成功才可用，且不会公开密钥", async () => {
     const root = await mkdtemp(
       path.join(tmpdir(), "digital-source-connections-"),
     );
@@ -1672,12 +1738,25 @@ describe("product-managed film source connections", () => {
     });
     const workflow = composeAssetRefresh(productDataDirectory, {});
     try {
-      const tmdb =
-        workflow.sourceConnections.tmdb.configureAccessToken(
-          "tmdb-verify-token",
-        );
-      const omdb =
-        workflow.sourceConnections.omdb.configureApiKey("omdb-invalid-key");
+      const tmdb = workflow.sourceConnections.tmdb.configureAccessToken(
+        "controlled-tmdb-verify-token",
+      );
+      const omdb = workflow.sourceConnections.omdb.configureApiKey(
+        "controlled-omdb-invalid-key",
+      );
+      expect(tmdb).toMatchObject({
+        credentialStatus: "configured",
+        availability: "unavailable",
+        reason: "verification-pending",
+      });
+      expect(omdb).toMatchObject({
+        credentialStatus: "configured",
+        availability: "unavailable",
+        reason: "verification-pending",
+      });
+      expect(JSON.stringify(workflow.sourceConnections.inspect())).not.toMatch(
+        /controlled-tmdb-verify-token|controlled-omdb-invalid-key/u,
+      );
       await expect(workflow.sourceConnections.tmdb.verify()).resolves.toEqual(
         expect.objectContaining({
           id: "tmdb",
@@ -1699,9 +1778,14 @@ describe("product-managed film source connections", () => {
 
       omdbCredentialAccepted = true;
       const replacement = workflow.sourceConnections.omdb.replaceApiKey(
-        "omdb-verified-key",
+        "controlled-omdb-verified-key",
         omdb.version,
       );
+      expect(replacement).toMatchObject({
+        credentialStatus: "configured",
+        availability: "unavailable",
+        reason: "verification-pending",
+      });
       await expect(workflow.sourceConnections.omdb.verify()).resolves.toEqual(
         expect.objectContaining({
           id: "omdb",
@@ -1712,9 +1796,9 @@ describe("product-managed film source connections", () => {
         }),
       );
       const observable = JSON.stringify(workflow.sourceConnections.inspect());
-      expect(observable).not.toContain("verify-token");
-      expect(observable).not.toContain("invalid-key");
-      expect(observable).not.toContain("verified-key");
+      expect(observable).not.toContain("controlled-tmdb-verify-token");
+      expect(observable).not.toContain("controlled-omdb-invalid-key");
+      expect(observable).not.toContain("controlled-omdb-verified-key");
     } finally {
       await workflow.close();
     }
@@ -1728,8 +1812,21 @@ describe("product-managed film source connections", () => {
     const productDataDirectory = path.join(root, "product-data");
     await prepareCatalogueAt(productDataDirectory);
     const authorizationHeaders: string[] = [];
+    let beginVerification!: () => void;
+    const verificationStarted = new Promise<void>((resolve) => {
+      beginVerification = resolve;
+    });
+    let releaseVerification!: () => void;
+    const verificationGate = new Promise<void>((resolve) => {
+      releaseVerification = resolve;
+    });
     vi.stubGlobal("fetch", async (input: string | URL, init?: RequestInit) => {
       const url = new URL(input);
+      if (url.pathname.endsWith("/authentication")) {
+        beginVerification();
+        await verificationGate;
+        return jsonResponse({ success: true });
+      }
       const authorization = new Headers(init?.headers).get("Authorization");
       if (authorization !== null) authorizationHeaders.push(authorization);
       if (url.pathname.endsWith("/search/movie"))
@@ -1763,10 +1860,25 @@ describe("product-managed film source connections", () => {
       );
       expect(first.sourceRecords).toEqual([]);
 
-      const configured =
-        workflow.sourceConnections.tmdb.configureAccessToken(
-          "tmdb-first-secret",
-        );
+      const configured = workflow.sourceConnections.tmdb.configureAccessToken(
+        "controlled-tmdb-first-secret",
+      );
+      const verification = workflow.sourceConnections.tmdb.verify();
+      await verificationStarted;
+      const pending = await scanStrictFilm(
+        workflow,
+        path.join(root, "TMDB Verification Pending Film (2004)"),
+      );
+      expect(pending.execution.status).toBe("failed");
+      expect(
+        pending.execution.workflowInput?.configurationReferences,
+      ).toContain(`source-connection/tmdb@${configured.version}`);
+      expect(pending.sourceRecords).toEqual([]);
+      expect(authorizationHeaders).not.toContain(
+        "Bearer controlled-tmdb-first-secret",
+      );
+      releaseVerification();
+      await verification;
       const accepted = await scanStrictFilm(
         workflow,
         path.join(root, "First Film (2004)"),
@@ -1775,12 +1887,15 @@ describe("product-managed film source connections", () => {
         accepted.execution.workflowInput?.configurationReferences,
       ).toContain("source-connection/tmdb@1");
       expect(accepted.sourceRecords.length).toBeGreaterThan(0);
-      expect(authorizationHeaders).toContain("Bearer tmdb-first-secret");
+      expect(authorizationHeaders).toContain(
+        "Bearer controlled-tmdb-first-secret",
+      );
 
       const replaced = workflow.sourceConnections.tmdb.replaceAccessToken(
-        "tmdb-second-secret",
+        "controlled-tmdb-second-secret",
         configured.version,
       );
+      await workflow.sourceConnections.tmdb.verify();
       const second = await scanStrictFilm(
         workflow,
         path.join(root, "Second Film (2004)"),
@@ -1789,7 +1904,9 @@ describe("product-managed film source connections", () => {
         "source-connection/tmdb@2",
       );
       expect(second.sourceRecords.length).toBeGreaterThan(0);
-      expect(authorizationHeaders).toContain("Bearer tmdb-second-secret");
+      expect(authorizationHeaders).toContain(
+        "Bearer controlled-tmdb-second-secret",
+      );
 
       const revoked = workflow.sourceConnections.tmdb.revoke(replaced.version);
       const unavailable = await scanStrictFilm(
@@ -1801,8 +1918,11 @@ describe("product-managed film source connections", () => {
       ).toContain(`source-connection/tmdb@${revoked.version}`);
       expect(unavailable.sourceRecords).toEqual([]);
       expect(unavailable.execution.status).toBe("failed");
-      expect(JSON.stringify(unavailable)).not.toContain("tmdb-second-secret");
+      expect(JSON.stringify(unavailable)).not.toContain(
+        "controlled-tmdb-second-secret",
+      );
     } finally {
+      releaseVerification();
       await workflow.close();
     }
   });
@@ -1838,14 +1958,16 @@ describe("product-managed film source connections", () => {
       if (triggered?.status !== "started")
         throw new Error("missing automatic execution");
       await vi.waitFor(async () => {
-        expect(
-          (await workflow.inspect(triggered.execution.execution.id)).execution
-            .status,
-        ).not.toBe("running");
+        const inspection = await workflow.inspect(
+          triggered.execution.execution.id,
+        );
+        assert.isDefined(inspection);
+        expect(inspection.execution.status).not.toBe("running");
       });
       const completed = await workflow.inspect(
         triggered.execution.execution.id,
       );
+      assert.isDefined(completed);
       const scan = await workflow.inspectAssetLibraryScan(
         completed.execution.id,
       );
@@ -1853,6 +1975,7 @@ describe("product-managed film source connections", () => {
       const child = await workflow.inspect(
         scan!.directories[0]!.childExecutionId!,
       );
+      assert.isDefined(child);
       expect({ execution: child }).toMatchObject({
         execution: {
           execution: {
@@ -1971,15 +2094,16 @@ describe("product-managed film source connections", () => {
     const workflow = composeAssetRefresh(productDataDirectory, {});
     try {
       const original = workflow.sourceConnections.tmdb.configureAccessToken(
-        "tmdb-frozen-version",
+        "controlled-tmdb-frozen-version",
       );
+      await workflow.sourceConnections.tmdb.verify();
       const running = scanStrictFilm(
         workflow,
         path.join(root, "Frozen Version Film (2004)"),
       );
       await firstSearch;
       const replacement = workflow.sourceConnections.tmdb.replaceAccessToken(
-        "tmdb-latest-version",
+        "controlled-tmdb-latest-version",
         original.version,
       );
       releaseFirstSearch();
@@ -1990,9 +2114,10 @@ describe("product-managed film source connections", () => {
         `source-connection/tmdb@${original.version}`,
       );
       expect(new Set(frozenHeaders)).toEqual(
-        new Set(["Bearer tmdb-frozen-version"]),
+        new Set(["Bearer controlled-tmdb-frozen-version"]),
       );
 
+      await workflow.sourceConnections.tmdb.verify();
       const later = await scanStrictFilm(
         workflow,
         path.join(root, "Latest Version Film (2004)"),
@@ -2001,7 +2126,7 @@ describe("product-managed film source connections", () => {
         `source-connection/tmdb@${replacement.version}`,
       );
       expect(authorizationHeaders.slice(frozenHeaders.length)).toContain(
-        "Bearer tmdb-latest-version",
+        "Bearer controlled-tmdb-latest-version",
       );
       expect(JSON.stringify(first)).not.toContain("frozen-version");
       expect(JSON.stringify(later)).not.toContain("latest-version");
@@ -2499,7 +2624,7 @@ function jsonResponse(body: unknown) {
 async function scanStrictFilm(
   workflow: ReturnType<typeof composeAssetRefresh>,
   directory: string,
-  informationRequirement = {
+  informationRequirement: InformationRequirement = {
     metadataUsageContext: "asset.ordinary",
     metadata: [{ property: "asset.title", necessity: "required" as const }],
     artifactRoles: [],

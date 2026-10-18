@@ -13,16 +13,9 @@
       "releaseDate": "2023-02-25",
       "circle": "G線上の牡丹雪",
       "credits": {
-        "voice": [
-          "逢坂成美",
-          "涼花みなせ"
-        ],
-        "scenario": [
-          "牡丹一"
-        ],
-        "illustration": [
-          "かふか"
-        ],
+        "voice": ["逢坂成美", "涼花みなせ"],
+        "scenario": ["牡丹一"],
+        "illustration": ["かふか"],
         "author": []
       },
       "series": {
@@ -64,16 +57,9 @@
       "releaseDate": "2023-04-29",
       "circle": "G線上の牡丹雪",
       "credits": {
-        "voice": [
-          "浅木式",
-          "涼花みなせ"
-        ],
-        "scenario": [
-          "牡丹一"
-        ],
-        "illustration": [
-          "かふか"
-        ],
+        "voice": ["浅木式", "涼花みなせ"],
+        "scenario": ["牡丹一"],
+        "illustration": ["かふか"],
         "author": []
       },
       "cover": "present",
@@ -103,15 +89,9 @@
       "releaseDate": "2023-11-18",
       "circle": "G線上の牡丹雪",
       "credits": {
-        "voice": [
-          "小花衣こっこ"
-        ],
-        "scenario": [
-          "牡丹一"
-        ],
-        "illustration": [
-          "かふか"
-        ],
+        "voice": ["小花衣こっこ"],
+        "scenario": ["牡丹一"],
+        "illustration": ["かふか"],
         "author": []
       },
       "series": {
@@ -152,15 +132,9 @@
       "releaseDate": "2023-12-27",
       "circle": "G線上の牡丹雪",
       "credits": {
-        "voice": [
-          "浅木式"
-        ],
-        "scenario": [
-          "牡丹一"
-        ],
-        "illustration": [
-          "睦月にゃふ"
-        ],
+        "voice": ["浅木式"],
+        "scenario": ["牡丹一"],
+        "illustration": ["睦月にゃふ"],
         "author": []
       },
       "cover": "present",
@@ -190,15 +164,9 @@
       "releaseDate": "2024-06-01",
       "circle": "G線上の牡丹雪",
       "credits": {
-        "voice": [
-          "砂糖しお"
-        ],
-        "scenario": [
-          "牡丹一"
-        ],
-        "illustration": [
-          "かふか"
-        ],
+        "voice": ["砂糖しお"],
+        "scenario": ["牡丹一"],
+        "illustration": ["かふか"],
         "author": []
       },
       "cover": "present",
@@ -228,18 +196,10 @@
       "releaseDate": "2025-11-30",
       "circle": "ないしょ部",
       "credits": {
-        "voice": [
-          "陽向葵ゅか"
-        ],
-        "scenario": [
-          "mizui"
-        ],
-        "illustration": [
-          "朱里 / shuri"
-        ],
-        "author": [
-          "ないしょ部"
-        ]
+        "voice": ["陽向葵ゅか"],
+        "scenario": ["mizui"],
+        "illustration": ["朱里 / shuri"],
+        "author": ["ないしょ部"]
       },
       "cover": "present",
       "files": [
@@ -260,13 +220,7 @@
           "input": "【早期限定購入特典】全裸差分、特典音声など/催眠アプリをくれたJK_スマホ用壁紙.png"
         }
       ],
-      "creditLabels": [
-        "陽向葵ゅか",
-        "mizui",
-        "朱里 ",
-        " shuri",
-        "ないしょ部"
-      ]
+      "creditLabels": ["陽向葵ゅか", "mizui", "朱里 / shuri", "ないしょ部"]
     },
     {
       "id": "RJ01668691",
@@ -279,15 +233,9 @@
       "releaseDate": "2026-07-17",
       "circle": "ぐらまらす工房",
       "credits": {
-        "voice": [
-          "みたかりん"
-        ],
-        "scenario": [
-          "しこみね"
-        ],
-        "illustration": [
-          "どちゃしこ"
-        ],
+        "voice": ["みたかりん"],
+        "scenario": ["しこみね"],
+        "illustration": ["どちゃしこ"],
         "author": []
       },
       "cover": "present",
@@ -317,15 +265,9 @@
       "releaseDate": "2021-08-02",
       "circle": "ぱれっと",
       "credits": {
-        "voice": [
-          "種﨑敦美"
-        ],
-        "scenario": [
-          "速水漣"
-        ],
-        "illustration": [
-          "和泉つばす"
-        ],
+        "voice": ["種﨑敦美"],
+        "scenario": ["速水漣"],
+        "illustration": ["和泉つばす"],
         "author": []
       },
       "cover": "present",

@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { createPublicApiClient } from "@digital/public-api";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
@@ -32,6 +33,10 @@ import {
   productDataDirectorySegment,
   recordFileName,
 } from "../src/internal/paths.ts";
+import {
+  createLibraryAndScan,
+  workflowHistoryIds as readWorkflowHistoryIds,
+} from "./product-service.ts";
 
 const workspaceRoot = path.resolve(
   fileURLToPath(new URL(".", import.meta.url)),
@@ -40,7 +45,6 @@ const workspaceRoot = path.resolve(
   "..",
 );
 const environmentCli = path.join("packages", "environment", "dist", "cli.js");
-const productCli = path.join("apps", "cli", "dist", "cli.js");
 /** 本回合可控端口只取 34001–34999，先确认真实空闲再登记使用。 */
 const portFloor = 34_001;
 const portCeiling = 34_999;
@@ -615,64 +619,24 @@ async function recordLibraryScan(
   label: string,
 ): Promise<typeof businessRecord> {
   const material = await temporaryDirectory("digital-05-material-");
-  const created = await run({
-    command: process.execPath,
-    args: [
-      path.join(workspaceRoot, productCli),
-      "library-create",
-      label,
-      "--directory",
-      material,
-      "--json",
-    ],
-    env: { ...cleanEnvironment(), DIGITAL_PRODUCT_DATA: scene.productDataRoot },
+  const recorded = await createLibraryAndScan({
+    workspacePath: workspaceRoot,
+    environment: scene.name,
+    displayName: label,
+    directory: material,
   });
-  expect(created.code, created.stderr).toBe(0);
-  const library = (JSON.parse(created.stdout) as { id: string }).id;
-  const scan = await run({
-    command: process.execPath,
-    args: [
-      path.join(workspaceRoot, productCli),
-      "scan-library",
-      library,
-      "--preview",
-      "--json",
-    ],
-    env: { ...cleanEnvironment(), DIGITAL_PRODUCT_DATA: scene.productDataRoot },
-  });
-  expect(scan.code, scan.stderr).toBe(0);
-  const recorded = JSON.parse(scan.stdout) as {
-    parentExecutionId: string;
-    assetLibraryId: string;
-    directories: { childExecutionId?: string }[];
-  };
-  const executionId = recorded.directories.find(
-    (directory) => directory.childExecutionId !== undefined,
-  )?.childExecutionId;
-  expect(executionId, scan.stdout).not.toBeUndefined();
   return {
-    scanId: recorded.parentExecutionId,
-    libraryId: recorded.assetLibraryId,
-    executionId: executionId!,
+    scanId: recorded.executionId,
+    libraryId: recorded.libraryId,
+    executionId: recorded.executionId,
   };
 }
 
 async function workflowHistoryIds(): Promise<string[]> {
-  const read = await run({
-    command: process.execPath,
-    args: [
-      path.join(workspaceRoot, productCli),
-      "catalogue-surface",
-      "--surface",
-      "workflow-history",
-    ],
-    env: { ...cleanEnvironment(), DIGITAL_PRODUCT_DATA: scene.productDataRoot },
+  return await readWorkflowHistoryIds({
+    workspacePath: workspaceRoot,
+    environment: scene.name,
   });
-  expect(read.code, read.stderr).toBe(0);
-  const page = JSON.parse(read.stdout) as {
-    items: { execution: { id: string } }[];
-  };
-  return page.items.map((item) => item.execution.id);
 }
 
 async function httpGet(
@@ -1325,42 +1289,33 @@ describe("超时与中断后的收尾和失败现场恢复", () => {
         await httpGet(scene.port, "/api/ready").then((read) => read.status),
       ).toBe(200);
       // 产品数据是单一写入者：就绪期间由该世代自己持有，旧值请运行中的产品经公开接口读回。
-      const readBack = await httpGet(
-        scene.port,
-        `/api/scans/library/${businessRecord.scanId}`,
+      const publicClient = createPublicApiClient({
+        baseUrl: `http://127.0.0.1:${String(scene.port)}`,
+      });
+      const stored = await publicClient.inspectAssetLibraryScan(
+        businessRecord.scanId,
       );
-      console.log(
-        `05 公开读回：GET /api/scans/library/${businessRecord.scanId} 状态 ${String(
-          readBack.status,
-        )} 正文 ${readBack.body.slice(0, 900)}`,
-      );
-      expect(readBack.status, readBack.body).toBe(200);
-      const stored = JSON.parse(readBack.body) as {
-        id?: string;
-        status?: string;
-        directories?: { id?: string; stage?: string }[];
-      };
-      expect(stored.id).toBe(businessRecord.scanId);
+      expect(stored.parentExecutionId).toBe(businessRecord.scanId);
       expect(
-        stored.directories?.length ?? 0,
-        `产品没有交出该次扫描的目录账本：${readBack.body}`,
+        stored.directories.length,
+        `产品没有交出该次扫描的目录账本：${JSON.stringify(stored)}`,
       ).toBeGreaterThan(0);
       expect(
-        stored.directories!.every(
+        stored.directories.every(
           (directory) =>
             typeof directory.id === "string" &&
             directory.id.length > 0 &&
             typeof directory.stage === "string",
         ),
-        `读回的目录账本缺少持久阶段事实：${readBack.body}`,
+        `读回的目录账本缺少持久阶段事实：${JSON.stringify(stored)}`,
       ).toBe(true);
       // 反证：同一个公开入口查一个没有落库的世代，产品不会凭 URL 编造结果，
       // 因此上面读到的确实是本世代从自己的持久数据里取回的旧业务记录。
-      const absent = await httpGet(
-        scene.port,
-        "/api/scans/library/execution_00000000-0000-4000-8000-000000000000",
-      );
-      expect(absent.status).not.toBe(200);
+      await expect(
+        publicClient.inspectAssetLibraryScan(
+          "execution_00000000-0000-4000-8000-000000000000",
+        ),
+      ).rejects.toMatchObject({ status: 404 });
     },
     realRunTimeout,
   );

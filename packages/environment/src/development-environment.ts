@@ -213,7 +213,7 @@ export async function developEnvironment(input: {
         "turbo",
         "watch",
         "dev:serve",
-        "--filter=@digital/web",
+        "--filter=@digital/service",
         "--ui=stream",
         "--env-mode=loose",
       ];

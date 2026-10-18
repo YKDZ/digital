@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>连接 FANBOX</title>
+    <style>
+      body {
+        width: 360px;
+        margin: 0;
+        padding: 16px;
+        color: #222;
+        font:
+          14px/1.5 system-ui,
+          sans-serif;
+      }
+      h1 {
+        margin: 0 0 12px;
+        font-size: 18px;
+      }
+      label {
+        display: block;
+        margin: 10px 0 4px;
+        font-weight: 600;
+      }
+      input {
+        box-sizing: border-box;
+        width: 100%;
+        padding: 7px;
+      }
+      button {
+        width: 100%;
+        margin-top: 12px;
+        padding: 8px;
+      }
+      #scope {
+        margin-top: 12px;
+        padding: 10px;
+        background: #f3f5f7;
+      }
+      #status {
+        min-height: 42px;
+        margin-top: 10px;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>连接 FANBOX</h1>
+    <label for="service-url">Digital 服务地址</label>
+    <input
+      id="service-url"
+      type="url"
+      autocomplete="url"
+      placeholder="http://127.0.0.1:3000"
+    />
+    <label for="instance-id">目标实例编号</label>
+    <input id="instance-id" autocomplete="off" />
+    <label for="request-id">连接请求编号</label>
+    <input id="request-id" autocomplete="off" />
+    <label for="pairing-code">限时配对码</label>
+    <input id="pairing-code" autocomplete="off" spellcheck="false" />
+    <button id="review" type="button">检查目标与创作者范围</button>
+    <div id="scope" hidden></div>
+    <button id="connect" type="button" disabled>
+      使用此浏览器登录状态连接
+    </button>
+    <div id="status" role="status" aria-live="polite"></div>
+    <script type="module" src="/src/popup.ts"></script>
+  </body>
+</html>

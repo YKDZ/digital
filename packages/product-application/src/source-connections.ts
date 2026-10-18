@@ -1,3 +1,11 @@
+import {
+  createHash,
+  randomBytes,
+  randomUUID,
+  timingSafeEqual,
+} from "node:crypto";
+
+import { SourceConnectionVersionConflict } from "@digital/application";
 import type {
   SourceCollectionExecutionContext,
   SourceCollector,
@@ -10,6 +18,8 @@ import type {
   CapabilityCoordinate,
   RecognitionEvidence,
 } from "@digital/domain";
+
+export { SourceConnectionVersionConflict } from "@digital/application";
 
 const storageVersion = "product-source-connection/1";
 
@@ -36,6 +46,15 @@ type VerificationFailedSourceConnectionRecord =
     readonly verifiedAt?: never;
   };
 
+type VerificationPendingSourceConnectionRecord =
+  PrivateSourceConnectionRecordBase & {
+    readonly credentialStatus: "configured";
+    readonly availability: "unavailable";
+    readonly secret: string;
+    readonly reason: "verification-pending";
+    readonly verifiedAt?: never;
+  };
+
 type UnconfiguredSourceConnectionRecord = Omit<
   PrivateSourceConnectionRecordBase,
   "configurationVersion"
@@ -58,6 +77,7 @@ type RevokedSourceConnectionRecord = PrivateSourceConnectionRecordBase & {
 
 type PrivateSourceConnectionRecord =
   | ConfiguredAvailableSourceConnectionRecord
+  | VerificationPendingSourceConnectionRecord
   | VerificationFailedSourceConnectionRecord
   | UnconfiguredSourceConnectionRecord
   | RevokedSourceConnectionRecord;
@@ -81,6 +101,13 @@ type ReadPrivateSourceConnectionRecord =
 
 type ConnectionVerifier = (secret: string) => Promise<void>;
 
+export class SourceConnectionAlreadyConfigured extends Error {
+  constructor() {
+    super("来源连接已经配置，请使用替换操作");
+    this.name = "SourceConnectionAlreadyConfigured";
+  }
+}
+
 type SourceConnectionDefinition = {
   readonly id: string;
   /** 安全的私有文件名片段；显示/引用 ID 可能包含 `/`。 */
@@ -99,9 +126,14 @@ export type ProductBangumiSourceConnection = {
     readonly redirectUri: string;
   }): void;
   beginAuthorization(): {
+    readonly attemptId: string;
     readonly authorizationUrl: string;
     readonly expiresAt: string;
   };
+  getAuthorizationAttempt(
+    attemptId: string,
+  ): ProductBangumiAuthorizationAttempt;
+  cancelAuthorization(attemptId: string): ProductBangumiAuthorizationAttempt;
   completeAuthorizationCallback(
     callbackUrl: string,
   ): Promise<SourceConnectionInspection>;
@@ -116,6 +148,19 @@ export type ProductBangumiSourceConnection = {
       context?: SourceCollectionExecutionContext,
     ) => Promise<string>;
   };
+};
+
+export type ProductBangumiAuthorizationAttempt = {
+  readonly attemptId: string;
+  readonly status:
+    | "waiting"
+    | "processing"
+    | "succeeded"
+    | "failed"
+    | "cancelled"
+    | "expired"
+    | "superseded";
+  readonly expiresAt?: string;
 };
 
 export type ProductSourceConnectionAdapters = {
@@ -204,11 +249,15 @@ class PrivateSourceConnection {
     };
   }
 
-  configure(secret: string): SourceConnectionInspection {
+  configure(
+    secret: string,
+    expectedVersion?: number,
+  ): SourceConnectionInspection {
     const previous = this.read();
     this.assertMutableStorage(previous);
+    this.assertExpectedVersion(previous, expectedVersion);
     if (previous.credentialStatus === "configured") {
-      throw new Error("来源连接已经配置，请使用替换操作");
+      throw new SourceConnectionAlreadyConfigured();
     }
     return this.replaceRecord(previous, secret);
   }
@@ -217,9 +266,13 @@ class PrivateSourceConnection {
    * 已经验证过私有材料的能力，可以通过一次本地写入将其提交为可用。普通连接保留各自的
    * 生命周期；浏览器 Cookie 导入器绝不会仅为稍后验证，而持久化未经检查的导出内容。
    */
-  configureVerified(secret: string): SourceConnectionInspection {
+  configureVerified(
+    secret: string,
+    expectedVersion?: number,
+  ): SourceConnectionInspection {
     const previous = this.read();
     this.assertMutableStorage(previous);
+    this.assertExpectedVersion(previous, expectedVersion);
     if (previous.credentialStatus === "configured") {
       throw new Error("来源连接已经配置，请使用替换操作");
     }
@@ -348,8 +401,9 @@ class PrivateSourceConnection {
       version: storageVersion,
       configurationVersion: previous.configurationVersion + 1,
       credentialStatus: "configured",
-      availability: "available",
+      availability: "unavailable",
       secret: secret.trim(),
+      reason: "verification-pending",
     });
     return this.inspect();
   }
@@ -378,7 +432,7 @@ class PrivateSourceConnection {
       expectedVersion !== undefined &&
       expectedVersion !== record.configurationVersion
     ) {
-      throw new Error("来源连接已被其他设置修改，请刷新后重试");
+      throw new SourceConnectionVersionConflict();
     }
   }
 
@@ -484,7 +538,8 @@ function isPrivateSourceConnectionRecord(
       }
       return (
         record.availability === "unavailable" &&
-        record.reason === "verification-failed" &&
+        (record.reason === "verification-pending" ||
+          record.reason === "verification-failed") &&
         record.verifiedAt === undefined
       );
     case "unconfigured":
@@ -526,8 +581,11 @@ export class TmdbSourceConnection {
     return this.connection.inspect();
   }
 
-  configureAccessToken(accessToken: string): SourceConnectionInspection {
-    return this.connection.configure(accessToken);
+  configureAccessToken(
+    accessToken: string,
+    expectedVersion?: number,
+  ): SourceConnectionInspection {
+    return this.connection.configure(accessToken, expectedVersion);
   }
 
   replaceAccessToken(
@@ -563,8 +621,11 @@ export class OmdbSourceConnection {
     return this.connection.inspect();
   }
 
-  configureApiKey(apiKey: string): SourceConnectionInspection {
-    return this.connection.configure(apiKey);
+  configureApiKey(
+    apiKey: string,
+    expectedVersion?: number,
+  ): SourceConnectionInspection {
+    return this.connection.configure(apiKey, expectedVersion);
   }
 
   replaceApiKey(
@@ -596,6 +657,11 @@ export class OmdbSourceConnection {
 export class ProductFanboxSourceConnections {
   private readonly privateState: SourceConnectionPrivateStatePort;
   private readonly adapter: ProductSourceConnectionAdapters["fanbox"];
+  private readonly instanceId = randomUUID();
+  private readonly pairingRequests = new Map<
+    string,
+    FanboxConnectionPairingRequest
+  >();
 
   constructor(input: {
     readonly privateState: SourceConnectionPrivateStatePort;
@@ -624,11 +690,18 @@ export class ProductFanboxSourceConnections {
     }
   > {
     assertFanboxCreatorId(input.creatorId);
+    const connection = this.connectionFor(input.creatorId);
+    const expectedVersion = connection.inspect().version;
     const privateConfiguration =
       await this.adapter.validatedBrowserCredential(input);
-    const connection = this.connectionFor(input.creatorId);
+    this.assertCurrentVersion(connection, expectedVersion);
+    const updated = connection.configureVerified(
+      privateConfiguration,
+      expectedVersion,
+    );
+    this.invalidatePairingRequests(input.creatorId, "superseded");
     return {
-      ...connection.configureVerified(privateConfiguration),
+      ...updated,
       creatorId: input.creatorId,
     };
   }
@@ -643,14 +716,19 @@ export class ProductFanboxSourceConnections {
     }
   > {
     assertFanboxCreatorId(input.creatorId);
+    const connection = this.connectionFor(input.creatorId);
+    const expectedVersion =
+      input.expectedVersion ?? connection.inspect().version;
     const privateConfiguration =
       await this.adapter.validatedBrowserCredential(input);
-    const connection = this.connectionFor(input.creatorId);
+    this.assertCurrentVersion(connection, expectedVersion);
+    const updated = connection.replaceVerified(
+      privateConfiguration,
+      expectedVersion,
+    );
+    this.invalidatePairingRequests(input.creatorId, "superseded");
     return {
-      ...connection.replaceVerified(
-        privateConfiguration,
-        input.expectedVersion,
-      ),
+      ...updated,
       creatorId: input.creatorId,
     };
   }
@@ -660,10 +738,137 @@ export class ProductFanboxSourceConnections {
     readonly expectedVersion?: number;
   }): SourceConnectionInspection & { readonly creatorId: string } {
     assertFanboxCreatorId(input.creatorId);
+    const connection = this.connectionFor(input.creatorId);
+    const revoked = connection.revoke(input.expectedVersion);
+    this.invalidatePairingRequests(input.creatorId, "superseded");
     return {
-      ...this.connectionFor(input.creatorId).revoke(input.expectedVersion),
+      ...revoked,
       creatorId: input.creatorId,
     };
+  }
+
+  createConnectionRequest(input: {
+    readonly creatorId: string;
+    readonly now?: number;
+  }): {
+    readonly request: PublicFanboxConnectionRequest;
+    readonly pairingCode: string;
+  } {
+    assertFanboxCreatorId(input.creatorId);
+    const now = input.now ?? Date.now();
+    this.invalidatePairingRequests(input.creatorId, "superseded");
+    const connection = this.connectionFor(input.creatorId);
+    const current = connection.inspect();
+    const pairingCode = randomBytes(32).toString("base64url");
+    const record: FanboxConnectionPairingRequest = {
+      id: randomUUID(),
+      creatorId: input.creatorId,
+      instanceId: this.instanceId,
+      status: "waiting",
+      createdAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + fanboxPairingLifetimeMs).toISOString(),
+      pairingCodeHash: hashPairingCode(pairingCode),
+      expectedVersion: current.version,
+      mode: current.credentialStatus === "configured" ? "replace" : "configure",
+    };
+    this.pairingRequests.set(record.id, record);
+    return { request: publicFanboxPairingRequest(record), pairingCode };
+  }
+
+  inspectConnectionRequest(
+    requestId: string,
+  ): PublicFanboxConnectionRequest | undefined {
+    const request = this.pairingRequests.get(requestId);
+    if (request === undefined) return undefined;
+    this.expirePairingRequest(request);
+    return publicFanboxPairingRequest(request);
+  }
+
+  inspectConnectionRequestForPairing(input: {
+    readonly requestId: string;
+    readonly pairingCode: string;
+  }): PublicFanboxConnectionRequest | undefined {
+    const request = this.authenticatedPairingRequest(input);
+    if (request === undefined) return undefined;
+    this.expirePairingRequest(request);
+    return publicFanboxPairingRequest(request);
+  }
+
+  async completeConnectionRequest(input: {
+    readonly requestId: string;
+    readonly pairingCode: string;
+    readonly browserCredential: unknown;
+    readonly now?: number;
+  }): Promise<PublicFanboxConnectionRequest | undefined> {
+    const request = this.authenticatedPairingRequest(input);
+    if (request === undefined) return undefined;
+    this.expirePairingRequest(request, input.now);
+    if (request.status !== "waiting")
+      return publicFanboxPairingRequest(request);
+    request.status = "verifying";
+
+    let privateConfiguration: string;
+    try {
+      privateConfiguration = await this.adapter.validatedBrowserCredential({
+        creatorId: request.creatorId,
+        browserCredential: input.browserCredential,
+      });
+    } catch {
+      if (request.status === "verifying") {
+        this.expirePairingRequest(request, input.now);
+        if (request.status === "verifying") {
+          request.status = "failed";
+          request.reason = "verification-failed";
+        }
+      }
+      return publicFanboxPairingRequest(request);
+    }
+
+    this.expirePairingRequest(request, input.now);
+    if (request.status !== "verifying")
+      return publicFanboxPairingRequest(request);
+    const connection = this.connectionFor(request.creatorId);
+    try {
+      const current = connection.inspect();
+      if (current.version !== request.expectedVersion) {
+        request.status = "superseded";
+        request.reason = "connection-changed";
+        return publicFanboxPairingRequest(request);
+      }
+      if (request.mode === "configure")
+        connection.configureVerified(
+          privateConfiguration,
+          request.expectedVersion,
+        );
+      else
+        connection.replaceVerified(
+          privateConfiguration,
+          request.expectedVersion,
+        );
+      request.status = "succeeded";
+      this.invalidateOtherPairingRequests(request.creatorId, request.id);
+      return publicFanboxPairingRequest(request);
+    } catch (error) {
+      request.status = "failed";
+      request.reason =
+        error instanceof SourceConnectionVersionConflict
+          ? "connection-changed"
+          : "storage-unavailable";
+      return publicFanboxPairingRequest(request);
+    }
+  }
+
+  cancelConnectionRequest(input: {
+    readonly requestId: string;
+    readonly pairingCode: string;
+    readonly now?: number;
+  }): PublicFanboxConnectionRequest | undefined {
+    const request = this.authenticatedPairingRequest(input);
+    if (request === undefined) return undefined;
+    this.expirePairingRequest(request, input.now);
+    if (request.status === "waiting" || request.status === "verifying")
+      request.status = "cancelled";
+    return publicFanboxPairingRequest(request);
   }
 
   inspectAll(): readonly (SourceConnectionInspection & {
@@ -754,6 +959,120 @@ export class ProductFanboxSourceConnections {
       this.privateState,
     );
   }
+
+  private authenticatedPairingRequest(input: {
+    readonly requestId: string;
+    readonly pairingCode: string;
+  }): FanboxConnectionPairingRequest | undefined {
+    const request = this.pairingRequests.get(input.requestId);
+    if (request === undefined) return undefined;
+    const provided = Buffer.from(hashPairingCode(input.pairingCode), "hex");
+    const expected = Buffer.from(request.pairingCodeHash, "hex");
+    return provided.length === expected.length &&
+      timingSafeEqual(provided, expected)
+      ? request
+      : undefined;
+  }
+
+  private expirePairingRequest(
+    request: FanboxConnectionPairingRequest,
+    now = Date.now(),
+  ): void {
+    if (
+      (request.status === "waiting" || request.status === "verifying") &&
+      Date.parse(request.expiresAt) <= now
+    ) {
+      request.status = "expired";
+    }
+  }
+
+  private invalidatePairingRequests(
+    creatorId: string,
+    status: "superseded",
+  ): void {
+    for (const request of this.pairingRequests.values()) {
+      if (
+        request.creatorId === creatorId &&
+        (request.status === "waiting" || request.status === "verifying")
+      )
+        request.status = status;
+    }
+  }
+
+  private invalidateOtherPairingRequests(
+    creatorId: string,
+    completedRequestId: string,
+  ): void {
+    for (const request of this.pairingRequests.values()) {
+      if (
+        request.creatorId === creatorId &&
+        request.id !== completedRequestId &&
+        (request.status === "waiting" || request.status === "verifying")
+      )
+        request.status = "superseded";
+    }
+  }
+
+  private assertCurrentVersion(
+    connection: PrivateSourceConnection,
+    expectedVersion: number,
+  ): void {
+    if (connection.inspect().version !== expectedVersion)
+      throw new SourceConnectionVersionConflict();
+  }
+}
+
+const fanboxPairingLifetimeMs = 5 * 60 * 1000;
+
+type FanboxConnectionPairingRequest = {
+  readonly id: string;
+  readonly creatorId: string;
+  readonly instanceId: string;
+  status: PublicFanboxConnectionRequest["status"];
+  readonly createdAt: string;
+  readonly expiresAt: string;
+  reason?: PublicFanboxConnectionRequest["reason"];
+  readonly pairingCodeHash: string;
+  readonly expectedVersion: number;
+  readonly mode: "configure" | "replace";
+};
+
+type PublicFanboxConnectionRequest = {
+  readonly id: string;
+  readonly creatorId: string;
+  readonly instanceId: string;
+  readonly status:
+    | "waiting"
+    | "verifying"
+    | "succeeded"
+    | "failed"
+    | "cancelled"
+    | "expired"
+    | "superseded";
+  readonly createdAt: string;
+  readonly expiresAt: string;
+  readonly reason?:
+    | "verification-failed"
+    | "connection-changed"
+    | "storage-unavailable";
+};
+
+function hashPairingCode(code: string): string {
+  return createHash("sha256").update(code, "utf8").digest("hex");
+}
+
+function publicFanboxPairingRequest(
+  request: FanboxConnectionPairingRequest,
+): PublicFanboxConnectionRequest {
+  return {
+    id: request.id,
+    creatorId: request.creatorId,
+    instanceId: request.instanceId,
+    status: request.status,
+    createdAt: request.createdAt,
+    expiresAt: request.expiresAt,
+    ...(request.reason === undefined ? {} : { reason: request.reason }),
+  };
 }
 
 function assertFanboxCreatorId(value: string): void {

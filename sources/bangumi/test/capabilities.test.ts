@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { assert, describe, expect, it } from "vitest";
 
 import {
   BangumiCollector,
@@ -84,6 +84,7 @@ describe("Bangumi episodic directory convention", () => {
         "Season 1/葬送的芙莉莲 - S01E03 - 第 2 集.mkv",
       ]),
     );
+    assert("workItems" in plan);
     // S01E03 标第 2 集是错误中文集号，被拒绝而不退化成技术标签；`- NCOP` 是有效横线技术标签。
     expect(plan.workItems.map((item) => item.key)).toEqual([
       'bangumi:episode:[".",1,1]',
@@ -111,6 +112,7 @@ describe("Bangumi episodic directory convention", () => {
     const interpreter = new BangumiEpisodicDirectoryInterpreter();
     const media = "Season 1/葬送的芙莉莲 - S01E01 - 第 1 集.mp4";
     const clean = interpreter.interpret(snapshot([media]));
+    assert("workItems" in clean);
     const withSidecars = interpreter.interpret(
       snapshot([
         media,
@@ -121,6 +123,7 @@ describe("Bangumi episodic directory convention", () => {
         "Season 1/葬送的芙莉莲 - S01E01 - 第 1 集.nfo",
       ]),
     );
+    assert("workItems" in withSidecars);
 
     expect(withSidecars.workItems).toHaveLength(1);
     expect(withSidecars.workItems[0]).toEqual(clean.workItems[0]);
@@ -141,6 +144,7 @@ describe("Bangumi episodic directory convention", () => {
     const plan = new BangumiEpisodicDirectoryInterpreter().interpret(
       snapshot(["Season 2/葬送的芙莉莲 - S02E01 - 第 1 集.mkv"]),
     );
+    assert("workItems" in plan);
     const evidence = plan.workItems[0]!.evidence;
     const records = [
       record("s1", "bangumi.subject:400602", {
@@ -192,6 +196,7 @@ describe("Bangumi episodic directory convention", () => {
       evidence,
       sourceRecords: records,
     });
+    assert.isDefined(batch);
     const proposal = new BangumiEpisodicRecognizer().recognize({
       evidence,
       basis: { kind: "source-interpretation", interpretation: batch },
@@ -265,9 +270,11 @@ describe("Bangumi episodic directory convention", () => {
   });
 
   it("projects every official relation along one unique compatible Season 3 path", () => {
-    const evidence = new BangumiEpisodicDirectoryInterpreter().interpret(
+    const plannedWork1 = new BangumiEpisodicDirectoryInterpreter().interpret(
       snapshot(["Season 3/葬送的芙莉莲 - S03E01.mkv"]),
-    ).workItems[0]!.evidence;
+    );
+    assert("workItems" in plannedWork1);
+    const evidence = plannedWork1.workItems[0]!.evidence;
     const records = [
       record("s1", "bangumi.subject:400602", {
         id: 400602,
@@ -326,6 +333,7 @@ describe("Bangumi episodic directory convention", () => {
       evidence,
       sourceRecords: records,
     });
+    assert.isDefined(batch);
 
     expect(batch.relationships).toEqual(
       expect.arrayContaining([
@@ -340,9 +348,11 @@ describe("Bangumi episodic directory convention", () => {
   });
 
   it("leaves a branching sequel path unresolved instead of using response order", () => {
-    const evidence = new BangumiEpisodicDirectoryInterpreter().interpret(
+    const plannedWork2 = new BangumiEpisodicDirectoryInterpreter().interpret(
       snapshot(["Season 2/葬送的芙莉莲 - S02E01.mkv"]),
-    ).workItems[0]!.evidence;
+    );
+    assert("workItems" in plannedWork2);
+    const evidence = plannedWork2.workItems[0]!.evidence;
     const records = [
       record("s1", "bangumi.subject:400602", {
         id: 400602,
@@ -366,9 +376,11 @@ describe("Bangumi episodic directory convention", () => {
   });
 
   it("filters incompatible captured sequel candidates before requiring one path", () => {
-    const evidence = new BangumiEpisodicDirectoryInterpreter().interpret(
+    const plannedWork3 = new BangumiEpisodicDirectoryInterpreter().interpret(
       snapshot(["Season 2/葬送的芙莉莲 - S02E01.mkv"]),
-    ).workItems[0]!.evidence;
+    );
+    assert("workItems" in plannedWork3);
+    const evidence = plannedWork3.workItems[0]!.evidence;
     const records = [
       record("s1", "bangumi.subject:400602", {
         id: 400602,
@@ -461,10 +473,12 @@ describe("Bangumi episodic directory convention", () => {
         return httpResponse(JSON.stringify(body), "application/json");
       },
     });
-    const evidence = new BangumiEpisodicDirectoryInterpreter().interpret({
+    const plannedWork4 = new BangumiEpisodicDirectoryInterpreter().interpret({
       ...snapshot(["Season 1/终将成为你 - S01E01.mkv"]),
       root: "/corpus/终将成为你 (2018)",
-    }).workItems[0]!.evidence[0]!;
+    });
+    assert("workItems" in plannedWork4);
+    const evidence = plannedWork4.workItems[0]!.evidence[0]!;
     const result = await collector.collect(evidence);
     expect(result.failures).toEqual([]);
     expect(requested).toEqual(
@@ -546,9 +560,11 @@ describe("Bangumi episodic directory convention", () => {
         return httpResponse(JSON.stringify(body), "application/json");
       },
     });
-    const evidence = new BangumiEpisodicDirectoryInterpreter().interpret(
+    const plannedWork5 = new BangumiEpisodicDirectoryInterpreter().interpret(
       snapshot(["Season 3/葬送的芙莉莲 - S03E01.mkv"]),
-    ).workItems[0]!.evidence[0]!;
+    );
+    assert("workItems" in plannedWork5);
+    const evidence = plannedWork5.workItems[0]!.evidence[0]!;
 
     const result = await collector.collect(evidence);
 
@@ -621,9 +637,11 @@ describe("Bangumi episodic directory convention", () => {
         return httpResponse(JSON.stringify(body), "application/json");
       },
     });
-    const evidence = new BangumiEpisodicDirectoryInterpreter().interpret(
+    const plannedWork6 = new BangumiEpisodicDirectoryInterpreter().interpret(
       snapshot(["Season 4/葬送的芙莉莲 - S04E01.mkv"]),
-    ).workItems[0]!.evidence[0]!;
+    );
+    assert("workItems" in plannedWork6);
+    const evidence = plannedWork6.workItems[0]!.evidence[0]!;
 
     const result = await collector.collect(evidence);
 
@@ -721,10 +739,12 @@ describe("Bangumi episodic directory convention", () => {
         return httpResponse(JSON.stringify(body), "application/json");
       },
     });
-    const evidence = new BangumiEpisodicDirectoryInterpreter().interpret({
+    const plannedWork7 = new BangumiEpisodicDirectoryInterpreter().interpret({
       ...snapshot(["Season 1/终将成为你 - S01E01.mkv"]),
       root: "/corpus/终将成为你 (2018)",
-    }).workItems[0]!.evidence[0]!;
+    });
+    assert("workItems" in plannedWork7);
+    const evidence = plannedWork7.workItems[0]!.evidence[0]!;
     const result = await collector.collect(evidence);
     expect(result.records.map((item) => item.coverage.id)).toEqual([
       "bangumi.subject-search",

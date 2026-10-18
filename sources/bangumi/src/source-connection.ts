@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
+import { SourceConnectionVersionConflict } from "@digital/application";
 import type {
   SourceCollectionExecutionContext,
   SourceConnectionPrivateLease,
@@ -37,27 +38,39 @@ type BangumiClientConfiguration = {
   readonly redirectUri: string;
 };
 
+type StoredBangumiAuthorizationAttempt = {
+  readonly attemptId: string;
+  readonly status:
+    | "waiting"
+    | "succeeded"
+    | "failed"
+    | "cancelled"
+    | "expired"
+    | "superseded";
+  readonly expiresAt: string;
+};
+
+type PrivateBangumiConnectionRecordBase = {
+  readonly version: typeof storageVersion;
+  readonly configurationVersion: number;
+  readonly authorizationAttempt?: StoredBangumiAuthorizationAttempt;
+};
+
 type PrivateBangumiConnectionRecord =
-  | {
-      readonly version: typeof storageVersion;
-      readonly configurationVersion: number;
+  | (PrivateBangumiConnectionRecordBase & {
       readonly credentialStatus: "configured";
       readonly availability: "available";
       readonly grant: BangumiOAuthGrant;
       readonly verifiedAt: string;
-    }
-  | {
-      readonly version: typeof storageVersion;
-      readonly configurationVersion: number;
+    })
+  | (PrivateBangumiConnectionRecordBase & {
       readonly credentialStatus: "configured";
       readonly availability: "unavailable";
       readonly reason: "authorization-failed";
       /** 仅为可审计修复而原样保留最后一份完整授权。 */
       readonly grant: BangumiOAuthGrant;
-    }
-  | {
-      readonly version: typeof storageVersion;
-      readonly configurationVersion: number;
+    })
+  | (PrivateBangumiConnectionRecordBase & {
       readonly credentialStatus: "configured";
       readonly availability: "unavailable";
       /**
@@ -68,21 +81,18 @@ type PrivateBangumiConnectionRecord =
       readonly grant: BangumiOAuthGrant;
       readonly verifiedAt: string;
       readonly refreshInProgress: RefreshInProgress;
-    }
-  | {
-      readonly version: typeof storageVersion;
+    })
+  | (PrivateBangumiConnectionRecordBase & {
       readonly configurationVersion: 0;
       readonly credentialStatus: "unconfigured";
       readonly availability: "unavailable";
       readonly reason: "not-configured";
-    }
-  | {
-      readonly version: typeof storageVersion;
-      readonly configurationVersion: number;
+    })
+  | (PrivateBangumiConnectionRecordBase & {
       readonly credentialStatus: "revoked";
       readonly availability: "unavailable";
       readonly reason: "revoked";
-    };
+    });
 
 type InvalidBangumiConnectionRecord = {
   readonly configurationVersion: 0;
@@ -128,7 +138,23 @@ type ConnectionMutationLease = SourceConnectionPrivateLeaseRecord & {
   readonly version: "bangumi-oauth-connection-mutation/1";
 };
 
+export type BangumiAuthorizationStatus =
+  | "waiting"
+  | "processing"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "expired"
+  | "superseded";
+
+export type BangumiAuthorizationAttempt = {
+  readonly attemptId: string;
+  readonly status: BangumiAuthorizationStatus;
+  readonly expiresAt?: string;
+};
+
 export type BangumiAuthorizationStart = {
+  readonly attemptId: string;
   readonly authorizationUrl: string;
   readonly expiresAt: string;
 };
@@ -234,40 +260,106 @@ export class ProductBangumiSourceConnection {
 
   beginAuthorization(): BangumiAuthorizationStart {
     const client = this.requireClientConfiguration();
-    const record = this.readConnection();
-    this.assertMutableStorage(record);
-    this.assertNoCallbackInProgress();
-    const state = this.nextState();
-    if (!isState(state)) throw new Error("Bangumi OAuth 状态生成失败");
-    const expiresAt = new Date(
-      this.now().getTime() + authorizationLifetimeMilliseconds,
-    );
-    if (!Number.isFinite(expiresAt.getTime()))
-      throw new Error("Bangumi OAuth 状态生成失败");
-    const pending: PendingAuthorization = {
-      schema: "product-private-lease/1",
-      version: "bangumi-oauth-pending/1",
-      instanceNonce: this.instanceNonce,
-      leaseNonce: randomUUID(),
-      fingerprint: pendingFingerprint(state),
-      acquiredAt: this.now().toISOString(),
-      state,
-      expiresAt: expiresAt.toISOString(),
-      redirectUri: client.redirectUri,
-      clientId: client.clientId,
-      configurationVersion: record.configurationVersion,
-    };
-    this.pendingLease.reclaimStale();
-    if (!this.pendingLease.tryAcquire(pending))
-      throw new Error("Bangumi OAuth 授权正在进行，请稍候重试");
-    return {
-      authorizationUrl: createBangumiOAuthAuthorizationRequest({
-        clientId: client.clientId,
-        redirectUri: client.redirectUri,
+    return this.withConnectionMutation(() => {
+      const record = this.readConnection();
+      this.assertMutableStorage(record);
+      this.assertNoCallbackInProgress();
+      const state = this.nextState();
+      if (!isState(state)) throw new Error("Bangumi OAuth 状态生成失败");
+      const expiresAt = new Date(
+        this.now().getTime() + authorizationLifetimeMilliseconds,
+      );
+      if (!Number.isFinite(expiresAt.getTime()))
+        throw new Error("Bangumi OAuth 状态生成失败");
+      const pending: PendingAuthorization = {
+        schema: "product-private-lease/1",
+        version: "bangumi-oauth-pending/1",
+        instanceNonce: this.instanceNonce,
+        leaseNonce: randomUUID(),
+        fingerprint: pendingFingerprint(state),
+        acquiredAt: this.now().toISOString(),
         state,
-      }),
-      expiresAt: pending.expiresAt,
-    };
+        expiresAt: expiresAt.toISOString(),
+        redirectUri: client.redirectUri,
+        clientId: client.clientId,
+        configurationVersion: record.configurationVersion,
+      };
+      this.pendingLease.reclaimStale();
+      if (!this.pendingLease.tryAcquire(pending))
+        throw new Error("Bangumi OAuth 授权正在进行，请稍候重试");
+      try {
+        this.writeConnectionUnchecked({
+          ...record,
+          authorizationAttempt: {
+            attemptId: pending.leaseNonce,
+            status: "waiting",
+            expiresAt: pending.expiresAt,
+          },
+        });
+      } catch (error) {
+        this.pendingLease.retireExact(pending);
+        throw error;
+      }
+      return {
+        attemptId: pending.leaseNonce,
+        authorizationUrl: createBangumiOAuthAuthorizationRequest({
+          clientId: client.clientId,
+          redirectUri: client.redirectUri,
+          state,
+        }),
+        expiresAt: pending.expiresAt,
+      };
+    });
+  }
+
+  getAuthorizationAttempt(attemptId: string): BangumiAuthorizationAttempt {
+    return this.withConnectionMutation(() => {
+      const current = this.readConnection();
+      this.assertMutableStorage(current);
+      return this.inspectAuthorizationAttempt(current, attemptId);
+    });
+  }
+
+  cancelAuthorization(attemptId: string): BangumiAuthorizationAttempt {
+    return this.withConnectionMutation(() => {
+      const current = this.readConnection();
+      this.assertMutableStorage(current);
+      const previous = current.authorizationAttempt;
+      if (previous === undefined || previous.attemptId !== attemptId)
+        return { attemptId, status: "superseded" };
+      if (previous.status !== "waiting") return { ...previous };
+
+      const processing = this.processingLease.currentRecord();
+      if (processing?.leaseNonce === attemptId) {
+        if (this.processingLease.isLive())
+          return { ...previous, status: "processing" };
+        this.processingLease.reclaimStale();
+        return this.storeAuthorizationAttempt(current, {
+          ...previous,
+          status: "failed",
+        });
+      }
+
+      const pending = this.pendingLease.currentRecord();
+      if (pending?.leaseNonce !== attemptId)
+        return this.inspectAuthorizationAttempt(current, attemptId);
+      if (!this.pendingLease.isLive()) {
+        this.pendingLease.retireExact(pending);
+        return this.storeAuthorizationAttempt(current, {
+          ...previous,
+          status: "expired",
+        });
+      }
+      if (this.pendingLease.retireExact(pending))
+        return this.storeAuthorizationAttempt(current, {
+          ...previous,
+          status: "cancelled",
+        });
+
+      const latest = this.readConnection();
+      this.assertMutableStorage(latest);
+      return this.inspectAuthorizationAttempt(latest, attemptId);
+    });
   }
 
   async completeAuthorizationCallback(
@@ -280,31 +372,53 @@ export class ProductBangumiSourceConnection {
     const state = singularCallbackParameter(callback, "state");
     const code = singularCallbackParameter(callback, "code");
     const rejected = hasOAuthErrorParameter(callback);
+    const pendingLive = this.pendingLease.isLive();
     if (
       state === undefined ||
       !isState(state) ||
       state !== pending.state ||
       !sameCallbackTarget(callback, pending.redirectUri) ||
-      !this.pendingLease.isLive()
+      !pendingLive
     ) {
-      if (!this.pendingLease.isLive()) this.pendingLease.retireExact(pending);
+      if (!pendingLive) {
+        this.pendingLease.retireExact(pending);
+        this.finishAuthorizationAttempt(pending, "expired");
+      }
       throw new Error("Bangumi OAuth 回调状态无效或已过期");
     }
     if (rejected) {
       const processing = this.consumePending(pending);
       try {
-        throw new Error("Bangumi OAuth 授权未完成");
+        const providerError = singularCallbackParameter(callback, "error");
+        this.finishAuthorizationAttempt(
+          pending,
+          providerError === "access_denied" ? "cancelled" : "failed",
+        );
+        throw new Error(
+          providerError === "access_denied"
+            ? "Bangumi OAuth 授权已取消"
+            : "Bangumi OAuth 授权未完成",
+        );
       } finally {
         processing.retire();
       }
     }
-    if (code === undefined)
+    if (code === undefined) {
+      const processing = this.consumePending(pending);
+      try {
+        this.finishAuthorizationAttempt(pending, "failed");
+      } finally {
+        processing.retire();
+      }
       throw new Error("Bangumi OAuth 回调状态无效或已过期");
+    }
     const client = this.requireClientConfiguration();
     if (
       client.clientId !== pending.clientId ||
       client.redirectUri !== pending.redirectUri
     ) {
+      this.pendingLease.retireExact(pending);
+      this.finishAuthorizationAttempt(pending, "superseded");
       throw new Error("Bangumi OAuth 授权配置已变化，请重新开始授权");
     }
     const processing = this.consumePending(pending);
@@ -326,6 +440,11 @@ export class ProductBangumiSourceConnection {
         this.writeConnectionUnchecked({
           version: storageVersion,
           configurationVersion: current.configurationVersion + 1,
+          authorizationAttempt: {
+            attemptId: pending.leaseNonce,
+            status: "succeeded",
+            expiresAt: pending.expiresAt,
+          },
           credentialStatus: "configured",
           availability: "available",
           grant,
@@ -336,6 +455,7 @@ export class ProductBangumiSourceConnection {
     } catch (error) {
       if (error instanceof Error && error.message.includes("配置已变化"))
         throw error;
+      this.finishAuthorizationAttempt(pending, "failed");
       // 不要把授权码、客户端密钥、令牌响应或传输错误映射到 CLI/Web 诊断中。
       throw new Error("Bangumi OAuth 回调换取授权失败", { cause: error });
     } finally {
@@ -348,15 +468,25 @@ export class ProductBangumiSourceConnection {
       const current = this.readConnection();
       this.assertMutableStorage(current);
       this.assertExpectedVersion(current, expectedVersion);
-      if (current.credentialStatus === "revoked") return this.inspect();
+      const authorizationAttempt = this.supersedePendingAuthorization(current);
+      if (current.credentialStatus === "revoked") {
+        if (authorizationAttempt !== current.authorizationAttempt)
+          this.writeConnectionUnchecked({
+            ...current,
+            ...(authorizationAttempt === undefined
+              ? {}
+              : { authorizationAttempt }),
+          });
+        return this.inspect();
+      }
       this.writeConnectionUnchecked({
         version: storageVersion,
         configurationVersion: current.configurationVersion + 1,
+        ...(authorizationAttempt === undefined ? {} : { authorizationAttempt }),
         credentialStatus: "revoked",
         availability: "unavailable",
         reason: "revoked",
       });
-      this.retirePendingIfCurrent();
       return this.inspect();
     });
   }
@@ -903,7 +1033,6 @@ export class ProductBangumiSourceConnection {
       throw new Error("请填写有效的 Bangumi 应用信息与回调地址");
     // 更换应用后旧授权不能继续使用；同时关闭绑定旧回调的待处理授权，
     // 避免用户必须等待它自然过期才能重新开始。
-    this.retirePendingIfCurrent();
     this.revoke(this.inspect().version);
     this.privateState.write({
       key: "bangumi-oauth-client",
@@ -982,20 +1111,100 @@ export class ProductBangumiSourceConnection {
   private writeConnectionUnchecked(
     record: PrivateBangumiConnectionRecord,
   ): void {
+    const current = this.readConnection();
+    const preservedAttempt =
+      record.authorizationAttempt ??
+      (current.credentialStatus === "invalid"
+        ? undefined
+        : current.authorizationAttempt);
     this.privateState.write({
       key: "bangumi-oauth",
-      value: record,
+      value:
+        preservedAttempt === undefined
+          ? record
+          : { ...record, authorizationAttempt: preservedAttempt },
       failureMessage: privateStorageFailure,
     });
   }
 
-  private retirePendingIfCurrent(): void {
-    try {
-      this.pendingLease.retireExact(this.readPending());
-    } catch {
-      // 过期或格式错误的待处理记录只能让后续回调以关闭方式失败。
-      // 不要替换它，也不要暴露私有文件系统细节。
+  private inspectAuthorizationAttempt(
+    current: PrivateBangumiConnectionRecord,
+    attemptId: string,
+  ): BangumiAuthorizationAttempt {
+    const previous = current.authorizationAttempt;
+    if (previous === undefined || previous.attemptId !== attemptId)
+      return { attemptId, status: "superseded" };
+    if (previous.status !== "waiting") return { ...previous };
+
+    const processing = this.processingLease.currentRecord();
+    if (processing?.leaseNonce === attemptId) {
+      if (this.processingLease.isLive())
+        return { ...previous, status: "processing" };
+      this.processingLease.reclaimStale();
+      return this.storeAuthorizationAttempt(current, {
+        ...previous,
+        status: "failed",
+      });
     }
+
+    const pending = this.pendingLease.currentRecord();
+    if (pending?.leaseNonce === attemptId) {
+      if (this.pendingLease.isLive()) return { ...previous };
+      this.pendingLease.retireExact(pending);
+      return this.storeAuthorizationAttempt(current, {
+        ...previous,
+        status: "expired",
+      });
+    }
+
+    return this.storeAuthorizationAttempt(current, {
+      ...previous,
+      status: "failed",
+    });
+  }
+
+  private storeAuthorizationAttempt(
+    current: PrivateBangumiConnectionRecord,
+    attempt: StoredBangumiAuthorizationAttempt,
+  ): BangumiAuthorizationAttempt {
+    this.writeConnectionUnchecked({
+      ...current,
+      authorizationAttempt: attempt,
+    });
+    return { ...attempt };
+  }
+
+  private finishAuthorizationAttempt(
+    pending: PendingAuthorization,
+    status: Exclude<BangumiAuthorizationStatus, "processing" | "waiting">,
+  ): void {
+    this.withConnectionMutation(() => {
+      const current = this.readConnection();
+      this.assertMutableStorage(current);
+      const previous = current.authorizationAttempt;
+      if (
+        (previous !== undefined && previous.attemptId !== pending.leaseNonce) ||
+        current.configurationVersion !== pending.configurationVersion
+      ) {
+        return;
+      }
+      this.storeAuthorizationAttempt(current, {
+        attemptId: pending.leaseNonce,
+        status,
+        expiresAt: pending.expiresAt,
+      });
+    });
+  }
+
+  private supersedePendingAuthorization(
+    current: PrivateBangumiConnectionRecord,
+  ): StoredBangumiAuthorizationAttempt | undefined {
+    const attempt = current.authorizationAttempt;
+    if (attempt === undefined || attempt.status !== "waiting") return attempt;
+    const pending = this.pendingLease.currentRecord();
+    if (pending?.leaseNonce === attempt.attemptId)
+      this.pendingLease.retireExact(pending);
+    return { ...attempt, status: "superseded" };
   }
 
   private assertMutableStorage(
@@ -1013,7 +1222,7 @@ export class ProductBangumiSourceConnection {
       expectedVersion !== undefined &&
       expectedVersion !== record.configurationVersion
     ) {
-      throw new Error("来源连接已被其他设置修改，请刷新后重试");
+      throw new SourceConnectionVersionConflict();
     }
   }
 }
@@ -1126,7 +1335,9 @@ function isPrivateBangumiConnectionRecord(
   if (
     record.version !== storageVersion ||
     !Number.isSafeInteger(record.configurationVersion) ||
-    (record.configurationVersion as number) < 0
+    (record.configurationVersion as number) < 0 ||
+    (record.authorizationAttempt !== undefined &&
+      !isStoredBangumiAuthorizationAttempt(record.authorizationAttempt))
   ) {
     return false;
   }
@@ -1170,6 +1381,24 @@ function isPrivateBangumiConnectionRecord(
     default:
       return false;
   }
+}
+
+function isStoredBangumiAuthorizationAttempt(
+  value: unknown,
+): value is StoredBangumiAuthorizationAttempt {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return false;
+  const attempt = value as Record<string, unknown>;
+  return (
+    isLeaseNonce(attempt.attemptId) &&
+    (attempt.status === "waiting" ||
+      attempt.status === "succeeded" ||
+      attempt.status === "failed" ||
+      attempt.status === "cancelled" ||
+      attempt.status === "expired" ||
+      attempt.status === "superseded") &&
+    isCanonicalTimestamp(attempt.expiresAt)
+  );
 }
 
 function isGrant(value: unknown): value is BangumiOAuthGrant {

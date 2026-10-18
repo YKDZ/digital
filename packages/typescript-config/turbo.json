@@ -1,4 +1,17 @@
 {
   "extends": ["//"],
-  "tags": ["tooling"]
+  "tags": ["tooling"],
+  "tasks": {
+    "format:check": {
+      "outputs": [],
+      "tags": ["quality:light"]
+    },
+    "format:write": {
+      "cache": false,
+      "tags": ["work:repair"]
+    },
+    "build": {},
+    "dev:build": {},
+    "typecheck": {}
+  }
 }

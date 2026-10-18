@@ -18,26 +18,223 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const fileSystemFault = vi.hoisted(() => ({ failStagingOpen: false }));
+const fileSystemFault = vi.hoisted(() => ({
+  failStagingOpen: false,
+  failRestoreStagingCleanup: false,
+  failCopyWrite: false,
+  failCopyDestinationClose: false,
+  directoryOpenTarget: "",
+  directoryOpenAttempts: 0,
+  failSecondDirectoryOpen: false,
+  directoryHandleTarget: "",
+  directoryCloseTarget: "",
+  failDirectoryReaddir: false,
+  failDirectoryChmod: false,
+  failDirectoryClose: false,
+  failDirectoryFsync: false,
+  failDirectorySyncClose: false,
+  failRestoreMarkerWrite: false,
+  failRestoreMarkerFileClose: false,
+  armDirectoryFsyncAfterMarkerClose: false,
+  directoryHandleDescriptors: new Set<number>(),
+  directoryCloseAttempts: new Set<number>(),
+  syncDirectoryDescriptors: new Set<number>(),
+  restoreMarkerFileDescriptors: new Set<number>(),
+  destinationFileDescriptors: new Set<number>(),
+  sourceFileDescriptors: new Set<number>(),
+  sourceFileCloseAttempts: new Set<number>(),
+}));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const fileSystem = await importOriginal<typeof import("node:fs")>();
   return {
     ...actual,
     open: async (...arguments_: Parameters<typeof actual.open>) => {
+      const [candidate, flags] = arguments_;
+      const candidateName =
+        typeof candidate === "string" ? path.basename(candidate) : "";
       if (
         fileSystemFault.failStagingOpen &&
-        typeof arguments_[0] === "string" &&
-        arguments_[0].includes("/staging")
+        typeof candidate === "string" &&
+        candidate.includes("/staging")
       ) {
         throw Object.assign(new Error("staging open failed"), { code: "EIO" });
       }
-      return await actual.open(...arguments_);
+      if (
+        candidateName === fileSystemFault.directoryOpenTarget &&
+        candidateName.length > 0 &&
+        typeof flags === "number" &&
+        (flags & fileSystem.constants.O_DIRECTORY) !== 0
+      ) {
+        fileSystemFault.directoryOpenAttempts += 1;
+        if (
+          fileSystemFault.failSecondDirectoryOpen &&
+          fileSystemFault.directoryOpenAttempts === 2
+        ) {
+          fileSystemFault.failSecondDirectoryOpen = false;
+          throw Object.assign(new Error("destination child open failed"), {
+            code: "EIO",
+          });
+        }
+      }
+      const handle = await actual.open(...arguments_);
+      if (
+        candidateName.length > 0 &&
+        candidateName === fileSystemFault.directoryHandleTarget
+      ) {
+        const descriptor = handle.fd;
+        fileSystemFault.directoryHandleDescriptors.add(descriptor);
+        const chmod = handle.chmod.bind(handle);
+        handle.chmod = async (...chmodArguments) => {
+          if (fileSystemFault.failDirectoryChmod) {
+            fileSystemFault.failDirectoryChmod = false;
+            throw new Error("directory chmod failed");
+          }
+          return await chmod(...chmodArguments);
+        };
+      }
+      if (
+        candidateName.length > 0 &&
+        candidateName ===
+          (fileSystemFault.directoryCloseTarget ||
+            fileSystemFault.directoryHandleTarget)
+      ) {
+        const descriptor = handle.fd;
+        const close = handle.close.bind(handle);
+        handle.close = async () => {
+          fileSystemFault.directoryCloseAttempts.add(descriptor);
+          const result = await close();
+          if (fileSystemFault.failDirectoryClose) {
+            fileSystemFault.failDirectoryClose = false;
+            throw new Error("directory close failed");
+          }
+          return result;
+        };
+      }
+      if (
+        typeof candidate === "string" &&
+        candidate.endsWith("/catalogue.sqlite") &&
+        typeof flags === "number"
+      ) {
+        const isDestination = (flags & fileSystem.constants.O_WRONLY) !== 0;
+        if (isDestination)
+          fileSystemFault.destinationFileDescriptors.add(handle.fd);
+        else fileSystemFault.sourceFileDescriptors.add(handle.fd);
+        const descriptor = handle.fd;
+        const close = handle.close.bind(handle);
+        handle.close = async () => {
+          if (!isDestination)
+            fileSystemFault.sourceFileCloseAttempts.add(descriptor);
+          const result = await close();
+          if (isDestination && fileSystemFault.failCopyDestinationClose) {
+            fileSystemFault.failCopyDestinationClose = false;
+            throw new Error("destination file close failed");
+          }
+          return result;
+        };
+      }
+      return handle;
+    },
+    readdir: async (...arguments_: Parameters<typeof actual.readdir>) => {
+      const descriptor =
+        typeof arguments_[0] === "string"
+          ? Number(/\/proc\/self\/fd\/(\d+)/.exec(arguments_[0])?.[1])
+          : Number.NaN;
+      if (
+        fileSystemFault.directoryHandleDescriptors.has(descriptor) &&
+        fileSystemFault.failDirectoryReaddir
+      ) {
+        fileSystemFault.failDirectoryReaddir = false;
+        throw new Error("directory readdir failed");
+      }
+      return await actual.readdir(...arguments_);
+    },
+    rm: async (...arguments_: Parameters<typeof actual.rm>) => {
+      if (
+        fileSystemFault.failRestoreStagingCleanup &&
+        typeof arguments_[0] === "string" &&
+        arguments_[0].includes("/proc/self/fd/") &&
+        path.basename(arguments_[0]).startsWith("restore-")
+      ) {
+        throw new Error("staging cleanup failed");
+      }
+      return await actual.rm(...arguments_);
+    },
+  };
+});
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    openSync: (...arguments_: Parameters<typeof actual.openSync>) => {
+      const descriptor = actual.openSync(...arguments_);
+      if (
+        typeof arguments_[0] === "string" &&
+        path.basename(arguments_[0]) === "runtime-state"
+      ) {
+        fileSystemFault.syncDirectoryDescriptors.add(descriptor);
+      }
+      if (
+        typeof arguments_[0] === "string" &&
+        arguments_[0].includes("offline-restore-in-progress.json.") &&
+        arguments_[0].endsWith(".tmp")
+      ) {
+        fileSystemFault.restoreMarkerFileDescriptors.add(descriptor);
+      }
+      return descriptor;
+    },
+    fsyncSync: (descriptor: number) => {
+      if (
+        fileSystemFault.syncDirectoryDescriptors.has(descriptor) &&
+        fileSystemFault.failDirectoryFsync
+      ) {
+        fileSystemFault.failDirectoryFsync = false;
+        throw new Error("directory fsync failed");
+      }
+      return actual.fsyncSync(descriptor);
+    },
+    writeFileSync: (...arguments_: Parameters<typeof actual.writeFileSync>) => {
+      if (
+        typeof arguments_[0] === "number" &&
+        fileSystemFault.restoreMarkerFileDescriptors.has(arguments_[0]) &&
+        fileSystemFault.failRestoreMarkerWrite
+      ) {
+        fileSystemFault.failRestoreMarkerWrite = false;
+        throw new Error("restore marker write failed");
+      }
+      return actual.writeFileSync(...arguments_);
+    },
+    closeSync: (descriptor: number) => {
+      const isTarget =
+        fileSystemFault.syncDirectoryDescriptors.delete(descriptor);
+      const isRestoreMarker =
+        fileSystemFault.restoreMarkerFileDescriptors.delete(descriptor);
+      const result = actual.closeSync(descriptor);
+      if (
+        isRestoreMarker &&
+        fileSystemFault.armDirectoryFsyncAfterMarkerClose
+      ) {
+        fileSystemFault.armDirectoryFsyncAfterMarkerClose = false;
+        fileSystemFault.failDirectoryFsync = true;
+        fileSystemFault.failDirectorySyncClose = true;
+      }
+      if (isRestoreMarker && fileSystemFault.failRestoreMarkerFileClose) {
+        fileSystemFault.failRestoreMarkerFileClose = false;
+        throw new Error("restore marker file close failed");
+      }
+      if (isTarget && fileSystemFault.failDirectorySyncClose) {
+        fileSystemFault.failDirectorySyncClose = false;
+        throw new Error("directory close failed");
+      }
+      return result;
     },
   };
 });
 
 import {
+  ProductDataMaintenanceLifecycle,
   ProductDataOperations,
   createOfflineProductDataBackup as copyOfflineProductDataBackup,
   restoreOfflineProductDataBackup as copyOfflineProductDataRestore,
@@ -77,12 +274,57 @@ function restoreOfflineProductDataBackup(
  * ENOTEMPTY 与 `Hook timed out` 都来自「仍在写入的根被并发 rm」这个顺序，而不是备份语义。
  */
 afterEach(async () => {
+  vi.restoreAllMocks();
+  fileSystemFault.failStagingOpen = false;
+  fileSystemFault.directoryOpenTarget = "";
+  fileSystemFault.directoryOpenAttempts = 0;
+  fileSystemFault.failSecondDirectoryOpen = false;
+  fileSystemFault.directoryHandleTarget = "";
+  fileSystemFault.directoryCloseTarget = "";
+  fileSystemFault.failDirectoryReaddir = false;
+  fileSystemFault.failDirectoryChmod = false;
+  fileSystemFault.failDirectoryClose = false;
+  fileSystemFault.failDirectoryFsync = false;
+  fileSystemFault.failDirectorySyncClose = false;
+  fileSystemFault.failRestoreMarkerWrite = false;
+  fileSystemFault.failRestoreMarkerFileClose = false;
+  fileSystemFault.armDirectoryFsyncAfterMarkerClose = false;
+  fileSystemFault.directoryHandleDescriptors.clear();
+  fileSystemFault.directoryCloseAttempts.clear();
+  fileSystemFault.syncDirectoryDescriptors.clear();
+  fileSystemFault.restoreMarkerFileDescriptors.clear();
   await Promise.allSettled(inFlightOperations);
   for (const root of temporaryRoots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
 
 describe("offline product-data layout", () => {
+  it("保留备份主失败与维护租约释放失败", async () => {
+    const workspace = await temporaryRoot();
+    const productDataDirectory = path.join(workspace, "product-data");
+    const backupDirectory = path.join(workspace, "backup");
+    await mkdir(productDataDirectory);
+    vi.spyOn(
+      ProductDataMaintenanceLifecycle.prototype,
+      "close",
+    ).mockImplementation(() => {
+      throw new Error("maintenance lease release failed");
+    });
+
+    await expect(
+      createOfflineProductDataBackup({ productDataDirectory, backupDirectory }),
+    ).rejects.toMatchObject({
+      errors: [
+        expect.objectContaining({
+          message: "备份源缺少产品 Catalogue；拒绝创建不完整副本",
+        }),
+        expect.objectContaining({
+          message: "maintenance lease release failed",
+        }),
+      ],
+    });
+  });
+
   it("fails closed during maintenance when a restore marker exists, without copying product data", async () => {
     const workspace = await temporaryRoot();
     const productDataDirectory = path.join(workspace, "product-data");
@@ -214,6 +456,376 @@ describe("offline product-data layout", () => {
     }
   });
 
+  it("保留复制写入主失败和目标文件句柄收尾失败，并继续关闭源句柄", async () => {
+    fileSystemFault.destinationFileDescriptors.clear();
+    fileSystemFault.sourceFileDescriptors.clear();
+    fileSystemFault.sourceFileCloseAttempts.clear();
+    const workspace = await temporaryRoot();
+    const productDataDirectory = path.join(workspace, "product-data");
+    const backupDirectory = path.join(workspace, "backup");
+    await writeProductRoot(productDataDirectory);
+    const probe = await open(
+      path.join(productDataDirectory, "catalogue.sqlite"),
+      "r",
+    );
+    const prototype = Object.getPrototypeOf(probe) as {
+      write: (...arguments_: readonly unknown[]) => Promise<unknown>;
+    };
+    const originalWrite = prototype.write;
+    vi.spyOn(prototype, "write").mockImplementation(async function (
+      this: FileHandle,
+      ...arguments_
+    ) {
+      if (
+        fileSystemFault.failCopyWrite &&
+        fileSystemFault.destinationFileDescriptors.has(this.fd)
+      ) {
+        fileSystemFault.failCopyWrite = false;
+        throw new Error("copy write failed");
+      }
+      return await originalWrite.apply(this, arguments_);
+    });
+    fileSystemFault.failCopyWrite = true;
+    fileSystemFault.failCopyDestinationClose = true;
+    try {
+      await expect(
+        createOfflineProductDataBackup({
+          productDataDirectory,
+          backupDirectory,
+        }),
+      ).rejects.toMatchObject({
+        errors: [
+          expect.objectContaining({ message: "copy write failed" }),
+          expect.objectContaining({
+            message: "destination file close failed",
+          }),
+        ],
+      });
+      expect(fileSystemFault.sourceFileDescriptors.size).toBeGreaterThan(0);
+      for (const descriptor of fileSystemFault.sourceFileDescriptors)
+        expect(fileSystemFault.sourceFileCloseAttempts.has(descriptor)).toBe(
+          true,
+        );
+    } finally {
+      fileSystemFault.failCopyWrite = false;
+      fileSystemFault.failCopyDestinationClose = false;
+      vi.restoreAllMocks();
+      await probe.close();
+      fileSystemFault.destinationFileDescriptors.clear();
+      fileSystemFault.sourceFileDescriptors.clear();
+      fileSystemFault.sourceFileCloseAttempts.clear();
+    }
+  });
+
+  it("保留恢复暂存目录读取主失败和目录句柄收尾失败", async () => {
+    fileSystemFault.directoryCloseAttempts.clear();
+    fileSystemFault.directoryHandleTarget = "staging";
+    fileSystemFault.failDirectoryReaddir = true;
+    fileSystemFault.failDirectoryClose = true;
+    const workspace = await temporaryRoot();
+    const backupDirectory = path.join(workspace, "backup");
+    const productDataDirectory = path.join(workspace, "product-data");
+    await writeProductRoot(backupDirectory);
+    let failure: unknown;
+    try {
+      await restoreOfflineProductDataBackup({
+        backupDirectory,
+        productDataDirectory,
+        prepareProductionCatalogue: async () => undefined,
+      });
+    } catch (error) {
+      failure = error;
+    } finally {
+      fileSystemFault.directoryHandleTarget = "";
+      fileSystemFault.directoryCloseTarget = "";
+      fileSystemFault.failDirectoryReaddir = false;
+      fileSystemFault.failDirectoryClose = false;
+    }
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure).toMatchObject({
+      errors: [
+        expect.objectContaining({ message: "directory readdir failed" }),
+        expect.objectContaining({ message: "directory close failed" }),
+      ],
+    });
+    expect(fileSystemFault.directoryCloseAttempts.size).toBe(1);
+  });
+
+  it("保留恢复暂存目录权限主失败和目录句柄收尾失败", async () => {
+    fileSystemFault.directoryCloseAttempts.clear();
+    fileSystemFault.directoryHandleTarget = "staging";
+    fileSystemFault.failDirectoryChmod = true;
+    fileSystemFault.failDirectoryClose = true;
+    const workspace = await temporaryRoot();
+    const backupDirectory = path.join(workspace, "backup");
+    const productDataDirectory = path.join(workspace, "product-data");
+    await writeProductRoot(backupDirectory);
+    let failure: unknown;
+    try {
+      await restoreOfflineProductDataBackup({
+        backupDirectory,
+        productDataDirectory,
+        prepareProductionCatalogue: async () => undefined,
+      });
+    } catch (error) {
+      failure = error;
+    } finally {
+      fileSystemFault.directoryHandleTarget = "";
+      fileSystemFault.directoryCloseTarget = "";
+      fileSystemFault.failDirectoryChmod = false;
+      fileSystemFault.failDirectoryClose = false;
+    }
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure).toMatchObject({
+      errors: [
+        expect.objectContaining({ message: "directory chmod failed" }),
+        expect.objectContaining({ message: "directory close failed" }),
+      ],
+    });
+    expect(fileSystemFault.directoryCloseAttempts.size).toBe(1);
+  });
+
+  it("保留备份目标目录读取主失败和目录句柄收尾失败", async () => {
+    fileSystemFault.directoryCloseAttempts.clear();
+    fileSystemFault.directoryHandleTarget = "backup";
+    fileSystemFault.failDirectoryReaddir = true;
+    fileSystemFault.failDirectoryClose = true;
+    const workspace = await temporaryRoot();
+    const productDataDirectory = path.join(workspace, "product-data");
+    const backupDirectory = path.join(workspace, "backup");
+    await writeProductRoot(productDataDirectory);
+    let failure: unknown;
+    try {
+      await createOfflineProductDataBackup({
+        productDataDirectory,
+        backupDirectory,
+      });
+    } catch (error) {
+      failure = error;
+    } finally {
+      fileSystemFault.directoryHandleTarget = "";
+      fileSystemFault.directoryCloseTarget = "";
+      fileSystemFault.failDirectoryReaddir = false;
+      fileSystemFault.failDirectoryClose = false;
+    }
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure).toMatchObject({
+      errors: [
+        expect.objectContaining({
+          cause: expect.objectContaining({
+            message: "directory readdir failed",
+          }),
+        }),
+        expect.objectContaining({ message: "directory close failed" }),
+      ],
+    });
+    expect(fileSystemFault.directoryCloseAttempts.size).toBe(1);
+  });
+
+  it("目标子目录打开失败后仍关闭已打开源句柄并保留两种失败", async () => {
+    fileSystemFault.directoryOpenTarget = "copy-child";
+    fileSystemFault.directoryOpenAttempts = 0;
+    fileSystemFault.failSecondDirectoryOpen = true;
+    fileSystemFault.directoryCloseTarget = "copy-child";
+    fileSystemFault.directoryCloseAttempts.clear();
+    fileSystemFault.failDirectoryClose = true;
+
+    const workspace = await temporaryRoot();
+    const productDataDirectory = path.join(workspace, "product-data");
+    const backupDirectory = path.join(workspace, "backup");
+    const child = path.join(productDataDirectory, "copy-child");
+    await writeProductRoot(productDataDirectory);
+    await mkdir(child);
+    await writeFile(path.join(child, "durable-state"), "state");
+
+    let failure: unknown;
+    try {
+      await createOfflineProductDataBackup({
+        productDataDirectory,
+        backupDirectory,
+      });
+    } catch (error) {
+      failure = error;
+    } finally {
+      fileSystemFault.directoryOpenTarget = "";
+      fileSystemFault.directoryOpenAttempts = 0;
+      fileSystemFault.failSecondDirectoryOpen = false;
+      fileSystemFault.directoryCloseTarget = "";
+      fileSystemFault.failDirectoryClose = false;
+    }
+
+    expect(fileSystemFault.directoryCloseAttempts.size).toBe(1);
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure).toMatchObject({
+      errors: [
+        expect.objectContaining({
+          message: "复制目标目录项无法安全打开",
+        }),
+        expect.objectContaining({ message: "directory close failed" }),
+      ],
+    });
+  });
+
+  it("保留备份目标初始化主失败和父目录句柄收尾失败", async () => {
+    const workspace = await temporaryRoot();
+    const sourceWorkspace = await temporaryRoot();
+    const productDataDirectory = path.join(sourceWorkspace, "product-data");
+    const backupDirectory = path.join(workspace, "backup");
+    await writeProductRoot(productDataDirectory);
+    fileSystemFault.directoryHandleTarget = "backup";
+    fileSystemFault.directoryCloseTarget = path.basename(workspace);
+    fileSystemFault.failDirectoryReaddir = true;
+    fileSystemFault.failDirectoryClose = true;
+    let failure: unknown;
+    try {
+      await createOfflineProductDataBackup({
+        productDataDirectory,
+        backupDirectory,
+      });
+    } catch (error) {
+      failure = error;
+    } finally {
+      fileSystemFault.directoryHandleTarget = "";
+      fileSystemFault.directoryCloseTarget = "";
+      fileSystemFault.failDirectoryReaddir = false;
+      fileSystemFault.failDirectoryClose = false;
+    }
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure).toMatchObject({
+      errors: [
+        expect.objectContaining({
+          cause: expect.objectContaining({
+            message: "directory readdir failed",
+          }),
+        }),
+        expect.objectContaining({ message: "directory close failed" }),
+      ],
+    });
+    expect(fileSystemFault.directoryCloseAttempts.size).toBe(1);
+  });
+
+  it("保留产品根打开主失败和祖先目录句柄收尾失败", async () => {
+    const workspace = await temporaryRoot();
+    const productDataDirectory = path.join(
+      workspace,
+      "staging",
+      "product-data",
+    );
+    const backupDirectory = path.join(workspace, "backup");
+    await writeProductRoot(productDataDirectory);
+    fileSystemFault.directoryHandleTarget = path.basename(workspace);
+    fileSystemFault.failDirectoryClose = true;
+    fileSystemFault.failStagingOpen = true;
+    let failure: unknown;
+    try {
+      await createOfflineProductDataBackup({
+        productDataDirectory,
+        backupDirectory,
+      });
+    } catch (error) {
+      failure = error;
+    } finally {
+      fileSystemFault.directoryHandleTarget = "";
+      fileSystemFault.directoryCloseTarget = "";
+      fileSystemFault.failDirectoryClose = false;
+      fileSystemFault.failStagingOpen = false;
+    }
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure).toMatchObject({
+      errors: [
+        expect.objectContaining({
+          message: "备份源产品数据目录无法安全打开",
+          cause: expect.objectContaining({ message: "staging open failed" }),
+        }),
+        expect.objectContaining({ message: "directory close failed" }),
+      ],
+    });
+    expect(fileSystemFault.directoryCloseAttempts.size).toBe(1);
+  });
+
+  it("保留恢复标记目录同步主失败和文件描述符收尾失败", async () => {
+    fileSystemFault.syncDirectoryDescriptors.clear();
+    fileSystemFault.armDirectoryFsyncAfterMarkerClose = true;
+    const workspace = await temporaryRoot();
+    const backupDirectory = path.join(workspace, "backup");
+    const productDataDirectory = path.join(workspace, "product-data");
+    await writeProductRoot(backupDirectory);
+    let failure: unknown;
+    try {
+      await restoreOfflineProductDataBackup({
+        backupDirectory,
+        productDataDirectory,
+        prepareProductionCatalogue: async () => undefined,
+      });
+    } catch (error) {
+      failure = error;
+    } finally {
+      fileSystemFault.failDirectoryFsync = false;
+      fileSystemFault.failDirectorySyncClose = false;
+    }
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure).toMatchObject({
+      errors: [
+        expect.objectContaining({ message: "directory fsync failed" }),
+        expect.objectContaining({ message: "directory close failed" }),
+      ],
+    });
+    const marker = path.join(
+      productDataDirectory,
+      "runtime-state",
+      "offline-restore-in-progress.json",
+    );
+    expect((await lstat(marker)).isFile()).toBe(true);
+    expect(() =>
+      ProductDataOperations.forRoot(productDataDirectory).startWriter(),
+    ).toThrow("离线恢复曾中断");
+  });
+
+  it("保留恢复标记写入主失败和文件句柄收尾失败", async () => {
+    fileSystemFault.restoreMarkerFileDescriptors.clear();
+    fileSystemFault.failRestoreMarkerWrite = true;
+    fileSystemFault.failRestoreMarkerFileClose = true;
+    const workspace = await temporaryRoot();
+    const backupDirectory = path.join(workspace, "backup");
+    const productDataDirectory = path.join(workspace, "product-data");
+    await writeProductRoot(backupDirectory);
+    let failure: unknown;
+    try {
+      await restoreOfflineProductDataBackup({
+        backupDirectory,
+        productDataDirectory,
+        prepareProductionCatalogue: async () => undefined,
+      });
+    } catch (error) {
+      failure = error;
+    } finally {
+      fileSystemFault.failRestoreMarkerWrite = false;
+      fileSystemFault.failRestoreMarkerFileClose = false;
+    }
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure).toMatchObject({
+      errors: [
+        expect.objectContaining({ message: "restore marker write failed" }),
+        expect.objectContaining({
+          message: "restore marker file close failed",
+        }),
+      ],
+    });
+    const marker = path.join(
+      productDataDirectory,
+      "runtime-state",
+      "offline-restore-in-progress.json",
+    );
+    await expect(lstat(marker)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("prepares a private staging root then publishes after a successful migration", async () => {
     const workspace = await temporaryRoot();
     const backupDirectory = path.join(workspace, "backup");
@@ -310,6 +922,46 @@ describe("offline product-data layout", () => {
     await expect(
       readFile(path.join(productDataDirectory, "catalogue.sqlite"), "utf8"),
     ).resolves.toBe("catalogue bytes");
+  });
+
+  it("保留恢复主失败与暂存清理失败，并继续以中断标记阻止写入", async () => {
+    const workspace = await temporaryRoot();
+    const backupDirectory = path.join(workspace, "backup");
+    const productDataDirectory = path.join(workspace, "product-data");
+    await writeProductRoot(backupDirectory);
+    fileSystemFault.failRestoreStagingCleanup = true;
+    let failure: unknown;
+    try {
+      await restoreOfflineProductDataBackup({
+        backupDirectory,
+        productDataDirectory,
+        prepareProductionCatalogue: async () => {
+          throw new Error("production migration failed");
+        },
+      });
+    } catch (error) {
+      failure = error;
+    } finally {
+      fileSystemFault.failRestoreStagingCleanup = false;
+    }
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure).toMatchObject({
+      message: "离线恢复主操作失败，且 1 项收尾失败；所有失败均已保留",
+      errors: [
+        expect.objectContaining({ message: "production migration failed" }),
+        expect.objectContaining({ message: "staging cleanup failed" }),
+      ],
+    });
+    const marker = path.join(
+      productDataDirectory,
+      "runtime-state",
+      "offline-restore-in-progress.json",
+    );
+    expect((await lstat(marker)).isFile()).toBe(true);
+    expect(() =>
+      ProductDataOperations.forRoot(productDataDirectory).startWriter(),
+    ).toThrow("离线恢复曾中断");
   });
 
   it("releases maintenance when staging initialization fails so a later writer can acquire the root", async () => {

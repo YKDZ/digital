@@ -233,7 +233,7 @@ export async function probeReady(
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
     return { reason: "ready 响应不是对象" };
   const value = parsed as Record<string, unknown>;
-  if (value.ok !== true || value.service !== "digital-web")
+  if (value.ok !== true || value.service !== "digital-product-service")
     return { reason: "ready 响应不表示服务就绪" };
   if (typeof value.runId !== "string" || value.runId !== target.run.runId)
     return { reason: `ready 响应世代不符：${String(value.runId)}` };

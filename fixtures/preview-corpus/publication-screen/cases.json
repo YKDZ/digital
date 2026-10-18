@@ -42,10 +42,15 @@
           "property": "book.publication-date",
           "value": "2018-01-12",
           "locator": "epub:OEBPS/content.opf#/metadata/dc:date[2]"
+        },
+        {
+          "property": "asset.introduction",
+          "value": "暑假结束，妹妹哭着找我讨救兵。那是她六岁，我十岁时的事。\n难得主动靠近的妹妹，手上拿着绘图日记本。「帮我……」\n她目光一与我对上，便战战兢兢地朝我递出日记本，小声地如此说道。\n我想，我和妹妹的关系，就是从这个瞬间开始发展的。\n爱哭、没有毅力、只会发呆、没有朋友，让人操心，无法放着不管的存在。\n——那就是我的妹妹。\n「因为哥─哥几乎是我人生的全部嘛。」\n始于幼年期，经历成长期，于成年之后做出选择的人生——\n描述难分难舍的两人的「一生」，略带苦涩的兄妹爱情喜剧。",
+          "locator": "epub:OEBPS/content.opf#/metadata/dc:description[1]"
         }
       ],
       "cover": "embedded",
-      "coverBytes": "responses/cover.png"
+      "coverBytes": "responses/epub-1-cover.jpg"
     },
     {
       "id": "epub-2",
@@ -88,10 +93,15 @@
           "property": "book.publication-date",
           "value": "2018-08-05",
           "locator": "epub:OEBPS/content.opf#/metadata/dc:date[2]"
+        },
+        {
+          "property": "asset.introduction",
+          "value": "妹妹实现了梦想，成为小说家。这个事实动摇了我的存在意义。\n我喜欢的是软弱无能的妹妹。被那样的妹妹依赖着，让我觉得自己很重要。\n但是，当我终于察觉自己有多么自以为是时，我的人生之路已经走到无法回头的地步了。\n所以我决定继续和妹妹一起过着两人生活。\n我的生命里只有妹妹，不论是过去，或是未来，\n就算被父母抛弃、被世人白眼蔑视，这个事实还是不会改变。\n原来如此。我们真是对恶心的兄妹呢。\n不过就算再恶心，我还是决定把人生献给血肉相连的妹妹，和她彼此依偎、互相依存地活下去。\n我只想要和妹妹一起生活。如此一来，我对人生就感到满足了。\n这就是我的，妹妹人生。\n描述互相依存的两人的「一生」，略带苦涩的兄妹爱情喜剧，完结。",
+          "locator": "epub:OEBPS/content.opf#/metadata/dc:description[1]"
         }
       ],
       "cover": "embedded",
-      "coverBytes": "responses/cover.png"
+      "coverBytes": "responses/epub-2-cover.jpg"
     },
     {
       "id": "epub-3",
@@ -142,7 +152,7 @@
         }
       ],
       "cover": "embedded",
-      "coverBytes": "responses/cover.png"
+      "coverBytes": "responses/epub-3-cover.jpg"
     },
     {
       "id": "epub-4",
@@ -193,7 +203,7 @@
         }
       ],
       "cover": "embedded",
-      "coverBytes": "responses/cover.png"
+      "coverBytes": "responses/epub-4-cover.jpg"
     },
     {
       "id": "epub-5",
@@ -234,7 +244,7 @@
         }
       ],
       "cover": "embedded",
-      "coverBytes": "responses/cover.png",
+      "coverBytes": "responses/epub-5-cover.jpg",
       "official": {
         "sourceIdentity": "nbinet",
         "isbn": "9789864738281",
@@ -333,7 +343,7 @@
         }
       ],
       "cover": "embedded",
-      "coverBytes": "responses/cover.png",
+      "coverBytes": "responses/epub-6-cover.jpg",
       "official": {
         "sourceIdentity": "nbinet",
         "isbn": "9789864738298",
@@ -400,22 +410,25 @@
       "directory": "material/books/やがて君になる 佐伯沙弥香について",
       "publications": [
         {
-          "relativePath": "01. /终将成为你 佐伯沙弥香的追忆/终将成为你 佐伯沙弥香的追忆 - 入间人间 (2020).pdf",
+          "relativePath": "01. /终将成为你 佐伯沙弥香的追忆/终将成为你 佐伯沙弥香的追忆.pdf",
           "pageCount": 1,
           "documentAuthor": "水橋 松梨",
-          "coverLocator": "pdf:page[1]"
+          "coverLocator": "pdf:page[1]",
+          "coverReferenceImage": "references/pdf-1-cover.png"
         },
         {
-          "relativePath": "02. /终将成为你 佐伯沙弥香的追忆2/终将成为你 佐伯沙弥香的追忆2 - 入间人间 (2020).pdf",
+          "relativePath": "02. /终将成为你 佐伯沙弥香的追忆2/终将成为你 佐伯沙弥香的追忆2.pdf",
           "pageCount": 1,
           "documentAuthor": "水橋 松梨",
-          "coverLocator": "pdf:page[1]"
+          "coverLocator": "pdf:page[1]",
+          "coverReferenceImage": "references/pdf-2-cover.png"
         },
         {
-          "relativePath": "03. /终将成为你 佐伯沙弥香的追忆3/终将成为你 佐伯沙弥香的追忆3 - 入间人间 (2020).pdf",
+          "relativePath": "03. /终将成为你 佐伯沙弥香的追忆3/终将成为你 佐伯沙弥香的追忆3.pdf",
           "pageCount": 1,
           "documentAuthor": "水橋 松梨",
-          "coverLocator": "pdf:page[1]"
+          "coverLocator": "pdf:page[1]",
+          "coverReferenceImage": "references/pdf-3-cover.png"
         }
       ]
     },
@@ -441,7 +454,15 @@
           "sort": 13
         }
       ],
-      "kind": "anime"
+      "kind": "anime",
+      "bangumiSubjects": [
+        {
+          "subject": 243981,
+          "title": "终将成为你",
+          "summary": "不明白与人恋爱的心情，为此感到烦恼的小糸侑，在初中毕业时被要好的男生告白，却无法给予回应。\r\n她在此时邂逅的学生会成员七海灯子，不论被谁告白，都无法喜欢上对方。\r\n与灯子感到共鸣的侑，将自己的烦恼坦诚相告，却反而从灯子那里听到了意想不到的话语——\r\n“我好像会喜欢上你。”",
+          "coverBytes": "responses/bangumi-subject-243981-cover.jpg"
+        }
+      ]
     },
     {
       "id": "anime-frieren",
@@ -473,7 +494,21 @@
           "sort": 29
         }
       ],
-      "kind": "anime"
+      "kind": "anime",
+      "bangumiSubjects": [
+        {
+          "subject": 400602,
+          "title": "葬送的芙莉莲",
+          "summary": "魔法使芙莉莲和勇者辛美尔等人一起，历经十年的冒险之后击败了魔王，为世界带来了和平。\r\n身为能活上一千多年的精灵族，她于是和辛美尔等人约定再次相见后，踏上了独自一人的旅途。\r\n自那以后，50年过去，芙莉莲又前往拜访辛美尔，相比于和50年前一点没变的她来说，辛美尔已经年迈体衰，进入了风烛残年。\r\n之后，她目睹了辛美尔迎来他的死亡，痛感自己以往没能“知晓人心\"，陷入后悔的芙莉莲，为了“知晓人心\"，踏上了旅途。\r\n这趟旅途会邂逅各种各样的人，也有各种各样的事情在等待着她。",
+          "coverBytes": "responses/bangumi-subject-400602-cover.jpg"
+        },
+        {
+          "subject": 515759,
+          "title": "葬送的芙莉莲 第二季",
+          "summary": "「流泪道别并不适合我们，因为下次再见时会很难为情。」\r\n在勇者欣梅尔一行人击败魔王后的世界中，与欣梅尔等人一同为世界带来和平、活了千年以上的精灵魔法使──芙莉莲。\r\n在面对寿命已尽的欣梅尔之死时，因落下的泪水与心中涌现的情感，踏上了「理解人类之心的旅程」。在旅途中，她与曾由过去伙伴海塔抚养长大的魔法使费伦，以及同为伙伴艾冉的弟子、战士修塔尔克结伴同行，一同朝向灵魂长眠之地前进。\r\n在旅程中，与各种人们相遇交流，并与狡诈的魔族与魔物展开战斗。有时平静温柔，有时无聊琐碎，有时激烈动荡，有时直击心扉……所有的一切、每一个瞬间，都一点一滴地堆叠成三人无可取代的珍贵回忆。而在这趟旅程的终点，究竟等待着他们的会是什么？\r\n魔法使资格测试结束后，他们三人将再度启程──\r\n\r\n\r\n\r\n[简介原文]\r\n「週刊少年サンデー」(小学館)で連載中、山田鐘人(原作)とアベツカサ(作画)による漫画『葬送のフリーレン』。\r\n勇者とそのパーティーによって魔王が倒された“その後”の世界を舞台に、\r\n勇者と共に魔王を打倒した千年以上生きる魔法使い・フリーレンと、彼女が新たに出会う人々の旅路が描かれていく。\r\n“魔王討伐後”という斬新な時系列で展開する胸に刺さるドラマやセリフ、魔法や剣による戦い、\r\n思わず笑ってしまうユーモアなど、キャラクターたちが織り成す物語で、多くの読者を獲得。\r\nこれまでに「マンガ大賞2021」大賞、「第25回手塚治虫文化賞」新生賞、\r\n「第69回(2023年度)小学館漫画賞」、「第48回講談社漫画賞」少年部門など数々の漫画賞を受賞。\r\nそして現在発売中のコミックスは累計部数3200万部を突破！漫画ファンの間で旋風を起こしている。\r\nそれを原作とするTVアニメは2023年9月から2024年3月まで放送され、\r\n国内外で幅広い、数多くのファンを獲得し、大きな反響を呼んだ。\r\nそしてこの度、待望の第2期が2026年1月より日本テレビ系で放送決定！\r\nフリーレンの「人の心を知る旅」が、再び始まる―。",
+          "coverBytes": "responses/bangumi-subject-515759-cover.jpg"
+        }
+      ]
     },
     {
       "id": "film-strict",
@@ -486,23 +521,108 @@
       "date": "2013-07-31",
       "files": ["恐怖直播 (2013) - 1080p.mp4"],
       "kind": "film",
-      "tmdbOverview": "TMDB 受控简介 209764",
-      "omdbAwards": "OMDb 独立贡献受控奖项 tt2990738"
+      "tmdbOverview": "曾经是韩国顶级电视新闻主播的尹英华，如今被调到广播电台主持时事节目。一天早晨的直播中，一名自称朴鲁圭的建筑工人突然打来电话，声称要炸毁汉江上的麻浦大桥。尹英华起初只当这是恶作剧，甚至出言挑衅，没想到几分钟后，窗外的麻浦大桥真的发生爆炸。意识到这场突发事件可能成为自己重返电视新闻台的机会，尹英华没有立即将独家线索交给警方，而是开始与来电者进行直播连线。对方声称多年前维修大桥时有工人因事故死亡，却始终没有得到应有的道歉，并要求总统亲自公开致歉。随着警方、电视台和政府相继介入，这场原本被尹英华视为事业翻身机会的独家直播，也逐渐演变成一场完全超出他掌控的生死危机……",
+      "omdbAwards": "9 wins & 7 nominations total",
+      "coverBytes": "responses/tmdb-209764-poster.jpg",
+      "tmdbFacts": [
+        {
+          "property": "asset.title",
+          "value": "恐怖直播"
+        },
+        {
+          "property": "asset.title.original",
+          "value": "더 테러 라이브"
+        },
+        {
+          "property": "asset.introduction",
+          "value": "曾经是韩国顶级电视新闻主播的尹英华，如今被调到广播电台主持时事节目。一天早晨的直播中，一名自称朴鲁圭的建筑工人突然打来电话，声称要炸毁汉江上的麻浦大桥。尹英华起初只当这是恶作剧，甚至出言挑衅，没想到几分钟后，窗外的麻浦大桥真的发生爆炸。意识到这场突发事件可能成为自己重返电视新闻台的机会，尹英华没有立即将独家线索交给警方，而是开始与来电者进行直播连线。对方声称多年前维修大桥时有工人因事故死亡，却始终没有得到应有的道歉，并要求总统亲自公开致歉。随着警方、电视台和政府相继介入，这场原本被尹英华视为事业翻身机会的独家直播，也逐渐演变成一场完全超出他掌控的生死危机……"
+        },
+        {
+          "property": "asset.release-date",
+          "value": "2013-07-31"
+        },
+        {
+          "property": "asset.runtime-minutes",
+          "value": "97"
+        },
+        {
+          "property": "external.imdb-id",
+          "value": "tt2990738"
+        },
+        {
+          "property": "asset.genre",
+          "value": "犯罪"
+        },
+        {
+          "property": "asset.genre",
+          "value": "剧情"
+        },
+        {
+          "property": "asset.genre",
+          "value": "惊悚"
+        }
+      ],
+      "directors": ["金秉祐"]
     },
     {
       "id": "film-directed",
       "directory": "material/films/[怒火救援].Man.on.Fire.2004.Blu-ray.1080p.AVC.DTS-HD.MA5.1-CMCT",
-      "title": "怒火救援",
+      "title": "Man on Fire",
       "originalTitle": "Man on Fire",
       "year": 2004,
       "tmdb": 9509,
       "imdb": "tt0328107",
       "date": "2004-04-23",
-      "files": ["BDMV/STREAM/00000.m2ts", "BDMV/STREAM/00001.m2ts"],
+      "files": ["BDMV/STREAM/00001.m2ts", "BDMV/STREAM/00002.m2ts"],
       "directed": true,
       "kind": "film",
-      "tmdbOverview": "TMDB 受控简介 9509",
-      "omdbAwards": "OMDb 独立贡献受控奖项 tt0328107"
+      "tmdbOverview": "Jaded ex-CIA operative John Creasy reluctantly accepts a job as the bodyguard for a 10-year-old girl in Mexico City. They clash at first, but eventually bond, and when she's kidnapped he's consumed by fury and will stop at nothing to save her life.",
+      "coverBytes": "responses/tmdb-9509-poster.jpg",
+      "tmdbFacts": [
+        {
+          "property": "asset.title",
+          "value": "Man on Fire"
+        },
+        {
+          "property": "asset.title.original",
+          "value": "Man on Fire"
+        },
+        {
+          "property": "asset.introduction",
+          "value": "Jaded ex-CIA operative John Creasy reluctantly accepts a job as the bodyguard for a 10-year-old girl in Mexico City. They clash at first, but eventually bond, and when she's kidnapped he's consumed by fury and will stop at nothing to save her life."
+        },
+        {
+          "property": "asset.release-date",
+          "value": "2004-04-23"
+        },
+        {
+          "property": "asset.runtime-minutes",
+          "value": "146"
+        },
+        {
+          "property": "external.imdb-id",
+          "value": "tt0328107"
+        },
+        {
+          "property": "asset.genre",
+          "value": "Action"
+        },
+        {
+          "property": "asset.genre",
+          "value": "Drama"
+        },
+        {
+          "property": "asset.genre",
+          "value": "Thriller"
+        }
+      ],
+      "directors": ["Tony Scott"],
+      "sourceFailures": [
+        {
+          "sourceIdentity": "omdb",
+          "reason": "HTTP 503"
+        }
+      ]
     }
   ]
 }
