@@ -23,6 +23,9 @@ const inspectionOnlyDouble: WorkflowExecutionQueries = {
   async listRunningExecutions() {
     return [];
   },
+  async listCommittedSourceRefreshRecordIdsForSubject() {
+    return [];
+  },
   async inspectRawSourceRecord() {
     return undefined;
   },

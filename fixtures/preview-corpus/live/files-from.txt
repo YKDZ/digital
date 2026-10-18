@@ -6,11 +6,11 @@ kikoeru/VoiceWork/RJ01115164/
 kikoeru/VoiceWork/RJ01131487/
 kikoeru/VoiceWork/RJ01196709/
 kikoeru/VoiceWork/RJ01497788/
-media/animation/Custom Udon/24.03.07 ひみつ/
-media/animation/Custom Udon/23.12.31 コスプレ4/
-media/animation/Custom Udon/18.12.19 プールで2/
-media/animation/Custom Udon/25.01.01 年始の挨拶(おまけ動画付き)/
-media/animation/Custom Udon/20.12.29 今年も一年ありがとうございました。/
+media/animation/customudon/24.03.07 ひみつ/
+media/animation/customudon/23.12.31 コスプレ4/
+media/animation/customudon/18.12.19 プールで2/
+media/animation/customudon/25.01.01 年始の挨拶(おまけ動画付き)/
+media/animation/customudon/20.12.29 今年も一年ありがとうございました。/
 media/music/25時、ナイトコードで。 — 25時、ナイトコードで。 SEKAI ALBUM vol.3 (2025) {BRMM-10894} [CD-FLAC]/
 media/music/[EAC][110612][ボーマス16][同人][Baguettes Ensemble][The Vocaloid Jazz sessions Vol.3][FLAC+CUE+LOG]/
 media/music/『プロジェクトセカイ カラフルステージ! feat. 初音ミク』25時、ナイトコードで。 8th Single「演劇／25時の情熱」[FLAC]/

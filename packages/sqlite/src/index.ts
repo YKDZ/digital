@@ -7901,6 +7901,18 @@ export class SqliteCatalogue
     return row === undefined ? undefined : sourceRecordFromDrizzle(row);
   }
 
+  async listCommittedSourceRefreshRecordIdsForSubject(
+    assetId: string,
+  ): Promise<readonly string[]> {
+    const query = drizzle({ client: await this.ensure() });
+    const rows = query
+      .select({ sourceRecordId: sourceRefreshChanges.sourceRecordId })
+      .from(sourceRefreshChanges)
+      .where(eq(sourceRefreshChanges.subjectId, assetId))
+      .all();
+    return uniqueStrings(rows.map(({ sourceRecordId }) => sourceRecordId));
+  }
+
   async findReusableOrdinaryScan(input: {
     readonly plan: OrdinaryScanReusePlan;
     readonly availableCompatibility: WorkflowExecution["compatibility"];

@@ -5549,6 +5549,10 @@ type CataloguePersistenceOperations = {
   inspectRawSourceRecordById?(
     sourceRecordId: string,
   ): Promise<SourceRecord | undefined>;
+  /** 只读取精确资产主体已提交来源刷新变化所保留的记录编号。 */
+  listCommittedSourceRefreshRecordIdsForSubject(
+    assetId: string,
+  ): Promise<readonly string[]>;
   /** 解析已接受范围，而不解析其目录或来源键。 */
   listEffectiveMaterialBoundaries(input: {
     readonly scope: ObservedRootSnapshot;
@@ -5885,6 +5889,7 @@ export type WorkflowExecutionQueries = Pick<
   | "listRunningExecutions"
   | "inspectRawSourceRecord"
   | "inspectRawSourceRecordById"
+  | "listCommittedSourceRefreshRecordIdsForSubject"
   | "inspectLibraryScan"
   | "listUnrecognizedLibraryScanObservations"
 >;
@@ -13605,6 +13610,11 @@ export class AssetRefreshWorkflow {
     for (const result of proposal.ruleResults)
       for (const reference of result.evidenceReferences ?? [])
         sourceRecordIds.add(reference.sourceRecordId);
+    const committedRefreshRecordIds =
+      await this.ports.executionQueries.listCommittedSourceRefreshRecordIdsForSubject(
+        assetId,
+      );
+    committedRefreshRecordIds.forEach((id) => sourceRecordIds.add(id));
     return {
       accepted: current.accepted,
       ...(inspection === undefined ? {} : { inspection }),

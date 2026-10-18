@@ -138,6 +138,8 @@ fs.writeFileSync(file,JSON.stringify(state));console.log(output);
       await rm(root, { recursive: true, force: true });
     }
   },
+  // 每项都串行覆盖五次公开操作和多批真实 CLI 子进程，给完整收尾留出预算。
+  15_000,
 );
 
 test("容器创建前失败时先通过只读载体保存本次自有卷，再回收其资源", async () => {

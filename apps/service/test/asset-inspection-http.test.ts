@@ -36,6 +36,10 @@ const materialFixture = fileURLToPath(
 const sourceManifest = fileURLToPath(
   import.meta.resolve("@digital/preview-corpus/audio-posts/manifest.json"),
 );
+const fanboxConnectionFixture = fileURLToPath(
+  import.meta
+    .resolve("@digital/preview-corpus/audio-posts/connections/synthetic-customudon.json"),
+);
 const movieMaterialFixture = fileURLToPath(
   import.meta.resolve("@digital/preview-corpus/publication-screen/material"),
 );
@@ -1226,6 +1230,225 @@ it("经已验证的正式来源扫描和刷新读取当前采用依据、未采�
     stage: "failed",
     outcome: "cancelled",
   });
+}, 180_000);
+
+it("资产来源记录页保留已提交 FANBOX unchanged 摘要及其历史正文", async () => {
+  const root = await mkdtemp(
+    path.join(tmpdir(), "ewc08-unchanged-fanbox-summary-"),
+  );
+  temporaryRoots.push(root);
+  const productDataDirectory = path.join(root, "product-data");
+  const materialRoot = path.join(root, "library");
+  const fanboxPostMaterial = path.join(
+    materialFixture,
+    "customudon",
+    "23.12.31 コスプレ4",
+  );
+  await cp(
+    fanboxPostMaterial,
+    path.join(materialRoot, "customudon", "23.12.31 コスプレ4"),
+    { recursive: true },
+  );
+
+  const controlled = await loadControlledSourceIo({
+    manifestPath: sourceManifest,
+  });
+  if (controlled.sessionTransport === undefined)
+    throw new Error("受控 FANBOX 样例缺少正式会话端点传输");
+  const sourceIo: ProductConfiguration["sourceIo"] = {
+    mode: "controlled",
+    request: controlled.request,
+    sessionTransport: controlled.sessionTransport,
+  };
+  const baseUrl = await startInspectionService(productDataDirectory, sourceIo);
+  const client = createPublicApiClient({ baseUrl });
+  const pairing = await client.createFanboxConnectionRequest({
+    creatorId: "customudon",
+  });
+  const browserCredential = JSON.parse(
+    await readFile(fanboxConnectionFixture, "utf8"),
+  ) as unknown;
+  await expect(
+    client.completeFanboxConnectionRequest({
+      requestId: pairing.request.id,
+      pairingCode: pairing.pairingCode,
+      browserCredential,
+    }),
+  ).resolves.toMatchObject({ status: "succeeded" });
+
+  const library = await client.saveAssetLibrary({
+    displayName: "受控 FANBOX 摘要证据库",
+    directories: [materialRoot],
+    recognitionProfileIds: ["fanbox"],
+    sourceIdentities: ["fanbox"],
+  });
+  const scan = await client.startAssetLibraryScan(library.id);
+  await expect
+    .poll(
+      async () =>
+        (await client.inspectAssetLibraryScan(scan.parentExecutionId)).status,
+      { timeout: 120_000, interval: 200 },
+    )
+    .toBe("completed");
+  const assets = await client.listAssets({
+    assetLibraryId: library.id,
+    limit: 10,
+  });
+  expect(assets.items).toHaveLength(1);
+  const assetId = assets.items[0]!.id;
+  const initialRecords = await client.listAssetEvidence(assetId, {
+    kind: "source-records",
+    limit: 100,
+  });
+  expect(initialRecords.items).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        kind: "source-record",
+        sourceIdentity: "fanbox",
+        coverage: expect.objectContaining({
+          id: "fanbox.creator-post-summaries",
+        }),
+        status: "available",
+      }),
+    ]),
+  );
+
+  const refreshUnchangedSummary = async () => {
+    const refresh = await client.startMetadataRefresh({ subjectId: assetId });
+    await expect
+      .poll(async () => (await client.inspectExecution(refresh.id)).status, {
+        timeout: 120_000,
+        interval: 200,
+      })
+      .toBe("completed");
+    const inspection = await client.inspectExecution(refresh.id);
+    if (inspection.kind !== "execution")
+      throw new Error("正式 FANBOX 刷新没有返回执行检查记录");
+    const run = inspection.sourceRefreshRuns.find(
+      (candidate) =>
+        candidate.requestedSelection.subjectId === assetId &&
+        candidate.requestedSelection.sourceIdentity === "fanbox",
+    );
+    if (run === undefined) throw new Error("正式 FANBOX 刷新没有保留来源运行");
+    const summaryScope = run.scopes.find(
+      (scope) => scope.coverage.coverageId === "fanbox.creator-post-summaries",
+    );
+    expect(summaryScope?.outcome).toBe("unchanged");
+    if (summaryScope?.candidateSourceRecordId === undefined)
+      throw new Error("unchanged 摘要范围没有正式候选记录");
+    return summaryScope.candidateSourceRecordId;
+  };
+  const currentUnchangedSummaryId = await refreshUnchangedSummary();
+  const historicalUnchangedSummaryId = await refreshUnchangedSummary();
+  expect(historicalUnchangedSummaryId).not.toBe(currentUnchangedSummaryId);
+
+  const sourceRecordPages: Array<
+    Awaited<ReturnType<typeof client.listAssetEvidence>>["items"][number]
+  > = [];
+  let cursor: string | undefined;
+  do {
+    const page = await client.listAssetEvidence(assetId, {
+      kind: "source-records",
+      limit: 1,
+      ...(cursor === undefined ? {} : { cursor }),
+    });
+    sourceRecordPages.push(...page.items);
+    cursor = page.nextCursor;
+  } while (cursor !== undefined);
+  expect(sourceRecordPages).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        kind: "source-record",
+        id: historicalUnchangedSummaryId,
+        status: "available",
+        sourceIdentity: "fanbox",
+        coverage: expect.objectContaining({
+          id: "fanbox.creator-post-summaries",
+        }),
+      }),
+      expect.objectContaining({
+        kind: "source-record",
+        id: currentUnchangedSummaryId,
+        status: "available",
+        sourceIdentity: "fanbox",
+        coverage: expect.objectContaining({
+          id: "fanbox.creator-post-summaries",
+        }),
+      }),
+    ]),
+  );
+
+  const readCompleteBody = async (sourceRecordId: string) => {
+    let offset = 0;
+    let complete = false;
+    let body = "";
+    while (!complete) {
+      const chunk = await client.readAssetSourceRecord(
+        assetId,
+        sourceRecordId,
+        {
+          offset,
+          limit: 256,
+        },
+      );
+      expect(chunk.record.id).toBe(sourceRecordId);
+      expect(chunk.offset).toBe(offset);
+      body += chunk.content;
+      offset = chunk.nextOffset;
+      complete = chunk.complete;
+    }
+    return JSON.parse(body) as {
+      readonly body: {
+        readonly posts: readonly {
+          readonly id: string;
+          readonly title: string;
+        }[];
+      };
+    };
+  };
+  for (const sourceRecordId of [
+    historicalUnchangedSummaryId,
+    currentUnchangedSummaryId,
+  ]) {
+    const body = await readCompleteBody(sourceRecordId);
+    expect(body.body.posts).toContainEqual(
+      expect.objectContaining({ id: "7225781", title: "Movie | コスプレ4" }),
+    );
+  }
+
+  const bookRoot = path.join(root, "unrelated-books");
+  await mkdir(bookRoot, { recursive: true });
+  await writeFile(
+    path.join(bookRoot, "无关书籍.pdf"),
+    syntheticPdf({ author: "无关资产作者", pageCount: 1 }),
+  );
+  const bookLibrary = await client.saveAssetLibrary({
+    displayName: "无关资产书库",
+    directories: [bookRoot],
+    recognitionProfileIds: ["books"],
+    sourceIdentities: [],
+  });
+  const bookScan = await client.startAssetLibraryScan(bookLibrary.id);
+  await expect
+    .poll(
+      async () =>
+        (await client.inspectAssetLibraryScan(bookScan.parentExecutionId))
+          .status,
+      { timeout: 120_000, interval: 200 },
+    )
+    .toBe("completed");
+  const unrelatedAssets = await client.listAssets({
+    assetLibraryId: bookLibrary.id,
+    limit: 10,
+  });
+  expect(unrelatedAssets.items).toHaveLength(1);
+  const unrelatedRead = await fetch(
+    new URL(
+      `/api/v1/assets/${encodeURIComponent(unrelatedAssets.items[0]!.id)}/inspection/source-records/${encodeURIComponent(currentUnchangedSummaryId)}`,
+      baseUrl,
+    ),
+  );
+  expect(unrelatedRead.status).toBe(404);
 }, 180_000);
 
 it("真实 HTTP 通过当前 nbinet 多值冲突明确采纳候选并拒绝过期候选", async () => {

@@ -1191,9 +1191,9 @@ try {
           scope.coverage.sourceIdentity === "fanbox" &&
           scope.coverage.nativeAddress ===
             refreshRun.requestedSelection.nativeAddress &&
-          scope.outcome === "applied",
+          (scope.outcome === "applied" || scope.outcome === "unchanged"),
       ),
-      "每帖刷新必须成功取得并应用两类官方来源范围",
+      "每帖刷新必须成功取得摘要和详情两类官方来源记录",
     );
     const afterRecords = await allSourceRecords(client, beforeAsset.id);
     const added = afterRecords.filter((record) => !beforeIds.has(record.id));

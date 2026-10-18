@@ -736,6 +736,9 @@ function refreshFixture(options?: {
     async requestLibraryScanCancellation() {
       throw new Error("本夹具不应取消资产库扫描");
     },
+    async listCommittedSourceRefreshRecordIdsForSubject() {
+      return [];
+    },
     async claimResumeExecution({ executionId, token, now, expiresAt }) {
       resumeClaimAttempts += 1;
       const inspection = persisted.get(executionId);
