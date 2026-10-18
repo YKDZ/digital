@@ -1,4 +1,4 @@
-FROM node:24-bookworm-slim
+FROM node:26-bookworm-slim
 ARG PACKAGE_MANAGER_PIN="pnpm@12.3.4"
 RUN corepack enable \
   && corepack prepare "$PACKAGE_MANAGER_PIN" --activate \
