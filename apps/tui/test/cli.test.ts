@@ -26,6 +26,121 @@ function interactivePtyEnvironment(
   return environment;
 }
 
+function startInteractivePty(
+  terminalCommand: string,
+  columns: number,
+  rows: number,
+  timeoutMs: number,
+) {
+  const child = spawn(
+    "bash",
+    ["-lc", `script -qfec ${shellQuote(terminalCommand)} /dev/null`],
+    {
+      cwd: process.cwd(),
+      env: interactivePtyEnvironment(columns, rows),
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32",
+    },
+  );
+  children.push(child);
+
+  const output: Buffer[] = [];
+  const errors: Buffer[] = [];
+  child.stdout.on("data", (chunk: Buffer) => output.push(chunk));
+  child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
+  const exitCode = new Promise<number | null>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code) => resolve(code));
+  });
+  const processTimeout = setTimeout(() => {
+    if (child.pid === undefined) return;
+    try {
+      process.kill(-child.pid, "SIGTERM");
+    } catch {
+      child.kill("SIGTERM");
+    }
+  }, timeoutMs).unref();
+  void exitCode.then(
+    () => clearTimeout(processTimeout),
+    () => clearTimeout(processTimeout),
+  );
+
+  const currentOutput = () => Buffer.concat(output);
+  const currentOutputText = () => currentOutput().toString("utf8");
+  const currentErrors = () => Buffer.concat(errors).toString("utf8");
+  const waitForOutputSince = (
+    needles: string | readonly string[],
+    textOffset: number,
+  ) =>
+    new Promise<void>((resolve, reject) => {
+      const markers = typeof needles === "string" ? [needles] : needles;
+      const check = () => {
+        const outputSince = currentOutputText().slice(textOffset);
+        return markers.every((needle) => outputSince.includes(needle));
+      };
+      let finished = false;
+      const cleanup = () => {
+        clearTimeout(waitTimeout);
+        child.stdout.off("data", onData);
+        child.off("close", onClose);
+      };
+      const complete = () => {
+        if (finished || !check()) return;
+        finished = true;
+        cleanup();
+        resolve();
+      };
+      const onData = () => complete();
+      const onClose = (code: number | null) => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        reject(
+          new Error(
+            `PTY 在等待新输出 ${JSON.stringify(markers)} 前已退出（退出码 ${String(code)}）；\n${currentErrors()}\n${currentOutput().toString("utf8")}`,
+          ),
+        );
+      };
+      const waitTimeout = setTimeout(() => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        reject(
+          new Error(
+            `PTY 等待的新输出 ${JSON.stringify(markers)} 未在期限内出现；\n${currentErrors()}\n${currentOutput().toString("utf8")}`,
+          ),
+        );
+      }, 5_000);
+      child.stdout.on("data", onData);
+      child.once("close", onClose);
+      complete();
+    });
+
+  return {
+    get output() {
+      return currentOutputText();
+    },
+    get errors() {
+      return currentErrors();
+    },
+    waitForOutput(needles: string | readonly string[]) {
+      return waitForOutputSince(needles, 0);
+    },
+    async sendAndWait(input: string, needles: string | readonly string[]) {
+      const textOffset = currentOutputText().length;
+      if (!child.stdin.write(input))
+        await new Promise<void>((resolve) =>
+          child.stdin.once("drain", resolve),
+        );
+      await waitForOutputSince(needles, textOffset);
+    },
+    async closeAndWait() {
+      child.stdin.end();
+      return exitCode;
+    },
+  };
+}
+
 afterEach(async () => {
   for (const child of children.splice(0).reverse()) {
     if (child.exitCode === null && child.signalCode === null) {
@@ -58,34 +173,30 @@ it("运行安装入口、处理分页键，并在窄终端退出时恢复输入�
   });
   const address = server.address() as AddressInfo;
   const terminalCommand = `stty cols 34 rows 10 -icanon -echo; terminalModeBefore=$(stty -g); (sleep 5; stty cols 46 rows 14 < /dev/tty) & ./dist/cli.js --url http://127.0.0.1:${address.port}; terminalModeAfter=$(stty -g); if [ "$terminalModeBefore" = "$terminalModeAfter" ]; then echo TERMINAL_RESTORED; else echo TERMINAL_NOT_RESTORED; fi`;
-  const keyInput =
-    "{ sleep 0.5; printf n; sleep 0.6; printf p; sleep 0.6; printf '/'; sleep 0.4; printf '本地资料库x'; sleep 0.8; printf '\\177'; sleep 0.5; printf '\\r'; sleep 0.5; printf '\\r'; sleep 0.5; printf n; for _ in {1..8}; do sleep 0.1; printf j; done; sleep 0.8; printf p; sleep 0.4; printf 3; sleep 0.4; printf q; }";
-  const command = `set -o pipefail; ${keyInput} | script -qfec ${shellQuote(terminalCommand)} /dev/null`;
-  const child = spawn("bash", ["-lc", command], {
-    cwd: process.cwd(),
-    env: interactivePtyEnvironment(34, 10),
-    stdio: ["ignore", "pipe", "pipe"],
-    detached: process.platform !== "win32",
-  });
-  children.push(child);
-  const output: Buffer[] = [];
-  const errors: Buffer[] = [];
-  child.stdout.on("data", (chunk: Buffer) => output.push(chunk));
-  child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
-  const exitCode = await new Promise<number | null>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", (code) => resolve(code));
-    setTimeout(() => {
-      if (child.pid === undefined) return;
-      try {
-        process.kill(-child.pid, "SIGTERM");
-      } catch {
-        child.kill("SIGTERM");
-      }
-    }, 10_000).unref();
-  });
-  const terminalOutput = Buffer.concat(output).toString("utf8");
-  const errorOutput = Buffer.concat(errors).toString("utf8");
+  const pty = startInteractivePty(terminalCommand, 34, 10, 15_000);
+  await pty.waitForOutput("本地资料库");
+  await pty.sendAndWait("n", "第二页资料库");
+  await pty.sendAndWait("p", "本地资料库");
+  await pty.sendAndWait("/", "筛选本页：");
+  await pty.sendAndWait("本地资料库x", "筛选本页：本地资料库x");
+  await pty.sendAndWait("\u007f", "筛选本页：本地资料库（输入后回车");
+  await pty.sendAndWait("\r", "筛选本页：本地资料库（1/1）");
+  await pty.sendAndWait("\r", "第一页资产");
+  await pty.sendAndWait("n", "第二页资产01");
+  await pty.sendAndWait("j", "› 第二页资产02");
+  await pty.sendAndWait("j", "› 第二页资产03");
+  await pty.sendAndWait("j", "› 第二页资产04");
+  await pty.sendAndWait("j", "› 第二页资产05");
+  await pty.sendAndWait("j", "› 第二页资产06");
+  await pty.sendAndWait("j", "› 第二页资产07");
+  await pty.sendAndWait("j", "› 第二页资产08");
+  await pty.sendAndWait("j", ["› 第二页资产09", "第 3-9/20 项"]);
+  await pty.sendAndWait("p", "第一页资产");
+  await pty.sendAndWait("3", "未识别样本.pdf");
+  await pty.sendAndWait("q", "TERMINAL_RESTORED");
+  const exitCode = await pty.closeAndWait();
+  const terminalOutput = pty.output;
+  const errorOutput = pty.errors;
 
   expect(exitCode, `${errorOutput}\n${terminalOutput}`).toBe(0);
   expect(terminalOutput).toContain("数字资料库");
@@ -285,34 +396,22 @@ it("安装入口可补充来源、检查失败依据并重试", async () => {
   });
   const address = server.address() as AddressInfo;
   const terminalCommand = `stty cols 54 rows 16 -icanon -echo; terminalModeBefore=$(stty -g); ./dist/cli.js --url http://127.0.0.1:${address.port}; terminalModeAfter=$(stty -g); if [ "$terminalModeBefore" = "$terminalModeAfter" ]; then echo TERMINAL_RESTORED; else echo TERMINAL_NOT_RESTORED; fi`;
-  const keyInput =
-    "{ sleep 0.5; printf '\\r'; sleep 0.6; printf i; sleep 0.6; printf e; sleep 0.8; printf '9789864738281'; sleep 0.3; printf '\\r'; sleep 1.0; printf r; sleep 1.3; printf '\\033'; sleep 0.3; printf q; }";
-  const command = `set -o pipefail; ${keyInput} | script -qfec ${shellQuote(terminalCommand)} /dev/null`;
-  const child = spawn("bash", ["-lc", command], {
-    cwd: process.cwd(),
-    env: interactivePtyEnvironment(54, 16),
-    stdio: ["ignore", "pipe", "pipe"],
-    detached: process.platform !== "win32",
-  });
-  children.push(child);
-  const output: Buffer[] = [];
-  const errors: Buffer[] = [];
-  child.stdout.on("data", (chunk: Buffer) => output.push(chunk));
-  child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
-  const exitCode = await new Promise<number | null>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", (code) => resolve(code));
-    setTimeout(() => {
-      if (child.pid === undefined) return;
-      try {
-        process.kill(-child.pid, "SIGTERM");
-      } catch {
-        child.kill("SIGTERM");
-      }
-    }, 10_000).unref();
-  });
-  const terminalOutput = Buffer.concat(output).toString("utf8");
-  const errorOutput = Buffer.concat(errors).toString("utf8");
+  const pty = startInteractivePty(terminalCommand, 54, 16, 15_000);
+  await pty.waitForOutput("来源补充库");
+  await pty.sendAndWait("\r", "待补来源的作品");
+  await pty.sendAndWait("i", "来源记录：暂无资料");
+  await pty.sendAndWait("e", "补充来源：國家圖書館");
+  await pty.sendAndWait("9789864738281", "9789864738281");
+  await pty.sendAndWait("\r", [
+    "正在补充来源，请稍候",
+    "可按 r 再次获取当前失败项",
+  ]);
+  await pty.sendAndWait("r", ["来源补充 · 已完成", "已关联：nbinet"]);
+  await pty.sendAndWait("\u001b", "来源记录：暂无资料");
+  await pty.sendAndWait("q", "TERMINAL_RESTORED");
+  const exitCode = await pty.closeAndWait();
+  const terminalOutput = pty.output;
+  const errorOutput = pty.errors;
 
   expect(exitCode, `${errorOutput}\n${terminalOutput}`).toBe(0);
   expect(terminalOutput).toContain("来源补充");
@@ -441,34 +540,16 @@ it("安装入口可检查待处理变更的影响并明确确认", async () => {
   });
   const address = server.address() as AddressInfo;
   const terminalCommand = `stty cols 64 rows 16 -icanon -echo; terminalModeBefore=$(stty -g); ./dist/cli.js --url http://127.0.0.1:${address.port}; terminalModeAfter=$(stty -g); if [ "$terminalModeBefore" = "$terminalModeAfter" ]; then echo TERMINAL_RESTORED; else echo TERMINAL_NOT_RESTORED; fi`;
-  const keyInput =
-    "{ sleep 0.5; printf 5; sleep 0.7; printf v; sleep 0.7; printf a; sleep 0.8; printf '\\033'; sleep 0.3; printf q; }";
-  const command = `set -o pipefail; ${keyInput} | script -qfec ${shellQuote(terminalCommand)} /dev/null`;
-  const child = spawn("bash", ["-lc", command], {
-    cwd: process.cwd(),
-    env: interactivePtyEnvironment(64, 16),
-    stdio: ["ignore", "pipe", "pipe"],
-    detached: process.platform !== "win32",
-  });
-  children.push(child);
-  const output: Buffer[] = [];
-  const errors: Buffer[] = [];
-  child.stdout.on("data", (chunk: Buffer) => output.push(chunk));
-  child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
-  const exitCode = await new Promise<number | null>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", (code) => resolve(code));
-    setTimeout(() => {
-      if (child.pid === undefined) return;
-      try {
-        process.kill(-child.pid, "SIGTERM");
-      } catch {
-        child.kill("SIGTERM");
-      }
-    }, 10_000).unref();
-  });
-  const terminalOutput = Buffer.concat(output).toString("utf8");
-  const errorOutput = Buffer.concat(errors).toString("utf8");
+  const pty = startInteractivePty(terminalCommand, 64, 16, 15_000);
+  await pty.waitForOutput("数字资料库");
+  await pty.sendAndWait("5", "撤回来源识别后需要检查影响");
+  await pty.sendAndWait("v", "变更影响 · 等待确认");
+  await pty.sendAndWait("a", "变更已确认");
+  await pty.sendAndWait("\u001b", "目前没有待处理事项");
+  await pty.sendAndWait("q", "TERMINAL_RESTORED");
+  const exitCode = await pty.closeAndWait();
+  const terminalOutput = pty.output;
+  const errorOutput = pty.errors;
 
   expect(exitCode, `${errorOutput}\n${terminalOutput}`).toBe(0);
   expect(terminalOutput).toContain("变更影响");
@@ -527,33 +608,13 @@ it("显示服务端读取错误并可重新读取", async () => {
   });
   const address = server.address() as AddressInfo;
   const terminalCommand = `stty cols 48 rows 12 -icanon -echo; terminalModeBefore=$(stty -g); ./dist/cli.js --url http://127.0.0.1:${address.port}; terminalModeAfter=$(stty -g); if [ "$terminalModeBefore" = "$terminalModeAfter" ]; then echo TERMINAL_RESTORED; else echo TERMINAL_NOT_RESTORED; fi`;
-  const keyInput = "{ sleep 0.6; printf r; sleep 0.6; printf q; }";
-  const command = `set -o pipefail; ${keyInput} | script -qfec ${shellQuote(terminalCommand)} /dev/null`;
-  const child = spawn("bash", ["-lc", command], {
-    cwd: process.cwd(),
-    env: interactivePtyEnvironment(48, 12),
-    stdio: ["ignore", "pipe", "pipe"],
-    detached: process.platform !== "win32",
-  });
-  children.push(child);
-  const output: Buffer[] = [];
-  const errors: Buffer[] = [];
-  child.stdout.on("data", (chunk: Buffer) => output.push(chunk));
-  child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
-  const exitCode = await new Promise<number | null>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", (code) => resolve(code));
-    setTimeout(() => {
-      if (child.pid === undefined) return;
-      try {
-        process.kill(-child.pid, "SIGTERM");
-      } catch {
-        child.kill("SIGTERM");
-      }
-    }, 10_000).unref();
-  });
-  const terminalOutput = Buffer.concat(output).toString("utf8");
-  const errorOutput = Buffer.concat(errors).toString("utf8");
+  const pty = startInteractivePty(terminalCommand, 48, 12, 15_000);
+  await pty.waitForOutput("资产库暂时不可用");
+  await pty.sendAndWait("r", "恢复后的资料库");
+  await pty.sendAndWait("q", "TERMINAL_RESTORED");
+  const exitCode = await pty.closeAndWait();
+  const terminalOutput = pty.output;
+  const errorOutput = pty.errors;
 
   expect(exitCode, `${errorOutput}\n${terminalOutput}`).toBe(0);
   expect(terminalOutput).toContain("资产库暂时不可用");
@@ -692,34 +753,20 @@ it("安装入口可跟踪三种操作、请求取消并展示同一执行的最�
   });
   const address = server.address() as AddressInfo;
   const terminalCommand = `stty cols 58 rows 16 -icanon -echo; terminalModeBefore=$(stty -g); ./dist/cli.js --url http://127.0.0.1:${address.port}; terminalModeAfter=$(stty -g); if [ "$terminalModeBefore" = "$terminalModeAfter" ]; then echo TERMINAL_RESTORED; else echo TERMINAL_NOT_RESTORED; fi`;
-  const keyInput =
-    "{ sleep 0.6; printf s; sleep 0.8; printf l; sleep 0.4; printf 2; sleep 0.7; printf x; sleep 0.8; printf c; sleep 1.2; printf l; sleep 0.4; printf 2; sleep 0.7; printf m; sleep 1.2; printf q; }";
-  const command = `set -o pipefail; ${keyInput} | script -qfec ${shellQuote(terminalCommand)} /dev/null`;
-  const child = spawn("bash", ["-lc", command], {
-    cwd: process.cwd(),
-    env: interactivePtyEnvironment(58, 16),
-    stdio: ["ignore", "pipe", "pipe"],
-    detached: process.platform !== "win32",
-  });
-  children.push(child);
-  const output: Buffer[] = [];
-  const errors: Buffer[] = [];
-  child.stdout.on("data", (chunk: Buffer) => output.push(chunk));
-  child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
-  const exitCode = await new Promise<number | null>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", (code) => resolve(code));
-    setTimeout(() => {
-      if (child.pid === undefined) return;
-      try {
-        process.kill(-child.pid, "SIGTERM");
-      } catch {
-        child.kill("SIGTERM");
-      }
-    }, 12_000).unref();
-  });
-  const terminalOutput = Buffer.concat(output).toString("utf8");
-  const errorOutput = Buffer.concat(errors).toString("utf8");
+  const pty = startInteractivePty(terminalCommand, 58, 16, 15_000);
+  await pty.waitForOutput("执行流程资料库");
+  await pty.sendAndWait("s", "execution-scan");
+  await pty.sendAndWait("l", "执行流程资料库");
+  await pty.sendAndWait("2", "受控作品");
+  await pty.sendAndWait("x", "execution-rescrape");
+  await pty.sendAndWait("c", ["取消请求已提交", "刷新已取消"]);
+  await pty.sendAndWait("l", "执行流程资料库");
+  await pty.sendAndWait("2", "受控作品");
+  await pty.sendAndWait("m", ["execution-metadata", "刷新已完成：已识别"]);
+  await pty.sendAndWait("q", "TERMINAL_RESTORED");
+  const exitCode = await pty.closeAndWait();
+  const terminalOutput = pty.output;
+  const errorOutput = pty.errors;
 
   expect(exitCode, `${errorOutput}\n${terminalOutput}`).toBe(0);
   expect(terminalOutput).toContain("execution-scan");
@@ -790,33 +837,12 @@ it("读取连接中断后保留原执行身份并自动恢复查询，不重提�
   });
   const address = server.address() as AddressInfo;
   const terminalCommand = `stty cols 58 rows 16 -icanon -echo; terminalModeBefore=$(stty -g); ./dist/cli.js --url http://127.0.0.1:${address.port} --execution execution-resume; terminalModeAfter=$(stty -g); if [ "$terminalModeBefore" = "$terminalModeAfter" ]; then echo TERMINAL_RESTORED; else echo TERMINAL_NOT_RESTORED; fi`;
-  const keyInput = "{ sleep 3.5; printf q; }";
-  const command = `set -o pipefail; ${keyInput} | script -qfec ${shellQuote(terminalCommand)} /dev/null`;
-  const child = spawn("bash", ["-lc", command], {
-    cwd: process.cwd(),
-    env: interactivePtyEnvironment(58, 16),
-    stdio: ["ignore", "pipe", "pipe"],
-    detached: process.platform !== "win32",
-  });
-  children.push(child);
-  const output: Buffer[] = [];
-  const errors: Buffer[] = [];
-  child.stdout.on("data", (chunk: Buffer) => output.push(chunk));
-  child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
-  const exitCode = await new Promise<number | null>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", (code) => resolve(code));
-    setTimeout(() => {
-      if (child.pid === undefined) return;
-      try {
-        process.kill(-child.pid, "SIGTERM");
-      } catch {
-        child.kill("SIGTERM");
-      }
-    }, 9_000).unref();
-  });
-  const terminalOutput = Buffer.concat(output).toString("utf8");
-  const errorOutput = Buffer.concat(errors).toString("utf8");
+  const pty = startInteractivePty(terminalCommand, 58, 16, 15_000);
+  await pty.waitForOutput("change-set-1");
+  await pty.sendAndWait("q", "TERMINAL_RESTORED");
+  const exitCode = await pty.closeAndWait();
+  const terminalOutput = pty.output;
+  const errorOutput = pty.errors;
 
   expect(exitCode, `${errorOutput}\n${terminalOutput}`).toBe(0);
   expect(terminalOutput).toContain("execution-resume");
