@@ -14,6 +14,7 @@ import {
   expect,
   type BrowserContext,
   type Page,
+  type Worker,
 } from "@playwright/test";
 import { serve } from "srvx";
 import { afterEach, it } from "vitest";
@@ -31,6 +32,47 @@ const capturedContexts: Array<{
   readonly cookieValue: string;
   readonly userAgent: string;
 }> = [];
+
+async function openOptionsPage(
+  context: BrowserContext,
+  worker: Worker,
+  extensionId: string,
+): Promise<Page> {
+  const optionsUrl = `chrome-extension://${extensionId}/options.html`;
+  await worker.evaluate(async () => {
+    const extensionChrome = (
+      globalThis as typeof globalThis & {
+        chrome: { runtime: { openOptionsPage: () => Promise<void> } };
+      }
+    ).chrome;
+    await extensionChrome.runtime.openOptionsPage();
+  });
+  await expect
+    .poll(() => context.pages().some((page) => page.url() === optionsUrl))
+    .toBe(true);
+  const optionsPage = context.pages().find((page) => page.url() === optionsUrl);
+  if (optionsPage === undefined) throw new Error("Chrome 没有打开扩展配置页");
+  return optionsPage;
+}
+
+async function readExtensionSessionStorage(
+  worker: Worker,
+): Promise<Record<string, unknown>> {
+  return worker.evaluate(async () => {
+    const extensionChrome = (
+      globalThis as typeof globalThis & {
+        chrome: {
+          storage: {
+            session: {
+              get: (key: null) => Promise<Record<string, unknown>>;
+            };
+          };
+        };
+      }
+    ).chrome;
+    return extensionChrome.storage.session.get(null);
+  });
+}
 
 afterEach(async () => {
   for (const child of terminalChildren.splice(0).reverse()) {
@@ -54,7 +96,7 @@ afterEach(async () => {
   capturedContexts.length = 0;
 });
 
-it("在 Chromium 中按正式清单安装并加载扩展【安装客户端】", async () => {
+it("通过扩展公开入口打开独立连接页，重复打开复用原页面【安装客户端】", async () => {
   const extensionDirectory = fileURLToPath(
     import.meta.resolve("@digital/fanbox-extension/extension"),
   );
@@ -76,12 +118,56 @@ it("在 Chromium 中按正式清单安装并加载扩展【安装客户端】", 
   const worker =
     existingWorker ?? (await context.waitForEvent("serviceworker"));
   const extensionId = new URL(worker.url()).host;
-  const popup = await context.newPage();
-  await popup.goto(`chrome-extension://${extensionId}/popup.html`);
-  await expect(popup.locator("h1")).toHaveText("连接 FANBOX");
+  const optionsPage = await openOptionsPage(context, worker, extensionId);
+  await expect(optionsPage.locator("h1")).toHaveText("连接 FANBOX");
   await expect(
-    popup.getByRole("button", { name: "检查目标与创作者范围" }),
+    optionsPage.getByRole("button", { name: "检查目标与创作者范围" }),
   ).toBeVisible();
+  const draft = {
+    serviceAddress: "http://127.0.0.1:31337",
+    instanceId: "11111111-1111-4111-8111-111111111111",
+    requestId: "22222222-2222-4222-8222-222222222222",
+    pairingCode: "A".repeat(43),
+  };
+  await fillPairing(optionsPage, draft);
+  await expect
+    .poll(async () => readExtensionSessionStorage(worker))
+    .toEqual({ fanboxConnectionDraft: draft });
+  const otherPage = await context.newPage();
+  await otherPage.bringToFront();
+  await optionsPage.bringToFront();
+  expect(optionsPage.isClosed()).toBe(false);
+  await expect(optionsPage.locator("#pairing-code")).toHaveValue(
+    draft.pairingCode,
+  );
+  await otherPage.close();
+  await expect(
+    optionsPage.getByRole("button", { name: "使用此浏览器登录状态连接" }),
+  ).toBeDisabled();
+  await optionsPage.close();
+  const reopenedPage = await openOptionsPage(context, worker, extensionId);
+  await expect(reopenedPage.locator("#service-url")).toHaveValue(
+    draft.serviceAddress,
+  );
+  await expect(reopenedPage.locator("#instance-id")).toHaveValue(
+    draft.instanceId,
+  );
+  await expect(reopenedPage.locator("#request-id")).toHaveValue(
+    draft.requestId,
+  );
+  await expect(reopenedPage.locator("#pairing-code")).toHaveValue(
+    draft.pairingCode,
+  );
+  await expect(reopenedPage.locator("#status")).toHaveText("");
+  await expect(
+    reopenedPage.getByRole("button", { name: "使用此浏览器登录状态连接" }),
+  ).toBeDisabled();
+  expect(await openOptionsPage(context, worker, extensionId)).toBe(
+    reopenedPage,
+  );
+  expect(
+    context.pages().filter((page) => page.url() === reopenedPage.url()),
+  ).toHaveLength(1);
 }, 60_000);
 
 it("编辑已核对的服务和请求后必须重新检查才会捕获浏览器会话【安装客户端】", async () => {
@@ -131,21 +217,22 @@ it("编辑已核对的服务和请求后必须重新检查才会捕获浏览器�
   const worker =
     existingWorker ?? (await context.waitForEvent("serviceworker"));
   const extensionId = new URL(worker.url()).host;
-  const popup = await context.newPage();
-  await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+  const optionsPage = await openOptionsPage(context, worker, extensionId);
 
-  await fillPairing(popup, {
+  await fillPairing(optionsPage, {
     serviceAddress: firstBaseUrl.origin,
     instanceId: first.request.instanceId,
     requestId: first.request.id,
     pairingCode: first.pairingCode,
   });
-  await popup.getByRole("button", { name: "检查目标与创作者范围" }).click();
-  await expect(popup.locator("#scope")).toContainText(
+  await optionsPage
+    .getByRole("button", { name: "检查目标与创作者范围" })
+    .click();
+  await expect(optionsPage.locator("#scope")).toContainText(
     `目标实例：${first.request.instanceId}`,
   );
   await expect(
-    popup.getByRole("button", { name: "使用此浏览器登录状态连接" }),
+    optionsPage.getByRole("button", { name: "使用此浏览器登录状态连接" }),
   ).toBeEnabled();
 
   await context.addCookies([
@@ -159,15 +246,17 @@ it("编辑已核对的服务和请求后必须重新检查才会捕获浏览器�
       sameSite: "None",
     },
   ]);
-  await fillPairing(popup, {
+  await fillPairing(optionsPage, {
     serviceAddress: secondBaseUrl.origin,
     instanceId: second.request.instanceId,
     requestId: second.request.id,
     pairingCode: second.pairingCode,
   });
-  await popup.getByRole("button", { name: "使用此浏览器登录状态连接" }).click();
+  await optionsPage
+    .getByRole("button", { name: "使用此浏览器登录状态连接" })
+    .click();
 
-  await expect(popup.locator("#status")).toContainText(
+  await expect(optionsPage.locator("#status")).toContainText(
     "目标信息已更改，请重新检查",
   );
   expect(capturedContexts).toHaveLength(0);
@@ -188,12 +277,16 @@ it("编辑已核对的服务和请求后必须重新检查才会捕获浏览器�
     ),
   ).toBe(false);
 
-  await popup.getByRole("button", { name: "检查目标与创作者范围" }).click();
-  await expect(popup.locator("#scope")).toContainText(
+  await optionsPage
+    .getByRole("button", { name: "检查目标与创作者范围" })
+    .click();
+  await expect(optionsPage.locator("#scope")).toContainText(
     `目标实例：${second.request.instanceId}`,
   );
-  await popup.getByRole("button", { name: "使用此浏览器登录状态连接" }).click();
-  await expect(popup.locator("#status")).toContainText("FANBOX 连接成功");
+  await optionsPage
+    .getByRole("button", { name: "使用此浏览器登录状态连接" })
+    .click();
+  await expect(optionsPage.locator("#status")).toContainText("FANBOX 连接成功");
   await expect
     .poll(
       async () =>
@@ -272,31 +365,40 @@ it("通过实际 Chromium 扩展与正式 FANBOX 验证器完成 TUI 连接【�
   const worker =
     existingWorker ?? (await context.waitForEvent("serviceworker"));
   const extensionId = new URL(worker.url()).host;
-  const popup = await context.newPage();
-  await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+  const optionsPage = await openOptionsPage(context, worker, extensionId);
 
-  await fillPairing(popup, {
+  await fillPairing(optionsPage, {
     serviceAddress: wrongTargetUrl.origin,
     instanceId,
     requestId,
     pairingCode,
   });
-  await popup.getByRole("button", { name: "检查目标与创作者范围" }).click();
-  await expect(popup.locator("#status")).toContainText("配对信息无效");
+  await optionsPage
+    .getByRole("button", { name: "检查目标与创作者范围" })
+    .click();
+  await expect(optionsPage.locator("#status")).toContainText("配对信息无效");
   expect(capturedContexts).toHaveLength(0);
 
-  await popup.locator("#service-url").fill(baseUrl.origin);
-  await popup.getByRole("button", { name: "检查目标与创作者范围" }).click();
-  await expect(popup.locator("#scope")).toContainText("创作者范围：customudon");
-  await expect(popup.locator("#scope")).toContainText(
+  await optionsPage.locator("#service-url").fill(baseUrl.origin);
+  await optionsPage
+    .getByRole("button", { name: "检查目标与创作者范围" })
+    .click();
+  await expect(optionsPage.locator("#scope")).toContainText(
+    "创作者范围：customudon",
+  );
+  await expect(optionsPage.locator("#scope")).toContainText(
     `目标实例：${instanceId}`,
   );
   await expect(
-    popup.getByRole("button", { name: "使用此浏览器登录状态连接" }),
+    optionsPage.getByRole("button", { name: "使用此浏览器登录状态连接" }),
   ).toBeEnabled();
 
-  await popup.getByRole("button", { name: "使用此浏览器登录状态连接" }).click();
-  await expect(popup.locator("#status")).toContainText("没有 FANBOX 登录会话");
+  await optionsPage
+    .getByRole("button", { name: "使用此浏览器登录状态连接" })
+    .click();
+  await expect(optionsPage.locator("#status")).toContainText(
+    "没有 FANBOX 登录会话",
+  );
   expect(capturedContexts).toHaveLength(0);
   expect((await client.getFanboxConnectionRequest(requestId)).status).toBe(
     "waiting",
@@ -313,19 +415,37 @@ it("通过实际 Chromium 扩展与正式 FANBOX 验证器完成 TUI 连接【�
       sameSite: "None",
     },
   ]);
-  await popup.getByRole("button", { name: "使用此浏览器登录状态连接" }).click();
-  await expect(popup.locator("#status")).toContainText("正在由目标服务验证");
+  await optionsPage
+    .getByRole("button", { name: "使用此浏览器登录状态连接" })
+    .click();
+  await expect(optionsPage.locator("#status")).toContainText(
+    "正在由目标服务验证",
+  );
   await verificationGate.started;
   await terminal.waitFor("当前状态：正在验证 FANBOX 登录状态");
   verificationGate.release();
-  await expect(popup.locator("#status")).toContainText("FANBOX 连接成功", {
-    timeout: 20_000,
-  });
+  await expect(optionsPage.locator("#status")).toContainText(
+    "FANBOX 连接成功",
+    {
+      timeout: 20_000,
+    },
+  );
   await expect
     .poll(
       async () => (await client.getFanboxConnectionRequest(requestId)).status,
     )
     .toBe("succeeded");
+  await expect(optionsPage.locator("#pairing-code")).toHaveValue("");
+  await expect
+    .poll(async () => readExtensionSessionStorage(worker))
+    .toEqual({
+      fanboxConnectionDraft: {
+        serviceAddress: baseUrl.origin,
+        instanceId,
+        requestId,
+        pairingCode: "",
+      },
+    });
   expect(capturedContexts).toHaveLength(1);
   expect(capturedContexts[0]).toMatchObject({
     creatorId: "customudon",
@@ -361,17 +481,23 @@ it("通过实际 Chromium 扩展与正式 FANBOX 验证器完成 TUI 连接【�
     failedPrompt,
     /限时配对码：\s*([A-Za-z0-9_-]{43})/u,
   );
-  await fillPairing(popup, {
+  await fillPairing(optionsPage, {
     serviceAddress: baseUrl.origin,
     instanceId: failedInstanceId,
     requestId: failedRequestId,
     pairingCode: failedPairingCode,
   });
-  await popup.getByRole("button", { name: "检查目标与创作者范围" }).click();
-  await expect(popup.locator("#status")).toContainText("请核对上方服务实例");
-  await expect(popup.locator("#scope")).toContainText("创作者范围：customudon");
+  await optionsPage
+    .getByRole("button", { name: "检查目标与创作者范围" })
+    .click();
+  await expect(optionsPage.locator("#status")).toContainText(
+    "请核对上方服务实例",
+  );
+  await expect(optionsPage.locator("#scope")).toContainText(
+    "创作者范围：customudon",
+  );
   await expect(
-    popup.getByRole("button", { name: "使用此浏览器登录状态连接" }),
+    optionsPage.getByRole("button", { name: "使用此浏览器登录状态连接" }),
   ).toBeEnabled();
   await context.clearCookies();
   await context.addCookies([
@@ -385,8 +511,10 @@ it("通过实际 Chromium 扩展与正式 FANBOX 验证器完成 TUI 连接【�
       sameSite: "None",
     },
   ]);
-  await popup.getByRole("button", { name: "使用此浏览器登录状态连接" }).click();
-  await expect(popup.locator("#status")).toContainText("验证失败", {
+  await optionsPage
+    .getByRole("button", { name: "使用此浏览器登录状态连接" })
+    .click();
+  await expect(optionsPage.locator("#status")).toContainText("验证失败", {
     timeout: 20_000,
   });
   await expect
@@ -395,6 +523,10 @@ it("通过实际 Chromium 扩展与正式 FANBOX 验证器完成 TUI 连接【�
         (await client.getFanboxConnectionRequest(failedRequestId)).status,
     )
     .toBe("failed");
+  await expect(optionsPage.locator("#pairing-code")).toHaveValue("");
+  await expect
+    .poll(async () => readExtensionSessionStorage(worker))
+    .toMatchObject({ fanboxConnectionDraft: { pairingCode: "" } });
   await terminal.waitFor("当前状态：验证失败");
   expect(capturedContexts.map(({ cookieValue }) => cookieValue)).toEqual([
     "synthetic-controlled-session-value",
@@ -430,16 +562,20 @@ it("通过实际 Chromium 扩展与正式 FANBOX 验证器完成 TUI 连接【�
     replacementPrompt,
     /限时配对码：\s*([A-Za-z0-9_-]{43})/u,
   );
-  await fillPairing(popup, {
+  await fillPairing(optionsPage, {
     serviceAddress: baseUrl.origin,
     instanceId: replacementInstanceId,
     requestId: replacementRequestId,
     pairingCode: replacementPairingCode,
   });
-  await popup.getByRole("button", { name: "检查目标与创作者范围" }).click();
-  await expect(popup.locator("#status")).toContainText("请核对上方服务实例");
+  await optionsPage
+    .getByRole("button", { name: "检查目标与创作者范围" })
+    .click();
+  await expect(optionsPage.locator("#status")).toContainText(
+    "请核对上方服务实例",
+  );
   await expect(
-    popup.getByRole("button", { name: "使用此浏览器登录状态连接" }),
+    optionsPage.getByRole("button", { name: "使用此浏览器登录状态连接" }),
   ).toBeEnabled();
   await context.clearCookies();
   await context.addCookies([
@@ -453,16 +589,25 @@ it("通过实际 Chromium 扩展与正式 FANBOX 验证器完成 TUI 连接【�
       sameSite: "None",
     },
   ]);
-  await popup.getByRole("button", { name: "使用此浏览器登录状态连接" }).click();
-  await expect(popup.locator("#status")).toContainText("FANBOX 连接成功", {
-    timeout: 20_000,
-  });
+  await optionsPage
+    .getByRole("button", { name: "使用此浏览器登录状态连接" })
+    .click();
+  await expect(optionsPage.locator("#status")).toContainText(
+    "FANBOX 连接成功",
+    {
+      timeout: 20_000,
+    },
+  );
   await expect
     .poll(
       async () =>
         (await client.getFanboxConnectionRequest(replacementRequestId)).status,
     )
     .toBe("succeeded");
+  await expect(optionsPage.locator("#pairing-code")).toHaveValue("");
+  await expect
+    .poll(async () => readExtensionSessionStorage(worker))
+    .toMatchObject({ fanboxConnectionDraft: { pairingCode: "" } });
   await terminal.waitFor("当前状态：连接成功");
   expect((await fanboxConnection(client)).version).toBe(2);
   expect(capturedContexts.map(({ cookieValue }) => cookieValue)).toEqual([
@@ -721,7 +866,7 @@ async function startTui(serviceAddress: string) {
 }
 
 async function fillPairing(
-  popup: Page,
+  optionsPage: Page,
   input: {
     readonly serviceAddress: string;
     readonly instanceId: string;
@@ -729,10 +874,10 @@ async function fillPairing(
     readonly pairingCode: string;
   },
 ): Promise<void> {
-  await popup.locator("#service-url").fill(input.serviceAddress);
-  await popup.locator("#instance-id").fill(input.instanceId);
-  await popup.locator("#request-id").fill(input.requestId);
-  await popup.locator("#pairing-code").fill(input.pairingCode);
+  await optionsPage.locator("#service-url").fill(input.serviceAddress);
+  await optionsPage.locator("#instance-id").fill(input.instanceId);
+  await optionsPage.locator("#request-id").fill(input.requestId);
+  await optionsPage.locator("#pairing-code").fill(input.pairingCode);
 }
 
 function matchAfter(value: string, pattern: RegExp): string {

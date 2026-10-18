@@ -5,6 +5,19 @@ declare namespace chrome {
     }): Promise<boolean>;
   }
 
+  namespace action {
+    const onClicked: {
+      addListener(listener: () => void): void;
+    };
+  }
+
+  namespace storage {
+    namespace session {
+      function get(keys: string): Promise<Record<string, unknown>>;
+      function set(items: Record<string, unknown>): Promise<void>;
+    }
+  }
+
   namespace cookies {
     type SameSite = "unspecified" | "no_restriction" | "lax" | "strict";
     type Cookie = {
@@ -26,5 +39,6 @@ declare namespace chrome {
     const onInstalled: {
       addListener(listener: () => void): void;
     };
+    function openOptionsPage(): Promise<void>;
   }
 }

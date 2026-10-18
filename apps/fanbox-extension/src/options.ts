@@ -12,14 +12,138 @@ const reviewButton = requiredButton("review");
 const connectButton = requiredButton("connect");
 const scope = requiredElement("scope");
 const status = requiredElement("status");
+const draftStatus = requiredElement("draft-status");
+
+const draftStorageKey = "fanboxConnectionDraft";
+type ConnectionDraft = {
+  readonly serviceAddress: string;
+  readonly instanceId: string;
+  readonly requestId: string;
+  readonly pairingCode: string;
+};
+type DraftField = keyof ConnectionDraft;
+const draftEditedFields = new Set<DraftField>();
+let draftWriteQueue: Promise<void> = Promise.resolve();
 
 let reviewedRequest: PublicFanboxConnectionRequest | undefined;
 type ConnectionTarget = NonNullable<ReturnType<typeof readTarget>>;
 let reviewedTarget: ConnectionTarget | undefined;
 let busy = false;
 
+for (const [field, input] of draftInputs()) {
+  input.addEventListener("input", () => {
+    draftEditedFields.add(field);
+    saveDraft();
+  });
+}
+
+setStatus("正在恢复当前浏览器会话草稿…");
+void restoreDraft();
 reviewButton.addEventListener("click", () => void reviewTarget());
 connectButton.addEventListener("click", () => void connectBrowserSession());
+
+function draftInputs(): readonly (readonly [DraftField, HTMLInputElement])[] {
+  return [
+    ["serviceAddress", serviceUrlInput],
+    ["instanceId", instanceIdInput],
+    ["requestId", requestIdInput],
+    ["pairingCode", pairingCodeInput],
+  ];
+}
+
+async function restoreDraft(): Promise<void> {
+  try {
+    const saved = (await chrome.storage.session.get(draftStorageKey))[
+      draftStorageKey
+    ];
+    if (!isConnectionDraft(saved)) return;
+    for (const [field, input] of draftInputs()) {
+      if (!draftEditedFields.has(field)) input.value = saved[field];
+    }
+  } catch {
+    showDraftStorageFailure();
+  } finally {
+    for (const [, input] of draftInputs()) input.disabled = false;
+    reviewButton.disabled = false;
+    setStatus("");
+  }
+}
+
+function saveDraft(): void {
+  const draft: ConnectionDraft = {
+    serviceAddress: serviceUrlInput.value,
+    instanceId: instanceIdInput.value,
+    requestId: requestIdInput.value,
+    pairingCode: pairingCodeInput.value,
+  };
+  draftWriteQueue = draftWriteQueue
+    .catch(() => {})
+    .then(async () => {
+      await chrome.storage.session.set({ [draftStorageKey]: draft });
+      draftStatus.textContent = "";
+    })
+    .catch(showDraftStorageFailure);
+}
+
+function showDraftStorageFailure(): void {
+  draftStatus.textContent =
+    "表单草稿无法保存在当前浏览器会话中；关闭页面后输入可能丢失。";
+}
+
+function isConnectionDraft(value: unknown): value is ConnectionDraft {
+  if (typeof value !== "object" || value === null) return false;
+  return (
+    "serviceAddress" in value &&
+    typeof value.serviceAddress === "string" &&
+    "instanceId" in value &&
+    typeof value.instanceId === "string" &&
+    "requestId" in value &&
+    typeof value.requestId === "string" &&
+    "pairingCode" in value &&
+    typeof value.pairingCode === "string"
+  );
+}
+
+function clearPairingCodeIfTerminal(
+  statusValue: PublicFanboxConnectionRequest["status"],
+  target: ConnectionTarget,
+): void {
+  if (
+    !isTerminalRequestStatus(statusValue) ||
+    !targetStillMatchesInputs(target)
+  )
+    return;
+  pairingCodeInput.value = "";
+  draftEditedFields.add("pairingCode");
+  saveDraft();
+}
+
+function targetStillMatchesInputs(target: ConnectionTarget): boolean {
+  let serviceAddress: string;
+  try {
+    serviceAddress = new URL(serviceUrlInput.value.trim()).href;
+  } catch {
+    return false;
+  }
+  return (
+    serviceAddress === target.serviceAddress &&
+    instanceIdInput.value.trim() === target.expectedInstanceId &&
+    requestIdInput.value.trim() === target.requestId &&
+    pairingCodeInput.value.trim() === target.pairingCode
+  );
+}
+
+function isTerminalRequestStatus(
+  statusValue: PublicFanboxConnectionRequest["status"],
+): boolean {
+  return (
+    statusValue === "succeeded" ||
+    statusValue === "failed" ||
+    statusValue === "cancelled" ||
+    statusValue === "expired" ||
+    statusValue === "superseded"
+  );
+}
 
 async function reviewTarget(): Promise<void> {
   if (busy) return;
@@ -57,6 +181,7 @@ async function reviewTarget(): Promise<void> {
     setScope(request);
     if (request.status !== "waiting") {
       setStatus(`此连接请求当前状态为：${requestStatus(request.status)}。`);
+      clearPairingCodeIfTerminal(request.status, target);
       return;
     }
     reviewedRequest = request;
@@ -118,6 +243,7 @@ async function connectBrowserSession(): Promise<void> {
       setStatus(
         `连接请求已变化，当前状态为：${requestStatus(current.status)}。请重新检查目标。`,
       );
+      clearPairingCodeIfTerminal(current.status, confirmedTarget);
       return;
     }
 
@@ -142,7 +268,7 @@ async function connectBrowserSession(): Promise<void> {
     setScope(result);
     reviewedRequest = undefined;
     reviewedTarget = undefined;
-    pairingCodeInput.value = "";
+    clearPairingCodeIfTerminal(result.status, confirmedTarget);
     setStatus(
       result.status === "succeeded"
         ? "FANBOX 连接成功。浏览器会话已由目标服务验证并私密保存。"
